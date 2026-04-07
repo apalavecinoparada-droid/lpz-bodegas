@@ -898,13 +898,20 @@ function OCCerrarModal(p){
 // ── OC RECIBIR BODEGA MODAL ──
 function OCRecibirModal(p){
   const bodegas=p.m&&Array.isArray(p.m.bodegas)?p.m.bodegas:[];
+  const prods=p.m&&Array.isArray(p.m.prods)?p.m.prods.filter(function(x){return x.activo;}):[];
   const lineas=Array.isArray(p.oc&&p.oc.lineas)?p.oc.lineas:[];
   const lineasBodega=lineas.filter(function(l){return l.ingresa_bodega||l.ingresa_bodega===null;});
-  const lineasConProd=lineasBodega.filter(function(l){return l.producto_id||l.producto_nombre;});
+  // Map de asignacion de productos por linea: {detalle_id: producto_id}
+  const initMap={};lineasBodega.forEach(function(l){initMap[l.detalle_id]=str(l.producto_id||'');});
+  const[prodMap,setProdMap]=useState(initMap);
   const[bodega_id,setBodega]=useState('');const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
+  function setProd(detalle_id,val){setProdMap(function(m){var n=Object.assign({},m);n[detalle_id]=val;return n;});}
+  const lineasListas=lineasBodega.filter(function(l){return !!prodMap[l.detalle_id];});
   function save(){
+    if(!lineasListas.length){setErr('Debe asignar un producto de inventario a al menos una linea.');return;}
     setSaving(true);
-    api('/ordenes-compra/'+p.oc.oc_id+'/recibir-bodega','POST',{bodega_id:bodega_id||null},p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
+    // Enrich lines with selected products before sending
+    api('/ordenes-compra/'+p.oc.oc_id+'/recibir-bodega','POST',{bodega_id:bodega_id||null,prod_map:prodMap},p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
   }
   return h(Modal,{title:'Recibir en Bodega — '+str(p.oc.numero_oc),onClose:p.onClose,lg:true},
     h(EB,null,
@@ -915,15 +922,31 @@ function OCRecibirModal(p){
         lineasBodega.length===0&&h('div',{className:'al al-e',style:{marginBottom:10}},
           '⚠ No hay lineas marcadas con "A Bodega". Edite la OC y active el checkbox en las lineas que deben ingresar al inventario.'
         ),
-        lineasBodega.length>0&&lineasConProd.length===0&&h('div',{className:'al al-e',style:{marginBottom:10}},
-          '⚠ Las lineas marcadas "A Bodega" no tienen producto de inventario asignado. Actualmente la OC usa solo "Tipo de Producto" (clasificacion). Para recibir en bodega debe asociar un Producto especifico a cada linea marcada.'
-        ),
-        lineasConProd.length>0&&h('div',null,
-          h('div',{style:{fontWeight:600,fontSize:13,marginBottom:6}},'Lineas que ingresaran a stock ('+lineasConProd.length+'):'),
-          h('table',null,
-            h('thead',null,h('tr',null,h('th',null,'Producto'),h('th',null,'Descripcion'),h('th',{className:'tr'},'Cantidad'),h('th',{className:'tr'},'Precio Unit.'))),
-            h('tbody',null,...lineasConProd.map(function(l,i){return h('tr',{key:i},h('td',null,l.producto_nombre||'—'),h('td',{style:{fontSize:11,color:'#64748B'}},l.descripcion||'—'),h('td',{className:'tr mono',style:{fontSize:11}},l.cantidad),h('td',{className:'tr mono',style:{fontSize:11}},CLP(l.precio_unitario)));}))
-          )
+        lineasBodega.length>0&&h('div',null,
+          h('div',{style:{fontWeight:600,fontSize:13,marginBottom:6}},'Asigne el producto de inventario a cada linea ('+lineasBodega.length+' linea(s)):'),
+          h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},'Solo las lineas con producto asignado se recibiran en bodega.'),
+          h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
+            h('thead',null,h('tr',null,
+              h('th',{style:{textAlign:'left',padding:'4px 6px',background:'#F1F5F9'}},'Detalle'),
+              h('th',{style:{textAlign:'left',padding:'4px 6px',background:'#F1F5F9'}},'Clasif.'),
+              h('th',{style:{textAlign:'right',padding:'4px 6px',background:'#F1F5F9'}},'Cant.'),
+              h('th',{style:{textAlign:'left',padding:'4px 6px',background:'#F1F5F9'}},'Producto inventario')
+            )),
+            h('tbody',null,...lineasBodega.map(function(l,i){
+              return h('tr',{key:i,style:{borderBottom:'1px solid #E2E8F0'}},
+                h('td',{style:{padding:'4px 6px'}},l.descripcion||'—'),
+                h('td',{style:{padding:'4px 6px',color:'#64748B'}},l.subcategoria_nombre||'—'),
+                h('td',{style:{padding:'4px 6px',textAlign:'right',fontFamily:'monospace'}},l.cantidad),
+                h('td',{style:{padding:'4px 6px'}},
+                  h('select',{value:prodMap[l.detalle_id]||'',onChange:function(e){setProd(l.detalle_id,e.target.value);},style:{width:'100%',padding:'3px 5px',fontSize:11,border:'1px solid #CBD5E1',borderRadius:4}},
+                    h('option',{value:''},'— Seleccione producto —'),
+                    prods.sort(function(a,b){return a.nombre.localeCompare(b.nombre);}).map(function(pr){return h('option',{key:pr.producto_id,value:pr.producto_id},pr.codigo+' — '+pr.nombre.substring(0,35));})
+                  )
+                )
+              );
+            }))
+          ),
+          lineasListas.length>0&&h('div',{className:'al al-s',style:{marginTop:6}},lineasListas.length+' linea(s) listas para recibir.')
         ),
         h('hr',{className:'divider'}),
         err&&h('div',{className:'al al-e'},err),
@@ -936,7 +959,7 @@ function OCRecibirModal(p){
       ),
       h('div',{className:'mf'},
         h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),
-        h(Btn,{v:'teal',onClick:save,disabled:saving||lineasConProd.length===0},saving?'Procesando...':'Recibir '+lineasConProd.length+' producto(s) en Bodega')
+        h(Btn,{v:'teal',onClick:save,disabled:saving||lineasListas.length===0},saving?'Procesando...':'Recibir '+lineasListas.length+' producto(s) en Bodega')
       )
     )
   );
