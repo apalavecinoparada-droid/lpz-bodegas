@@ -533,59 +533,207 @@ function ReportesView(p){
 function OCView(p){
   const empresas=p.m&&Array.isArray(p.m.empresas)?p.m.empresas:[];
   const provs=p.m&&Array.isArray(p.m.provs)?p.m.provs:[];
+  const faenas=p.m&&Array.isArray(p.m.faenas)?p.m.faenas:[];
+  const equipos=p.m&&Array.isArray(p.m.equipos)?p.m.equipos:[];
+  const subcats=p.m&&Array.isArray(p.m.subcats)?p.m.subcats:[];
   const[ocs,setOCs]=useState([]);const[load,setLoad]=useState(true);
   const[formOC,setFormOC]=useState(null);const[cerrarOC,setCerrarOC]=useState(null);
-  const[recibirOC,setRecibirOC]=useState(null);const[err,setErr]=useState('');
+  const[recibirOC,setRecibirOC]=useState(null);const[verOC,setVerOC]=useState(null);
+  const[reabrirOC,setReabrirOC]=useState(null);
   const[filtEst,setFiltEst]=useState('');const[filtProv,setFiltProv]=useState('');
   const[filtDesde,setFiltDesde]=useState('');const[filtHasta,setFiltHasta]=useState('');
+  const[filtEmp,setFiltEmp]=useState('');
+  const[filtSubcat,setFiltSubcat]=useState('');
+  const[filtFaena,setFiltFaena]=useState('');
+  const[filtEquipo,setFiltEquipo]=useState('');
   function load2(){
+    setLoad(true);
+    const hasDetail=filtSubcat||filtFaena||filtEquipo;
     let qs='?';
     if(filtEst)qs+='estado='+filtEst+'&';
     if(filtProv)qs+='proveedor_id='+filtProv+'&';
     if(filtDesde)qs+='desde='+filtDesde+'&';
     if(filtHasta)qs+='hasta='+filtHasta+'&';
-    api('/ordenes-compra'+qs,'GET',null,p.tok).then(function(r){setOCs(Array.isArray(r)?r:[]);}).catch(function(){}).finally(function(){setLoad(false);});
+    if(filtEmp)qs+='empresa_id='+filtEmp+'&';
+    if(filtSubcat)qs+='subcategoria_id='+filtSubcat+'&';
+    if(filtFaena)qs+='faena_id='+filtFaena+'&';
+    if(filtEquipo)qs+='equipo_id='+filtEquipo+'&';
+    const ep=hasDetail?'/ordenes-compra/buscar/filtros':'/ordenes-compra';
+    api(ep+qs,'GET',null,p.tok).then(function(r){setOCs(Array.isArray(r)?r:[]);}).catch(function(){setOCs([]);}).finally(function(){setLoad(false);});
   }
-  useEffect(function(){load2();},[p.tok,filtEst,filtProv,filtDesde,filtHasta]);
+  useEffect(function(){load2();},[p.tok,filtEst,filtProv,filtDesde,filtHasta,filtEmp,filtSubcat,filtFaena,filtEquipo]);
   function anular(id){
     if(!window.confirm('Anular esta OC? Esta accion no se puede deshacer.'))return;
     api('/ordenes-compra/'+id+'/anular','PATCH',{},p.tok).then(function(){load2();}).catch(function(ex){alert(ex.message);});
   }
-  function exportOC(){
-    api('/ordenes-compra/reporte/detalle?'+(filtDesde?'desde='+filtDesde+'&':'')+(filtHasta?'hasta='+filtHasta+'&':'')+(filtEst?'estado='+filtEst+'&':'')+'','GET',null,p.tok).then(function(rows){
-      exportXLSX(rows,[{header:'N° OC',value:r=>r.numero_oc},{header:'Empresa',value:r=>r.empresa},{header:'Proveedor',value:r=>r.proveedor},{header:'RUT Proveedor',value:r=>r.proveedor_rut},{header:'Fecha Emision',value:r=>r.fecha_emision},{header:'Estado',value:r=>r.estado},{header:'Solicitante',value:r=>r.solicitante},{header:'Retira',value:r=>r.retira},{header:'Condicion Pago',value:r=>r.condicion_pago},{header:'Tipo Documento',value:r=>r.tipo_documento},{header:'N° Documento',value:r=>r.numero_documento},{header:'Fecha Documento',value:r=>r.fecha_documento},{header:'Linea',value:r=>r.linea_num},{header:'Descripcion',value:r=>r.descripcion},{header:'Codigo Producto',value:r=>r.producto_codigo},{header:'Producto',value:r=>r.producto_nombre},{header:'Subcategoria',value:r=>r.subcategoria},{header:'Faena',value:r=>r.faena},{header:'Equipo',value:r=>r.equipo},{header:'Cantidad',value:r=>r.cantidad},{header:'Precio Unit',value:r=>r.precio_unitario},{header:'Total Linea',value:r=>r.total_linea},{header:'Ingresa Bodega',value:r=>r.ingresa_bodega?'SI':'NO'},{header:'Neto',value:r=>r.neto},{header:'IVA',value:r=>r.iva},{header:'Imp Adicional',value:r=>r.impuesto_adicional},{header:'Total',value:r=>r.total},{header:'Usuario',value:r=>r.usuario}],'ordenes_compra');
+  function openDoc(oc){
+    api('/ordenes-compra/'+oc.oc_id,'GET',null,p.tok).then(function(full){setVerOC(full);}).catch(function(ex){alert(ex.message);});
+  }
+  function exportFiltered(){
+    exportXLSX(ocs,[
+      {header:'N° OC',value:function(r){return r.numero_oc;}},
+      {header:'Empresa',value:function(r){return r.empresa_nombre||r.empresa||'';}},
+      {header:'Proveedor',value:function(r){return r.proveedor_nombre||r.proveedor||'';}},
+      {header:'RUT Proveedor',value:function(r){return r.proveedor_rut||'';}},
+      {header:'Fecha Emision',value:function(r){return r.fecha_emision||'';}},
+      {header:'Estado',value:function(r){return r.estado||'';}},
+      {header:'Solicitante',value:function(r){return r.solicitante||'';}},
+      {header:'Condicion Pago',value:function(r){return r.condicion_nombre||'';}},
+      {header:'N° Documento',value:function(r){return r.numero_documento||'';}},
+      {header:'Fecha Documento',value:function(r){return r.fecha_documento||'';}},
+      {header:'Neto',value:function(r){return r.neto||0;}},
+      {header:'IVA',value:function(r){return r.iva||0;}},
+      {header:'Total',value:function(r){return r.total||0;}},
+      {header:'Usuario',value:function(r){return r.usuario||'';}}
+    ],'ordenes_filtradas');
+  }
+  function exportDetalle(){
+    api('/ordenes-compra/reporte/detalle?'+(filtDesde?'desde='+filtDesde+'&':'')+(filtHasta?'hasta='+filtHasta+'&':'')+(filtEst?'estado='+filtEst+'&':''),'GET',null,p.tok).then(function(rows){
+      exportXLSX(rows,[{header:'N° OC',value:function(r){return r.numero_oc;}},{header:'Empresa',value:function(r){return r.empresa;}},{header:'Proveedor',value:function(r){return r.proveedor;}},{header:'RUT',value:function(r){return r.proveedor_rut;}},{header:'Fecha Emision',value:function(r){return r.fecha_emision;}},{header:'Estado',value:function(r){return r.estado;}},{header:'Solicitante',value:function(r){return r.solicitante;}},{header:'Retira',value:function(r){return r.retira;}},{header:'Condicion Pago',value:function(r){return r.condicion_pago;}},{header:'Tipo Doc',value:function(r){return r.tipo_documento;}},{header:'N° Doc',value:function(r){return r.numero_documento;}},{header:'Fecha Doc',value:function(r){return r.fecha_documento;}},{header:'Linea',value:function(r){return r.linea_num;}},{header:'Detalle',value:function(r){return r.descripcion;}},{header:'Clasif Producto',value:function(r){return r.subcategoria;}},{header:'Faena',value:function(r){return r.faena;}},{header:'Equipo',value:function(r){return r.equipo;}},{header:'Cantidad',value:function(r){return r.cantidad;}},{header:'Precio Unit',value:function(r){return r.precio_unitario;}},{header:'Total Linea',value:function(r){return r.total_linea;}},{header:'A Bodega',value:function(r){return r.ingresa_bodega?'SI':'NO';}},{header:'Neto',value:function(r){return r.neto;}},{header:'IVA',value:function(r){return r.iva;}},{header:'Imp Adicional',value:function(r){return r.impuesto_adicional;}},{header:'Total',value:function(r){return r.total;}},{header:'Usuario',value:function(r){return r.usuario;}}],'ordenes_detalle');
     }).catch(function(ex){alert(ex.message);});
   }
   const estadoColor={PENDIENTE:'b',CERRADA:'g',ANULADA:'r'};
   return h('div',null,
-    h('div',{className:'tb'},
+    h('div',{style:{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap',alignItems:'center'}},
       h(Btn,{onClick:function(){setFormOC({});}},'+ Nueva OC'),
-      h('select',{value:filtEst,onChange:e=>setFiltEst(e.target.value),style:{minWidth:130}},h('option',{value:''},'Todos los estados'),h('option',{value:'PENDIENTE'},'Pendiente'),h('option',{value:'CERRADA'},'Cerrada'),h('option',{value:'ANULADA'},'Anulada')),
-      h('select',{value:filtProv,onChange:e=>setFiltProv(e.target.value),style:{minWidth:150}},h('option',{value:''},'Todos los proveedores'),provs.map(q=>h('option',{key:q.proveedor_id,value:q.proveedor_id},q.nombre))),
-      h('input',{type:'date',value:filtDesde,onChange:e=>setFiltDesde(e.target.value),style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,width:140},placeholder:'Desde'}),
-      h('input',{type:'date',value:filtHasta,onChange:e=>setFiltHasta(e.target.value),style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,width:140},placeholder:'Hasta'}),
-      h(Btn,{v:'teal',onClick:exportOC},null,'⬇ Excel detalle')
+      h('select',{value:filtEst,onChange:function(e){setFiltEst(e.target.value);},style:{minWidth:115,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todos estados'),h('option',{value:'PENDIENTE'},'Pendiente'),h('option',{value:'CERRADA'},'Cerrada'),h('option',{value:'ANULADA'},'Anulada')),
+      h('select',{value:filtEmp,onChange:function(e){setFiltEmp(e.target.value);},style:{minWidth:130,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todas empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})),
+      h('select',{value:filtProv,onChange:function(e){setFiltProv(e.target.value);},style:{minWidth:130,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todos proveedores'),provs.map(function(q){return h('option',{key:q.proveedor_id,value:q.proveedor_id},q.nombre);})),
+      h('input',{type:'date',value:filtDesde,onChange:function(e){setFiltDesde(e.target.value);},style:{padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,width:130},title:'Desde'}),
+      h('input',{type:'date',value:filtHasta,onChange:function(e){setFiltHasta(e.target.value);},style:{padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,width:130},title:'Hasta'}),
+      h('select',{value:filtSubcat,onChange:function(e){setFiltSubcat(e.target.value);},style:{minWidth:140,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Clasif. producto'),subcats.map(function(s){return h('option',{key:s.subcategoria_id,value:s.subcategoria_id},s.nombre);})),
+      h('select',{value:filtFaena,onChange:function(e){setFiltFaena(e.target.value);},style:{minWidth:120,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todas faenas'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})),
+      h('select',{value:filtEquipo,onChange:function(e){setFiltEquipo(e.target.value);},style:{minWidth:120,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todos equipos'),equipos.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.nombre);})),
+      h(Btn,{v:'teal',sm:true,onClick:exportFiltered},null,'⬇ Excel filtrado'),
+      h(Btn,{v:'g',sm:true,onClick:exportDetalle},null,'⬇ Informe masivo')
     ),
+    h('div',{style:{fontSize:12,color:'#64748B',marginBottom:6}},ocs.length+' resultado(s)'),
     load?h('div',{className:'spin'},'Cargando...'):
     h('div',{className:'card'},h(TBL,{cols:[
-      {lbl:'N° OC',k:'numero_oc',mono:true},{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Proveedor',k:'proveedor_nombre'},
-      {lbl:'Fecha',k:'fecha_emision'},{lbl:'Estado',render:r=>h(Bg,{c:estadoColor[r.estado]||'gray'},r.estado)},
-      {lbl:'Neto',r:true,mono:true,render:r=>CLP(r.neto)},{lbl:'IVA',r:true,mono:true,render:r=>CLP(r.iva)},{lbl:'Total',r:true,mono:true,render:r=>h('strong',null,CLP(r.total))},
-      {lbl:'Bodega recep.',render:r=>r.bodega_ingreso_nombre||'—'},
+      {lbl:'N° OC',k:'numero_oc',mono:true},{lbl:'Empresa',render:function(r){return r.empresa_nombre||r.empresa||'—';}},{lbl:'Proveedor',render:function(r){return r.proveedor_nombre||r.proveedor||'—';}},
+      {lbl:'Fecha',k:'fecha_emision'},{lbl:'Estado',render:function(r){return h(Bg,{c:estadoColor[r.estado]||'gray'},r.estado);}},
+      {lbl:'Neto',r:true,mono:true,render:function(r){return CLP(r.neto);}},{lbl:'Total',r:true,mono:true,render:function(r){return h('strong',null,CLP(r.total));}},
       {lbl:'Acciones',render:function(r){
         return h('div',{style:{display:'flex',gap:3,flexWrap:'wrap'}},
-          r.estado==='PENDIENTE'&&h('button',{className:'btn btn-g btn-xs',onClick:function(){setFormOC(r);},title:'Editar'},'✏'),
-          r.estado==='PENDIENTE'&&h('button',{className:'btn btn-p btn-xs',onClick:function(){setCerrarOC(r);},title:'Cerrar OC'},'Cerrar'),
-          r.estado==='PENDIENTE'&&h('button',{className:'btn btn-d btn-xs',onClick:function(){anular(r.oc_id);},title:'Anular'},'Anular'),
-          r.estado==='CERRADA'&&!r.movimiento_id&&h('button',{className:'btn btn-teal btn-xs',onClick:function(){setRecibirOC(r);},title:'Recibir en Bodega'},'Recibir'),
+          r.estado==='PENDIENTE'&&h('button',{className:'btn btn-g btn-xs',onClick:function(){setFormOC(r);}},null,'✏'),
+          r.estado==='PENDIENTE'&&h('button',{className:'btn btn-p btn-xs',onClick:function(){setCerrarOC(r);}},'Cerrar'),
+          r.estado==='PENDIENTE'&&h('button',{className:'btn btn-d btn-xs',onClick:function(){anular(r.oc_id);}},'Anular'),
+          r.estado==='CERRADA'&&!r.movimiento_id&&h('button',{className:'btn btn-teal btn-xs',onClick:function(){setRecibirOC(r);}},'Recibir'),
+          r.estado==='CERRADA'&&!r.movimiento_id&&h('button',{className:'btn btn-a btn-xs',onClick:function(){setReabrirOC(r);}},null,'↩ Reabrir'),
           r.estado==='CERRADA'&&r.movimiento_id&&h(Bg,{c:'teal'},'Recibida'),
-          r.estado==='CERRADA'&&h('button',{className:'btn btn-g btn-xs',onClick:function(){window.open('/api/ordenes-compra/'+r.oc_id,'_blank');},title:'Ver detalle'},'Ver')
+          (r.estado==='CERRADA'||r.estado==='PENDIENTE')&&h('button',{className:'btn btn-g btn-xs',onClick:function(){openDoc(r);}},'Ver')
         );
       }}
     ],rows:ocs,empty:'Sin ordenes de compra'})),
     formOC!==null&&h(OCFormModal,{tok:p.tok,oc:formOC,m:p.m,onClose:function(){setFormOC(null);},onSave:function(){setFormOC(null);load2();}}),
     cerrarOC&&h(OCCerrarModal,{tok:p.tok,oc:cerrarOC,m:p.m,onClose:function(){setCerrarOC(null);},onSave:function(){setCerrarOC(null);load2();}}),
-    recibirOC&&h(OCRecibirModal,{tok:p.tok,oc:recibirOC,m:p.m,onClose:function(){setRecibirOC(null);},onSave:function(){setRecibirOC(null);load2();}})
+    recibirOC&&h(OCRecibirModal,{tok:p.tok,oc:recibirOC,m:p.m,onClose:function(){setRecibirOC(null);},onSave:function(){setRecibirOC(null);load2();}}),
+    reabrirOC&&h(OCReabrirModal,{tok:p.tok,oc:reabrirOC,onClose:function(){setReabrirOC(null);},onSave:function(){setReabrirOC(null);load2();}}),
+    verOC&&h(OCDocView,{oc:verOC,m:p.m,onClose:function(){setVerOC(null);}})
+  );
+}
+// ── OC REABRIR MODAL ──
+function OCReabrirModal(p){
+  const[motivo,setMotivo]=useState('');const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
+  function save(){
+    setErr('');if(!motivo.trim()){setErr('Ingrese el motivo');return;}setSaving(true);
+    api('/ordenes-compra/'+p.oc.oc_id+'/reabrir','PATCH',{motivo:motivo},p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
+  }
+  return h(Modal,{title:'Reabrir OC '+str(p.oc.numero_oc),onClose:p.onClose},
+    h(EB,null,
+      h('div',{className:'mb'},
+        h('div',{className:'al al-w',style:{marginBottom:12}},'La OC volvera a estado PENDIENTE. Los datos del documento tributario seran eliminados. Si ya genero ingreso a bodega, no se puede reabrir.'),
+        err&&h('div',{className:'al al-e'},err),
+        h(FR,{label:'Motivo de reapertura',req:true},h('textarea',{value:motivo,onChange:function(e){setMotivo(e.target.value);},rows:3,style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,resize:'vertical'},placeholder:'Describa el motivo...'}))
+      ),
+      h('div',{className:'mf'},h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),h(Btn,{v:'a',onClick:save,disabled:saving},saving?'Reabriendo...':'Confirmar Reapertura'))
+    )
+  );
+}
+
+// ── OC DOCUMENTO FORMAL ──
+function OCDocView(p){
+  const oc=p.oc||{};
+  const lineas=Array.isArray(oc.lineas)?oc.lineas:[];
+  const empresa=(p.m&&Array.isArray(p.m.empresas)?p.m.empresas:[]).find(function(e){return e.empresa_id===oc.empresa_id;})||{};
+  const CLP2=function(n){return '$'+new Intl.NumberFormat('es-CL').format(parseFloat(n)||0);};
+  const css=`body{font-family:Arial,sans-serif;font-size:12px;color:#1E293B;margin:24px}
+    .header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #1D4ED8;padding-bottom:14px;margin-bottom:16px}
+    .logo{max-height:70px;max-width:180px} .empresa{font-size:12px;line-height:1.7}
+    .empresa strong{font-size:15px;color:#0F172A}
+    .title-box{text-align:right} .title-box h2{font-size:20px;color:#1D4ED8;margin:0 0 3px}
+    .oc-num{font-size:16px;font-weight:700} .estado{display:inline-block;padding:2px 10px;border-radius:12px;font-size:11px;font-weight:700}
+    .est-PENDIENTE{background:#DBEAFE;color:#1E40AF}.est-CERRADA{background:#DCFCE7;color:#166534}.est-ANULADA{background:#FEE2E2;color:#991B1B}
+    .meta{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:#F8FAFC;padding:10px;border-radius:6px;margin-bottom:14px;font-size:11px}
+    .mi{display:flex;gap:4px} .ml{color:#64748B;min-width:90px} .mv{font-weight:600}
+    table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:12px}
+    th{background:#1D4ED8;color:#fff;padding:5px 7px;text-align:left;font-weight:600}
+    td{padding:5px 7px;border-bottom:1px solid #E2E8F0;vertical-align:top}
+    tr:nth-child(even) td{background:#F8FAFC}
+    .totals{width:260px;margin-left:auto;font-size:12px;border-collapse:collapse}
+    .totals td{padding:4px 8px;border-bottom:1px solid #E2E8F0}
+    .totals td:last-child{text-align:right;font-weight:600}
+    .total-final td{border-top:2px solid #1D4ED8!important;color:#1D4ED8!important;font-size:14px!important;font-weight:700!important}
+    .trib{margin-top:10px;padding:8px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:5px;font-size:11px}
+    .footer{margin-top:20px;padding-top:10px;border-top:1px solid #E2E8F0;font-size:10px;color:#94A3B8;text-align:center}
+    @media print{button{display:none}}`;
+  function buildHTML(){
+    return '<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'</style></head><body>'+
+    '<div class="header">'+
+    '<div class="empresa">'+
+    (empresa.logo_base64?'<img src="'+empresa.logo_base64+'" class="logo"><br>':'')+
+    '<strong>'+(empresa.razon_social||'Sin empresa')+'</strong><br>'+
+    (empresa.rut?'RUT: '+empresa.rut+'<br>':'')+
+    (empresa.giro?empresa.giro+'<br>':'')+
+    (empresa.direccion?empresa.direccion+(empresa.ciudad?', '+empresa.ciudad:'')+'<br>':'')+
+    (empresa.telefono?'Tel: '+empresa.telefono+'<br>':'')+
+    (empresa.email||'')+
+    '</div>'+
+    '<div class="title-box"><h2>ORDEN DE COMPRA</h2><div class="oc-num">'+(oc.numero_oc||'—')+'</div>'+
+    '<div style="margin-top:6px"><span class="estado est-'+(oc.estado||'PENDIENTE')+'">'+(oc.estado||'PENDIENTE')+'</span></div></div>'+
+    '</div>'+
+    '<div class="meta">'+
+    '<div class="mi"><span class="ml">Fecha emision:</span><span class="mv">'+(oc.fecha_emision||'—')+'</span></div>'+
+    '<div class="mi"><span class="ml">Proveedor:</span><span class="mv">'+(oc.proveedor_nombre||'—')+'</span></div>'+
+    '<div class="mi"><span class="ml">RUT Proveedor:</span><span class="mv">'+(oc.proveedor_rut||'—')+'</span></div>'+
+    '<div class="mi"><span class="ml">Condicion pago:</span><span class="mv">'+(oc.condicion_nombre||'—')+'</span></div>'+
+    '<div class="mi"><span class="ml">Solicitante:</span><span class="mv">'+(oc.solicitante||'—')+'</span></div>'+
+    '<div class="mi"><span class="ml">Retira:</span><span class="mv">'+(oc.retira||'—')+'</span></div>'+
+    '<div class="mi"><span class="ml">Usuario emisor:</span><span class="mv">'+(oc.usuario||'—')+'</span></div>'+
+    '</div>'+
+    '<table><thead><tr>'+
+    '<th style="width:4%">N</th><th style="width:28%">Detalle</th><th style="width:16%">Clasif. Producto</th>'+
+    '<th style="width:12%">Faena</th><th style="width:12%">Equipo</th>'+
+    '<th style="width:7%;text-align:right">Cant</th><th style="width:10%;text-align:right">P.Unit</th><th style="width:11%;text-align:right">Total</th>'+
+    '</tr></thead><tbody>'+
+    lineas.map(function(l,i){return '<tr><td>'+(l.linea_num||i+1)+'</td><td>'+(l.descripcion||'—')+'</td><td>'+(l.subcategoria_nombre||'—')+'</td><td>'+(l.faena_nombre||'—')+'</td><td>'+(l.equipo_nombre||'—')+'</td><td style="text-align:right">'+(l.cantidad||0)+'</td><td style="text-align:right">'+CLP2(l.precio_unitario)+'</td><td style="text-align:right"><strong>'+CLP2(l.total_linea)+'</strong></td></tr>';}).join('')+
+    '</tbody></table>'+
+    '<table class="totals">'+
+    '<tr><td>Neto:</td><td>'+CLP2(oc.neto)+'</td></tr>'+
+    '<tr><td>IVA 19%:</td><td>'+CLP2(oc.iva)+'</td></tr>'+
+    (parseFloat(oc.impuesto_adicional||0)>0?'<tr><td>Imp. adicional:</td><td>'+CLP2(oc.impuesto_adicional)+'</td></tr>':'')+
+    '<tr class="total-final"><td>TOTAL:</td><td>'+CLP2(oc.total)+'</td></tr>'+
+    '</table>'+
+    (oc.estado==='CERRADA'?'<div class="trib"><strong>Documento tributario:</strong> '+(oc.tipo_doc_nombre||'—')+' N° '+(oc.numero_documento||'—')+' — Fecha: '+(oc.fecha_documento||'—')+'</div>':'')+
+    '<div class="footer">Documento generado el '+new Date().toLocaleDateString('es-CL')+' | LPZ Bodegas v2.0</div>'+
+    '</body></html>';
+  }
+  function imprimir(){
+    const w=window.open('','_blank','width=900,height=700');
+    w.document.write(buildHTML());w.document.close();w.focus();
+    setTimeout(function(){w.print();},500);
+  }
+  return h('div',{className:'ov',style:{zIndex:400}},
+    h('div',{className:'modal modal-xl',style:{maxWidth:860,maxHeight:'90vh',overflow:'hidden',display:'flex',flexDirection:'column'}},
+      h('div',{className:'mh'},
+        h('h3',null,'Orden de Compra — '+str(oc.numero_oc)),
+        h('div',{style:{display:'flex',gap:8,alignItems:'center'}},
+          h('button',{className:'btn btn-p btn-sm',onClick:imprimir},'🖨 Imprimir'),
+          h('button',{className:'mc',onClick:p.onClose},'×')
+        )
+      ),
+      h('div',{style:{flex:1,overflowY:'auto',padding:16},dangerouslySetInnerHTML:{__html:buildHTML()}})
+    )
   );
 }
 
@@ -725,7 +873,7 @@ function OCRecibirModal(p){
 
 // ── MASTER CRUD GENERICO ──
 function MasterV(p){
-  const[items,setItems]=useState([]);const[modal,setModal]=useState(null);const[q,setQ]=useState('');const[err,setErr]=useState('');const[delErr,setDelErr]=useState('');
+  const[items,setItems]=useState([]);const[modal,setModal]=useState(null);const[q,setQ]=useState('');const[err,setErr]=useState('');const[delErr,setDelErr]=useState('');const[showImport,setShowImport]=useState(false);
   function load(){api('/'+p.ep,'GET',null,p.tok).then(function(r){setItems(Array.isArray(r)?r:[]);}).catch(function(){});}
   useEffect(function(){load();},[p.ep,p.tok]);
   const filtered=useMemo(function(){return items.filter(function(x){return !q||JSON.stringify(Object.values(x)).toLowerCase().includes(q.toLowerCase());});},[items,q]);
@@ -745,6 +893,7 @@ function MasterV(p){
     h('div',{style:{display:'flex',gap:8,marginBottom:10}},
       h('input',{value:q,onChange:e=>setQ(e.target.value),placeholder:'Buscar...',style:{maxWidth:250}}),
       h(Btn,{onClick:function(){setErr('');setModal(Object.assign({},p.blank));}},'+ Agregar'),
+      p.importKey&&h(Btn,{v:'g',sm:true,onClick:function(){setShowImport(true);}},null,'⬆ Importar'),
       p.onExport&&h(Btn,{v:'teal',onClick:p.onExport},null,'Excel')
     ),
     delErr&&h('div',{className:'al al-e',style:{marginBottom:8}},delErr),
@@ -756,7 +905,9 @@ function MasterV(p){
         p.canDelete!==false&&h(Btn,{v:'d',sm:true,onClick:function(){del(r[p.pk]);}},'Eliminar')
       );}},
     ]),rows:filtered,empty:'Sin registros'})),
+    showImport&&p.importKey&&IMPORT_CONFIGS[p.importKey]&&h(ImportModal,{tok:p.tok,config:IMPORT_CONFIGS[p.importKey],onClose:function(){setShowImport(false);},onRefresh:load}),
     modal&&h(Modal,{title:(modal[p.pk]?'Editar ':'Nuevo ')+p.titulo,onClose:function(){setModal(null);}},
+
       h('div',{className:'mb'},
         err&&h('div',{className:'al al-e'},err),
         h(EB,null,h(p.Form,{item:modal,onChange:setModal,extra:p.extra}))
@@ -770,7 +921,15 @@ function MasterV(p){
 function FI(p){return h(FR,{label:p.l,req:p.req},h(Inp,{value:p.item[p.k]||'',onChange:v=>p.onChange(Object.assign({},p.item,{[p.k]:v})),type:p.type,ph:p.ph}));}
 function FS(p){return h(FR,{label:p.l,req:p.req},h(Sel,{value:str(p.item[p.k]||''),onChange:v=>p.onChange(Object.assign({},p.item,{[p.k]:v}))},h('option',{value:''},'Seleccione...'),(p.opts||[]).map(o=>h('option',{key:o.v,value:o.v},o.l))));}
 const BodegaForm=p=>h('div',{className:'g2'},h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FI,{k:'ubicacion',l:'Ubicacion',item:p.item,onChange:p.onChange}),h(FI,{k:'responsable',l:'Responsable',item:p.item,onChange:p.onChange}));
-const FaenaForm=p=>h('div',{className:'g2'},h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FI,{k:'descripcion',l:'Descripcion',item:p.item,onChange:p.onChange}));
+function FaenaForm(p){
+  const emps=p.extra&&Array.isArray(p.extra.empresas)?p.extra.empresas:[];
+  return h('div',{className:'g2'},
+    h(FS,{k:'empresa_id',l:'Empresa',req:true,item:p.item,onChange:p.onChange,opts:emps.filter(function(e){return e.activo;}).map(function(e){return{v:e.empresa_id,l:e.razon_social};})}),
+    h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange}),
+    h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),
+    h(FI,{k:'descripcion',l:'Descripcion',item:p.item,onChange:p.onChange})
+  );
+}
 const ProvForm=p=>h('div',{className:'g2'},h(FI,{k:'rut',l:'RUT',req:true,item:p.item,onChange:p.onChange,ph:'76.543.210-5'}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FI,{k:'giro',l:'Giro',item:p.item,onChange:p.onChange}),h(FI,{k:'direccion',l:'Direccion',item:p.item,onChange:p.onChange}),h(FI,{k:'contacto',l:'Contacto',item:p.item,onChange:p.onChange}),h(FI,{k:'telefono',l:'Telefono',item:p.item,onChange:p.onChange}),h(FI,{k:'email',l:'Email',type:'email',item:p.item,onChange:p.onChange}));
 const EquipoForm=p=>h('div',{className:'g2'},
   h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange}),
@@ -784,7 +943,34 @@ const EquipoForm=p=>h('div',{className:'g2'},
   h(FI,{k:'num_chasis',l:'N° Chasis',item:p.item,onChange:p.onChange}),
   h(FI,{k:'patente_serie',l:'Patente/Serie',item:p.item,onChange:p.onChange})
 );
-const EmpresaForm=p=>h('div',{className:'g2'},h(FI,{k:'rut',l:'RUT',req:true,item:p.item,onChange:p.onChange,ph:'76.543.210-1'}),h(FI,{k:'razon_social',l:'Razon Social',req:true,item:p.item,onChange:p.onChange}),h(FI,{k:'giro',l:'Giro',item:p.item,onChange:p.onChange}),h(FI,{k:'direccion',l:'Direccion',item:p.item,onChange:p.onChange}),h(FI,{k:'ciudad',l:'Ciudad',item:p.item,onChange:p.onChange}),h(FI,{k:'telefono',l:'Telefono',item:p.item,onChange:p.onChange}),h(FI,{k:'email',l:'Email',type:'email',item:p.item,onChange:p.onChange}));
+function EmpresaForm(p){
+  function onLogo(e){
+    const file=e.target.files&&e.target.files[0];if(!file)return;
+    if(file.size>600000){alert('El logo no debe superar 500KB');return;}
+    const r=new FileReader();
+    r.onload=function(ev){p.onChange(Object.assign({},p.item,{logo_base64:ev.target.result}));};
+    r.readAsDataURL(file);
+  }
+  return h('div',null,
+    h('div',{className:'g2'},
+      h(FI,{k:'rut',l:'RUT',req:true,item:p.item,onChange:p.onChange,ph:'76.543.210-1'}),
+      h(FI,{k:'razon_social',l:'Razon Social',req:true,item:p.item,onChange:p.onChange}),
+      h(FI,{k:'giro',l:'Giro',item:p.item,onChange:p.onChange}),
+      h(FI,{k:'direccion',l:'Direccion',item:p.item,onChange:p.onChange}),
+      h(FI,{k:'ciudad',l:'Ciudad',item:p.item,onChange:p.onChange}),
+      h(FI,{k:'telefono',l:'Telefono',item:p.item,onChange:p.onChange}),
+      h(FI,{k:'email',l:'Email',type:'email',item:p.item,onChange:p.onChange})
+    ),
+    h('hr',{className:'divider'}),
+    h(FR,{label:'Logo institucional (PNG/JPG, max 500KB)'},
+      h('input',{type:'file',accept:'image/*',onChange:onLogo,style:{padding:'4px 0',fontSize:12}}),
+      p.item.logo_base64&&h('div',{style:{marginTop:6,display:'flex',alignItems:'center',gap:8}},
+        h('img',{src:p.item.logo_base64,style:{maxHeight:55,maxWidth:180,border:'1px solid #E2E8F0',borderRadius:4},alt:'Logo'}),
+        h('button',{type:'button',style:{fontSize:11,color:'#EF4444',background:'none',border:'none',cursor:'pointer'},onClick:function(){p.onChange(Object.assign({},p.item,{logo_base64:null}));}},null,'Quitar')
+      )
+    )
+  );
+}
 const CondPagoForm=p=>h('div',null,h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange,ph:'Ej: 30 dias'}),h(FI,{k:'descripcion',l:'Descripcion',item:p.item,onChange:p.onChange}));
 const CatForm=p=>h('div',null,h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FI,{k:'descripcion',l:'Descripcion',item:p.item,onChange:p.onChange}));
 const SubcatForm=p=>h('div',null,h(FS,{k:'categoria_id',l:'Categoria',req:true,item:p.item,onChange:p.onChange,opts:(p.extra&&p.extra.cats||[]).filter(c=>c.activo).map(c=>({v:c.categoria_id,l:c.nombre}))}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}));
@@ -801,6 +987,104 @@ const ProdForm=p=>{
     h(FI,{k:'stock_minimo',l:'Stock minimo',type:'number',item:p.item,onChange:p.onChange}),
     h(FI,{k:'costo_referencia',l:'Costo referencia $',type:'number',item:p.item,onChange:p.onChange})
   );
+};
+
+// ── IMPORTADOR GENERICO ──
+function ImportModal(p){
+  const[preview,setPreview]=useState([]);const[errors,setErrors]=useState([]);
+  const[importing,setImporting]=useState(false);const[result,setResult]=useState(null);const[step,setStep]=useState('upload');
+  function onFile(e){
+    const f=e.target.files&&e.target.files[0];if(!f)return;
+    setErrors([]);setPreview([]);setResult(null);setStep('upload');
+    const reader=new FileReader();
+    reader.onload=function(ev){
+      try{
+        const wb=XLSX.read(ev.target.result,{type:'array'});
+        const ws=wb.Sheets[wb.SheetNames[0]];
+        const rows=XLSX.utils.sheet_to_json(ws,{header:1});
+        if(!rows||rows.length<2){setErrors(['El archivo no tiene datos.']);return;}
+        const headers=rows[0].map(function(h){return String(h||'').trim();});
+        const campos=p.config.campos;
+        const missing=campos.filter(function(c){return c.req&&!headers.includes(c.header);}).map(function(c){return c.header;});
+        if(missing.length){setErrors(['Columnas obligatorias faltantes: '+missing.join(', ')]);return;}
+        const parsed=rows.slice(1).map(function(row,i){
+          const obj={__row:i+2};
+          campos.forEach(function(c){const idx2=headers.indexOf(c.header);obj[c.k]=idx2>=0?String(row[idx2]||'').trim():'';});
+          return obj;
+        }).filter(function(r){return Object.values(r).some(function(v,i2){return i2>0&&v;});});
+        const errs=[];const valid=[];
+        parsed.forEach(function(r){
+          const rowErrs=[];
+          campos.forEach(function(c){if(c.req&&!r[c.k])rowErrs.push('Fila '+r.__row+': "'+c.header+'" es obligatorio.');});
+          if(rowErrs.length)errs.push(...rowErrs);else valid.push(r);
+        });
+        setErrors(errs);setPreview(valid);setStep('preview');
+      }catch(ex){setErrors(['Error al leer: '+ex.message]);}
+    };
+    reader.readAsArrayBuffer(f);
+  }
+  function downloadTemplate(){
+    const hs=p.config.campos.map(function(c){return c.header;});
+    const ex=p.config.campos.map(function(c){return c.example||'';});
+    const ws=XLSX.utils.aoa_to_sheet([hs,[...ex]]);
+    const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,'Plantilla');
+    XLSX.writeFile(wb,'plantilla_'+p.config.titulo.toLowerCase().replace(/ /g,'_')+'.xlsx');
+  }
+  function doImport(){
+    setImporting(true);setResult(null);
+    Promise.all(preview.map(function(row){
+      const body={};p.config.campos.forEach(function(c){body[c.k]=row[c.k]||null;});
+      return api('/'+p.config.endpoint,'POST',body,p.tok).then(function(){return{ok:true};}).catch(function(ex){return{ok:false,msg:ex.message,row:row.__row};});
+    })).then(function(results){
+      const ok=results.filter(function(r){return r.ok;}).length;
+      const fail=results.filter(function(r){return !r.ok;});
+      setResult({ok,fail});setStep('done');p.onRefresh&&p.onRefresh();
+    }).finally(function(){setImporting(false);});
+  }
+  return h(Modal,{title:'Importar — '+p.config.titulo,onClose:p.onClose},
+    h(EB,null,
+      h('div',{className:'mb'},
+        step==='upload'&&h('div',null,
+          h('div',{className:'al al-i',style:{marginBottom:10}},'Descargue la plantilla, completela y subala para importar masivamente.'),
+          h(Btn,{v:'g',onClick:downloadTemplate},'⬇ Descargar plantilla Excel'),
+          h('hr',{className:'divider'}),
+          h(FR,{label:'Archivo Excel (.xlsx) o CSV'},h('input',{type:'file',accept:'.xlsx,.xls,.csv',onChange:onFile,style:{padding:'4px 0'}})),
+          errors.length>0&&h('div',{className:'al al-e',style:{marginTop:8}},errors.slice(0,6).join('\n'))
+        ),
+        step==='preview'&&h('div',null,
+          errors.length>0&&h('div',{className:'al al-w',style:{marginBottom:8}},errors.length+' fila(s) con errores seran ignoradas.'),
+          h('div',{className:'al al-s',style:{marginBottom:8}},preview.length+' registro(s) listos para importar.'),
+          h('div',{style:{overflowX:'auto',maxHeight:260,overflowY:'auto'}},
+            h('table',null,
+              h('thead',null,h('tr',null,...p.config.campos.map(function(c){return h('th',{key:c.k},c.header);}))),
+              h('tbody',null,...preview.slice(0,15).map(function(r,i){return h('tr',{key:i},...p.config.campos.map(function(c){return h('td',{key:c.k,style:{fontSize:11}},r[c.k]||'—');}));})),
+              preview.length>15&&h('tbody',null,h('tr',null,h('td',{colSpan:p.config.campos.length,style:{textAlign:'center',color:'#94A3B8',fontSize:11}},'... y '+(preview.length-15)+' mas')))
+            )
+          )
+        ),
+        step==='done'&&result&&h('div',null,
+          h('div',{className:'al al-s',style:{marginBottom:8}},result.ok+' registro(s) importados.'),
+          result.fail.length>0&&h('div',{className:'al al-e'},result.fail.slice(0,5).map(function(f){return 'Fila '+f.row+': '+f.msg;}).join('\n'))
+        )
+      ),
+      h('div',{className:'mf'},
+        h(Btn,{v:'g',onClick:p.onClose},'Cerrar'),
+        step==='preview'&&h(Btn,{v:'g',onClick:function(){setStep('upload');setPreview([]);setErrors([]);}},null,'Volver'),
+        step==='preview'&&h(Btn,{onClick:doImport,disabled:importing||!preview.length},importing?'Importando...':'Importar '+preview.length)
+      )
+    )
+  );
+}
+const IMPORT_CONFIGS={
+  bodegas:{titulo:'Bodegas',endpoint:'bodegas',campos:[{k:'codigo',header:'Codigo',req:true,example:'BC'},{k:'nombre',header:'Nombre',req:true,example:'Bodega Central'},{k:'ubicacion',header:'Ubicacion',req:false,example:'Planta'},{k:'responsable',header:'Responsable',req:false,example:'Juan Perez'}]},
+  categorias:{titulo:'Categorias',endpoint:'categorias',campos:[{k:'nombre',header:'Nombre',req:true,example:'Repuestos'},{k:'descripcion',header:'Descripcion',req:false,example:''}]},
+  subcategorias:{titulo:'Clasificaciones de Producto',endpoint:'subcategorias',campos:[{k:'nombre',header:'Nombre',req:true,example:'Filtros'},{k:'categoria_id',header:'categoria_id',req:true,example:'1'}]},
+  faenas:{titulo:'Faenas',endpoint:'faenas',campos:[{k:'empresa_id',header:'empresa_id',req:true,example:'1'},{k:'codigo',header:'Codigo',req:true,example:'FAE-001'},{k:'nombre',header:'Nombre',req:true,example:'Faena Norte'},{k:'descripcion',header:'Descripcion',req:false,example:''}]},
+  equipos:{titulo:'Equipos',endpoint:'equipos',campos:[{k:'codigo',header:'Codigo',req:true,example:'HARV-01'},{k:'nombre',header:'Nombre',req:true,example:'Harvester 01'},{k:'tipo',header:'Tipo',req:false,example:'Cosechador'},{k:'faena_id',header:'faena_id',req:false,example:'1'},{k:'marca',header:'Marca',req:false,example:'John Deere'},{k:'modelo',header:'Modelo',req:false,example:'1270G'},{k:'anio',header:'Ano',req:false,example:'2020'},{k:'placa_patente',header:'Patente',req:false,example:'AB1234'}]},
+  proveedores:{titulo:'Proveedores',endpoint:'proveedores',campos:[{k:'rut',header:'RUT',req:true,example:'76.543.210-5'},{k:'nombre',header:'Nombre',req:true,example:'Comercial Sur'},{k:'giro',header:'Giro',req:false,example:'Comercio'},{k:'direccion',header:'Direccion',req:false,example:''},{k:'contacto',header:'Contacto',req:false,example:''},{k:'telefono',header:'Telefono',req:false,example:''},{k:'email',header:'Email',req:false,example:''}]},
+  condpago:{titulo:'Condiciones de Pago',endpoint:'condiciones-pago',campos:[{k:'nombre',header:'Nombre',req:true,example:'30 dias'},{k:'descripcion',header:'Descripcion',req:false,example:''}]},
+  empresas:{titulo:'Empresas',endpoint:'empresas',campos:[{k:'rut',header:'RUT',req:true,example:'76.111.222-3'},{k:'razon_social',header:'Razon Social',req:true,example:'Mi Empresa Ltda'},{k:'giro',header:'Giro',req:false,example:''},{k:'direccion',header:'Direccion',req:false,example:''},{k:'ciudad',header:'Ciudad',req:false,example:''},{k:'telefono',header:'Telefono',req:false,example:''},{k:'email',header:'Email',req:false,example:''}]},
+  tdocs:{titulo:'Tipos de Documentos',endpoint:'tipos-documento',campos:[{k:'codigo',header:'Codigo',req:true,example:'FAC'},{k:'nombre',header:'Nombre',req:true,example:'Factura Electronica'}]},
 };
 
 // ── APP ──
@@ -880,17 +1164,17 @@ function App(){
           view==='kardex'&&h(KardexView,{tok,m}),
           view==='reportes'&&h(ReportesView,{tok,m}),
           view==='ordenes'&&h(OCView,{tok,m}),
-          view==='empresas'&&h(MasterV,{tok,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',activo:true},cols:[{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
-          view==='bodegas'&&h(MasterV,{tok,titulo:'Bodega',ep:'bodegas',pk:'bodega_id',Form:BodegaForm,blank:{codigo:'',nombre:'',ubicacion:'',responsable:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Ubicacion',k:'ubicacion'},{lbl:'Responsable',k:'responsable'}]}),
+          view==='empresas'&&h(MasterV,{tok,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,activo:true},cols:[{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
+          view==='bodegas'&&h(MasterV,{tok,titulo:'Bodega',ep:'bodegas',pk:'bodega_id',Form:BodegaForm,importKey:'bodegas',blank:{codigo:'',nombre:'',ubicacion:'',responsable:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Ubicacion',k:'ubicacion'},{lbl:'Responsable',k:'responsable'}]}),
           view==='productos'&&h(MasterV,{tok,titulo:'Producto',ep:'productos',pk:'producto_id',Form:ProdForm,blank:{codigo:'',nombre:'',subcategoria_id:'',categoria_id:'',unidad_medida:'UN',stock_minimo:0,costo_referencia:0,activo:true},extra:{cats:m.cats,subcats:m.subcats},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Subcategoria',k:'subcategoria_nombre'},{lbl:'UM',k:'unidad_medida'},{lbl:'Stk min',k:'stock_minimo'},{lbl:'Costo ref.',render:r=>CLP(r.costo_referencia)}]}),
           view==='categorias'&&h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}},
             h('div',null,h('h3',{style:{marginBottom:8,fontWeight:700}},'Categorias'),h(MasterV,{tok,titulo:'Categoria',ep:'categorias',pk:'categoria_id',Form:CatForm,blank:{nombre:'',descripcion:'',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]})),
             h('div',null,h('h3',{style:{marginBottom:8,fontWeight:700}},'Subcategorias'),h(MasterV,{tok,titulo:'Subcategoria',ep:'subcategorias',pk:'subcategoria_id',Form:SubcatForm,blank:{nombre:'',categoria_id:'',activo:true},extra:{cats:m.cats},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Categoria',render:r=>(m.cats.find(c=>c.categoria_id===r.categoria_id)||{}).nombre||'—'}]}))
           ),
-          view==='faenas'&&h(MasterV,{tok,titulo:'Faena',ep:'faenas',pk:'faena_id',Form:FaenaForm,blank:{codigo:'',nombre:'',descripcion:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
-          view==='equipos'&&h(MasterV,{tok,titulo:'Equipo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,blank:{codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',anio:'',placa_patente:'',num_chasis:'',patente_serie:'',activo:true},extra:{faenas:m.faenas},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Tipo',k:'tipo'},{lbl:'Faena',render:r=>(m.faenas.find(f=>f.faena_id===r.faena_id)||{}).nombre||'—'},{lbl:'Marca',k:'marca'},{lbl:'Modelo',k:'modelo'},{lbl:'Ano',k:'anio'}]}),
-          view==='proveedores'&&h(MasterV,{tok,titulo:'Proveedor',ep:'proveedores',pk:'proveedor_id',Form:ProvForm,blank:{rut:'',nombre:'',giro:'',direccion:'',contacto:'',telefono:'',email:'',activo:true},onExport:function(){api('/proveedores','GET',null,tok).then(function(rows){exportXLSX(rows,[{header:'RUT',value:r=>r.rut},{header:'Nombre',value:r=>r.nombre},{header:'Giro',value:r=>r.giro},{header:'Direccion',value:r=>r.direccion},{header:'Contacto',value:r=>r.contacto},{header:'Telefono',value:r=>r.telefono},{header:'Email',value:r=>r.email},{header:'Activo',value:r=>r.activo?'SI':'NO'}],'proveedores');}).catch(function(ex){alert(ex.message);});},cols:[{lbl:'RUT',k:'rut',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Giro',k:'giro'},{lbl:'Contacto',k:'contacto'},{lbl:'Telefono',k:'telefono'}]}),
-          view==='condpago'&&h(MasterV,{tok,titulo:'Condicion de Pago',ep:'condiciones-pago',pk:'condicion_id',Form:CondPagoForm,blank:{nombre:'',descripcion:'',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
+          view==='faenas'&&h(MasterV,{tok,titulo:'Faena',ep:'faenas',pk:'faena_id',Form:FaenaForm,blank:{codigo:'',nombre:'',descripcion:'',empresa_id:'',activo:true},extra:{empresas:m.empresas},importKey:'faenas',cols:[{lbl:'Empresa',render:function(r){return (m.empresas.find(function(e){return e.empresa_id===parseInt(r.empresa_id||0);})||{}).razon_social||'—';}},{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
+          view==='equipos'&&h(MasterV,{tok,titulo:'Equipo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',blank:{codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',anio:'',placa_patente:'',num_chasis:'',patente_serie:'',activo:true},extra:{faenas:m.faenas},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Tipo',k:'tipo'},{lbl:'Faena',render:r=>(m.faenas.find(f=>f.faena_id===r.faena_id)||{}).nombre||'—'},{lbl:'Marca',k:'marca'},{lbl:'Modelo',k:'modelo'},{lbl:'Ano',k:'anio'}]}),
+          view==='proveedores'&&h(MasterV,{tok,titulo:'Proveedor',ep:'proveedores',pk:'proveedor_id',Form:ProvForm,importKey:'proveedores',blank:{rut:'',nombre:'',giro:'',direccion:'',contacto:'',telefono:'',email:'',activo:true},onExport:function(){api('/proveedores','GET',null,tok).then(function(rows){exportXLSX(rows,[{header:'RUT',value:r=>r.rut},{header:'Nombre',value:r=>r.nombre},{header:'Giro',value:r=>r.giro},{header:'Direccion',value:r=>r.direccion},{header:'Contacto',value:r=>r.contacto},{header:'Telefono',value:r=>r.telefono},{header:'Email',value:r=>r.email},{header:'Activo',value:r=>r.activo?'SI':'NO'}],'proveedores');}).catch(function(ex){alert(ex.message);});},cols:[{lbl:'RUT',k:'rut',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Giro',k:'giro'},{lbl:'Contacto',k:'contacto'},{lbl:'Telefono',k:'telefono'}]}),
+          view==='condpago'&&h(MasterV,{tok,titulo:'Condicion de Pago',ep:'condiciones-pago',pk:'condicion_id',Form:CondPagoForm,importKey:'condpago',blank:{nombre:'',descripcion:'',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
           view==='tdocs'&&h(MasterV,{tok,titulo:'Tipo de Documento',ep:'tipos-documento',pk:'tipo_doc_id',Form:p=>h('div',{className:'g2'},h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange,ph:'FAC,GD...'}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange})),blank:{codigo:'',nombre:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'}]}),
           view==='motivos'&&h(MasterV,{tok,titulo:'Motivo',ep:'motivos',pk:'motivo_id',Form:p=>h('div',{className:'g2'},h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FS,{k:'tipo',l:'Tipo',req:true,item:p.item,onChange:p.onChange,opts:[{v:'SALIDA',l:'SALIDA'},{v:'INGRESO',l:'INGRESO'},{v:'AJUSTE',l:'AJUSTE'}]})),blank:{nombre:'',tipo:'SALIDA',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Tipo',k:'tipo'}]}),
           view==='usuarios'&&h('div',{className:'al al-i'},'Modulo de usuarios. Use la API POST /api/usuarios para crear nuevos usuarios con email, nombre, password y rol (ADMINISTRADOR/BODEGUERO).')
