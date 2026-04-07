@@ -888,19 +888,46 @@ function OCCerrarModal(p){
 // ── OC RECIBIR BODEGA MODAL ──
 function OCRecibirModal(p){
   const bodegas=p.m&&Array.isArray(p.m.bodegas)?p.m.bodegas:[];
+  const lineas=Array.isArray(p.oc&&p.oc.lineas)?p.oc.lineas:[];
+  const lineasBodega=lineas.filter(function(l){return l.ingresa_bodega;});
+  const lineasConProd=lineasBodega.filter(function(l){return l.producto_id||l.producto_nombre;});
   const[bodega_id,setBodega]=useState('');const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
   function save(){
     setSaving(true);
     api('/ordenes-compra/'+p.oc.oc_id+'/recibir-bodega','POST',{bodega_id:bodega_id||null},p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
   }
-  return h(Modal,{title:'Recibir en Bodega — '+str(p.oc.numero_oc),onClose:p.onClose},
+  return h(Modal,{title:'Recibir en Bodega — '+str(p.oc.numero_oc),onClose:p.onClose,lg:true},
     h(EB,null,
       h('div',{className:'mb'},
-        h('div',{className:'al al-i',style:{marginBottom:12}},'Esta accion generara un ingreso de inventario por las lineas marcadas como "ingresa a bodega". Se usara la fecha del documento tributario como fecha del ingreso.'),
+        h('div',{className:'al al-i',style:{marginBottom:10}},
+          h('strong',null,'Proceso de recepcion: '),'Al confirmar, el sistema generara un movimiento de INGRESO en inventario usando la fecha del documento tributario ('+str(p.oc.fecha_documento)+'). No se exige faena ni equipo — eso se registra al momento del consumo.'
+        ),
+        lineasBodega.length===0&&h('div',{className:'al al-e',style:{marginBottom:10}},
+          '⚠ No hay lineas marcadas con "A Bodega". Edite la OC y active el checkbox en las lineas que deben ingresar al inventario.'
+        ),
+        lineasBodega.length>0&&lineasConProd.length===0&&h('div',{className:'al al-e',style:{marginBottom:10}},
+          '⚠ Las lineas marcadas "A Bodega" no tienen producto de inventario asignado. Actualmente la OC usa solo "Tipo de Producto" (clasificacion). Para recibir en bodega debe asociar un Producto especifico a cada linea marcada.'
+        ),
+        lineasConProd.length>0&&h('div',null,
+          h('div',{style:{fontWeight:600,fontSize:13,marginBottom:6}},'Lineas que ingresaran a stock ('+lineasConProd.length+'):'),
+          h('table',null,
+            h('thead',null,h('tr',null,h('th',null,'Producto'),h('th',null,'Descripcion'),h('th',{className:'tr'},'Cantidad'),h('th',{className:'tr'},'Precio Unit.'))),
+            h('tbody',null,...lineasConProd.map(function(l,i){return h('tr',{key:i},h('td',null,l.producto_nombre||'—'),h('td',{style:{fontSize:11,color:'#64748B'}},l.descripcion||'—'),h('td',{className:'tr mono',style:{fontSize:11}},l.cantidad),h('td',{className:'tr mono',style:{fontSize:11}},CLP(l.precio_unitario)));}))
+          )
+        ),
+        h('hr',{className:'divider'}),
         err&&h('div',{className:'al al-e'},err),
-        h(FR,{label:'Bodega de recepcion'},h(Sel,{value:bodega_id,onChange:setBodega},h('option',{value:''},'Usar bodega por linea / bodega por defecto'),bodegas.filter(b=>b.activo).map(b=>h('option',{key:b.bodega_id,value:b.bodega_id},b.nombre))))
+        h(FR,{label:'Bodega de recepcion'},
+          h(Sel,{value:bodega_id,onChange:setBodega},
+            h('option',{value:''},'Bodega por defecto de cada linea'),
+            bodegas.filter(function(b){return b.activo;}).map(function(b){return h('option',{key:b.bodega_id,value:b.bodega_id},b.nombre);})
+          )
+        )
       ),
-      h('div',{className:'mf'},h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),h(Btn,{v:'teal',onClick:save,disabled:saving},saving?'Procesando...':'Recibir en Bodega'))
+      h('div',{className:'mf'},
+        h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),
+        h(Btn,{v:'teal',onClick:save,disabled:saving||lineasConProd.length===0},saving?'Procesando...':'Recibir '+lineasConProd.length+' producto(s) en Bodega')
+      )
     )
   );
 }
