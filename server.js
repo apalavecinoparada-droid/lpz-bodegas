@@ -68,6 +68,14 @@ async function autoSetup() {
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS anio INT`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS placa_patente VARCHAR(30)`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS num_chasis VARCHAR(50)`);
+  // Faenas por empresa (v2.1)
+  await q(`ALTER TABLE faenas ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)`);
+  // Logo empresa (v2.1)
+  await q(`ALTER TABLE empresas ADD COLUMN IF NOT EXISTS logo_base64 TEXT`);
+  // OC auditoria reapertura (v2.1)
+  await q(`ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS reabierto_en TIMESTAMP`);
+  await q(`ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS reabierto_por VARCHAR(100)`);
+  await q(`ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS motivo_reapertura TEXT`);
   await q(`CREATE TABLE IF NOT EXISTS tipos_documento (tipo_doc_id SERIAL PRIMARY KEY, codigo VARCHAR(10) NOT NULL UNIQUE, nombre VARCHAR(80) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true)`);
   await q(`CREATE TABLE IF NOT EXISTS motivos_movimiento (motivo_id SERIAL PRIMARY KEY, nombre VARCHAR(100) NOT NULL, tipo VARCHAR(20) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true)`);
   await q(`CREATE TABLE IF NOT EXISTS usuarios (usuario_id SERIAL PRIMARY KEY, email VARCHAR(100) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, password_hash VARCHAR(255) NOT NULL, rol VARCHAR(30) NOT NULL DEFAULT 'BODEGUERO', activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
@@ -215,7 +223,7 @@ function crud(tabla, pk, campos) {
 app.use('/api/bodegas',     crud('bodegas',    'bodega_id',    ['codigo','nombre','ubicacion','responsable']));
 app.use('/api/categorias',  crud('categorias', 'categoria_id', ['nombre','descripcion']));
 app.use('/api/subcategorias', crud('subcategorias','subcategoria_id',['categoria_id','nombre']));
-app.use('/api/faenas',      crud('faenas',     'faena_id',     ['codigo','nombre','descripcion']));
+app.use('/api/faenas',      crud('faenas',     'faena_id',     ['codigo','nombre','descripcion','empresa_id']));
 app.use('/api/tipos-documento', crud('tipos_documento','tipo_doc_id',['codigo','nombre']));
 app.use('/api/motivos',     crud('motivos_movimiento','motivo_id',['nombre','tipo']));
 app.use('/api/condiciones-pago', crud('condiciones_pago','condicion_id',['nombre','descripcion']));
@@ -252,14 +260,14 @@ empR.get('/', auth, async(req,res)=>{try{res.json((await pool.query('SELECT * FR
 empR.post('/', auth, async(req,res)=>{
   try{
     const{rut,razon_social,direccion,ciudad,giro,telefono,email}=req.body;
-    const r=await pool.query('INSERT INTO empresas(rut,razon_social,direccion,ciudad,giro,telefono,email) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',[rut,razon_social,direccion||null,ciudad||null,giro||null,telefono||null,email||null]);
+    const r=await pool.query('INSERT INTO empresas(rut,razon_social,direccion,ciudad,giro,telefono,email,logo_base64) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[rut,razon_social,direccion||null,ciudad||null,giro||null,telefono||null,email||null,req.body.logo_base64||null]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 empR.put('/:id', auth, async(req,res)=>{
   try{
     const{rut,razon_social,direccion,ciudad,giro,telefono,email}=req.body;
-    const r=await pool.query('UPDATE empresas SET rut=$1,razon_social=$2,direccion=$3,ciudad=$4,giro=$5,telefono=$6,email=$7,modificado_en=NOW() WHERE empresa_id=$8 RETURNING *',[rut,razon_social,direccion||null,ciudad||null,giro||null,telefono||null,email||null,req.params.id]);
+    const r=await pool.query('UPDATE empresas SET rut=$1,razon_social=$2,direccion=$3,ciudad=$4,giro=$5,telefono=$6,email=$7,logo_base64=$8,modificado_en=NOW() WHERE empresa_id=$9 RETURNING *',[rut,razon_social,direccion||null,ciudad||null,giro||null,telefono||null,email||null,req.body.logo_base64||null,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -600,6 +608,54 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
+// REABRIR OC (solo si no generó ingreso a bodega)
+ocR.patch('/:id/reabrir', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const chk=await client.query('SELECT estado,movimiento_id FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
+    if(!chk.rows.length) throw new Error('OC no encontrada');
+    const oc=chk.rows[0];
+    if(oc.estado!=='CERRADA') throw new Error('Solo se pueden reabrir ordenes en estado CERRADA');
+    if(oc.movimiento_id) throw new Error('No se puede reabrir: la OC ya genero un ingreso a bodega (movimiento #'+oc.movimiento_id+'). Anule el movimiento primero si desea reabrir la OC.');
+    const motivo=req.body.motivo||'Sin motivo especificado';
+    await client.query("UPDATE ordenes_compra SET estado='PENDIENTE',tipo_doc_id=NULL,numero_documento=NULL,fecha_documento=NULL,reabierto_en=NOW(),reabierto_por=$1,motivo_reapertura=$2,modificado_en=NOW() WHERE oc_id=$3",[req.user.email,motivo,req.params.id]);
+    await client.query('COMMIT');
+    res.json({ok:true});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// OC con filtros adicionales (subcategoria, faena, equipo)
+ocR.get('/buscar/filtros', auth, async(req,res)=>{
+  try{
+    const{estado,proveedor_id,empresa_id,desde,hasta,subcategoria_id,faena_id,equipo_id}=req.query;
+    let where=['1=1'],vals=[];
+    if(estado){vals.push(estado);where.push(`oc.estado=$${vals.length}`);}
+    if(proveedor_id){vals.push(proveedor_id);where.push(`oc.proveedor_id=$${vals.length}`);}
+    if(empresa_id){vals.push(empresa_id);where.push(`oc.empresa_id=$${vals.length}`);}
+    if(desde){vals.push(desde);where.push(`oc.fecha_emision>=$${vals.length}`);}
+    if(hasta){vals.push(hasta);where.push(`oc.fecha_emision<=$${vals.length}`);}
+    if(subcategoria_id){vals.push(subcategoria_id);where.push(`d.subcategoria_id=$${vals.length}`);}
+    if(faena_id){vals.push(faena_id);where.push(`d.faena_id=$${vals.length}`);}
+    if(equipo_id){vals.push(equipo_id);where.push(`d.equipo_id=$${vals.length}`);}
+    const r=await pool.query(`
+      SELECT DISTINCT oc.oc_id,oc.numero_oc,oc.fecha_emision,oc.estado,oc.solicitante,oc.retira,
+             oc.fecha_documento,oc.numero_documento,oc.neto,oc.iva,oc.impuesto_adicional,oc.total,oc.usuario,
+             e.razon_social AS empresa,pr.nombre AS proveedor,pr.rut AS proveedor_rut,
+             cp.nombre AS condicion_pago,td.nombre AS tipo_documento
+      FROM ordenes_compra oc
+      LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id
+      LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
+      LEFT JOIN condiciones_pago cp ON oc.condicion_id=cp.condicion_id
+      LEFT JOIN tipos_documento td ON oc.tipo_doc_id=td.tipo_doc_id
+      LEFT JOIN ordenes_compra_detalle d ON oc.oc_id=d.oc_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY oc.oc_id DESC`,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 app.use('/api/ordenes-compra', ocR);
 
 // USUARIOS
