@@ -68,6 +68,7 @@ async function autoSetup() {
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS anio INT`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS placa_patente VARCHAR(30)`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS num_chasis VARCHAR(50)`);
+  await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)`);
   // Faenas por empresa (v2.1)
   await q(`ALTER TABLE faenas ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)`);
   // Logo empresa (v2.1)
@@ -238,7 +239,7 @@ app.use('/api/subcategorias', crud('subcategorias','subcategoria_id',['categoria
 // Faenas con resolución automática de empresa_id desde RUT
 const faenaRouter = express.Router();
 faenaRouter.get('/', auth, async(req,res)=>{
-  try{res.json((await pool.query('SELECT f.*,e.razon_social AS empresa_nombre FROM faenas f LEFT JOIN empresas e ON f.empresa_id=e.empresa_id ORDER BY f.faena_id')).rows);}
+  try{res.json((await pool.query('SELECT f.*,e.razon_social AS empresa_nombre FROM faenas f LEFT JOIN empresas e ON f.empresa_id=e.empresa_id ORDER BY e.razon_social NULLS LAST,f.nombre')).rows);}
   catch(e){res.status(500).json({error:e.message});}
 });
 faenaRouter.post('/', auth, async(req,res)=>{
@@ -349,24 +350,43 @@ empR.get('/lookup/rut/:rut', auth, async(req,res)=>{
 });
 app.use('/api/empresas', empR);
 
-// EQUIPOS con nuevos campos
+// EQUIPOS con empresa (v2.2)
 const eqR=express.Router();
-eqR.get('/', auth, async(req,res)=>{try{res.json((await pool.query('SELECT e.*,f.nombre AS faena_nombre FROM equipos e LEFT JOIN faenas f ON e.faena_id=f.faena_id ORDER BY e.equipo_id')).rows);}catch(e){res.status(500).json({error:e.message});}});
+async function resolveEmpresaId(val){
+  if(!val)return null;
+  const s=String(val).trim();
+  if(/^\d+$/.test(s))return parseInt(s);
+  const r=await pool.query("SELECT empresa_id FROM empresas WHERE REPLACE(REPLACE(rut,'.',''),'-','')=REPLACE(REPLACE($1,'.',''),'-','') LIMIT 1",[s]);
+  if(!r.rows.length)throw new Error('Empresa no encontrada con RUT: '+s);
+  return r.rows[0].empresa_id;
+}
+eqR.get('/', auth, async(req,res)=>{
+  try{
+    const r=await pool.query('SELECT e.*,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre FROM equipos e LEFT JOIN faenas f ON e.faena_id=f.faena_id LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id ORDER BY emp.razon_social NULLS LAST,e.nombre');
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
 eqR.post('/', auth, async(req,res)=>{
   try{
     const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis}=req.body;
-    const r=await pool.query('INSERT INTO equipos(codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,num_chasis||null]);
+    const empresa_id=await resolveEmpresaId(req.body.empresa_id);
+    const r=await pool.query('INSERT INTO equipos(codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,empresa_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,num_chasis||null,empresa_id]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 eqR.put('/:id', auth, async(req,res)=>{
   try{
     const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis}=req.body;
-    const r=await pool.query('UPDATE equipos SET codigo=$1,nombre=$2,tipo=$3,faena_id=$4,patente_serie=$5,marca=$6,modelo=$7,anio=$8,placa_patente=$9,num_chasis=$10 WHERE equipo_id=$11 RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,num_chasis||null,req.params.id]);
+    const empresa_id=await resolveEmpresaId(req.body.empresa_id);
+    const r=await pool.query('UPDATE equipos SET codigo=$1,nombre=$2,tipo=$3,faena_id=$4,patente_serie=$5,marca=$6,modelo=$7,anio=$8,placa_patente=$9,num_chasis=$10,empresa_id=$11 WHERE equipo_id=$12 RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,num_chasis||null,empresa_id,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 eqR.patch('/:id/activo', auth, async(req,res)=>{try{res.json((await pool.query('UPDATE equipos SET activo=NOT activo WHERE equipo_id=$1 RETURNING *',[req.params.id])).rows[0]);}catch(e){res.status(400).json({error:e.message});}});
+eqR.delete('/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM equipos WHERE equipo_id=$1',[req.params.id]);res.json({ok:true});}
+  catch(e){if(e.code==='23503')return res.status(409).json({error:'No se puede eliminar: equipo en uso.'});res.status(400).json({error:e.message});}
+});
 app.use('/api/equipos', eqR);
 
 // PROVEEDORES con nuevos campos
@@ -551,13 +571,14 @@ app.get('/api/reportes/ingresos', auth, async(req,res)=>{
 const ocR=express.Router();
 ocR.get('/', auth, async(req,res)=>{
   try{
-    const{estado,proveedor_id,desde,hasta,empresa_id}=req.query;
+    const{estado,proveedor_id,desde,hasta,empresa_id,numero_documento}=req.query;
     let where=['1=1'],vals=[];
     if(estado){vals.push(estado);where.push(`oc.estado=$${vals.length}`);}
     if(proveedor_id){vals.push(proveedor_id);where.push(`oc.proveedor_id=$${vals.length}`);}
     if(empresa_id){vals.push(empresa_id);where.push(`oc.empresa_id=$${vals.length}`);}
     if(desde){vals.push(desde);where.push(`oc.fecha_emision>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`oc.fecha_emision<=$${vals.length}`);}
+    if(numero_documento){vals.push('%'+numero_documento+'%');where.push(`oc.numero_documento ILIKE $${vals.length}`);}
     const r=await pool.query(`SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,pr.rut AS proveedor_rut,cp.nombre AS condicion_nombre,td.nombre AS tipo_doc_nombre FROM ordenes_compra oc LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id LEFT JOIN condiciones_pago cp ON oc.condicion_id=cp.condicion_id LEFT JOIN tipos_documento td ON oc.tipo_doc_id=td.tipo_doc_id WHERE ${where.join(' AND ')} ORDER BY oc.oc_id DESC`,vals);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
@@ -696,7 +717,7 @@ ocR.patch('/:id/reabrir', auth, async(req,res)=>{
 // OC con filtros adicionales (subcategoria, faena, equipo)
 ocR.get('/buscar/filtros', auth, async(req,res)=>{
   try{
-    const{estado,proveedor_id,empresa_id,desde,hasta,subcategoria_id,faena_id,equipo_id}=req.query;
+    const{estado,proveedor_id,empresa_id,desde,hasta,subcategoria_id,faena_id,equipo_id,numero_documento}=req.query;
     let where=['1=1'],vals=[];
     if(estado){vals.push(estado);where.push(`oc.estado=$${vals.length}`);}
     if(proveedor_id){vals.push(proveedor_id);where.push(`oc.proveedor_id=$${vals.length}`);}
@@ -706,6 +727,7 @@ ocR.get('/buscar/filtros', auth, async(req,res)=>{
     if(subcategoria_id){vals.push(subcategoria_id);where.push(`d.subcategoria_id=$${vals.length}`);}
     if(faena_id){vals.push(faena_id);where.push(`d.faena_id=$${vals.length}`);}
     if(equipo_id){vals.push(equipo_id);where.push(`d.equipo_id=$${vals.length}`);}
+    if(numero_documento){vals.push('%'+numero_documento+'%');where.push(`oc.numero_documento ILIKE $${vals.length}`);}
     const r=await pool.query(`
       SELECT DISTINCT oc.oc_id,oc.numero_oc,oc.fecha_emision,oc.estado,oc.solicitante,oc.retira,
              oc.fecha_documento,oc.numero_documento,oc.neto,oc.iva,oc.impuesto_adicional,oc.total,oc.usuario,
