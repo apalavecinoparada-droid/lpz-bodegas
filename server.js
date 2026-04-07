@@ -205,7 +205,19 @@ function crud(tabla, pk, campos) {
   const r = express.Router();
   r.get('/', auth, async(req,res)=>{try{res.json((await pool.query(`SELECT * FROM ${tabla} ORDER BY ${pk}`)).rows);}catch(e){res.status(500).json({error:e.message});}});
   r.get('/:id', auth, async(req,res)=>{try{const r2=await pool.query(`SELECT * FROM ${tabla} WHERE ${pk}=$1`,[req.params.id]);if(!r2.rows.length)return res.status(404).json({error:'No encontrado'});res.json(r2.rows[0]);}catch(e){res.status(500).json({error:e.message});}});
-  r.post('/', auth, async(req,res)=>{try{const vals=campos.map(c=>req.body[c]);const r2=await pool.query(`INSERT INTO ${tabla}(${campos.join(',')}) VALUES(${campos.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`,vals);res.status(201).json(r2.rows[0]);}catch(e){res.status(400).json({error:e.message});}});
+  r.post('/', auth, async(req,res)=>{
+    try{
+      const intFields=['empresa_id','faena_id','equipo_id','categoria_id','subcategoria_id','bodega_id','proveedor_id','tipo_doc_id','motivo_id','condicion_id'];
+      const vals=campos.map(function(c){
+        const v=req.body[c];
+        if(v===''||v===null||v===undefined)return null;
+        if(intFields.includes(c)&&!isNaN(v))return parseInt(v);
+        return v;
+      });
+      const r2=await pool.query(`INSERT INTO ${tabla}(${campos.join(',')}) VALUES(${campos.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`,vals);
+      res.status(201).json(r2.rows[0]);
+    }catch(e){res.status(400).json({error:e.message});}
+  });
   r.put('/:id', auth, async(req,res)=>{try{const vals=[...campos.map(c=>req.body[c]),req.params.id];const sets=campos.map((c,i)=>`${c}=$${i+1}`).join(',');const r2=await pool.query(`UPDATE ${tabla} SET ${sets} WHERE ${pk}=$${vals.length} RETURNING *`,vals);res.json(r2.rows[0]);}catch(e){res.status(400).json({error:e.message});}});
   r.patch('/:id/activo', auth, async(req,res)=>{try{const r2=await pool.query(`UPDATE ${tabla} SET activo=NOT activo WHERE ${pk}=$1 RETURNING *`,[req.params.id]);res.json(r2.rows[0]);}catch(e){res.status(400).json({error:e.message});}});
   r.delete('/:id', auth, async(req,res)=>{
