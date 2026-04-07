@@ -69,7 +69,7 @@ async function autoSetup() {
     `);
     await client.query(`
       CREATE SEQUENCE IF NOT EXISTS seq_oc_num START 1;
-      CREATE TABLE IF NOT EXISTS ordenes_compra (oc_id SERIAL PRIMARY KEY, numero_oc VARCHAR(30) NOT NULL UNIQUE, empresa_id INT REFERENCES empresas(empresa_id), proveedor_id INT NOT NULL REFERENCES proveedores(proveedor_id), fecha_emision DATE NOT NULL, solicitante VARCHAR(100), retira VARCHAR(100), condicion_id INT REFERENCES condiciones_pago(condicion_id), estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE', impuesto_adicional NUMERIC(14,2) DEFAULT 0, neto NUMERIC(14,2) DEFAULT 0, iva NUMERIC(14,2) DEFAULT 0, total NUMERIC(14,2) DEFAULT 0, tipo_doc_id INT REFERENCES tipos_documento(tipo_doc_id), numero_documento VARCHAR(30), fecha_documento DATE, bodega_ingreso_id INT REFERENCES bodegas(bodega_id), movimiento_id INT REFERENCES movimiento_encabezado(movimiento_id), observaciones TEXT, usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), modificado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100));
+      CREATE TABLE IF NOT EXISTS ordenes_compra (oc_id SERIAL PRIMARY KEY, numero_oc VARCHAR(30) NOT NULL UNIQUE, empresa_id INT REFERENCES empresas(empresa_id), proveedor_id INT REFERENCES proveedores(proveedor_id), fecha_emision DATE, solicitante VARCHAR(100), retira VARCHAR(100), condicion_id INT REFERENCES condiciones_pago(condicion_id), estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE', impuesto_adicional NUMERIC(14,2) DEFAULT 0, neto NUMERIC(14,2) DEFAULT 0, iva NUMERIC(14,2) DEFAULT 0, total NUMERIC(14,2) DEFAULT 0, tipo_doc_id INT REFERENCES tipos_documento(tipo_doc_id), numero_documento VARCHAR(30), fecha_documento DATE, bodega_ingreso_id INT REFERENCES bodegas(bodega_id), movimiento_id INT REFERENCES movimiento_encabezado(movimiento_id), observaciones TEXT, usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), modificado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100));
       CREATE TABLE IF NOT EXISTS ordenes_compra_detalle (detalle_id SERIAL PRIMARY KEY, oc_id INT NOT NULL REFERENCES ordenes_compra(oc_id) ON DELETE CASCADE, linea_num INT, descripcion TEXT, producto_id INT REFERENCES productos(producto_id), subcategoria_id INT REFERENCES subcategorias(subcategoria_id), faena_id INT REFERENCES faenas(faena_id), equipo_id INT REFERENCES equipos(equipo_id), cantidad NUMERIC(12,3) NOT NULL DEFAULT 0, precio_unitario NUMERIC(14,4) DEFAULT 0, total_linea NUMERIC(14,2) GENERATED ALWAYS AS (cantidad * precio_unitario) STORED, ingresa_bodega BOOLEAN DEFAULT false, bodega_destino_id INT REFERENCES bodegas(bodega_id));
     `);
     await client.query(`
@@ -84,6 +84,38 @@ async function autoSetup() {
       CREATE INDEX IF NOT EXISTS idx_oc_prov ON ordenes_compra(proveedor_id);
       CREATE INDEX IF NOT EXISTS idx_oc_fecha ON ordenes_compra(fecha_emision);
     `);
+    // Patch ordenes_compra: add any missing columns (idempotente)
+    const ocCols = [
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS fecha_emision DATE",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS solicitante VARCHAR(100)",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS retira VARCHAR(100)",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS condicion_id INT REFERENCES condiciones_pago(condicion_id)",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'PENDIENTE'",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS impuesto_adicional NUMERIC(14,2) DEFAULT 0",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS neto NUMERIC(14,2) DEFAULT 0",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS iva NUMERIC(14,2) DEFAULT 0",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS total NUMERIC(14,2) DEFAULT 0",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS tipo_doc_id INT REFERENCES tipos_documento(tipo_doc_id)",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS numero_documento VARCHAR(30)",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS fecha_documento DATE",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS bodega_ingreso_id INT REFERENCES bodegas(bodega_id)",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS movimiento_id INT REFERENCES movimiento_encabezado(movimiento_id)",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS observaciones TEXT",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS usuario VARCHAR(100)",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT NOW()",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS modificado_en TIMESTAMP DEFAULT NOW()",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_en TIMESTAMP",
+      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_por VARCHAR(100)",
+      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS linea_num INT",
+      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS descripcion TEXT",
+      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS subcategoria_id INT REFERENCES subcategorias(subcategoria_id)",
+      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS faena_id INT REFERENCES faenas(faena_id)",
+      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS equipo_id INT REFERENCES equipos(equipo_id)",
+      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS ingresa_bodega BOOLEAN DEFAULT false",
+      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS bodega_destino_id INT REFERENCES bodegas(bodega_id)",
+    ];
+    for (const q of ocCols) { await pool.query(q).catch(()=>{}); }
     await client.query('COMMIT');
     console.log('  [OK] Tablas verificadas');
     const {rows} = await client.query('SELECT COUNT(*) FROM bodegas');
