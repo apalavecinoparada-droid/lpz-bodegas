@@ -235,7 +235,54 @@ function crud(tabla, pk, campos) {
 app.use('/api/bodegas',     crud('bodegas',    'bodega_id',    ['codigo','nombre','ubicacion','responsable']));
 app.use('/api/categorias',  crud('categorias', 'categoria_id', ['nombre','descripcion']));
 app.use('/api/subcategorias', crud('subcategorias','subcategoria_id',['categoria_id','nombre']));
-app.use('/api/faenas',      crud('faenas',     'faena_id',     ['codigo','nombre','descripcion','empresa_id']));
+// Faenas con resolución automática de empresa_id desde RUT
+const faenaRouter = express.Router();
+faenaRouter.get('/', auth, async(req,res)=>{
+  try{res.json((await pool.query('SELECT f.*,e.razon_social AS empresa_nombre FROM faenas f LEFT JOIN empresas e ON f.empresa_id=e.empresa_id ORDER BY f.faena_id')).rows);}
+  catch(e){res.status(500).json({error:e.message});}
+});
+faenaRouter.post('/', auth, async(req,res)=>{
+  try{
+    let{codigo,nombre,descripcion,empresa_id}=req.body;
+    // Auto-resolver: si empresa_id contiene letras o guiones, es un RUT
+    if(empresa_id&&!/^\d+$/.test(String(empresa_id).trim())){
+      const rut=String(empresa_id).replace(/\./g,'').replace(/-/g,'').trim();
+      const er=await pool.query("SELECT empresa_id FROM empresas WHERE REPLACE(REPLACE(rut,'.',''),'-','')=REPLACE(REPLACE($1,'.',''),'-','') LIMIT 1",[String(empresa_id)]);
+      if(!er.rows.length)throw new Error('Empresa no encontrada con RUT: '+empresa_id);
+      empresa_id=er.rows[0].empresa_id;
+    }
+    empresa_id=empresa_id?parseInt(empresa_id):null;
+    const r=await pool.query('INSERT INTO faenas(codigo,nombre,descripcion,empresa_id) VALUES($1,$2,$3,$4) RETURNING *',[codigo,nombre||null,descripcion||null,empresa_id]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+faenaRouter.put('/:id', auth, async(req,res)=>{
+  try{
+    let{codigo,nombre,descripcion,empresa_id}=req.body;
+    if(empresa_id&&!/^\d+$/.test(String(empresa_id).trim())){
+      const er=await pool.query("SELECT empresa_id FROM empresas WHERE REPLACE(REPLACE(rut,'.',''),'-','')=REPLACE(REPLACE($1,'.',''),'-','') LIMIT 1",[String(empresa_id)]);
+      if(!er.rows.length)throw new Error('Empresa no encontrada con RUT: '+empresa_id);
+      empresa_id=er.rows[0].empresa_id;
+    }
+    empresa_id=empresa_id?parseInt(empresa_id):null;
+    const r=await pool.query('UPDATE faenas SET codigo=$1,nombre=$2,descripcion=$3,empresa_id=$4 WHERE faena_id=$5 RETURNING *',[codigo,nombre||null,descripcion||null,empresa_id,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+faenaRouter.patch('/:id/activo', auth, async(req,res)=>{
+  try{res.json((await pool.query('UPDATE faenas SET activo=NOT activo WHERE faena_id=$1 RETURNING *',[req.params.id])).rows[0]);}
+  catch(e){res.status(400).json({error:e.message});}
+});
+faenaRouter.delete('/:id', auth, async(req,res)=>{
+  try{
+    await pool.query('DELETE FROM faenas WHERE faena_id=$1',[req.params.id]);
+    res.json({ok:true});
+  }catch(e){
+    if(e.code==='23503')return res.status(409).json({error:'No se puede eliminar: esta en uso. Use Inactivar.'});
+    res.status(400).json({error:e.message});
+  }
+});
+app.use('/api/faenas', faenaRouter);
 app.use('/api/tipos-documento', crud('tipos_documento','tipo_doc_id',['codigo','nombre']));
 app.use('/api/motivos',     crud('motivos_movimiento','motivo_id',['nombre','tipo']));
 app.use('/api/condiciones-pago', crud('condiciones_pago','condicion_id',['nombre','descripcion']));
