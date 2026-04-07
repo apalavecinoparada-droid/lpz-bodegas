@@ -674,10 +674,15 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
     if(oc.estado!=='CERRADA') throw new Error('Solo se pueden recibir ordenes CERRADAS');
     if(oc.movimiento_id) throw new Error('Esta OC ya fue recibida en bodega');
     const{bodega_id}=req.body;
-    const lineas=await client.query('SELECT * FROM ordenes_compra_detalle WHERE oc_id=$1 AND ingresa_bodega=true',[req.params.id]);
-    if(!lineas.rows.length) throw new Error('No hay lineas marcadas para ingresar a bodega. Al crear o editar la OC, active el checkbox "A Bodega" en las lineas que deben entrar al inventario.');
+    // Buscar lineas marcadas; si ninguna tiene ingresa_bodega=true (OC antigua), usar todas las que no tienen false
+    let lineas=await client.query('SELECT * FROM ordenes_compra_detalle WHERE oc_id=$1 AND ingresa_bodega=true',[req.params.id]);
+    if(!lineas.rows.length){
+      // Fallback para OCs creadas antes de que existiera la columna ingresa_bodega
+      lineas=await client.query('SELECT * FROM ordenes_compra_detalle WHERE oc_id=$1 AND (ingresa_bodega IS NULL OR ingresa_bodega=true)',[req.params.id]);
+    }
+    if(!lineas.rows.length) throw new Error('No hay lineas marcadas para ingresar a bodega. Edite la OC y active el checkbox "A Bodega" en las lineas que deben entrar al inventario.');
     const conProducto=lineas.rows.filter(function(l){return l.producto_id;});
-    if(!conProducto.length) throw new Error('Las lineas marcadas "A Bodega" no tienen producto asociado. Edite la OC, asigne un producto a esas lineas y vuelva a intentarlo.');
+    if(!conProducto.length) throw new Error('Las lineas no tienen un Producto de inventario asignado. Esta OC usa solo clasificacion (Tipo de Producto). Para recibir en bodega debe asociar un Producto especifico a cada linea desde la edicion de la OC.');
     const bodegaEfectiva=bodega_id||oc.bodega_ingreso_id;
     if(!bodegaEfectiva) throw new Error('Debe seleccionar la bodega de destino');
     const mr=await client.query('INSERT INTO movimiento_encabezado(tipo_movimiento,fecha,bodega_id,proveedor_id,tipo_doc_id,numero_documento,fecha_documento,oc_referencia,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING movimiento_id',['INGRESO',oc.fecha_documento||new Date().toISOString().split('T')[0],bodegaEfectiva,oc.proveedor_id,oc.tipo_doc_id,oc.numero_documento,oc.fecha_documento,oc.numero_oc,`Recepcion OC ${oc.numero_oc}`,req.user.email]);
