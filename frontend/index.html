@@ -120,10 +120,12 @@ function api(path,method,body,token){
   if(token)opts.headers['Authorization']='Bearer '+token;
   if(body)opts.body=JSON.stringify(body);
   return fetch('/api'+path,opts).then(function(r){
-    return r.json().then(function(d){
+    return r.text().then(function(txt){
+      var d;
+      try{d=JSON.parse(txt);}catch(_){throw new Error('Servidor respondio: '+r.status+' '+txt.substring(0,120));}
       if(!r.ok)throw new Error(d.error||'Error '+r.status);
       return d;
-    }).catch(function(e){if(e.message&&e.message.startsWith('Error'))throw e;throw new Error('Error de comunicacion con el servidor');});
+    });
   });
 }
 
@@ -1033,13 +1035,21 @@ function ImportModal(p){
   function doImport(){
     setImporting(true);setResult(null);
     Promise.all(preview.map(function(row){
-      const body={};p.config.campos.forEach(function(c){
+      var body={};
+      p.config.campos.forEach(function(c){
+        if(c.k==='empresa_rut')return;
         var v=row[c.k];
         if(v===''||v===undefined||v===null){body[c.k]=null;}
-        else if(c.num||(!isNaN(v)&&v.trim&&v.trim()!==''&&String(parseInt(v))===v.trim())){body[c.k]=parseInt(v);}
+        else if(!isNaN(v)&&String(v).trim()!==''&&String(parseInt(v))===String(v).trim()){body[c.k]=parseInt(v);}
         else{body[c.k]=v;}
       });
-      return api('/'+p.config.endpoint,'POST',body,p.tok).then(function(){return{ok:true};}).catch(function(ex){return{ok:false,msg:ex.message,row:row.__row};});
+      if(p.config.resolveEmpresa&&row.empresa_rut){
+        return api('/empresas/lookup/rut/'+encodeURIComponent(row.empresa_rut),'GET',null,p.tok).then(function(r){
+          body.empresa_id=r.empresa_id;
+          return api('/'+p.config.endpoint,'POST',body,p.tok).then(function(){return{ok:true};});
+        }).catch(function(ex){return{ok:false,msg:ex.message||String(ex),row:row.__row};});
+      }
+      return api('/'+p.config.endpoint,'POST',body,p.tok).then(function(){return{ok:true};}).catch(function(ex){return{ok:false,msg:ex.message||String(ex),row:row.__row};});
     })).then(function(results){
       const ok=results.filter(function(r){return r.ok;}).length;
       const fail=results.filter(function(r){return !r.ok;});
@@ -1069,7 +1079,7 @@ function ImportModal(p){
         ),
         step==='done'&&result&&h('div',null,
           h('div',{className:'al al-s',style:{marginBottom:8}},result.ok+' registro(s) importados.'),
-          result.fail.length>0&&h('div',{className:'al al-e'},result.fail.slice(0,5).map(function(f){return 'Fila '+f.row+': '+f.msg;}).join('\n'))
+          result.fail.length>0&&h('div',{className:'al al-e'},result.fail.slice(0,8).map(function(f){return 'Fila '+f.row+': '+f.msg;}).join(' | '))
         )
       ),
       h('div',{className:'mf'},
@@ -1084,7 +1094,7 @@ const IMPORT_CONFIGS={
   bodegas:{titulo:'Bodegas',endpoint:'bodegas',campos:[{k:'codigo',header:'Codigo',req:true,example:'BC'},{k:'nombre',header:'Nombre',req:true,example:'Bodega Central'},{k:'ubicacion',header:'Ubicacion',req:false,example:'Planta'},{k:'responsable',header:'Responsable',req:false,example:'Juan Perez'}]},
   categorias:{titulo:'Categorias',endpoint:'categorias',campos:[{k:'nombre',header:'Nombre',req:true,example:'Repuestos'},{k:'descripcion',header:'Descripcion',req:false,example:''}]},
   subcategorias:{titulo:'Clasificaciones de Producto',endpoint:'subcategorias',campos:[{k:'nombre',header:'Nombre',req:true,example:'Filtros'},{k:'categoria_id',header:'categoria_id',req:true,example:'1'}]},
-  faenas:{titulo:'Faenas',endpoint:'faenas',campos:[{k:'empresa_id',header:'empresa_id',req:true,example:'1'},{k:'codigo',header:'Codigo',req:true,example:'FAE-001'},{k:'nombre',header:'Nombre',req:true,example:'Faena Norte'},{k:'descripcion',header:'Descripcion',req:false,example:''}]},
+  faenas:{titulo:'Faenas',endpoint:'faenas',campos:[{k:'empresa_id',header:'empresa_id',req:true,example:'1',hint:'Ver ID en mantenedor Empresas'},{k:'codigo',header:'Codigo',req:true,example:'FAE-001'},{k:'nombre',header:'Nombre',req:true,example:'Faena Norte'},{k:'descripcion',header:'Descripcion',req:false,example:''}]},
   equipos:{titulo:'Equipos',endpoint:'equipos',campos:[{k:'codigo',header:'Codigo',req:true,example:'HARV-01'},{k:'nombre',header:'Nombre',req:true,example:'Harvester 01'},{k:'tipo',header:'Tipo',req:false,example:'Cosechador'},{k:'faena_id',header:'faena_id',req:false,example:'1'},{k:'marca',header:'Marca',req:false,example:'John Deere'},{k:'modelo',header:'Modelo',req:false,example:'1270G'},{k:'anio',header:'Ano',req:false,example:'2020'},{k:'placa_patente',header:'Patente',req:false,example:'AB1234'}]},
   proveedores:{titulo:'Proveedores',endpoint:'proveedores',campos:[{k:'rut',header:'RUT',req:true,example:'76.543.210-5'},{k:'nombre',header:'Nombre',req:true,example:'Comercial Sur'},{k:'giro',header:'Giro',req:false,example:'Comercio'},{k:'direccion',header:'Direccion',req:false,example:''},{k:'contacto',header:'Contacto',req:false,example:''},{k:'telefono',header:'Telefono',req:false,example:''},{k:'email',header:'Email',req:false,example:''}]},
   condpago:{titulo:'Condiciones de Pago',endpoint:'condiciones-pago',campos:[{k:'nombre',header:'Nombre',req:true,example:'30 dias'},{k:'descripcion',header:'Descripcion',req:false,example:''}]},
@@ -1169,7 +1179,7 @@ function App(){
           view==='kardex'&&h(KardexView,{tok,m}),
           view==='reportes'&&h(ReportesView,{tok,m}),
           view==='ordenes'&&h(OCView,{tok,m}),
-          view==='empresas'&&h(MasterV,{tok,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,activo:true},cols:[{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
+          view==='empresas'&&h(MasterV,{tok,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,activo:true},cols:[{lbl:'ID',k:'empresa_id',mono:true,w:50},{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
           view==='bodegas'&&h(MasterV,{tok,titulo:'Bodega',ep:'bodegas',pk:'bodega_id',Form:BodegaForm,importKey:'bodegas',blank:{codigo:'',nombre:'',ubicacion:'',responsable:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Ubicacion',k:'ubicacion'},{lbl:'Responsable',k:'responsable'}]}),
           view==='productos'&&h(MasterV,{tok,titulo:'Producto',ep:'productos',pk:'producto_id',Form:ProdForm,blank:{codigo:'',nombre:'',subcategoria_id:'',categoria_id:'',unidad_medida:'UN',stock_minimo:0,costo_referencia:0,activo:true},extra:{cats:m.cats,subcats:m.subcats},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Subcategoria',k:'subcategoria_nombre'},{lbl:'UM',k:'unidad_medida'},{lbl:'Stk min',k:'stock_minimo'},{lbl:'Costo ref.',render:r=>CLP(r.costo_referencia)}]}),
           view==='categorias'&&h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}},
