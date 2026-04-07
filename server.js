@@ -422,14 +422,18 @@ prR.get('/:id', auth, async(req,res)=>{try{res.json((await pool.query('SELECT * 
 prR.post('/', auth, async(req,res)=>{
   try{
     const{codigo,nombre,descripcion,subcategoria_id,unidad_medida,stock_minimo,stock_maximo,costo_referencia,unidad_compra,factor_conversion}=req.body;
-    const r=await pool.query('INSERT INTO productos(codigo,nombre,descripcion,subcategoria_id,unidad_medida,stock_minimo,stock_maximo,costo_referencia,unidad_compra,factor_conversion) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',[codigo,nombre,descripcion||null,subcategoria_id,unidad_medida||'UN',stock_minimo||0,stock_maximo||null,costo_referencia||0,unidad_compra||null,parseFloat(factor_conversion)||1]);
+    const scId=subcategoria_id?parseInt(subcategoria_id):null;
+    if(!scId)throw new Error('Debe seleccionar un Tipo de Producto');
+    const r=await pool.query('INSERT INTO productos(codigo,nombre,descripcion,subcategoria_id,unidad_medida,stock_minimo,stock_maximo,costo_referencia,unidad_compra,factor_conversion) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',[codigo,nombre,descripcion||null,scId,unidad_medida||'UN',stock_minimo||0,stock_maximo||null,costo_referencia||0,unidad_compra||null,parseFloat(factor_conversion)||1]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 prR.put('/:id', auth, async(req,res)=>{
   try{
     const{codigo,nombre,descripcion,subcategoria_id,unidad_medida,stock_minimo,stock_maximo,costo_referencia,unidad_compra,factor_conversion}=req.body;
-    const r=await pool.query('UPDATE productos SET codigo=$1,nombre=$2,descripcion=$3,subcategoria_id=$4,unidad_medida=$5,stock_minimo=$6,stock_maximo=$7,costo_referencia=$8,unidad_compra=$9,factor_conversion=$10,modificado_en=NOW() WHERE producto_id=$11 RETURNING *',[codigo,nombre,descripcion||null,subcategoria_id,unidad_medida||'UN',stock_minimo||0,stock_maximo||null,costo_referencia||0,unidad_compra||null,parseFloat(factor_conversion)||1,req.params.id]);
+    const scId2=subcategoria_id?parseInt(subcategoria_id):null;
+    if(!scId2)throw new Error('Debe seleccionar un Tipo de Producto');
+    const r=await pool.query('UPDATE productos SET codigo=$1,nombre=$2,descripcion=$3,subcategoria_id=$4,unidad_medida=$5,stock_minimo=$6,stock_maximo=$7,costo_referencia=$8,unidad_compra=$9,factor_conversion=$10,modificado_en=NOW() WHERE producto_id=$11 RETURNING *',[codigo,nombre,descripcion||null,scId2,unidad_medida||'UN',stock_minimo||0,stock_maximo||null,costo_referencia||0,unidad_compra||null,parseFloat(factor_conversion)||1,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
