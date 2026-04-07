@@ -69,6 +69,12 @@ async function autoSetup() {
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS placa_patente VARCHAR(30)`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS num_chasis VARCHAR(50)`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)`);
+  // Factor de conversion (v2.3)
+  await q(`ALTER TABLE productos ADD COLUMN IF NOT EXISTS unidad_compra VARCHAR(30)`);
+  await q(`ALTER TABLE productos ADD COLUMN IF NOT EXISTS factor_conversion NUMERIC(10,4) DEFAULT 1`);
+  // Factor de conversion unidad compra → unidad stock (v2.3)
+  await q(`ALTER TABLE productos ADD COLUMN IF NOT EXISTS unidad_compra VARCHAR(30)`);
+  await q(`ALTER TABLE productos ADD COLUMN IF NOT EXISTS factor_conversion NUMERIC(10,4) DEFAULT 1`);
   // Faenas por empresa (v2.1)
   await q(`ALTER TABLE faenas ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)`);
   // Logo empresa (v2.1)
@@ -415,15 +421,15 @@ prR.get('/', auth, async(req,res)=>{try{res.json((await pool.query('SELECT p.*,s
 prR.get('/:id', auth, async(req,res)=>{try{res.json((await pool.query('SELECT * FROM productos WHERE producto_id=$1',[req.params.id])).rows[0]);}catch(e){res.status(500).json({error:e.message});}});
 prR.post('/', auth, async(req,res)=>{
   try{
-    const{codigo,nombre,descripcion,subcategoria_id,unidad_medida,stock_minimo,stock_maximo,costo_referencia}=req.body;
-    const r=await pool.query('INSERT INTO productos(codigo,nombre,descripcion,subcategoria_id,unidad_medida,stock_minimo,stock_maximo,costo_referencia) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[codigo,nombre,descripcion||null,subcategoria_id,unidad_medida||'UN',stock_minimo||0,stock_maximo||null,costo_referencia||0]);
+    const{codigo,nombre,descripcion,subcategoria_id,unidad_medida,stock_minimo,stock_maximo,costo_referencia,unidad_compra,factor_conversion}=req.body;
+    const r=await pool.query('INSERT INTO productos(codigo,nombre,descripcion,subcategoria_id,unidad_medida,stock_minimo,stock_maximo,costo_referencia,unidad_compra,factor_conversion) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',[codigo,nombre,descripcion||null,subcategoria_id,unidad_medida||'UN',stock_minimo||0,stock_maximo||null,costo_referencia||0,unidad_compra||null,parseFloat(factor_conversion)||1]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 prR.put('/:id', auth, async(req,res)=>{
   try{
-    const{codigo,nombre,descripcion,subcategoria_id,unidad_medida,stock_minimo,stock_maximo,costo_referencia}=req.body;
-    const r=await pool.query('UPDATE productos SET codigo=$1,nombre=$2,descripcion=$3,subcategoria_id=$4,unidad_medida=$5,stock_minimo=$6,stock_maximo=$7,costo_referencia=$8,modificado_en=NOW() WHERE producto_id=$9 RETURNING *',[codigo,nombre,descripcion||null,subcategoria_id,unidad_medida||'UN',stock_minimo||0,stock_maximo||null,costo_referencia||0,req.params.id]);
+    const{codigo,nombre,descripcion,subcategoria_id,unidad_medida,stock_minimo,stock_maximo,costo_referencia,unidad_compra,factor_conversion}=req.body;
+    const r=await pool.query('UPDATE productos SET codigo=$1,nombre=$2,descripcion=$3,subcategoria_id=$4,unidad_medida=$5,stock_minimo=$6,stock_maximo=$7,costo_referencia=$8,unidad_compra=$9,factor_conversion=$10,modificado_en=NOW() WHERE producto_id=$11 RETURNING *',[codigo,nombre,descripcion||null,subcategoria_id,unidad_medida||'UN',stock_minimo||0,stock_maximo||null,costo_referencia||0,unidad_compra||null,parseFloat(factor_conversion)||1,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -696,13 +702,20 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
     }).filter(function(l){return l.producto_id;});
     if(!lineasParaRecibir.length) throw new Error('Debe asignar un producto de inventario a al menos una linea antes de recibir.');
     for(const l of lineasParaRecibir){
-      const pid=l.producto_id,qty=parseFloat(l.cantidad),cu=parseFloat(l.precio_unitario)||0;
+      const pid=l.producto_id,cantCompra=parseFloat(l.cantidad),cu=parseFloat(l.precio_unitario)||0;
       const bodDest=l.bodega_destino_id||bodegaEfectiva;
+      // Obtener factor de conversion del producto
+      const pInfo=await client.query('SELECT factor_conversion,unidad_compra,unidad_medida FROM productos WHERE producto_id=$1',[pid]);
+      const factor_map=req.body.factor_map||{};
+      const factorOverride=factor_map[String(l.detalle_id)];
+      const factor=factorOverride?parseFloat(factorOverride)||1:parseFloat((pInfo.rows[0]||{}).factor_conversion)||1;
+      const qty=cantCompra*factor;  // unidades base a ingresar al stock
+      const cuBase=factor>1?cu/factor:cu;  // costo por unidad base
       const sr=await client.query('SELECT cantidad_disponible,costo_promedio_actual FROM stock_actual WHERE producto_id=$1 AND bodega_id=$2',[pid,bodDest]);
       const cur=sr.rows[0]||{cantidad_disponible:0,costo_promedio_actual:0};
       const curQ=parseFloat(cur.cantidad_disponible),curCpp=parseFloat(cur.costo_promedio_actual);
-      const newQ=curQ+qty,newCpp=newQ>0?(curQ*curCpp+qty*cu)/newQ:cu;
-      await client.query('INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) VALUES($1,$2,$3,$4)',[mr.rows[0].movimiento_id,pid,qty,cu]);
+      const newQ=curQ+qty,newCpp=newQ>0?(curQ*curCpp+qty*cuBase)/newQ:cuBase;
+      await client.query('INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) VALUES($1,$2,$3,$4)',[mr.rows[0].movimiento_id,pid,qty,cuBase]);
       await client.query('INSERT INTO stock_actual(producto_id,bodega_id,cantidad_disponible,costo_promedio_actual,ultima_actualizacion) VALUES($1,$2,$3,$4,NOW()) ON CONFLICT(producto_id,bodega_id) DO UPDATE SET cantidad_disponible=$3,costo_promedio_actual=$4,ultima_actualizacion=NOW()',[pid,bodDest,newQ,newCpp]);
     }
 
