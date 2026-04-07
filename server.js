@@ -35,6 +35,19 @@ async function audit(tabla, id, accion, antes, despues, usr) {
 }
 
 async function autoSetup() {
+  // AUTO-REPARACION: si ordenes_compra existe con estructura incorrecta, la elimina
+  try {
+    const cols = await pool.query(`SELECT column_name FROM information_schema.columns WHERE table_name='ordenes_compra' AND table_schema='public'`);
+    if (cols.rows.length > 0) {
+      const names = cols.rows.map(function(r){return r.column_name;});
+      if (!names.includes('fecha_emision')) {
+        await pool.query('DROP TABLE IF EXISTS ordenes_compra_detalle CASCADE');
+        await pool.query('DROP TABLE IF EXISTS ordenes_compra CASCADE');
+        console.log('  [FIX] Tablas OC con estructura incorrecta eliminadas — se recrearan');
+      }
+    }
+  } catch(e) { console.log('  [WARN] Check OC:', e.message); }
+
   // Cada DDL corre de forma independiente — un fallo no afecta a los demas
   async function q(sql) {
     try { await pool.query(sql); } catch(e) { /* ignore: IF NOT EXISTS handles duplicates */ }
