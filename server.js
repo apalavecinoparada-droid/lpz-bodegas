@@ -705,6 +705,10 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
       return Object.assign({},l,{producto_id:pid});
     }).filter(function(l){return l.producto_id;});
     if(!lineasParaRecibir.length) throw new Error('Debe asignar un producto de inventario a al menos una linea antes de recibir.');
+    const bodegaEfectiva=bodega_id||oc.bodega_ingreso_id||(await client.query('SELECT bodega_id FROM bodegas WHERE activo=true ORDER BY bodega_id LIMIT 1')).rows[0]?.bodega_id;
+    if(!bodegaEfectiva) throw new Error('Debe seleccionar una bodega de recepcion.');
+    const mr=await client.query('INSERT INTO movimiento_encabezado(tipo_movimiento,fecha,bodega_id,proveedor_id,tipo_doc_id,numero_documento,fecha_documento,oc_referencia,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING movimiento_id',['INGRESO',oc.fecha_documento||new Date().toISOString().split('T')[0],bodegaEfectiva,oc.proveedor_id,oc.tipo_doc_id,oc.numero_documento,oc.fecha_documento,oc.numero_oc,'Recepcion OC '+oc.numero_oc,req.user.email]);
+    const movId=mr.rows[0].movimiento_id;
     for(const l of lineasParaRecibir){
       const pid=l.producto_id,cantCompra=parseFloat(l.cantidad),cu=parseFloat(l.precio_unitario)||0;
       const bodDest=l.bodega_destino_id||bodegaEfectiva;
