@@ -692,11 +692,11 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
     }
     if(!lineas.rows.length) throw new Error('No hay lineas marcadas para ingresar a bodega. Edite la OC y active el checkbox "A Bodega" en las lineas que deben entrar al inventario.');
     const conProducto=lineas.rows.filter(function(l){return l.producto_id;});
-    if(!conProducto.length) throw new Error('Las lineas no tienen un Producto de inventario asignado. Esta OC usa solo clasificacion (Tipo de Producto). Para recibir en bodega debe asociar un Producto especifico a cada linea desde la edicion de la OC.');
-    const bodegaEfectiva=bodega_id||oc.bodega_ingreso_id;
-    if(!bodegaEfectiva) throw new Error('Debe seleccionar la bodega de destino');
-    const mr=await client.query('INSERT INTO movimiento_encabezado(tipo_movimiento,fecha,bodega_id,proveedor_id,tipo_doc_id,numero_documento,fecha_documento,oc_referencia,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING movimiento_id',['INGRESO',oc.fecha_documento||new Date().toISOString().split('T')[0],bodegaEfectiva,oc.proveedor_id,oc.tipo_doc_id,oc.numero_documento,oc.fecha_documento,oc.numero_oc,`Recepcion OC ${oc.numero_oc}`,req.user.email]);
-    const movId=mr.rows[0].movimiento_id;
+    const prod_map_check=req.body.prod_map||{};
+    const anyMapped=Object.values(prod_map_check).some(function(v){return !!v;});
+    if(!conProducto.length&&!anyMapped){
+      throw new Error('Debe asignar un producto de inventario a al menos una linea antes de recibir en bodega.');
+    }
     // Accept prod_map from frontend to assign products at reception time
     const prod_map=req.body.prod_map||{};
     // Build final list: use prod_map overrides, fallback to producto_id on line
