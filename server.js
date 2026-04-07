@@ -292,6 +292,14 @@ empR.delete('/:id', auth, async(req,res)=>{
     res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
 });
+// Lookup empresa_id by RUT (for imports)
+empR.get('/lookup/rut/:rut', auth, async(req,res)=>{
+  try{
+    const r=await pool.query("SELECT empresa_id FROM empresas WHERE REPLACE(REPLACE(rut,'.',''),'-','')=REPLACE(REPLACE($1,'.',''),'-','') AND activo=true LIMIT 1",[req.params.rut]);
+    if(!r.rows.length) return res.status(404).json({error:'Empresa no encontrada con RUT: '+req.params.rut});
+    res.json({empresa_id:r.rows[0].empresa_id});
+  }catch(e){res.status(500).json({error:e.message});}
+});
 app.use('/api/empresas', empR);
 
 // EQUIPOS con nuevos campos
