@@ -687,16 +687,25 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
     if(!bodegaEfectiva) throw new Error('Debe seleccionar la bodega de destino');
     const mr=await client.query('INSERT INTO movimiento_encabezado(tipo_movimiento,fecha,bodega_id,proveedor_id,tipo_doc_id,numero_documento,fecha_documento,oc_referencia,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING movimiento_id',['INGRESO',oc.fecha_documento||new Date().toISOString().split('T')[0],bodegaEfectiva,oc.proveedor_id,oc.tipo_doc_id,oc.numero_documento,oc.fecha_documento,oc.numero_oc,`Recepcion OC ${oc.numero_oc}`,req.user.email]);
     const movId=mr.rows[0].movimiento_id;
-    for(const l of conProducto){
+    // Accept prod_map from frontend to assign products at reception time
+    const prod_map=req.body.prod_map||{};
+    // Build final list: use prod_map overrides, fallback to producto_id on line
+    const lineasParaRecibir=lineas.rows.map(function(l){
+      const pid=prod_map[String(l.detalle_id)]?parseInt(prod_map[String(l.detalle_id)]):l.producto_id;
+      return Object.assign({},l,{producto_id:pid});
+    }).filter(function(l){return l.producto_id;});
+    if(!lineasParaRecibir.length) throw new Error('Debe asignar un producto de inventario a al menos una linea antes de recibir.');
+    for(const l of lineasParaRecibir){
       const pid=l.producto_id,qty=parseFloat(l.cantidad),cu=parseFloat(l.precio_unitario)||0;
       const bodDest=l.bodega_destino_id||bodegaEfectiva;
       const sr=await client.query('SELECT cantidad_disponible,costo_promedio_actual FROM stock_actual WHERE producto_id=$1 AND bodega_id=$2',[pid,bodDest]);
       const cur=sr.rows[0]||{cantidad_disponible:0,costo_promedio_actual:0};
       const curQ=parseFloat(cur.cantidad_disponible),curCpp=parseFloat(cur.costo_promedio_actual);
       const newQ=curQ+qty,newCpp=newQ>0?(curQ*curCpp+qty*cu)/newQ:cu;
-      await client.query('INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) VALUES($1,$2,$3,$4)',[movId,pid,qty,cu]);
+      await client.query('INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) VALUES($1,$2,$3,$4)',[mr.rows[0].movimiento_id,pid,qty,cu]);
       await client.query('INSERT INTO stock_actual(producto_id,bodega_id,cantidad_disponible,costo_promedio_actual,ultima_actualizacion) VALUES($1,$2,$3,$4,NOW()) ON CONFLICT(producto_id,bodega_id) DO UPDATE SET cantidad_disponible=$3,costo_promedio_actual=$4,ultima_actualizacion=NOW()',[pid,bodDest,newQ,newCpp]);
     }
+
     await client.query('UPDATE ordenes_compra SET movimiento_id=$1,bodega_ingreso_id=$2,modificado_en=NOW() WHERE oc_id=$3',[movId,bodegaEfectiva,req.params.id]);
     await client.query('COMMIT');
     res.json({ok:true,movimiento_id:movId});
