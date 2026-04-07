@@ -35,106 +35,115 @@ async function audit(tabla, id, accion, antes, despues, usr) {
 }
 
 async function autoSetup() {
-  const client = await pool.connect();
+  // Cada DDL corre de forma independiente — un fallo no afecta a los demas
+  async function q(sql) {
+    try { await pool.query(sql); } catch(e) { /* ignore: IF NOT EXISTS handles duplicates */ }
+  }
+
+  // ── Tablas base ──────────────────────────────────────────
+  await q(`CREATE TABLE IF NOT EXISTS bodegas (bodega_id SERIAL PRIMARY KEY, codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, ubicacion VARCHAR(200), responsable VARCHAR(100), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await q(`CREATE TABLE IF NOT EXISTS categorias (categoria_id SERIAL PRIMARY KEY, nombre VARCHAR(80) NOT NULL UNIQUE, descripcion TEXT, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await q(`CREATE TABLE IF NOT EXISTS subcategorias (subcategoria_id SERIAL PRIMARY KEY, categoria_id INT NOT NULL REFERENCES categorias(categoria_id), nombre VARCHAR(80) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW(), UNIQUE(categoria_id, nombre))`);
+  await q(`CREATE TABLE IF NOT EXISTS proveedores (proveedor_id SERIAL PRIMARY KEY, rut VARCHAR(12) NOT NULL UNIQUE, nombre VARCHAR(150) NOT NULL, contacto VARCHAR(100), telefono VARCHAR(30), email VARCHAR(100), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await q(`ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS direccion VARCHAR(200)`);
+  await q(`ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS giro VARCHAR(200)`);
+  await q(`CREATE TABLE IF NOT EXISTS productos (producto_id SERIAL PRIMARY KEY, codigo VARCHAR(30) NOT NULL UNIQUE, codigo_alternativo VARCHAR(50), nombre VARCHAR(150) NOT NULL, descripcion TEXT, subcategoria_id INT NOT NULL REFERENCES subcategorias(subcategoria_id), unidad_medida VARCHAR(20) NOT NULL DEFAULT 'UN', stock_minimo NUMERIC(12,3) DEFAULT 0, stock_maximo NUMERIC(12,3), costo_referencia NUMERIC(14,2) DEFAULT 0, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW(), modificado_en TIMESTAMP DEFAULT NOW())`);
+  await q(`CREATE TABLE IF NOT EXISTS faenas (faena_id SERIAL PRIMARY KEY, codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, descripcion TEXT, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await q(`CREATE TABLE IF NOT EXISTS equipos (equipo_id SERIAL PRIMARY KEY, codigo VARCHAR(30) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo VARCHAR(50), faena_id INT REFERENCES faenas(faena_id), patente_serie VARCHAR(50), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS marca VARCHAR(80)`);
+  await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS modelo VARCHAR(80)`);
+  await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS anio INT`);
+  await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS placa_patente VARCHAR(30)`);
+  await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS num_chasis VARCHAR(50)`);
+  await q(`CREATE TABLE IF NOT EXISTS tipos_documento (tipo_doc_id SERIAL PRIMARY KEY, codigo VARCHAR(10) NOT NULL UNIQUE, nombre VARCHAR(80) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true)`);
+  await q(`CREATE TABLE IF NOT EXISTS motivos_movimiento (motivo_id SERIAL PRIMARY KEY, nombre VARCHAR(100) NOT NULL, tipo VARCHAR(20) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true)`);
+  await q(`CREATE TABLE IF NOT EXISTS usuarios (usuario_id SERIAL PRIMARY KEY, email VARCHAR(100) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, password_hash VARCHAR(255) NOT NULL, rol VARCHAR(30) NOT NULL DEFAULT 'BODEGUERO', activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  // ── Tablas nuevas v2 ─────────────────────────────────────
+  await q(`CREATE TABLE IF NOT EXISTS empresas (empresa_id SERIAL PRIMARY KEY, rut VARCHAR(15) NOT NULL UNIQUE, razon_social VARCHAR(150) NOT NULL, direccion VARCHAR(200), ciudad VARCHAR(100), giro VARCHAR(200), telefono VARCHAR(30), email VARCHAR(100), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW(), modificado_en TIMESTAMP DEFAULT NOW())`);
+  await q(`CREATE TABLE IF NOT EXISTS condiciones_pago (condicion_id SERIAL PRIMARY KEY, nombre VARCHAR(100) NOT NULL UNIQUE, descripcion TEXT, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  // ── Movimientos ──────────────────────────────────────────
+  await q(`CREATE TABLE IF NOT EXISTS movimiento_encabezado (movimiento_id SERIAL PRIMARY KEY, tipo_movimiento VARCHAR(20) NOT NULL, fecha DATE NOT NULL, bodega_id INT NOT NULL REFERENCES bodegas(bodega_id), bodega_destino_id INT REFERENCES bodegas(bodega_id), faena_id INT REFERENCES faenas(faena_id), equipo_id INT REFERENCES equipos(equipo_id), proveedor_id INT REFERENCES proveedores(proveedor_id), tipo_doc_id INT REFERENCES tipos_documento(tipo_doc_id), numero_documento VARCHAR(30), fecha_documento DATE, oc_referencia VARCHAR(50), motivo_id INT REFERENCES motivos_movimiento(motivo_id), estado VARCHAR(20) NOT NULL DEFAULT 'ACTIVO', observaciones TEXT, responsable_entrega VARCHAR(100), responsable_recepcion VARCHAR(100), usuario VARCHAR(100) NOT NULL DEFAULT 'sistema', referencia_transfer_id INT REFERENCES movimiento_encabezado(movimiento_id), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100), motivo_anulacion TEXT)`);
+  await q(`CREATE TABLE IF NOT EXISTS movimiento_detalle (detalle_id SERIAL PRIMARY KEY, movimiento_id INT NOT NULL REFERENCES movimiento_encabezado(movimiento_id), producto_id INT NOT NULL REFERENCES productos(producto_id), cantidad NUMERIC(12,3) NOT NULL, unidad_medida VARCHAR(20), costo_unitario NUMERIC(14,4) NOT NULL DEFAULT 0, costo_total NUMERIC(14,2) GENERATED ALWAYS AS (cantidad * costo_unitario) STORED, lote VARCHAR(50), observacion TEXT)`);
+  await q(`CREATE TABLE IF NOT EXISTS stock_actual (producto_id INT NOT NULL REFERENCES productos(producto_id), bodega_id INT NOT NULL REFERENCES bodegas(bodega_id), cantidad_disponible NUMERIC(12,3) NOT NULL DEFAULT 0, costo_promedio_actual NUMERIC(14,4) NOT NULL DEFAULT 0, ultima_actualizacion TIMESTAMP DEFAULT NOW(), PRIMARY KEY (producto_id, bodega_id))`);
+  await q(`CREATE TABLE IF NOT EXISTS auditoria (auditoria_id BIGSERIAL PRIMARY KEY, tabla_afectada VARCHAR(60) NOT NULL, registro_id INT, accion VARCHAR(20) NOT NULL, datos_anteriores JSONB, datos_nuevos JSONB, usuario VARCHAR(100) NOT NULL, ip_origen VARCHAR(45), fecha_hora TIMESTAMP DEFAULT NOW())`);
+  // ── OC ───────────────────────────────────────────────────
+  await q(`CREATE SEQUENCE IF NOT EXISTS seq_oc_num START 1`);
+  await q(`CREATE TABLE IF NOT EXISTS ordenes_compra (oc_id SERIAL PRIMARY KEY, numero_oc VARCHAR(30) NOT NULL UNIQUE, empresa_id INT REFERENCES empresas(empresa_id), proveedor_id INT REFERENCES proveedores(proveedor_id), fecha_emision DATE, solicitante VARCHAR(100), retira VARCHAR(100), condicion_id INT REFERENCES condiciones_pago(condicion_id), estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE', impuesto_adicional NUMERIC(14,2) DEFAULT 0, neto NUMERIC(14,2) DEFAULT 0, iva NUMERIC(14,2) DEFAULT 0, total NUMERIC(14,2) DEFAULT 0, tipo_doc_id INT REFERENCES tipos_documento(tipo_doc_id), numero_documento VARCHAR(30), fecha_documento DATE, bodega_ingreso_id INT REFERENCES bodegas(bodega_id), movimiento_id INT REFERENCES movimiento_encabezado(movimiento_id), observaciones TEXT, usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), modificado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100))`);
+  await q(`CREATE TABLE IF NOT EXISTS ordenes_compra_detalle (detalle_id SERIAL PRIMARY KEY, oc_id INT NOT NULL REFERENCES ordenes_compra(oc_id) ON DELETE CASCADE, linea_num INT, descripcion TEXT, producto_id INT REFERENCES productos(producto_id), subcategoria_id INT REFERENCES subcategorias(subcategoria_id), faena_id INT REFERENCES faenas(faena_id), equipo_id INT REFERENCES equipos(equipo_id), cantidad NUMERIC(12,3) NOT NULL DEFAULT 0, precio_unitario NUMERIC(14,4) DEFAULT 0, total_linea NUMERIC(14,2) GENERATED ALWAYS AS (cantidad * precio_unitario) STORED, ingresa_bodega BOOLEAN DEFAULT false, bodega_destino_id INT REFERENCES bodegas(bodega_id))`);
+  // ── Patch columnas OC faltantes (BD con tabla incompleta) ─
+  const ocPatch = [
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS fecha_emision DATE",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS empresa_id INT",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS solicitante VARCHAR(100)",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS retira VARCHAR(100)",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS condicion_id INT",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'PENDIENTE'",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS impuesto_adicional NUMERIC(14,2) DEFAULT 0",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS neto NUMERIC(14,2) DEFAULT 0",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS iva NUMERIC(14,2) DEFAULT 0",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS total NUMERIC(14,2) DEFAULT 0",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS tipo_doc_id INT",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS numero_documento VARCHAR(30)",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS fecha_documento DATE",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS bodega_ingreso_id INT",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS movimiento_id INT",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS observaciones TEXT",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS usuario VARCHAR(100)",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT NOW()",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS modificado_en TIMESTAMP DEFAULT NOW()",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_en TIMESTAMP",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_por VARCHAR(100)",
+    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS linea_num INT",
+    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS descripcion TEXT",
+    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS subcategoria_id INT",
+    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS faena_id INT",
+    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS equipo_id INT",
+    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS ingresa_bodega BOOLEAN DEFAULT false",
+    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS bodega_destino_id INT",
+  ];
+  for (const sql of ocPatch) { await q(sql); }
+  // ── Indices (cada uno independiente) ─────────────────────
+  const idxList = [
+    "CREATE INDEX IF NOT EXISTS idx_mov_fecha ON movimiento_encabezado(fecha)",
+    "CREATE INDEX IF NOT EXISTS idx_mov_tipo ON movimiento_encabezado(tipo_movimiento)",
+    "CREATE INDEX IF NOT EXISTS idx_mov_bodega ON movimiento_encabezado(bodega_id)",
+    "CREATE INDEX IF NOT EXISTS idx_mov_faena ON movimiento_encabezado(faena_id)",
+    "CREATE INDEX IF NOT EXISTS idx_mov_equipo ON movimiento_encabezado(equipo_id)",
+    "CREATE INDEX IF NOT EXISTS idx_det_mov ON movimiento_detalle(movimiento_id)",
+    "CREATE INDEX IF NOT EXISTS idx_det_prod ON movimiento_detalle(producto_id)",
+    "CREATE INDEX IF NOT EXISTS idx_oc_estado ON ordenes_compra(estado)",
+    "CREATE INDEX IF NOT EXISTS idx_oc_prov ON ordenes_compra(proveedor_id)",
+    "CREATE INDEX IF NOT EXISTS idx_oc_fecha ON ordenes_compra(fecha_emision)",
+  ];
+  for (const sql of idxList) { await q(sql); }
+  console.log('  [OK] Tablas verificadas');
+  // ── Datos iniciales ───────────────────────────────────────
   try {
-    await client.query('BEGIN');
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS bodegas (bodega_id SERIAL PRIMARY KEY, codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, ubicacion VARCHAR(200), responsable VARCHAR(100), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW());
-      CREATE TABLE IF NOT EXISTS categorias (categoria_id SERIAL PRIMARY KEY, nombre VARCHAR(80) NOT NULL UNIQUE, descripcion TEXT, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW());
-      CREATE TABLE IF NOT EXISTS subcategorias (subcategoria_id SERIAL PRIMARY KEY, categoria_id INT NOT NULL REFERENCES categorias(categoria_id), nombre VARCHAR(80) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW(), UNIQUE(categoria_id, nombre));
-      CREATE TABLE IF NOT EXISTS proveedores (proveedor_id SERIAL PRIMARY KEY, rut VARCHAR(12) NOT NULL UNIQUE, nombre VARCHAR(150) NOT NULL, contacto VARCHAR(100), telefono VARCHAR(30), email VARCHAR(100), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW());
-    `);
-    await client.query('ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS direccion VARCHAR(200)');
-    await client.query('ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS giro VARCHAR(200)');
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS productos (producto_id SERIAL PRIMARY KEY, codigo VARCHAR(30) NOT NULL UNIQUE, codigo_alternativo VARCHAR(50), nombre VARCHAR(150) NOT NULL, descripcion TEXT, subcategoria_id INT NOT NULL REFERENCES subcategorias(subcategoria_id), unidad_medida VARCHAR(20) NOT NULL DEFAULT 'UN', stock_minimo NUMERIC(12,3) DEFAULT 0, stock_maximo NUMERIC(12,3), costo_referencia NUMERIC(14,2) DEFAULT 0, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW(), modificado_en TIMESTAMP DEFAULT NOW());
-      CREATE TABLE IF NOT EXISTS faenas (faena_id SERIAL PRIMARY KEY, codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, descripcion TEXT, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW());
-      CREATE TABLE IF NOT EXISTS equipos (equipo_id SERIAL PRIMARY KEY, codigo VARCHAR(30) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo VARCHAR(50), faena_id INT REFERENCES faenas(faena_id), patente_serie VARCHAR(50), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW());
-    `);
-    await client.query('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS marca VARCHAR(80)');
-    await client.query('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS modelo VARCHAR(80)');
-    await client.query('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS anio INT');
-    await client.query('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS placa_patente VARCHAR(30)');
-    await client.query('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS num_chasis VARCHAR(50)');
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS tipos_documento (tipo_doc_id SERIAL PRIMARY KEY, codigo VARCHAR(10) NOT NULL UNIQUE, nombre VARCHAR(80) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true);
-      CREATE TABLE IF NOT EXISTS motivos_movimiento (motivo_id SERIAL PRIMARY KEY, nombre VARCHAR(100) NOT NULL, tipo VARCHAR(20) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true);
-      CREATE TABLE IF NOT EXISTS usuarios (usuario_id SERIAL PRIMARY KEY, email VARCHAR(100) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, password_hash VARCHAR(255) NOT NULL, rol VARCHAR(30) NOT NULL DEFAULT 'BODEGUERO', activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW());
-      CREATE TABLE IF NOT EXISTS empresas (empresa_id SERIAL PRIMARY KEY, rut VARCHAR(15) NOT NULL UNIQUE, razon_social VARCHAR(150) NOT NULL, direccion VARCHAR(200), ciudad VARCHAR(100), giro VARCHAR(200), telefono VARCHAR(30), email VARCHAR(100), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW(), modificado_en TIMESTAMP DEFAULT NOW());
-      CREATE TABLE IF NOT EXISTS condiciones_pago (condicion_id SERIAL PRIMARY KEY, nombre VARCHAR(100) NOT NULL UNIQUE, descripcion TEXT, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW());
-      CREATE TABLE IF NOT EXISTS movimiento_encabezado (movimiento_id SERIAL PRIMARY KEY, tipo_movimiento VARCHAR(20) NOT NULL, fecha DATE NOT NULL, bodega_id INT NOT NULL REFERENCES bodegas(bodega_id), bodega_destino_id INT REFERENCES bodegas(bodega_id), faena_id INT REFERENCES faenas(faena_id), equipo_id INT REFERENCES equipos(equipo_id), proveedor_id INT REFERENCES proveedores(proveedor_id), tipo_doc_id INT REFERENCES tipos_documento(tipo_doc_id), numero_documento VARCHAR(30), fecha_documento DATE, oc_referencia VARCHAR(50), motivo_id INT REFERENCES motivos_movimiento(motivo_id), estado VARCHAR(20) NOT NULL DEFAULT 'ACTIVO', observaciones TEXT, responsable_entrega VARCHAR(100), responsable_recepcion VARCHAR(100), usuario VARCHAR(100) NOT NULL DEFAULT 'sistema', referencia_transfer_id INT REFERENCES movimiento_encabezado(movimiento_id), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100), motivo_anulacion TEXT);
-      CREATE TABLE IF NOT EXISTS movimiento_detalle (detalle_id SERIAL PRIMARY KEY, movimiento_id INT NOT NULL REFERENCES movimiento_encabezado(movimiento_id), producto_id INT NOT NULL REFERENCES productos(producto_id), cantidad NUMERIC(12,3) NOT NULL, unidad_medida VARCHAR(20), costo_unitario NUMERIC(14,4) NOT NULL DEFAULT 0, costo_total NUMERIC(14,2) GENERATED ALWAYS AS (cantidad * costo_unitario) STORED, lote VARCHAR(50), observacion TEXT);
-      CREATE TABLE IF NOT EXISTS stock_actual (producto_id INT NOT NULL REFERENCES productos(producto_id), bodega_id INT NOT NULL REFERENCES bodegas(bodega_id), cantidad_disponible NUMERIC(12,3) NOT NULL DEFAULT 0, costo_promedio_actual NUMERIC(14,4) NOT NULL DEFAULT 0, ultima_actualizacion TIMESTAMP DEFAULT NOW(), PRIMARY KEY (producto_id, bodega_id));
-      CREATE TABLE IF NOT EXISTS auditoria (auditoria_id BIGSERIAL PRIMARY KEY, tabla_afectada VARCHAR(60) NOT NULL, registro_id INT, accion VARCHAR(20) NOT NULL, datos_anteriores JSONB, datos_nuevos JSONB, usuario VARCHAR(100) NOT NULL, ip_origen VARCHAR(45), fecha_hora TIMESTAMP DEFAULT NOW());
-    `);
-    await client.query(`
-      CREATE SEQUENCE IF NOT EXISTS seq_oc_num START 1;
-      CREATE TABLE IF NOT EXISTS ordenes_compra (oc_id SERIAL PRIMARY KEY, numero_oc VARCHAR(30) NOT NULL UNIQUE, empresa_id INT REFERENCES empresas(empresa_id), proveedor_id INT REFERENCES proveedores(proveedor_id), fecha_emision DATE, solicitante VARCHAR(100), retira VARCHAR(100), condicion_id INT REFERENCES condiciones_pago(condicion_id), estado VARCHAR(20) NOT NULL DEFAULT 'PENDIENTE', impuesto_adicional NUMERIC(14,2) DEFAULT 0, neto NUMERIC(14,2) DEFAULT 0, iva NUMERIC(14,2) DEFAULT 0, total NUMERIC(14,2) DEFAULT 0, tipo_doc_id INT REFERENCES tipos_documento(tipo_doc_id), numero_documento VARCHAR(30), fecha_documento DATE, bodega_ingreso_id INT REFERENCES bodegas(bodega_id), movimiento_id INT REFERENCES movimiento_encabezado(movimiento_id), observaciones TEXT, usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), modificado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100));
-      CREATE TABLE IF NOT EXISTS ordenes_compra_detalle (detalle_id SERIAL PRIMARY KEY, oc_id INT NOT NULL REFERENCES ordenes_compra(oc_id) ON DELETE CASCADE, linea_num INT, descripcion TEXT, producto_id INT REFERENCES productos(producto_id), subcategoria_id INT REFERENCES subcategorias(subcategoria_id), faena_id INT REFERENCES faenas(faena_id), equipo_id INT REFERENCES equipos(equipo_id), cantidad NUMERIC(12,3) NOT NULL DEFAULT 0, precio_unitario NUMERIC(14,4) DEFAULT 0, total_linea NUMERIC(14,2) GENERATED ALWAYS AS (cantidad * precio_unitario) STORED, ingresa_bodega BOOLEAN DEFAULT false, bodega_destino_id INT REFERENCES bodegas(bodega_id));
-    `);
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_mov_fecha ON movimiento_encabezado(fecha);
-      CREATE INDEX IF NOT EXISTS idx_mov_tipo ON movimiento_encabezado(tipo_movimiento);
-      CREATE INDEX IF NOT EXISTS idx_mov_bodega ON movimiento_encabezado(bodega_id);
-      CREATE INDEX IF NOT EXISTS idx_mov_faena ON movimiento_encabezado(faena_id);
-      CREATE INDEX IF NOT EXISTS idx_mov_equipo ON movimiento_encabezado(equipo_id);
-      CREATE INDEX IF NOT EXISTS idx_det_mov ON movimiento_detalle(movimiento_id);
-      CREATE INDEX IF NOT EXISTS idx_det_prod ON movimiento_detalle(producto_id);
-      CREATE INDEX IF NOT EXISTS idx_oc_estado ON ordenes_compra(estado);
-      CREATE INDEX IF NOT EXISTS idx_oc_prov ON ordenes_compra(proveedor_id);
-      CREATE INDEX IF NOT EXISTS idx_oc_fecha ON ordenes_compra(fecha_emision);
-    `);
-    // Patch ordenes_compra: add any missing columns (idempotente)
-    const ocCols = [
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS fecha_emision DATE",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS solicitante VARCHAR(100)",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS retira VARCHAR(100)",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS condicion_id INT REFERENCES condiciones_pago(condicion_id)",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'PENDIENTE'",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS impuesto_adicional NUMERIC(14,2) DEFAULT 0",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS neto NUMERIC(14,2) DEFAULT 0",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS iva NUMERIC(14,2) DEFAULT 0",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS total NUMERIC(14,2) DEFAULT 0",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS tipo_doc_id INT REFERENCES tipos_documento(tipo_doc_id)",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS numero_documento VARCHAR(30)",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS fecha_documento DATE",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS bodega_ingreso_id INT REFERENCES bodegas(bodega_id)",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS movimiento_id INT REFERENCES movimiento_encabezado(movimiento_id)",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS observaciones TEXT",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS usuario VARCHAR(100)",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT NOW()",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS modificado_en TIMESTAMP DEFAULT NOW()",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_en TIMESTAMP",
-      "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_por VARCHAR(100)",
-      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS linea_num INT",
-      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS descripcion TEXT",
-      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS subcategoria_id INT REFERENCES subcategorias(subcategoria_id)",
-      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS faena_id INT REFERENCES faenas(faena_id)",
-      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS equipo_id INT REFERENCES equipos(equipo_id)",
-      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS ingresa_bodega BOOLEAN DEFAULT false",
-      "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS bodega_destino_id INT REFERENCES bodegas(bodega_id)",
-    ];
-    for (const q of ocCols) { await pool.query(q).catch(()=>{}); }
-    await client.query('COMMIT');
-    console.log('  [OK] Tablas verificadas');
-    const {rows} = await client.query('SELECT COUNT(*) FROM bodegas');
-    if (parseInt(rows[0].count) === 0) await insertarDatosIniciales(client);
+    const {rows} = await pool.query('SELECT COUNT(*) FROM bodegas');
+    if (parseInt(rows[0].count) === 0) {
+      const client = await pool.connect();
+      try { await insertarDatosIniciales(client); } finally { client.release(); }
+    }
+  } catch(e) { console.error('  [WARN] Datos iniciales:', e.message); }
+  try {
     const u = await pool.query('SELECT COUNT(*) FROM usuarios');
     if (parseInt(u.rows[0].count) === 0) {
       const hash = await bcrypt.hash('admin123', 10);
       await pool.query("INSERT INTO usuarios(email,nombre,password_hash,rol) VALUES('admin@lpz.cl','Administrador',$1,'ADMINISTRADOR')",[hash]);
     }
+  } catch(e) {}
+  try {
     const emp = await pool.query('SELECT COUNT(*) FROM empresas');
     if (parseInt(emp.rows[0].count) === 0) {
       await pool.query("INSERT INTO empresas(rut,razon_social,giro) VALUES('76.543.210-1','Leonidas Poo Zenteno y Cia. Ltda.','Explotacion Forestal') ON CONFLICT DO NOTHING");
     }
+  } catch(e) {}
+  try {
     const cp = await pool.query('SELECT COUNT(*) FROM condiciones_pago');
     if (parseInt(cp.rows[0].count) === 0) {
       await pool.query("INSERT INTO condiciones_pago(nombre) VALUES('Contado'),('30 dias'),('60 dias'),('90 dias') ON CONFLICT DO NOTHING");
     }
-  } catch(e) { await client.query('ROLLBACK'); console.error('  [ERROR] autoSetup:', e.message); }
-  finally { client.release(); }
+  } catch(e) {}
 }
 
 async function insertarDatosIniciales(client) {
@@ -178,6 +187,15 @@ function crud(tabla, pk, campos) {
   r.post('/', auth, async(req,res)=>{try{const vals=campos.map(c=>req.body[c]);const r2=await pool.query(`INSERT INTO ${tabla}(${campos.join(',')}) VALUES(${campos.map((_,i)=>`$${i+1}`).join(',')}) RETURNING *`,vals);res.status(201).json(r2.rows[0]);}catch(e){res.status(400).json({error:e.message});}});
   r.put('/:id', auth, async(req,res)=>{try{const vals=[...campos.map(c=>req.body[c]),req.params.id];const sets=campos.map((c,i)=>`${c}=$${i+1}`).join(',');const r2=await pool.query(`UPDATE ${tabla} SET ${sets} WHERE ${pk}=$${vals.length} RETURNING *`,vals);res.json(r2.rows[0]);}catch(e){res.status(400).json({error:e.message});}});
   r.patch('/:id/activo', auth, async(req,res)=>{try{const r2=await pool.query(`UPDATE ${tabla} SET activo=NOT activo WHERE ${pk}=$1 RETURNING *`,[req.params.id]);res.json(r2.rows[0]);}catch(e){res.status(400).json({error:e.message});}});
+  r.delete('/:id', auth, async(req,res)=>{
+    try{
+      await pool.query(`DELETE FROM ${tabla} WHERE ${pk}=$1`,[req.params.id]);
+      res.json({ok:true});
+    }catch(e){
+      if(e.code==='23503') return res.status(409).json({error:'No se puede eliminar: este registro esta en uso. Use Inactivar en su lugar.'});
+      res.status(400).json({error:e.message});
+    }
+  });
   return r;
 }
 
