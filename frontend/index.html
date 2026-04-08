@@ -894,6 +894,145 @@ function OCDocView(p){
 
 // ── OC FORM MODAL ──
 
+
+function OCRFactura(p){
+  const[file,setFile]=useState(null);
+  const[preview,setPreview]=useState(null);
+  const[loading,setLoading]=useState(false);
+  const[result,setResult]=useState(null);
+  const[rawText,setRawText]=useState('');
+
+  var provs=(p.m.provs||[]).filter(function(p2){return p2.activo;});
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var tdocs=(p.m.tdocs||[]);
+
+  function onFileChange(e){
+    var f=e.target.files[0];
+    if(!f)return;
+    setFile(f);setResult(null);setRawText('');
+    var reader=new FileReader();
+    reader.onload=function(ev){setPreview(ev.target.result);};
+    reader.readAsDataURL(f);
+  }
+
+  function extraer(){
+    if(!file){alert('Seleccione un archivo primero');return;}
+    setLoading(true);p.onMsg&&p.onMsg('Analizando documento...');
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      var b64=ev.target.result.split(',')[1];
+      var isImg=file.type.startsWith('image/');
+      var isPdf=file.type==='application/pdf';
+      var content=[{
+        type:isPdf?'document':'image',
+        source:{type:'base64',media_type:file.type,data:b64}
+      },{
+        type:'text',
+        text:'Analiza este documento (factura o guía de despacho chilena) y extrae los datos en formato JSON exacto con esta estructura:\n{\n  "numero_documento": "string o null",\n  "fecha_emision": "YYYY-MM-DD o null",\n  "tipo_doc": "FACTURA|GUIA|BOLETA|otro",\n  "proveedor_rut": "string sin puntos ni guión o null",\n  "proveedor_nombre": "string o null",\n  "cliente_rut": "string o null",\n  "cliente_nombre": "string o null",\n  "neto": número o null,\n  "iva": número o null,\n  "total": número o null,\n  "lineas": [\n    {"descripcion":"string","cantidad":número,"precio_unitario":número,"total_linea":número}\n  ]\n}\nResponde SOLO con el JSON, sin texto adicional ni markdown.'
+      }];
+      fetch('https://api.anthropic.com/v1/messages',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({
+          model:'claude-sonnet-4-20250514',
+          max_tokens:1000,
+          messages:[{role:'user',content:content}]
+        })
+      }).then(function(r){return r.json();})
+      .then(function(data){
+        var text=data.content&&data.content[0]&&data.content[0].text;
+        if(!text){setRawText('Sin respuesta');setLoading(false);p.onMsg&&p.onMsg('');return;}
+        setRawText(text);
+        try{
+          var clean=text.replace(/```json|```/g,'').trim();
+          var parsed=JSON.parse(clean);
+          setResult(parsed);
+          p.onMsg&&p.onMsg('Documento analizado. Confirme los datos.');
+        }catch(ex){
+          p.onMsg&&p.onMsg('Error al parsear respuesta. Use los datos manuales.');
+        }
+        setLoading(false);
+      })
+      .catch(function(ex){setLoading(false);p.onMsg&&p.onMsg('Error: '+ex.message);});
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function aplicar(){
+    if(!result)return;
+    // Match proveedor by RUT
+    var prov=result.proveedor_rut?provs.find(function(p2){
+      var r1=(p2.rut||'').replace(/[\.\-]/g,'').toLowerCase();
+      var r2=(result.proveedor_rut||'').replace(/[\.\-]/g,'').toLowerCase();
+      return r1&&r2&&r1===r2;
+    }):null;
+    // Match empresa by RUT
+    var emp=result.cliente_rut?empresas.find(function(e){
+      var r1=(e.rut||'').replace(/[\.\-]/g,'').toLowerCase();
+      var r2=(result.cliente_rut||'').replace(/[\.\-]/g,'').toLowerCase();
+      return r1&&r2&&r1===r2;
+    }):null;
+    // Match tdoc
+    var tdoc=result.tipo_doc?tdocs.find(function(t){
+      return result.tipo_doc.toUpperCase().includes(t.nombre?t.nombre.toUpperCase():'')
+        ||(t.codigo&&result.tipo_doc.toUpperCase().includes(t.codigo.toUpperCase()));
+    }):null;
+    // Build lineas for OC
+    var lineas=(result.lineas||[]).map(function(l,i){
+      return {descripcion:l.descripcion||'',prod_id:'',subcategoria_id:'',faena_id:'',equipo_id:'',
+        cantidad:l.cantidad||1,precio_unitario:l.precio_unitario||0,
+        ingresa_bodega:false,bodega_destino_id:''};
+    });
+    p.onImport({
+      proveedor_id:prov?prov.proveedor_id:null,
+      empresa_id:emp?emp.empresa_id:null,
+      fecha_emision:result.fecha_emision||null,
+      numero_documento:result.numero_documento||null,
+      tipo_doc_id:tdoc?tdoc.tipo_doc_id:null,
+      lineas:lineas.length?lineas:null,
+      _raw:result
+    });
+  }
+
+  var inpStyle={padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
+
+  return h('div',{style:{background:'#F0F9FF',border:'2px solid #BAE6FD',borderRadius:8,padding:'14px',marginBottom:12}},
+    h('div',{style:{fontWeight:600,fontSize:13,color:'#0369A1',marginBottom:10}},'📄 Importar datos desde factura o guía de despacho'),
+    h('div',{style:{display:'flex',gap:10,alignItems:'flex-start',flexWrap:'wrap'}},
+      h('div',{style:{flex:1,minWidth:200}},
+        h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:4,color:'#475569'}},'Seleccione archivo (PDF, JPG, PNG)'),
+        h('input',{type:'file',accept:'image/*,.pdf',onChange:onFileChange,style:{fontSize:11,width:'100%'}}),
+        file&&h('div',{style:{fontSize:10,color:'#64748B',marginTop:2}},file.name+' ('+Math.round(file.size/1024)+' KB)')
+      ),
+      h(Btn,{v:'teal',sm:true,onClick:extraer,disabled:!file||loading},loading?'Analizando...':'🔍 Extraer datos')
+    ),
+    // Preview extracted data
+    result&&h('div',{style:{marginTop:10}},
+      h('div',{style:{fontSize:11,fontWeight:600,color:'#0369A1',marginBottom:6}},'Datos extraídos — revise antes de aplicar:'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,fontSize:11,background:'#fff',borderRadius:5,padding:'8px 10px',border:'1px solid #BAE6FD'}},
+        h('div',null,h('span',{style:{color:'#64748B'}},'Proveedor: '),h('span',{style:{fontWeight:600}},result.proveedor_nombre||'—')),
+        h('div',null,h('span',{style:{color:'#64748B'}},'RUT prov.: '),h('span',{style:{fontWeight:600}},result.proveedor_rut||'—')),
+        h('div',null,h('span',{style:{color:'#64748B'}},'N° doc.: '),h('span',{style:{fontWeight:600}},result.numero_documento||'—')),
+        h('div',null,h('span',{style:{color:'#64748B'}},'Fecha: '),h('span',{style:{fontWeight:600}},result.fecha_emision||'—')),
+        h('div',null,h('span',{style:{color:'#64748B'}},'Total: '),h('span',{style:{fontWeight:600}},result.total?CLP(result.total):'—')),
+        h('div',null,h('span',{style:{color:'#64748B'}},'Líneas: '),h('span',{style:{fontWeight:600}},(result.lineas||[]).length))
+      ),
+      (result.lineas||[]).length>0&&h('div',{style:{marginTop:6,fontSize:10,color:'#475569'}},
+        h('div',{style:{fontWeight:600,marginBottom:3}},'Líneas detectadas:'),
+        (result.lineas||[]).slice(0,3).map(function(l,i){
+          return h('div',{key:i,style:{padding:'2px 0',borderBottom:'1px solid #E0F2FE'}},
+            (i+1)+'. '+l.descripcion+' — '+l.cantidad+' × '+CLP(l.precio_unitario||0));
+        }),
+        (result.lineas||[]).length>3&&h('div',{style:{color:'#64748B'}},'... y '+(result.lineas.length-3)+' más')
+      ),
+      h('div',{style:{marginTop:8,display:'flex',gap:6,alignItems:'center'}},
+        h(Btn,{v:'g',sm:true,onClick:aplicar},'✓ Aplicar al formulario'),
+        h('span',{style:{fontSize:10,color:'#64748B'}},'Los datos se pre-rellenarán. Puede editarlos antes de guardar.')
+      )
+    )
+  );
+}
+
 function CalcCombustibleInline(){
   var TASAS={diesel:1.5,gasolina:6.0};
   const[tipoComb,setTipoComb]=useState('diesel');
@@ -1010,7 +1149,7 @@ function OCFormModal(p){
   const isNew=!p.oc.oc_id;
   const blank={empresa_id:'',proveedor_id:'',fecha_emision:TODAY,solicitante:'',retira:'',condicion_id:'',impuesto_adicional:'0',observaciones:'',lineas:[{descripcion:'',prod_id:'',subcat_id:'',faena_id:'',eq_id:'',cantidad:'1',precio_unitario:'0',ingresa_bodega:false,bodega_destino_id:''}]};
   const[form,setForm]=useState(isNew?blank:{empresa_id:str(p.oc.empresa_id||''),proveedor_id:str(p.oc.proveedor_id||''),fecha_emision:p.oc.fecha_emision||TODAY,solicitante:p.oc.solicitante||'',retira:p.oc.retira||'',condicion_id:str(p.oc.condicion_id||''),impuesto_adicional:str(p.oc.impuesto_adicional||0),observaciones:p.oc.observaciones||'',lineas:(p.oc.lineas||[]).map(l=>({descripcion:l.descripcion||'',prod_id:str(l.producto_id||''),subcat_id:str(l.subcategoria_id||''),faena_id:str(l.faena_id||''),eq_id:str(l.equipo_id||''),cantidad:str(l.cantidad||1),precio_unitario:str(l.precio_unitario||0),ingresa_bodega:!!l.ingresa_bodega,bodega_destino_id:str(l.bodega_destino_id||'')}))});
-  const[err,setErr]=useState('');const[saving,setSaving]=useState(false);const[showCalcOC,setShowCalcOC]=useState(false);
+  const[err,setErr]=useState('');const[saving,setSaving]=useState(false);const[showCalcOC,setShowCalcOC]=useState(false);const[showOCR,setShowOCR]=useState(false);const[ocrLoading,setOcrLoading]=useState(false);const[ocrMsg,setOcrMsg]=useState('');
   // Safety: if form.lineas is empty but p.oc has lineas, reload them
   useEffect(function(){
     if(!isNew && p.oc.lineas && p.oc.lineas.length > 0 && form.lineas.length === 0){
@@ -1085,7 +1224,26 @@ function OCFormModal(p){
           h('div',{className:'total-row total-final'},h('span',null,'TOTAL:'),h('span',{className:'mono'},CLP(total)))
         )
       ),
-      h('div',{style:{display:'flex',justifyContent:'flex-end',marginBottom:8}},h(Btn,{v:'teal',sm:true,onClick:function(){setShowCalcOC(!showCalcOC);}},null,showCalcOC?'✕ Cerrar Calculadora':'🧮 Calc. Litro Neto')),
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+      h('div',{style:{display:'flex',gap:6}},
+        h(Btn,{v:'a',sm:true,onClick:function(){setShowOCR(!showOCR);}},null,showOCR?'✕ Cerrar':'📄 Importar desde factura'),
+        ocrMsg&&h('span',{style:{fontSize:11,color:ocrMsg.startsWith('Error')?'#EF4444':'#10B981'}},ocrMsg)
+      ),
+      h(Btn,{v:'teal',sm:true,onClick:function(){setShowCalcOC(!showCalcOC);}},null,showCalcOC?'✕ Cerrar Calculadora':'🧮 Calc. Litro Neto')
+    ),
+      showOCR&&h(OCRFactura,{tok:p.tok,m:p.m,onImport:function(data){
+          setForm(function(f){
+            var update={};
+            if(data.proveedor_id)update.proveedor_id=String(data.proveedor_id);
+            if(data.empresa_id)update.empresa_id=String(data.empresa_id);
+            if(data.fecha_emision)update.fecha_emision=data.fecha_emision;
+            if(data.numero_documento)update.numero_documento=data.numero_documento;
+            if(data.tipo_doc_id)update.tipo_doc_id=String(data.tipo_doc_id);
+            if(data.lineas&&data.lineas.length)update.lineas=data.lineas;
+            return Object.assign({},f,update);
+          });
+          setShowOCR(false);setOcrMsg('✓ Datos importados. Revise y confirme antes de guardar.');
+        },onMsg:function(m){setOcrMsg(m);}}),
       showCalcOC&&h('div',{style:{background:'#FFFBEB',border:'2px solid #FDE68A',borderRadius:8,padding:'16px',marginBottom:12}},
         h(CalcCombustibleInline,{})
       ),
