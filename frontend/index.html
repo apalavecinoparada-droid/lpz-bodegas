@@ -1445,37 +1445,205 @@ const IMPORT_CONFIGS={
 const COMB_COLORES={COMPRA_DIRECTA:'r',INGRESO_STOCK:'g',TRASPASO:'b',DISTRIBUCION:'p'};
 const COMB_LABELS={COMPRA_DIRECTA:'Compra Directa',INGRESO_STOCK:'Ingreso Stock',TRASPASO:'Traspaso',DISTRIBUCION:'Distribución'};
 
-function CombPanel(p){
-  const stock=p.m.combStock||[];
-  const[movs,setMovs]=useState([]);
-  useEffect(function(){
-    api('/comb/movimientos?','GET',null,p.tok).then(function(r){setMovs(Array.isArray(r)?r.slice(0,20):[]); }).catch(function(){});
-  },[p.tok]);
-  const totalLts=stock.reduce(function(s,r){return s+parseFloat(r.litros_disponibles||0);},0);
-  const totalVal=stock.reduce(function(s,r){return s+parseFloat(r.valor_total||0);},0);
-  return h('div',null,
-    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
-    h('h3',{style:{margin:0}},'Panel de Combustibles'),
-    h(Btn,{v:'a',sm:true,onClick:function(){
-      if(!window.confirm('Inicializar tablas de combustibles? Solo es necesario la primera vez.'))return;
-      api('/setup/comb','POST',{},p.tok)
-      .then(function(r){alert(r.msg||'Listo. Recargue la pagina.');})
-      .catch(function(ex){alert('Error: '+ex.message);});
-    }},'⚙ Inicializar tablas')
-  ),
-    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12,marginBottom:20}},
-      h('div',{className:'card',style:{textAlign:'center'}},h('div',{style:{fontSize:24,fontWeight:700,color:'#F59E0B'}},totalLts.toFixed(0)+' lts'),h('div',{style:{fontSize:12,color:'#64748B'}},'Stock total en estanques')),
-      h('div',{className:'card',style:{textAlign:'center'}},h('div',{style:{fontSize:24,fontWeight:700,color:'#10B981'}},CLP(Math.round(totalVal))),h('div',{style:{fontSize:12,color:'#64748B'}},'Valor stock combustible')),
-      h('div',{className:'card',style:{textAlign:'center'}},h('div',{style:{fontSize:24,fontWeight:700,color:'#6366F1'}},(p.m.combEstanques||[]).filter(function(e){return e.activo;}).length),h('div',{style:{fontSize:12,color:'#64748B'}},'Estanques activos'))
+function BarChart(p){
+  // Simple SVG bar chart
+  var data=p.data||[];var h=p.height||120;var w=p.width||'100%';
+  if(!data.length)return h('div',{style:{color:'#94A3B8',fontSize:12,textAlign:'center',padding:16}},'Sin datos');
+  var maxVal=Math.max.apply(null,data.map(function(d){return d.value||0;}));
+  if(!maxVal)return h('div',{style:{color:'#94A3B8',fontSize:12,textAlign:'center',padding:16}},'Sin datos');
+  var barW=Math.max(20,Math.min(60,Math.floor(300/data.length)));
+  var gap=4;
+  var totalW=data.length*(barW+gap);
+  return h('div',{style:{overflowX:'auto'}},
+    h('svg',{width:Math.max(totalW,200),height:h+30,style:{display:'block'}},
+      data.map(function(d,i){
+        var bh=Math.round(((d.value||0)/maxVal)*h);
+        var x=i*(barW+gap);
+        var y=h-bh;
+        var color=p.colors?p.colors[i%p.colors.length]:(d.color||'#3B82F6');
+        return h('g',{key:i},
+          h('rect',{x:x,y:y,width:barW,height:bh,fill:color,rx:3}),
+          h('text',{x:x+barW/2,y:h+12,textAnchor:'middle',fontSize:9,fill:'#64748B'},
+            (d.label||'').substring(0,8)+(d.label&&d.label.length>8?'..':'')),
+          bh>14&&h('text',{x:x+barW/2,y:y+11,textAnchor:'middle',fontSize:9,fill:'#fff',fontWeight:600},
+            d.value>999?(d.value/1000).toFixed(1)+'k':Math.round(d.value))
+        );
+      })
+    )
+  );
+}
+
+function DonutChart(p){
+  var data=(p.data||[]).filter(function(d){return d.value>0;});
+  if(!data.length)return h('div',{style:{color:'#94A3B8',fontSize:12,textAlign:'center',padding:16}},'Sin datos');
+  var total=data.reduce(function(s,d){return s+d.value;},0);
+  var cx=70,cy=70,r=55,ri=32;
+  var colors=['#3B82F6','#F59E0B','#10B981','#EF4444','#8B5CF6','#06B6D4','#F97316'];
+  var paths=[];var angle=-Math.PI/2;
+  data.forEach(function(d,i){
+    var sweep=(d.value/total)*Math.PI*2;
+    var x1=cx+r*Math.cos(angle),y1=cy+r*Math.sin(angle);
+    angle+=sweep;
+    var x2=cx+r*Math.cos(angle),y2=cy+r*Math.sin(angle);
+    var xi1=cx+ri*Math.cos(angle-sweep),yi1=cy+ri*Math.sin(angle-sweep);
+    var xi2=cx+ri*Math.cos(angle),yi2=cy+ri*Math.sin(angle);
+    var large=sweep>Math.PI?1:0;
+    paths.push({path:`M${x1},${y1} A${r},${r} 0 ${large},1 ${x2},${y2} L${xi2},${yi2} A${ri},${ri} 0 ${large},0 ${xi1},${yi1} Z`,color:colors[i%colors.length],label:d.label,pct:Math.round(d.value/total*100)});
+  });
+  return h('div',{style:{display:'flex',gap:10,alignItems:'center',flexWrap:'wrap'}},
+    h('svg',{width:140,height:140},
+      paths.map(function(p2,i){return h('path',{key:i,d:p2.path,fill:p2.color});}),
+      h('text',{x:cx,y:cy+5,textAnchor:'middle',fontSize:11,fontWeight:600,fill:'#1E293B'},total>999?(total/1000).toFixed(1)+'k':Math.round(total))
     ),
-    h('div',{className:'g2'},
+    h('div',{style:{fontSize:11}},
+      paths.map(function(p2,i){return h('div',{key:i,style:{display:'flex',alignItems:'center',gap:4,marginBottom:3}},
+        h('div',{style:{width:10,height:10,borderRadius:2,background:p2.color,flexShrink:0}}),
+        h('span',{style:{color:'#475569'}},p2.label+': '),
+        h('span',{style:{fontWeight:600}},p2.pct+'%')
+      );})
+    )
+  );
+}
+
+function CombPanel(p){
+  var TODAY=new Date().toISOString().split('T')[0];
+  var FIRST=new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().split('T')[0];
+  const[desde,setDesde]=useState(FIRST);
+  const[hasta,setHasta]=useState(TODAY);
+  const[filtEmp,setFiltEmp]=useState('');
+  const[stats,setStats]=useState(null);
+  const[loading,setLoading]=useState(false);
+  const empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+
+  function quickRange(tipo){
+    var now=new Date();
+    if(tipo==='mes'){setDesde(new Date(now.getFullYear(),now.getMonth(),1).toISOString().split('T')[0]);setHasta(TODAY);}
+    else if(tipo==='mes_ant'){var pm=new Date(now.getFullYear(),now.getMonth()-1,1);var ult=new Date(now.getFullYear(),now.getMonth(),0);setDesde(pm.toISOString().split('T')[0]);setHasta(ult.toISOString().split('T')[0]);}
+    else if(tipo==='30d'){var d30=new Date(now-30*86400000);setDesde(d30.toISOString().split('T')[0]);setHasta(TODAY);}
+    else if(tipo==='ano'){setDesde(now.getFullYear()+'-01-01');setHasta(TODAY);}
+  }
+
+  function load(){
+    setLoading(true);
+    var qs='?desde='+desde+'&hasta='+hasta+(filtEmp?'&empresa_id='+filtEmp:'');
+    api('/comb/panel-stats'+qs,'GET',null,p.tok)
+      .then(function(r){setStats(r);})
+      .catch(function(ex){alert('Error: '+ex.message);})
+      .finally(function(){setLoading(false);});
+  }
+  useEffect(load,[p.tok,desde,hasta,filtEmp]);
+
+  function exportStock(){
+    if(!stats||!stats.stock)return;
+    exportXLSX(stats.stock,[
+      {header:'Empresa',value:function(r){return r.empresa_nombre;}},
+      {header:'Estanque',value:function(r){return r.estanque_nombre;}},
+      {header:'Tipo',value:function(r){return r.tipo_nombre;}},
+      {header:'Litros',value:function(r){return r.litros_disponibles;}},
+      {header:'CPP',value:function(r){return r.costo_promedio;}},
+      {header:'Valor',value:function(r){return r.valor_total;}}
+    ],'stock_combustibles');
+  }
+
+  var totalLts=stats?(stats.stock||[]).reduce(function(s,r){return s+parseFloat(r.litros_disponibles||0);},0):0;
+  var totalVal=stats?(stats.stock||[]).reduce(function(s,r){return s+parseFloat(r.valor_total||0);},0):0;
+  var totalCompras=stats?(stats.comprasPorEmpresa||[]).reduce(function(s,r){return s+parseFloat(r.litros||0);},0):0;
+  var totalDist=stats?(stats.distPorEmpresa||[]).reduce(function(s,r){return s+parseFloat(r.litros||0);},0):0;
+
+  var btnFiltro={padding:'4px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,cursor:'pointer',background:'#F8FAFC'};
+
+  return h('div',null,
+    // Period filter bar
+    h('div',{className:'card',style:{marginBottom:12,padding:'10px 14px'}},
+      h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}},
+        h('span',{style:{fontSize:12,fontWeight:600,color:'#475569'}},'Período:'),
+        h('button',{style:btnFiltro,onClick:function(){quickRange('mes');}},'Mes actual'),
+        h('button',{style:btnFiltro,onClick:function(){quickRange('mes_ant');}},'Mes anterior'),
+        h('button',{style:btnFiltro,onClick:function(){quickRange('30d');}},'Últimos 30 días'),
+        h('button',{style:btnFiltro,onClick:function(){quickRange('ano');}},'Año actual'),
+        h('input',{type:'date',value:desde,onChange:function(e){setDesde(e.target.value);},style:{padding:'4px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12},title:'Desde'}),
+        h('span',{style:{fontSize:11,color:'#94A3B8'}},'→'),
+        h('input',{type:'date',value:hasta,onChange:function(e){setHasta(e.target.value);},style:{padding:'4px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12},title:'Hasta'}),
+        h('select',{value:filtEmp,onChange:function(e){setFiltEmp(e.target.value);},style:{padding:'4px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
+          h('option',{value:''},'Todas las empresas'),
+          empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})
+        ),
+        loading&&h('span',{style:{fontSize:11,color:'#64748B'}},'Calculando...')
+      )
+    ),
+    // KPI cards
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:14}},
+      h('div',{className:'card',style:{textAlign:'center'}},
+        h('div',{style:{fontSize:22,fontWeight:700,color:'#F59E0B'}},totalLts.toFixed(0)+' lts'),
+        h('div',{style:{fontSize:11,color:'#64748B'}},'Stock total actual')
+      ),
+      h('div',{className:'card',style:{textAlign:'center'}},
+        h('div',{style:{fontSize:22,fontWeight:700,color:'#10B981'}},CLP(Math.round(totalVal))),
+        h('div',{style:{fontSize:11,color:'#64748B'}},'Valor stock actual')
+      ),
+      h('div',{className:'card',style:{textAlign:'center'}},
+        h('div',{style:{fontSize:22,fontWeight:700,color:'#3B82F6'}},totalCompras.toFixed(0)+' lts'),
+        h('div',{style:{fontSize:11,color:'#64748B'}},'Comprados en período')
+      ),
+      h('div',{className:'card',style:{textAlign:'center'}},
+        h('div',{style:{fontSize:22,fontWeight:700,color:'#EF4444'}},totalDist.toFixed(0)+' lts'),
+        h('div',{style:{fontSize:11,color:'#64748B'}},'Distribuidos en período')
+      )
+    ),
+    // Stock por estanque + donut
+    h('div',{className:'g2',style:{marginBottom:12}},
       h('div',{className:'card'},
-        h('h4',{style:{marginBottom:8,fontSize:13}},'Stock por estanque'),
-        h(TBL,{cols:[{lbl:'Estanque',k:'estanque_nombre'},{lbl:'Empresa',render:function(r){return r.empresa_nombre||'—';}},{lbl:'Combustible',k:'tipo_nombre'},{lbl:'Litros',r:true,mono:true,render:function(r){return (parseFloat(r.litros_disponibles||0)).toFixed(1)+' lts';}},{lbl:'CPP',r:true,render:function(r){return CLP(Math.round(r.costo_promedio||0));}},{lbl:'Valor',r:true,mono:true,render:function(r){return CLP(Math.round(r.valor_total||0));}}],rows:stock,empty:'Sin stock registrado'})
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+          h('div',{style:{fontWeight:600,fontSize:13}},'Stock actual por estanque'),
+          h(Btn,{v:'teal',sm:true,onClick:exportStock},'⬇ Excel')
+        ),
+        stats&&stats.stock&&stats.stock.length>0?
+          h(TBL,{cols:[
+            {lbl:'Empresa',render:function(r){return h('span',{style:{fontSize:11}},r.empresa_nombre);}},
+            {lbl:'Estanque',k:'estanque_nombre'},
+            {lbl:'Combustible',k:'tipo_nombre'},
+            {lbl:'Litros',r:true,mono:true,render:function(r){return h('strong',null,parseFloat(r.litros_disponibles||0).toFixed(1));}},
+            {lbl:'CPP/lt',r:true,render:function(r){return CLP(Math.round(r.costo_promedio||0));}},
+            {lbl:'Valor',r:true,render:function(r){return CLP(Math.round(r.valor_total||0));}}
+          ],rows:stats.stock,empty:'Sin stock'})
+          :h('div',{style:{color:'#94A3B8',fontSize:12,textAlign:'center',padding:20}},'Sin stock en estanques')
       ),
       h('div',{className:'card'},
-        h('h4',{style:{marginBottom:8,fontSize:13}},'Últimos movimientos'),
-        h(TBL,{cols:[{lbl:'Fecha',k:'fecha'},{lbl:'Tipo',render:function(r){return h(Bg,{c:COMB_COLORES[r.tipo_mov]||'gray'},COMB_LABELS[r.tipo_mov]||r.tipo_mov);}},{lbl:'Combustible',k:'tipo_nombre'},{lbl:'Litros',r:true,mono:true,render:function(r){return (parseFloat(r.litros||0)).toFixed(1);}},{lbl:'Equipo/Estanque',render:function(r){return r.equipo_nombre||r.estanque_destino||r.estanque_origen||'—';}}],rows:movs,empty:'Sin movimientos'})
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Distribución stock por estanque'),
+        stats&&h(DonutChart,{data:(stats.stock||[]).map(function(r){return{label:r.estanque_nombre,value:parseFloat(r.litros_disponibles||0)};})}))
+    ),
+    // Compras vs distribuciones por empresa
+    h('div',{className:'g2',style:{marginBottom:12}},
+      h('div',{className:'card'},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Litros comprados por empresa (período)'),
+        stats&&h(BarChart,{data:(stats.comprasPorEmpresa||[]).map(function(r){return{label:r.empresa,value:parseFloat(r.litros||0)};}),colors:['#3B82F6','#0EA5E9','#6366F1']}),
+        stats&&(stats.comprasPorEmpresa||[]).length>0&&h('table',{style:{width:'100%',fontSize:11,marginTop:8,borderCollapse:'collapse'}},
+          h('thead',null,h('tr',null,h('th',{style:{textAlign:'left',padding:'3px 6px',background:'#F1F5F9'}},'Empresa'),h('th',{style:{textAlign:'right',padding:'3px 6px',background:'#F1F5F9'}},'Litros'),h('th',{style:{textAlign:'right',padding:'3px 6px',background:'#F1F5F9'}},'Monto'))),
+          h('tbody',null,(stats.comprasPorEmpresa||[]).map(function(r,i){return h('tr',{key:i,style:{borderBottom:'1px solid #F1F5F9'}},h('td',{style:{padding:'3px 6px'}},r.empresa),h('td',{style:{padding:'3px 6px',textAlign:'right',fontFamily:'monospace'}},parseFloat(r.litros||0).toFixed(1)),h('td',{style:{padding:'3px 6px',textAlign:'right'}},CLP(Math.round(r.monto||0))));}))
+        )
+      ),
+      h('div',{className:'card'},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Litros distribuidos por empresa (período)'),
+        stats&&h(BarChart,{data:(stats.distPorEmpresa||[]).map(function(r){return{label:r.empresa,value:parseFloat(r.litros||0)};}),colors:['#EF4444','#F97316','#F59E0B']}),
+        stats&&(stats.distPorEmpresa||[]).length>0&&h('table',{style:{width:'100%',fontSize:11,marginTop:8,borderCollapse:'collapse'}},
+          h('thead',null,h('tr',null,h('th',{style:{textAlign:'left',padding:'3px 6px',background:'#F1F5F9'}},'Empresa'),h('th',{style:{textAlign:'right',padding:'3px 6px',background:'#F1F5F9'}},'Litros'),h('th',{style:{textAlign:'right',padding:'3px 6px',background:'#F1F5F9'}},'Costo'))),
+          h('tbody',null,(stats.distPorEmpresa||[]).map(function(r,i){return h('tr',{key:i,style:{borderBottom:'1px solid #F1F5F9'}},h('td',{style:{padding:'3px 6px'}},r.empresa),h('td',{style:{padding:'3px 6px',textAlign:'right',fontFamily:'monospace'}},parseFloat(r.litros||0).toFixed(1)),h('td',{style:{padding:'3px 6px',textAlign:'right'}},CLP(Math.round(r.costo||0))));}))
+        )
+      )
+    ),
+    // Litros por faena
+    h('div',{className:'card'},
+      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Litros distribuidos por faena (período)'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}},
+        h('div',null,stats&&h(BarChart,{data:(stats.porFaena||[]).slice(0,8).map(function(r){return{label:r.faena,value:parseFloat(r.litros||0)};}),colors:['#10B981','#059669','#047857']})),
+        h('div',null,
+          stats&&(stats.porFaena||[]).length>0?
+            h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
+              h('thead',null,h('tr',null,h('th',{style:{textAlign:'left',padding:'3px 6px',background:'#F1F5F9'}},'Faena'),h('th',{style:{textAlign:'right',padding:'3px 6px',background:'#F1F5F9'}},'Litros'),h('th',{style:{textAlign:'right',padding:'3px 6px',background:'#F1F5F9'}},'Costo'))),
+              h('tbody',null,(stats.porFaena||[]).map(function(r,i){return h('tr',{key:i,style:{borderBottom:'1px solid #F1F5F9'}},h('td',{style:{padding:'3px 6px'}},r.faena),h('td',{style:{padding:'3px 6px',textAlign:'right',fontFamily:'monospace'}},parseFloat(r.litros||0).toFixed(1)),h('td',{style:{padding:'3px 6px',textAlign:'right'}},CLP(Math.round(r.costo||0))));}))
+            )
+            :h('div',{style:{color:'#94A3B8',fontSize:12,textAlign:'center',padding:20}},'Sin distribuciones en el período')
+        )
       )
     )
   );
@@ -1886,6 +2054,131 @@ function CombTiposAdmin(p){
   );
 }
 
+
+function CombKardex(p){
+  var TODAY=new Date().toISOString().split('T')[0];
+  var FIRST=new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().split('T')[0];
+  const[estanque,setEstanque]=useState('');
+  const[desde,setDesde]=useState(FIRST);
+  const[hasta,setHasta]=useState(TODAY);
+  const[rows,setRows]=useState([]);const[loading,setLoading]=useState(false);
+  const combEstanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
+
+  function load(){
+    if(!estanque){setRows([]);return;}
+    setLoading(true);
+    api('/comb/kardex-est?estanque_id='+estanque+'&desde='+desde+'&hasta='+hasta,'GET',null,p.tok)
+      .then(function(r){setRows(Array.isArray(r)?r:[]);})
+      .catch(function(ex){alert('Error: '+ex.message);})
+      .finally(function(){setLoading(false);});
+  }
+  useEffect(load,[estanque,desde,hasta,p.tok]);
+
+  function exportar(){
+    if(!rows.length){alert('Sin datos para exportar');return;}
+    var estNombre=(combEstanques.find(function(e){return String(e.estanque_id)===String(estanque);})||{}).nombre||'estanque';
+    exportXLSX(rows,[
+      {header:'Fecha',value:function(r){return r.fecha;}},
+      {header:'Tipo Movimiento',value:function(r){return r.tipo_mov;}},
+      {header:'Empresa',value:function(r){return r.empresa_nombre||'';}},
+      {header:'Estanque Origen',value:function(r){return r.estanque_origen||'';}},
+      {header:'Estanque Destino',value:function(r){return r.estanque_destino||'';}},
+      {header:'Equipo',value:function(r){return r.equipo_nombre||'';}},
+      {header:'Faena',value:function(r){return r.faena_nombre||'';}},
+      {header:'Combustible',value:function(r){return r.tipo_nombre||'';}},
+      {header:'Entrada (lts)',value:function(r){return r.entrada||'';}},
+      {header:'Salida (lts)',value:function(r){return r.salida||'';}},
+      {header:'Saldo (lts)',value:function(r){return r.saldo_acumulado;}},
+      {header:'CPP $/lt',value:function(r){return r.precio_unitario||'';}},
+      {header:'Valor $',value:function(r){return r.costo_total||'';}},
+      {header:'N° Documento',value:function(r){return r.numero_documento||'';}},
+      {header:'Ref OC',value:function(r){return r.oc_referencia||'';}},
+      {header:'Responsable',value:function(r){return r.responsable||'';}},
+      {header:'Observaciones',value:function(r){return r.observaciones||'';}},
+      {header:'Usuario',value:function(r){return r.usuario||'';}},
+    ],'kardex_'+estNombre);
+  }
+
+  var totalEntradas=rows.reduce(function(s,r){return s+parseFloat(r.entrada||0);},0);
+  var totalSalidas=rows.reduce(function(s,r){return s+parseFloat(r.salida||0);},0);
+  var saldoFinal=rows.length?rows[rows.length-1].saldo_acumulado:0;
+
+  var MOV_COLORS={INGRESO_STOCK:'g',DISTRIBUCION:'r',TRASPASO:'b',COMPRA_DIRECTA:'p'};
+  var MOV_LABELS={INGRESO_STOCK:'Ingreso',DISTRIBUCION:'Distribución',TRASPASO:'Traspaso',COMPRA_DIRECTA:'Compra Directa'};
+
+  return h('div',null,
+    // Filters
+    h('div',{className:'card',style:{marginBottom:12,padding:'10px 14px'}},
+      h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}},
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:2}},'Estanque *'),
+          h('select',{value:estanque,onChange:function(e){setEstanque(e.target.value);},
+            style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:180}},
+            h('option',{value:''},'Seleccione estanque...'),
+            combEstanques.map(function(e){return h('option',{key:e.estanque_id,value:e.estanque_id},e.nombre+(e.empresa_nombre?' ('+e.empresa_nombre+')':''));})
+          )
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:2}},'Desde'),
+          h('input',{type:'date',value:desde,onChange:function(e){setDesde(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}})
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:2}},'Hasta'),
+          h('input',{type:'date',value:hasta,onChange:function(e){setHasta(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}})
+        ),
+        rows.length>0&&h(Btn,{v:'teal',sm:true,onClick:exportar,style:{alignSelf:'flex-end'}},'⬇ Excel')
+      )
+    ),
+    !estanque&&h('div',{className:'al al-i'},'Seleccione un estanque para ver su kardex.'),
+    estanque&&loading&&h('div',{className:'spin'},'Cargando...'),
+    estanque&&!loading&&rows.length>0&&h('div',null,
+      // Summary cards
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,marginBottom:12}},
+        h('div',{className:'card',style:{textAlign:'center'}},h('div',{style:{fontSize:18,fontWeight:700,color:'#10B981'}},totalEntradas.toFixed(1)+' lts'),h('div',{style:{fontSize:11,color:'#64748B'}},'Total ingresos')),
+        h('div',{className:'card',style:{textAlign:'center'}},h('div',{style:{fontSize:18,fontWeight:700,color:'#EF4444'}},totalSalidas.toFixed(1)+' lts'),h('div',{style:{fontSize:11,color:'#64748B'}},'Total salidas')),
+        h('div',{className:'card',style:{textAlign:'center'}},h('div',{style:{fontSize:18,fontWeight:700,color:'#F59E0B'}},parseFloat(saldoFinal).toFixed(1)+' lts'),h('div',{style:{fontSize:11,color:'#64748B'}},'Saldo final'))
+      ),
+      // Table
+      h('div',{className:'card'},
+        h('div',{style:{overflowX:'auto'}},
+          h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse',minWidth:900}},
+            h('thead',null,h('tr',null,
+              ...[['Fecha',80],['Tipo',90],['Empresa',100],['Detalle',120],['Documento',80],['Entrada lts',70],['Salida lts',70],['Saldo lts',70],['CPP $/lt',70],['Valor $',80],['Usuario',80]]
+                .map(function(c){return h('th',{style:{padding:'6px 8px',background:'#F1F5F9',textAlign:c[0].includes('lts')||c[0].includes('$')?'right':'left',whiteSpace:'nowrap',fontSize:11}},c[0]);})
+            )),
+            h('tbody',null,rows.map(function(r,i){
+              var esIngreso=r.entrada>0;
+              var esSalida=r.salida>0;
+              return h('tr',{key:i,style:{borderBottom:'1px solid #F1F5F9',background:i%2?'#FAFAFA':'#fff'}},
+                h('td',{style:{padding:'4px 8px',whiteSpace:'nowrap'}},r.fecha),
+                h('td',{style:{padding:'4px 8px'}},h(Bg,{c:MOV_COLORS[r.tipo_mov]||'gray'},MOV_LABELS[r.tipo_mov]||r.tipo_mov)),
+                h('td',{style:{padding:'4px 8px',fontSize:10}},r.empresa_nombre||'—'),
+                h('td',{style:{padding:'4px 8px',fontSize:10}},r.equipo_nombre||r.estanque_origen||r.estanque_destino||r.proveedor_nombre||'—'),
+                h('td',{style:{padding:'4px 8px',fontFamily:'monospace',fontSize:10}},r.numero_documento||r.oc_referencia||'—'),
+                h('td',{style:{padding:'4px 8px',textAlign:'right',color:'#10B981',fontWeight:esIngreso?700:400}},esIngreso?'+'+parseFloat(r.entrada).toFixed(1):'—'),
+                h('td',{style:{padding:'4px 8px',textAlign:'right',color:'#EF4444',fontWeight:esSalida?700:400}},esSalida?'-'+parseFloat(r.salida).toFixed(1):'—'),
+                h('td',{style:{padding:'4px 8px',textAlign:'right',fontFamily:'monospace',fontWeight:600}},parseFloat(r.saldo_acumulado).toFixed(1)),
+                h('td',{style:{padding:'4px 8px',textAlign:'right'}},r.precio_unitario>0?CLP(Math.round(r.precio_unitario)):'—'),
+                h('td',{style:{padding:'4px 8px',textAlign:'right'}},r.costo_total>0?CLP(Math.round(r.costo_total)):'—'),
+                h('td',{style:{padding:'4px 8px',fontSize:10,color:'#64748B'}},r.usuario||'—')
+              );
+            })),
+            // Totals row
+            h('tfoot',null,h('tr',{style:{background:'#EFF6FF',fontWeight:700}},
+              h('td',{colSpan:5,style:{padding:'5px 8px',fontSize:11}},'TOTALES DEL PERÍODO'),
+              h('td',{style:{padding:'5px 8px',textAlign:'right',color:'#10B981'}},'+'+totalEntradas.toFixed(1)),
+              h('td',{style:{padding:'5px 8px',textAlign:'right',color:'#EF4444'}},'-'+totalSalidas.toFixed(1)),
+              h('td',{style:{padding:'5px 8px',textAlign:'right',color:'#F59E0B'}},parseFloat(saldoFinal).toFixed(1)),
+              h('td',{colSpan:3})
+            ))
+          )
+        )
+      )
+    ),
+    estanque&&!loading&&rows.length===0&&h('div',{className:'card',style:{textAlign:'center',padding:30,color:'#94A3B8'}},'Sin movimientos en el período seleccionado')
+  );
+}
+
 // ── APP ──
 const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Equipos',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios'};
 
@@ -1927,7 +2220,8 @@ function App(){
           navI('comb-ingresos','↓','Ingresos a Stock',true),
           navI('comb-traspasos','⇄','Traspasos Estanques',true),
           navI('comb-distribuciones','↑','Distribuciones',true),
-          navI('comb-reportes','◈','Reportes',true)
+          navI('comb-reportes','◈','Reportes',true),
+          navI('comb-kardex','≡','Kardex Estanque',true)
         ),
         h('div',{className:'sb-sep'}),
         grpHdr('inv','CONTROL DE INVENTARIO'),
@@ -1969,6 +2263,7 @@ function App(){
       h('div',{className:'content'},
         h(EB,null,
           view==='comb-tipos'&&h(CombTiposAdmin,{tok,m}),
+          view==='comb-kardex'&&h(CombKardex,{tok,m}),
           view==='comb-panel'&&h(CombPanel,{tok,m}),
           view==='comb-compras'&&h(CombComprasDirectas,{tok,m}),
           view==='comb-ingresos'&&h(CombIngresosStock,{tok,m}),
