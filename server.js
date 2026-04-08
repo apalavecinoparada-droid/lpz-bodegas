@@ -805,7 +805,7 @@ app.post('/api/usuarios', auth, async(req,res)=>{
 app.patch('/api/usuarios/:id/activo', auth, async(req,res)=>{try{res.json((await pool.query('UPDATE usuarios SET activo=NOT activo WHERE usuario_id=$1 RETURNING *',[req.params.id])).rows[0]);}catch(e){res.status(400).json({error:e.message});}});
 
 app.get('/api/ping', async(req,res)=>{try{await pool.query('SELECT 1');res.json({ok:true,version:'2.0',time:new Date().toISOString()});}catch(e){res.status(500).json({ok:false,error:e.message});}});
-app.get('*', (req,res)=>res.sendFile(path.join(__dirname,'frontend','index.html')));
+// catch-all moved to after API routes
 
 
 // ════════════════════════════════════════════════════
@@ -1106,6 +1106,9 @@ app.post('/api/setup/comb', auth, async(req,res)=>{
   else res.json({ok:true,msg:'Tablas de combustibles creadas correctamente'});
 });
 
+
+// SPA fallback — must be AFTER all API routes
+app.get('*', (req,res)=>res.sendFile(path.join(__dirname,'frontend','index.html')));
 
 app.listen(PORT,'0.0.0.0', async()=>{
   console.log('\n============================================================');
