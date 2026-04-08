@@ -1539,76 +1539,56 @@ function parsearFacturaChilena(txt){
 
   function cleanRut(r){return r?r.replace(/\s/g,'').toUpperCase():null;}
 
-  // Tipo documento
   const tipoDoc=/FACTURA/i.test(txt)?'FACTURA':/GU[IÍ]A/i.test(txt)?'GUIA':/BOLETA/i.test(txt)?'BOLETA':'FACTURA';
 
-  // Número documento — handle "N º", "Nº", "N°" with optional spaces
-  const ndoc=findFirst([
-    /N\s*[°º]\s*0*(\d{4,})/,
-    /Nº\s*0*(\d{4,})/,
-    /N[°º]\s*0*(\d{4,})/,
-    /NUMERO\s*:?\s*0*(\d{4,})/i,
-    /Número\s*:?\s*0*(\d{4,})/i
-  ]);
+  const ndoc=findFirst([/N\s*[°º]\s*0*(\d{4,})/,/Nº\s*0*(\d{4,})/,/NUMERO\s*:?\s*0*(\d{4,})/i]);
 
-  // Fecha
   let fecha=null;
   const fm=txt.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
   if(fm)fecha=`${fm[3]}-${fm[2].padStart(2,'0')}-${fm[1].padStart(2,'0')}`;
 
-  // RUTs
   const rutMatches=[...txt.matchAll(/(\d{1,2}\.?\d{3}\.?\d{3}-[\dkK])/g)];
   const provRut=rutMatches[0]?cleanRut(rutMatches[0][1]):null;
   const clienteRut=rutMatches[1]?cleanRut(rutMatches[1][1]):null;
 
-  // Proveedor nombre: primera línea larga con mayúsculas antes del primer RUT
+  // Proveedor: primera línea con mayúsculas que no sea dirección/giro/sigla
   let provNombre=null;
-  if(rutMatches[0]){
-    const primerRutPos=rutMatches[0].index;
-    const antesRut=txt.substring(0,primerRutPos).split('\n').map(l=>l.trim());
-    for(let i=antesRut.length-1;i>=0;i--){
-      const l=antesRut[i];
-      if(l.length>4&&!/^(RUT|R\.U\.T|DIREC|Direcc|Calle|colon|GIRO|Giro|SII|S\.I\.I)/i.test(l)){
-        provNombre=l;break;
-      }
+  const skipProv=/^(RUT|R\.U\.T|DIREC|Direcc|Calle|colon|GIRO|Giro|SII|S\.I\.I|SEGU|Segu|SERV|Serv|VENTAS|COME|FERR|INDU|www\.|http)/i;
+  for(const l of lineas){
+    if(l.length>4&&!skipProv.test(l)&&/[A-ZÁÉÍÓÚ]{3}/.test(l)){
+      provNombre=l;break;
     }
   }
-  if(!provNombre&&lineas.length>0)provNombre=lineas[0];
 
-  // Cliente nombre
-  const clienteNombre=findFirst([
-    /[Ss]e[ñn]or(?:es)?\s*:?\s*([A-ZÁÉÍÓÚÑ][^\n]{5,60})/,
-    /NOMBRE\s*:\s*([^\n]{5,60})/
-  ]);
+  const clienteNombre=findFirst([/[Ss]e[ñn]or(?:es)?\s*:?\s*([A-ZÁÉÍÓÚÑ][^\n]{5,60})/,/NOMBRE\s*:\s*([^\n]{5,60})/]);
+  const condPago=findFirst([/[Cc]ondici[oó]n(?:es)?\s*de\s*[Pp]ago\s*:?\s*([^\n]{2,30})/,/CTA\.?\s*CTE\.?\s*(\d+)/i]);
 
-  // Condiciones pago
-  const condPago=findFirst([
-    /[Cc]ondici[oó]n(?:es)?\s*de\s*[Pp]ago\s*:?\s*([^\n]{2,30})/,
-    /CTA\.?\s*CTE\.?\s*(\d+)/i
-  ]);
-
-  // Montos
   const neto=parseMonto(findFirst([/[Mm]onto\s*[Nn]eto\s*\$?\s*([\d.]+)/,/NETO\s*\$?\s*([\d.]+)/]));
   const iva=parseMonto(findFirst([/IVA\s*19%?\s*\$?\s*([\d.]+)/,/I\.?V\.?A\.?\s*\$?\s*([\d.]+)/]));
   const total=parseMonto(findFirst([/TOTAL\s*\$?\s*([\d.]+)/,/Total\s*\$?\s*([\d.]+)/]));
 
-  // LÍNEAS DE DETALLE — múltiples estrategias
+  // LÍNEAS — el pdf a veces pega el precio a la descripción sin espacio
+  // Limpiar línea: insertar espacio antes de dígito que sigue a letra (S1$11 → S 1 $11)
   const detalleLineas=[];
   const skipLine=/^(Glosa|DETALLE|Descripci|PRODUCTO|Cantidad|CANTIDAD|Precio|PRECIO|Monto|MONTO|TOTAL|Total|IVA|Neto|NETO|RUT|Fecha|Venc|Cond|Giro|GIRO|Señor|Direcc|Ciudad|Comuna|S\.I\.I|Timbre|Sistema|www\.|Afecto|Imp\.|Desc)/i;
 
-  // Estrategia A: línea con cantidad y dos montos (con o sin $, SI opcional)
-  // "DESCRIPCION N $PRECIO [SI] $TOTAL"
-  const reA=/^(.{4,70}?)\s+(\d{1,4})\s+\$?([\d.]{3,12})\s+(?:[A-Z]{2}\s+)?\$?([\d.]{3,12})$/;
+  // Normalizar: agregar espacio antes de dígito que sigue inmediatamente a letra mayúscula
+  // "MS S1$11.490" → "MS S 1 $11.490"
+  function normalizeLine(l){
+    return l
+      .replace(/([A-Za-záéíóú])(\d)/g,'$1 $2')  // letra+dígito → letra espacio dígito
+      .replace(/(\d)(\$)/g,'$1 $2')               // dígito+$ → dígito espacio $
+      .replace(/\s{2,}/g,' ');
+  }
 
-  // Estrategia B: buscar líneas con al menos dos montos al final
-  // Cualquier línea que termina en: "N $XXXX $XXXX" o "N XXXX XXXX"
+  const reA=/^(.{4,70}?)\s+(\d{1,4})\s+\$?([\d.]{3,12})\s+(?:[A-Z]{2}\s+)?\$?([\d.]{3,12})$/;
   const reB=/^(.+?)\s+(\d{1,4})\s+\$?([\d.]{4,12})\s+\$?([\d.]{4,12})$/;
 
   for(const l of lineas){
     if(l.length<8||l.length>150)continue;
     if(skipLine.test(l))continue;
-
-    const m=l.match(reA)||l.match(reB);
+    const ln=normalizeLine(l);
+    const m=ln.match(reA)||ln.match(reB);
     if(m){
       const desc=m[1].replace(/^\s+|\s+$/g,'');
       const qty=parseInt(m[2])||1;
@@ -1623,13 +1603,12 @@ function parsearFacturaChilena(txt){
     }
   }
 
-  // Si no se encontraron líneas, intentar estrategia por bloques
+  // Fallback: líneas con texto + monto al final
   if(detalleLineas.length===0){
-    // Buscar cualquier línea con texto + número al final
     const reC=/^(.{6,80})\s+\$?([\d.]{4,12})$/;
     for(const l of lineas){
       if(skipLine.test(l))continue;
-      const m=l.match(reC);
+      const m=normalizeLine(l).match(reC);
       if(m){
         const desc=m[1].trim();
         const tot=parseMonto(m[2]);
