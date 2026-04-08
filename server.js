@@ -50,7 +50,7 @@ async function autoSetup() {
 
   // Cada DDL corre de forma independiente — un fallo no afecta a los demas
   async function q(sql) {
-    try { await pool.query(sql); } catch(e) { /* ignore: IF NOT EXISTS handles duplicates */ }
+    try { await pool.query(sql); } catch(e) { console.error('[SETUP ERR]',sql.substring(0,60),'→',e.message.substring(0,100)); }
   }
 
   // ── Tablas base ──────────────────────────────────────────
@@ -820,6 +820,12 @@ app.get('/api/comb/tipos', auth, async(req,res)=>{
 app.post('/api/comb/tipos', auth, async(req,res)=>{
   try{const r=await pool.query('INSERT INTO comb_tipos(nombre) VALUES($1) RETURNING *',[req.body.nombre]);res.status(201).json(r.rows[0]);}
   catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/comb/tipos/:id', auth, async(req,res)=>{
+  try{
+    const r=await pool.query('UPDATE comb_tipos SET nombre=$1 WHERE tipo_id=$2 RETURNING *',[req.body.nombre,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
 });
 app.patch('/api/comb/tipos/:id/activo', auth, async(req,res)=>{
   try{res.json((await pool.query('UPDATE comb_tipos SET activo=NOT activo WHERE tipo_id=$1 RETURNING *',[req.params.id])).rows[0]);}
