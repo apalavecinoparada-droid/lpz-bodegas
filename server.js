@@ -859,13 +859,21 @@ app.patch('/api/comb/tipos/:id/activo', auth, async(req,res)=>{
 // Estanques
 app.get('/api/comb/estanques', auth, async(req,res)=>{
   try{
-    const r=await pool.query(`SELECT e.*,emp.razon_social AS empresa_nombre,ct.nombre AS tipo_comb_nombre,cs.litros_disponibles,cs.costo_promedio
-      FROM comb_estanques e
-      LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
-      LEFT JOIN comb_tipos ct ON e.tipo_combustible_id=ct.tipo_id
-      LEFT JOIN comb_stock cs ON cs.estanque_id=e.estanque_id AND cs.tipo_id=e.tipo_combustible_id
-      ORDER BY emp.razon_social NULLS LAST,e.nombre`);
-    res.json(r.rows);
+    // Try full query first; if comb_tipos/comb_stock don't exist yet, fallback to simple query
+    let rows;
+    try{
+      const r=await pool.query(`SELECT e.*,emp.razon_social AS empresa_nombre,ct.nombre AS tipo_comb_nombre,cs.litros_disponibles,cs.costo_promedio
+        FROM comb_estanques e
+        LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
+        LEFT JOIN comb_tipos ct ON e.tipo_combustible_id=ct.tipo_id
+        LEFT JOIN comb_stock cs ON cs.estanque_id=e.estanque_id AND cs.tipo_id=e.tipo_combustible_id
+        ORDER BY emp.razon_social NULLS LAST,e.nombre`);
+      rows=r.rows;
+    }catch(_){
+      const r2=await pool.query('SELECT e.*,emp.razon_social AS empresa_nombre FROM comb_estanques e LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id ORDER BY e.nombre');
+      rows=r2.rows;
+    }
+    res.json(rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.post('/api/comb/estanques', auth, async(req,res)=>{
