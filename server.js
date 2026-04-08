@@ -1720,15 +1720,30 @@ async function getFactoToken(){
   const secret=process.env.FACTO_CLIENT_SECRET||''; // Client Secret
   if(!apiKey||!secret) throw new Error('Credenciales Facto/Koywe no configuradas (FACTO_CLIENT_ID, FACTO_CLIENT_SECRET)');
 
-  const r=await fetch('https://api-billing.koywe.com/V1/authentication',{
-    method:'POST',
-    headers:{'Content-Type':'application/json','Accept':'application/json'},
-    body:JSON.stringify({apiKey,secret})
-  });
-  const text=await r.text();
-  let d;try{d=JSON.parse(text);}catch(e){d={raw:text};}
-  console.log('[Facto/Koywe auth] HTTP',r.status,'→',text.substring(0,200));
-  if(!r.ok||!d.token) throw new Error(`Auth Koywe HTTP ${r.status}: ${d.message||d.error||text.substring(0,100)}`);
+  // Try multiple auth endpoints
+  const authUrls=[
+    'https://api-billing.koywe.com/V1/authentication',
+    'https://api-billing.koywe.com/V1/auth',
+    'https://api-billing.koywe.com/V1/auth/login',
+    'https://api-billing.koywe.com/V1/auth/sign-in',
+    'https://api-billing.koywe.com/V1/login',
+  ];
+  let d=null,lastStatus=0,lastText='';
+  for(const authUrl of authUrls){
+    const r2=await fetch(authUrl,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({apiKey,secret})});
+    const text2=await r2.text();
+    console.log('[Facto auth try]',authUrl,'→ HTTP',r2.status,text2.substring(0,150));
+    try{d=JSON.parse(text2);}catch(e){d={raw:text2};}
+    lastStatus=r2.status;lastText=text2;
+    if(r2.ok&&d&&d.token){
+      factoToken=d.token;
+      factoTokenExp=Date.now()+(23*3600*1000);
+      console.log('[Facto] auth OK via',authUrl);
+      return factoToken;
+    }
+    if(r2.status!==404) break; // non-404 error = found endpoint, wrong credentials
+  }
+  if(!d||!d.token) throw new Error(`Auth Koywe HTTP ${lastStatus}: ${(d&&(d.message||d.error))||lastText.substring(0,100)}`);
   factoToken=d.token;
   factoTokenExp=Date.now()+(23*3600*1000); // JWT dura 24h, renovar a las 23h
   return factoToken;
