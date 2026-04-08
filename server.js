@@ -880,6 +880,17 @@ app.put('/api/comb/estanques/:id', auth, async(req,res)=>{
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
+app.delete('/api/comb/estanques/:id', auth, async(req,res)=>{
+  try{
+    // Check if estanque has stock
+    const stk=await pool.query('SELECT litros_disponibles FROM comb_stock WHERE estanque_id=$1',[req.params.id]);
+    if(stk.rows.some(r=>parseFloat(r.litros_disponibles)>0))
+      return res.status(409).json({error:'No se puede eliminar: el estanque tiene stock. Primero distribuya o traslade el combustible.'});
+    await pool.query('DELETE FROM comb_stock WHERE estanque_id=$1',[req.params.id]);
+    await pool.query('DELETE FROM comb_estanques WHERE estanque_id=$1',[req.params.id]);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
 app.patch('/api/comb/estanques/:id/activo', auth, async(req,res)=>{
   try{res.json((await pool.query('UPDATE comb_estanques SET activo=NOT activo WHERE estanque_id=$1 RETURNING *',[req.params.id])).rows[0]);}
   catch(e){res.status(400).json({error:e.message});}
