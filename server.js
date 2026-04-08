@@ -1707,89 +1707,100 @@ function parsearDteXml(xmlStr){
 
 
 // ══════════════════════════════════════════════════════
-// INTEGRACIÓN FACTO — DTE RECIBIDOS
+// INTEGRACIÓN FACTO/KOYWE — DTE RECIBIDOS
+// Base URL: https://api-billing.koywe.com
+// Auth: POST /V1/authentication  {apiKey, secret}
 // ══════════════════════════════════════════════════════
 
-// Cache simple del token Facto (se renueva automáticamente)
 let factoToken=null, factoTokenExp=0;
 
 async function getFactoToken(){
   if(factoToken&&Date.now()<factoTokenExp) return factoToken;
-  const user=process.env.FACTO_USER||'';
-  const pass=process.env.FACTO_PASS||'';
-  const clientId=process.env.FACTO_CLIENT_ID||'';
-  const clientSecret=process.env.FACTO_CLIENT_SECRET||'';
-  const creds={grant_type:'password',username:user,password:pass,client_id:clientId,client_secret:clientSecret};
-  const params=new URLSearchParams(creds).toString();
-  // Try multiple known Facto token endpoints
-  const tokenUrls=[
-    'https://api.facto.cl/oauth/token',
-    'https://api.facto.cl/v1/oauth/token',
-    'https://api.facto.cl/auth/token',
-    'https://api.facto.cl/token',
-    'https://api.facto.cl/cl/oauth/token',
-  ];
-  let lastErr='';
-  for(const url of tokenUrls){
-    try{
-      const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:params});
-      const text=await r.text();
-      let d;try{d=JSON.parse(text);}catch(e){d={raw:text};}
-      console.log('[Facto token attempt]',url,'→ HTTP',r.status,'body:',text.substring(0,200));
-      if(r.ok&&d.access_token){
-        factoToken=d.access_token;
-        factoTokenExp=Date.now()+(((d.expires_in||3600)-60)*1000);
-        console.log('[Facto] token OK from',url);
-        return factoToken;
-      }
-      lastErr=`HTTP ${r.status} ${url}: ${d.error_description||d.message||d.error||text.substring(0,100)}`;
-    }catch(e){lastErr=url+': '+e.message;}
-  }
-  throw new Error('Facto auth failed. Último error: '+lastErr);
+  const apiKey=process.env.FACTO_CLIENT_ID||'';     // Client Identification
+  const secret=process.env.FACTO_CLIENT_SECRET||''; // Client Secret
+  if(!apiKey||!secret) throw new Error('Credenciales Facto/Koywe no configuradas (FACTO_CLIENT_ID, FACTO_CLIENT_SECRET)');
+
+  const r=await fetch('https://api-billing.koywe.com/V1/authentication',{
+    method:'POST',
+    headers:{'Content-Type':'application/json','Accept':'application/json'},
+    body:JSON.stringify({apiKey,secret})
+  });
+  const text=await r.text();
+  let d;try{d=JSON.parse(text);}catch(e){d={raw:text};}
+  console.log('[Facto/Koywe auth] HTTP',r.status,'→',text.substring(0,200));
+  if(!r.ok||!d.token) throw new Error(`Auth Koywe HTTP ${r.status}: ${d.message||d.error||text.substring(0,100)}`);
+  factoToken=d.token;
+  factoTokenExp=Date.now()+(23*3600*1000); // JWT dura 24h, renovar a las 23h
+  return factoToken;
 }
 
-// Listar DTE recibidos
+// Listar DTE recibidos (inbox)
 app.get('/api/facto/dte-recibidos', auth, async(req,res)=>{
   try{
-    if(!process.env.FACTO_USER) return res.status(400).json({error:'Credenciales Facto no configuradas en el servidor'});
+    if(!process.env.FACTO_CLIENT_ID) return res.status(400).json({error:'Credenciales Facto no configuradas'});
     const{desde,hasta,tipo}=req.query;
     const token=await getFactoToken();
-    // Try common Facto API patterns
-    let url='https://api.facto.cl/api/v1/dte/recibidos?';
-    const params=[];
-    if(desde) params.push('fecha_desde='+desde);
-    if(hasta) params.push('fecha_hasta='+hasta);
-    if(tipo) params.push('tipo_dte='+tipo);
-    params.push('per_page=50');
+    // Koywe Billing: inbox = documentos recibidos
+    let url='https://api-billing.koywe.com/V1/inbox?';
+    const params=['per_page=50','page=1'];
+    if(desde) params.push('created_at_start='+desde);
+    if(hasta) params.push('created_at_end='+hasta);
     url+=params.join('&');
     const r=await fetch(url,{headers:{'Authorization':'Bearer '+token,'Accept':'application/json'}});
-    const d=await r.json();
-    if(!r.ok) return res.status(r.status).json({error:d.message||d.error||'Error consultando Facto',detail:d});
+    const text=await r.text();
+    let d;try{d=JSON.parse(text);}catch(e){d={raw:text};}
+    console.log('[Facto inbox] HTTP',r.status,'→',text.substring(0,300));
+    if(!r.ok) return res.status(r.status).json({error:`HTTP ${r.status}: ${d.message||d.error||text.substring(0,100)}`,detail:d});
     res.json(d);
   }catch(e){res.status(500).json({error:e.message});}
 });
 
-// Descargar XML de un DTE
+// Descargar XML de un DTE recibido
 app.get('/api/facto/dte/:id/xml', auth, async(req,res)=>{
   try{
-    if(!process.env.FACTO_USER) return res.status(400).json({error:'Credenciales Facto no configuradas'});
+    if(!process.env.FACTO_CLIENT_ID) return res.status(400).json({error:'Credenciales no configuradas'});
     const token=await getFactoToken();
-    const url='https://api.facto.cl/api/v1/dte/'+req.params.id+'/xml';
-    const r=await fetch(url,{headers:{'Authorization':'Bearer '+token,'Accept':'application/xml,text/xml,*/*'}});
-    if(!r.ok){const d=await r.json().catch(()=>({}));return res.status(r.status).json({error:d.message||'Error descargando XML'});}
-    const xml=await r.text();
-    // Parse and return structured data
-    const data=parsearDteXml(xml);
-    res.json({ok:true,data,raw_xml:xml});
+    // Get the specific inbox document with its XML
+    const url='https://api-billing.koywe.com/V1/inbox/'+req.params.id;
+    const r=await fetch(url,{headers:{'Authorization':'Bearer '+token,'Accept':'application/json'}});
+    const d=await r.json();
+    if(!r.ok) return res.status(r.status).json({error:d.message||'Error descargando DTE'});
+    // Try to extract XML from the document
+    const xmlContent=d.xml||d.electronic_document||d.xml_content||null;
+    if(xmlContent){
+      const data=parsearDteXml(xmlContent);
+      return res.json({ok:true,data,raw_xml:xmlContent});
+    }
+    // If no XML, build from document data
+    const data={
+      numero_documento:d.folio||d.document_number||d.number||null,
+      fecha_emision:d.issue_date||d.created_at||null,
+      tipo_doc:d.document_type_id==='33'?'FACTURA':d.document_type_id==='52'?'GUIA':'FACTURA',
+      proveedor_rut:d.issuer?.tax_id||d.issuer_tax_id||null,
+      proveedor_nombre:d.issuer?.name||d.issuer_name||null,
+      cliente_rut:d.receiver?.tax_id||d.receiver_tax_id||null,
+      cliente_nombre:d.receiver?.name||d.receiver_name||null,
+      neto:d.net_amount||d.totals?.net||null,
+      iva:d.tax_amount||d.totals?.tax||null,
+      total:d.total_amount||d.totals?.total||null,
+      condiciones_pago:null,
+      lineas:(d.items||d.details||[]).map(function(item){
+        return{descripcion:item.name||item.description||item.detail||'',
+          cantidad:parseFloat(item.quantity||1),
+          precio_unitario:parseFloat(item.unit_price||item.price||0),
+          total_linea:parseFloat(item.total||item.amount||0)};
+      })
+    };
+    res.json({ok:true,data,raw:d});
   }catch(e){res.status(500).json({error:e.message});}
 });
 
-// Test conexión Facto
+// Test conexión
 app.get('/api/facto/test', auth, async(req,res)=>{
   try{
-    if(!process.env.FACTO_USER) return res.json({ok:false,msg:'Variables de entorno no configuradas'});
+    if(!process.env.FACTO_CLIENT_ID) return res.json({ok:false,msg:'Variables FACTO_CLIENT_ID y FACTO_CLIENT_SECRET no configuradas'});
     const token=await getFactoToken();
-    res.json({ok:true,msg:'Conexión exitosa con Facto',token_preview:token.substring(0,20)+'...'});
+    res.json({ok:true,msg:'Conexión Koywe Billing exitosa',token_preview:token.substring(0,20)+'...'});
   }catch(e){res.json({ok:false,msg:e.message});}
 });
 
