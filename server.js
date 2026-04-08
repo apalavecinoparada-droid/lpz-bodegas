@@ -80,7 +80,10 @@ async function autoSetup() {
   await q(`CREATE TABLE IF NOT EXISTS comb_traspasos (traspaso_id SERIAL PRIMARY KEY, empresa_id INT NOT NULL REFERENCES empresas(empresa_id), fecha DATE NOT NULL, estanque_origen_id INT NOT NULL REFERENCES comb_estanques(estanque_id), estanque_destino_id INT NOT NULL REFERENCES comb_estanques(estanque_id), tipo_combustible_id INT NOT NULL REFERENCES comb_tipos(tipo_id), cantidad NUMERIC(12,4) NOT NULL, observaciones TEXT, estado VARCHAR(20) DEFAULT 'ACTIVO', usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100), motivo_anulacion TEXT)`);
   await q(`CREATE TABLE IF NOT EXISTS comb_distribuciones (dist_id SERIAL PRIMARY KEY, empresa_id INT NOT NULL REFERENCES empresas(empresa_id), fecha DATE NOT NULL, faena_id INT REFERENCES faenas(faena_id), estanque_id INT NOT NULL REFERENCES comb_estanques(estanque_id), tipo_combustible_id INT NOT NULL REFERENCES comb_tipos(tipo_id), equipo_id INT NOT NULL REFERENCES equipos(equipo_id), cantidad NUMERIC(12,4) NOT NULL, costo_unitario NUMERIC(14,4) DEFAULT 0, costo_total NUMERIC(14,2) DEFAULT 0, horometro NUMERIC(12,2), kilometraje NUMERIC(12,2), responsable VARCHAR(100), observaciones TEXT, estado VARCHAR(20) DEFAULT 'ACTIVO', usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100), motivo_anulacion TEXT)`);
   // Seed tipos de combustible
-  await q(`INSERT INTO comb_tipos(nombre) VALUES('Diesel'),('Gasolina 93'),('Gasolina 95'),('Gasolina 97') ON CONFLICT(nombre) DO NOTHING`);
+  // Seed comb tipos (one by one to avoid constraint naming issues)
+  for(const t of ['Diesel','Gasolina 93','Gasolina 95','Gasolina 97']){
+    await q(`INSERT INTO comb_tipos(nombre) SELECT '${t}' WHERE NOT EXISTS(SELECT 1 FROM comb_tipos WHERE nombre='${t}')`);
+  }
   // Control de Combustibles (v2.4)
   await q(`CREATE TABLE IF NOT EXISTS comb_tipos (tipo_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, activo BOOLEAN DEFAULT true)`);
   await q(`CREATE TABLE IF NOT EXISTS comb_estanques (estanque_id SERIAL PRIMARY KEY, empresa_id INT NOT NULL REFERENCES empresas(empresa_id), codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo_estanque VARCHAR(30) NOT NULL DEFAULT 'FIJO', ubicacion VARCHAR(150), capacidad_max NUMERIC(10,2), tipo_combustible_id INT REFERENCES comb_tipos(tipo_id), observaciones TEXT, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
@@ -102,7 +105,10 @@ async function autoSetup() {
   await q(`CREATE TABLE IF NOT EXISTS comb_traspasos (traspaso_id SERIAL PRIMARY KEY, empresa_id INT NOT NULL REFERENCES empresas(empresa_id), fecha DATE NOT NULL, estanque_origen_id INT NOT NULL REFERENCES comb_estanques(estanque_id), estanque_destino_id INT NOT NULL REFERENCES comb_estanques(estanque_id), tipo_combustible_id INT NOT NULL REFERENCES comb_tipos(tipo_id), cantidad NUMERIC(12,4) NOT NULL, observaciones TEXT, estado VARCHAR(20) DEFAULT 'ACTIVO', usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100), motivo_anulacion TEXT)`);
   await q(`CREATE TABLE IF NOT EXISTS comb_distribuciones (dist_id SERIAL PRIMARY KEY, empresa_id INT NOT NULL REFERENCES empresas(empresa_id), fecha DATE NOT NULL, faena_id INT REFERENCES faenas(faena_id), estanque_id INT NOT NULL REFERENCES comb_estanques(estanque_id), tipo_combustible_id INT NOT NULL REFERENCES comb_tipos(tipo_id), equipo_id INT NOT NULL REFERENCES equipos(equipo_id), cantidad NUMERIC(12,4) NOT NULL, costo_unitario NUMERIC(14,4) DEFAULT 0, costo_total NUMERIC(14,2) DEFAULT 0, horometro NUMERIC(12,2), kilometraje NUMERIC(12,2), responsable VARCHAR(100), observaciones TEXT, estado VARCHAR(20) DEFAULT 'ACTIVO', usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100), motivo_anulacion TEXT)`);
   // Seed tipos de combustible
-  await q(`INSERT INTO comb_tipos(nombre) VALUES('Diesel'),('Gasolina 93'),('Gasolina 95'),('Gasolina 97') ON CONFLICT(nombre) DO NOTHING`);
+  // Seed comb tipos (one by one to avoid constraint naming issues)
+  for(const t of ['Diesel','Gasolina 93','Gasolina 95','Gasolina 97']){
+    await q(`INSERT INTO comb_tipos(nombre) SELECT '${t}' WHERE NOT EXISTS(SELECT 1 FROM comb_tipos WHERE nombre='${t}')`);
+  }
   // Faenas por empresa (v2.1)
   await q(`ALTER TABLE faenas ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)`);
   // Logo empresa (v2.1)
@@ -865,16 +871,22 @@ app.get('/api/comb/estanques', auth, async(req,res)=>{
 app.post('/api/comb/estanques', auth, async(req,res)=>{
   try{
     const{empresa_id,codigo,nombre,tipo_estanque,ubicacion,capacidad_max,tipo_combustible_id,observaciones}=req.body;
+    const empId=parseInt(empresa_id);
+    if(!empId) return res.status(400).json({error:'Debe seleccionar una empresa'});
+    if(!codigo) return res.status(400).json({error:'El codigo es obligatorio'});
+    if(!nombre) return res.status(400).json({error:'El nombre es obligatorio'});
     const r=await pool.query('INSERT INTO comb_estanques(empresa_id,codigo,nombre,tipo_estanque,ubicacion,capacidad_max,tipo_combustible_id,observaciones) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
-      [empresa_id,codigo,nombre,tipo_estanque||'FIJO',ubicacion||null,capacidad_max||null,tipo_combustible_id||null,observaciones||null]);
+      [empId,codigo.trim(),nombre.trim(),tipo_estanque||'FIJO',ubicacion||null,capacidad_max?parseFloat(capacidad_max):null,tipo_combustible_id?parseInt(tipo_combustible_id):null,observaciones||null]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.put('/api/comb/estanques/:id', auth, async(req,res)=>{
   try{
     const{empresa_id,codigo,nombre,tipo_estanque,ubicacion,capacidad_max,tipo_combustible_id,observaciones}=req.body;
+    const empId=parseInt(empresa_id);
+    if(!empId) return res.status(400).json({error:'Debe seleccionar una empresa'});
     const r=await pool.query('UPDATE comb_estanques SET empresa_id=$1,codigo=$2,nombre=$3,tipo_estanque=$4,ubicacion=$5,capacidad_max=$6,tipo_combustible_id=$7,observaciones=$8 WHERE estanque_id=$9 RETURNING *',
-      [empresa_id,codigo,nombre,tipo_estanque||'FIJO',ubicacion||null,capacidad_max||null,tipo_combustible_id||null,observaciones||null,req.params.id]);
+      [empId,codigo.trim(),nombre.trim(),tipo_estanque||'FIJO',ubicacion||null,capacidad_max?parseFloat(capacidad_max):null,tipo_combustible_id?parseInt(tipo_combustible_id):null,observaciones||null,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
