@@ -1130,6 +1130,141 @@ app.post('/api/setup/comb', auth, async(req,res)=>{
 });
 
 
+
+// ══════════════════════════════════════════════════════
+// PANEL DE COMBUSTIBLES — ESTADÍSTICAS POR PERÍODO
+// ══════════════════════════════════════════════════════
+app.get('/api/comb/panel-stats', auth, async(req,res)=>{
+  try{
+    const{desde,hasta,empresa_id}=req.query;
+    const d=desde||new Date(new Date().getFullYear(),new Date().getMonth(),1).toISOString().split('T')[0];
+    const h=hasta||new Date().toISOString().split('T')[0];
+    let eWhere='',eVals=[d,h];
+    if(empresa_id){eVals.push(empresa_id);eWhere=` AND m.empresa_id=$${eVals.length}`;}
+
+    // Stock actual por estanque (no filtra por fecha — es estado actual)
+    const stockQ=await pool.query(`
+      SELECT cs.estanque_id,e.nombre AS estanque_nombre,e.tipo_estanque,e.codigo,
+        emp.razon_social AS empresa_nombre,ct.nombre AS tipo_nombre,
+        cs.litros_disponibles,cs.costo_promedio,
+        ROUND(cs.litros_disponibles*cs.costo_promedio,0) AS valor_total
+      FROM comb_stock cs
+      JOIN comb_estanques e ON cs.estanque_id=e.estanque_id
+      JOIN empresas emp ON e.empresa_id=emp.empresa_id
+      JOIN comb_tipos ct ON cs.tipo_id=ct.tipo_id
+      WHERE cs.litros_disponibles>0
+      ORDER BY emp.razon_social,e.nombre`);
+
+    // Compras del período (INGRESO_STOCK)
+    const comprasQ=await pool.query(`
+      SELECT emp.razon_social AS empresa,ct.nombre AS tipo,
+        SUM(m.litros) AS litros,SUM(m.costo_total) AS monto
+      FROM comb_movimientos m
+      LEFT JOIN empresas emp ON m.empresa_id=emp.empresa_id
+      LEFT JOIN comb_tipos ct ON m.tipo_id=ct.tipo_id
+      WHERE m.tipo_mov='INGRESO_STOCK' AND m.estado='ACTIVO'
+        AND m.fecha>=$1 AND m.fecha<=$2${empresa_id?` AND m.empresa_id=$${eVals.length}`:''}
+      GROUP BY emp.razon_social,ct.nombre ORDER BY litros DESC`,eVals);
+
+    // Distribuciones del período
+    const distQ=await pool.query(`
+      SELECT emp.razon_social AS empresa,ct.nombre AS tipo,
+        f.nombre AS faena,eq.nombre AS equipo,
+        SUM(m.litros) AS litros,SUM(m.costo_total) AS costo
+      FROM comb_movimientos m
+      LEFT JOIN empresas emp ON m.empresa_id=emp.empresa_id
+      LEFT JOIN comb_tipos ct ON m.tipo_id=ct.tipo_id
+      LEFT JOIN faenas f ON m.faena_id=f.faena_id
+      LEFT JOIN equipos eq ON m.equipo_id=eq.equipo_id
+      WHERE m.tipo_mov='DISTRIBUCION' AND m.estado='ACTIVO'
+        AND m.fecha>=$1 AND m.fecha<=$2${empresa_id?` AND m.empresa_id=$${eVals.length}`:''}
+      GROUP BY emp.razon_social,ct.nombre,f.nombre,eq.nombre ORDER BY litros DESC`,eVals);
+
+    // Distribuciones por faena
+    const faenaQ=await pool.query(`
+      SELECT COALESCE(f.nombre,'Sin faena') AS faena,
+        SUM(m.litros) AS litros,SUM(m.costo_total) AS costo
+      FROM comb_movimientos m
+      LEFT JOIN faenas f ON m.faena_id=f.faena_id
+      WHERE m.tipo_mov='DISTRIBUCION' AND m.estado='ACTIVO'
+        AND m.fecha>=$1 AND m.fecha<=$2${empresa_id?` AND m.empresa_id=$${eVals.length}`:''}
+      GROUP BY f.nombre ORDER BY litros DESC`,eVals);
+
+    // Compras por empresa
+    const compEmpQ=await pool.query(`
+      SELECT COALESCE(emp.razon_social,'Sin empresa') AS empresa,
+        SUM(m.litros) AS litros,SUM(m.costo_total) AS monto
+      FROM comb_movimientos m
+      LEFT JOIN empresas emp ON m.empresa_id=emp.empresa_id
+      WHERE m.tipo_mov='INGRESO_STOCK' AND m.estado='ACTIVO'
+        AND m.fecha>=$1 AND m.fecha<=$2${empresa_id?` AND m.empresa_id=$${eVals.length}`:''}
+      GROUP BY emp.razon_social ORDER BY litros DESC`,eVals);
+
+    // Distribuciones por empresa
+    const distEmpQ=await pool.query(`
+      SELECT COALESCE(emp.razon_social,'Sin empresa') AS empresa,
+        SUM(m.litros) AS litros,SUM(m.costo_total) AS costo
+      FROM comb_movimientos m
+      LEFT JOIN empresas emp ON m.empresa_id=emp.empresa_id
+      WHERE m.tipo_mov='DISTRIBUCION' AND m.estado='ACTIVO'
+        AND m.fecha>=$1 AND m.fecha<=$2${empresa_id?` AND m.empresa_id=$${eVals.length}`:''}
+      GROUP BY emp.razon_social ORDER BY litros DESC`,eVals);
+
+    res.json({
+      periodo:{desde:d,hasta:h},
+      stock:stockQ.rows,
+      compras:comprasQ.rows,
+      distribuciones:distQ.rows,
+      porFaena:faenaQ.rows,
+      comprasPorEmpresa:compEmpQ.rows,
+      distPorEmpresa:distEmpQ.rows
+    });
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// KARDEX POR ESTANQUE
+app.get('/api/comb/kardex-est', auth, async(req,res)=>{
+  try{
+    const{estanque_id,empresa_id,tipo_id,desde,hasta}=req.query;
+    if(!estanque_id) return res.status(400).json({error:'Debe indicar estanque_id'});
+    let where=["m.estado='ACTIVO'","(m.estanque_origen_id=$1 OR m.estanque_destino_id=$1)"],vals=[estanque_id];
+    if(desde){vals.push(desde);where.push(`m.fecha>=$${vals.length}`);}
+    if(hasta){vals.push(hasta);where.push(`m.fecha<=$${vals.length}`);}
+    if(tipo_id){vals.push(tipo_id);where.push(`m.tipo_id=$${vals.length}`);}
+    const movs=await pool.query(`
+      SELECT m.*,ct.nombre AS tipo_nombre,
+        eo.nombre AS estanque_origen,ed.nombre AS estanque_destino,
+        eq.nombre AS equipo_nombre,f.nombre AS faena_nombre,
+        pr.nombre AS proveedor_nombre,emp.razon_social AS empresa_nombre
+      FROM comb_movimientos m
+      LEFT JOIN comb_tipos ct ON m.tipo_id=ct.tipo_id
+      LEFT JOIN comb_estanques eo ON m.estanque_origen_id=eo.estanque_id
+      LEFT JOIN comb_estanques ed ON m.estanque_destino_id=ed.estanque_id
+      LEFT JOIN equipos eq ON m.equipo_id=eq.equipo_id
+      LEFT JOIN faenas f ON m.faena_id=f.faena_id
+      LEFT JOIN proveedores pr ON m.proveedor_id=pr.proveedor_id
+      LEFT JOIN empresas emp ON m.empresa_id=emp.empresa_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY m.fecha ASC,m.mov_id ASC`,vals);
+
+    // Calculate running balance
+    const estId=parseInt(estanque_id);
+    let saldo=0;
+    const rows=movs.rows.map(function(m){
+      let entrada=0,salida=0;
+      if(m.tipo_mov==='INGRESO_STOCK'&&m.estanque_destino_id===estId) entrada=parseFloat(m.litros);
+      else if(m.tipo_mov==='DISTRIBUCION'&&m.estanque_origen_id===estId) salida=parseFloat(m.litros);
+      else if(m.tipo_mov==='TRASPASO'){
+        if(m.estanque_destino_id===estId) entrada=parseFloat(m.litros);
+        else if(m.estanque_origen_id===estId) salida=parseFloat(m.litros);
+      }
+      saldo+=entrada-salida;
+      return Object.assign({},m,{entrada,salida,saldo_acumulado:parseFloat(saldo.toFixed(3))});
+    });
+    res.json(rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 // SPA fallback — must be AFTER all API routes
 app.get('*', (req,res)=>res.sendFile(path.join(__dirname,'frontend','index.html')));
 
