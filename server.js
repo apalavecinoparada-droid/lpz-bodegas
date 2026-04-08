@@ -1718,6 +1718,8 @@ async function getFactoToken(){
   if(factoToken&&Date.now()<factoTokenExp) return factoToken;
   const apiKey=process.env.FACTO_CLIENT_ID||'';     // Client Identification
   const secret=process.env.FACTO_CLIENT_SECRET||''; // Client Secret
+  const user=process.env.FACTO_USER||apiKey;         // Resource Owner Name
+  const pass=process.env.FACTO_PASS||secret;         // Resource Owner Password
   if(!apiKey||!secret) throw new Error('Credenciales Facto/Koywe no configuradas (FACTO_CLIENT_ID, FACTO_CLIENT_SECRET)');
 
   // The 400 "invalid_request" means endpoint found, body field names wrong
