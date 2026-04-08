@@ -441,6 +441,15 @@ prvR.put('/:id', auth, async(req,res)=>{
   }catch(e){res.status(400).json({error:e.message});}
 });
 prvR.patch('/:id/activo', auth, async(req,res)=>{try{res.json((await pool.query('UPDATE proveedores SET activo=NOT activo WHERE proveedor_id=$1 RETURNING *',[req.params.id])).rows[0]);}catch(e){res.status(400).json({error:e.message});}});
+prvR.delete('/:id', auth, async(req,res)=>{
+  try{
+    await pool.query('DELETE FROM proveedores WHERE proveedor_id=$1',[req.params.id]);
+    res.json({ok:true});
+  }catch(e){
+    if(e.code==='23503') return res.status(409).json({error:'No se puede eliminar: proveedor en uso. Use Inactivar.'});
+    res.status(400).json({error:e.message});
+  }
+});
 app.use('/api/proveedores', prvR);
 
 // PRODUCTOS con delete
