@@ -92,6 +92,38 @@ async function autoSetup() {
   await q(`CREATE INDEX IF NOT EXISTS idx_comb_mov_fecha ON comb_movimientos(fecha)`);
   await q(`CREATE INDEX IF NOT EXISTS idx_comb_mov_tipo ON comb_movimientos(tipo_mov)`);
   await q(`CREATE INDEX IF NOT EXISTS idx_comb_mov_equipo ON comb_movimientos(equipo_id)`);
+  // Cierres quincenales Copec
+  await q(`CREATE TABLE IF NOT EXISTS comb_cierres (
+    cierre_id SERIAL PRIMARY KEY,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    proveedor_id INT REFERENCES proveedores(proveedor_id),
+    numero_factura VARCHAR(30),
+    fecha_factura DATE,
+    litros_total NUMERIC(12,3),
+    base_afecta NUMERIC(14,2),
+    ie_total NUMERIC(14,2),
+    iva NUMERIC(14,2),
+    total_factura NUMERIC(14,2),
+    precio_neto_litro NUMERIC(14,4),
+    estado VARCHAR(15) DEFAULT 'PENDIENTE',
+    observaciones TEXT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    procesado_en TIMESTAMP,
+    procesado_por VARCHAR(100)
+  )`);
+  await q(`CREATE TABLE IF NOT EXISTS comb_cierre_guias (
+    id SERIAL PRIMARY KEY,
+    cierre_id INT NOT NULL REFERENCES comb_cierres(cierre_id) ON DELETE CASCADE,
+    mov_id INT NOT NULL REFERENCES comb_movimientos(mov_id),
+    litros NUMERIC(12,3),
+    precio_provisorio NUMERIC(14,4),
+    precio_real NUMERIC(14,4),
+    diferencia_total NUMERIC(14,2)
+  )`);
+  // Campo provisorio en movimientos
+  await q(`ALTER TABLE comb_movimientos ADD COLUMN IF NOT EXISTS es_provisorio BOOLEAN DEFAULT false`);
+  await q(`ALTER TABLE comb_movimientos ADD COLUMN IF NOT EXISTS cierre_id INT REFERENCES comb_cierres(cierre_id)`);
   // Seed tipos de combustible
   for(const t of ['Diesel','Gasolina 93','Gasolina 95','Gasolina 97']){
     await q(`INSERT INTO comb_tipos(nombre) SELECT '${t}' WHERE NOT EXISTS(SELECT 1 FROM comb_tipos WHERE nombre='${t}')`);
@@ -974,7 +1006,7 @@ app.post('/api/comb/ingreso-stock', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
-    const{empresa_id,fecha,tipo_id,estanque_destino_id,litros,precio_unitario,proveedor_id,numero_documento,oc_referencia,observaciones}=req.body;
+    const{empresa_id,fecha,tipo_id,estanque_destino_id,litros,precio_unitario,proveedor_id,numero_documento,oc_referencia,observaciones,es_provisorio}=req.body;
     if(!estanque_destino_id) throw new Error('Debe seleccionar el estanque destino');
     const lts=parseFloat(litros);
     const pu=parseFloat(precio_unitario||0);
@@ -1282,6 +1314,167 @@ app.get('/api/comb/kardex-est', auth, async(req,res)=>{
     });
     res.json({saldo_inicial:parseFloat(saldoInicial.toFixed(3)),rows});
   }catch(e){res.status(500).json({error:e.message});}
+});
+
+
+// Listar ingresos provisorios pendientes de cierre
+app.get('/api/comb/provisorios', auth, async(req,res)=>{
+  try{
+    const{empresa_id}=req.query;
+    let where=["m.tipo_mov='INGRESO_STOCK'","m.estado='ACTIVO'","m.es_provisorio=true","m.cierre_id IS NULL"];
+    let vals=[];
+    if(empresa_id){vals.push(empresa_id);where.push(`m.empresa_id=$${vals.length}`);}
+    const r=await pool.query(`
+      SELECT m.*,ct.nombre AS tipo_nombre,
+        ed.nombre AS estanque_nombre,
+        emp.razon_social AS empresa_nombre,
+        pr.nombre AS proveedor_nombre
+      FROM comb_movimientos m
+      LEFT JOIN comb_tipos ct ON m.tipo_id=ct.tipo_id
+      LEFT JOIN comb_estanques ed ON m.estanque_destino_id=ed.estanque_id
+      LEFT JOIN empresas emp ON m.empresa_id=emp.empresa_id
+      LEFT JOIN proveedores pr ON m.proveedor_id=pr.proveedor_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY m.fecha DESC,m.mov_id DESC`,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// CRUD cierres
+app.get('/api/comb/cierres', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`
+      SELECT c.*,emp.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,
+        COUNT(cg.id) AS num_guias
+      FROM comb_cierres c
+      LEFT JOIN empresas emp ON c.empresa_id=emp.empresa_id
+      LEFT JOIN proveedores pr ON c.proveedor_id=pr.proveedor_id
+      LEFT JOIN comb_cierre_guias cg ON c.cierre_id=cg.cierre_id
+      GROUP BY c.cierre_id,emp.razon_social,pr.nombre
+      ORDER BY c.creado_en DESC`);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.post('/api/comb/cierres', auth, async(req,res)=>{
+  try{
+    const{empresa_id,proveedor_id,numero_factura,fecha_factura,litros_total,base_afecta,ie_total,iva,total_factura,observaciones,mov_ids}=req.body;
+    if(!mov_ids||!mov_ids.length) return res.status(400).json({error:'Seleccione al menos un ingreso provisorio'});
+    const precio_neto_litro=parseFloat(base_afecta)/parseFloat(litros_total);
+    const r=await pool.query(`INSERT INTO comb_cierres(empresa_id,proveedor_id,numero_factura,fecha_factura,litros_total,base_afecta,ie_total,iva,total_factura,precio_neto_litro,observaciones,usuario)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [empresa_id||null,proveedor_id||null,numero_factura,fecha_factura,parseFloat(litros_total),parseFloat(base_afecta),parseFloat(ie_total),parseFloat(iva),parseFloat(total_factura),precio_neto_litro,observaciones||null,req.user.email]);
+    const cierreId=r.rows[0].cierre_id;
+    // Link guias
+    for(const mid of mov_ids){
+      const mv=await pool.query('SELECT litros,precio_unitario FROM comb_movimientos WHERE mov_id=$1',[mid]);
+      if(mv.rows.length){
+        const lts=parseFloat(mv.rows[0].litros),pprov=parseFloat(mv.rows[0].precio_unitario);
+        const diff=(precio_neto_litro-pprov)*lts;
+        await pool.query('INSERT INTO comb_cierre_guias(cierre_id,mov_id,litros,precio_provisorio,precio_real,diferencia_total) VALUES($1,$2,$3,$4,$5,$6)',
+          [cierreId,mid,lts,pprov,precio_neto_litro,diff]);
+      }
+    }
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// PROCESAR CIERRE — ajusta CPP y recalcula distribuciones retroactivamente
+app.post('/api/comb/cierres/:id/procesar', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    // Load cierre
+    const cQ=await client.query('SELECT * FROM comb_cierres WHERE cierre_id=$1',[req.params.id]);
+    if(!cQ.rows.length) throw new Error('Cierre no encontrado');
+    const cierre=cQ.rows[0];
+    if(cierre.estado==='PROCESADO') throw new Error('Este cierre ya fue procesado');
+    const precioReal=parseFloat(cierre.precio_neto_litro);
+
+    // Load guias of this cierre
+    const guiasQ=await client.query(`SELECT cg.*,m.estanque_destino_id,m.tipo_id,m.fecha,m.empresa_id
+      FROM comb_cierre_guias cg JOIN comb_movimientos m ON cg.mov_id=m.mov_id
+      WHERE cg.cierre_id=$1`,[req.params.id]);
+
+    // Group by estanque
+    const estanques={};
+    guiasQ.rows.forEach(function(g){
+      const eid=g.estanque_destino_id;
+      if(!estanques[eid]) estanques[eid]={tipo_id:g.tipo_id,empresa_id:g.empresa_id,guias:[],fecha_min:g.fecha};
+      estanques[eid].guias.push(g);
+      if(g.fecha<estanques[eid].fecha_min) estanques[eid].fecha_min=g.fecha;
+    });
+
+    const ajustes=[];
+
+    for(const [estId,est] of Object.entries(estanques)){
+      // Update each provisional ingreso with real price
+      for(const g of est.guias){
+        const costoRealTotal=g.litros*precioReal;
+        await client.query('UPDATE comb_movimientos SET precio_unitario=$1,costo_total=$2,es_provisorio=false,cierre_id=$3 WHERE mov_id=$4',
+          [precioReal,costoRealTotal,req.params.id,g.mov_id]);
+      }
+
+      // Recalculate CPP for this estanque from scratch (all ACTIVE movements)
+      const histQ=await client.query(`SELECT tipo_mov,estanque_origen_id,estanque_destino_id,litros,precio_unitario
+        FROM comb_movimientos WHERE estado='ACTIVO' AND (estanque_origen_id=$1 OR estanque_destino_id=$1)
+        ORDER BY fecha ASC,mov_id ASC`,[estId]);
+      let saldo=0,cpp=0;
+      histQ.rows.forEach(function(m){
+        const eid2=parseInt(estId);
+        if(m.tipo_mov==='INGRESO_STOCK'&&m.estanque_destino_id===eid2){
+          const q=parseFloat(m.litros),pu=parseFloat(m.precio_unitario);
+          const newQ=saldo+q;
+          cpp=newQ>0?(saldo*cpp+q*pu)/newQ:pu;
+          saldo=newQ;
+        } else if(m.tipo_mov==='DISTRIBUCION'&&m.estanque_origen_id===eid2){
+          saldo-=parseFloat(m.litros);
+        } else if(m.tipo_mov==='TRASPASO'){
+          if(m.estanque_destino_id===eid2) saldo+=parseFloat(m.litros);
+          else if(m.estanque_origen_id===eid2) saldo-=parseFloat(m.litros);
+        }
+      });
+      // Update comb_stock with recalculated CPP
+      await client.query('UPDATE comb_stock SET costo_promedio=$1,ultima_actualizacion=NOW() WHERE estanque_id=$2',[cpp,estId]);
+
+      // Retroactively adjust distributions from fecha_min onwards
+      const distQ=await client.query(`SELECT mov_id,litros,costo_total,precio_unitario
+        FROM comb_movimientos WHERE tipo_mov='DISTRIBUCION' AND estado='ACTIVO'
+          AND estanque_origen_id=$1 AND fecha>=$2`,[estId,est.fecha_min]);
+
+      let difTotal=0;
+      for(const d of distQ.rows){
+        const litros=parseFloat(d.litros);
+        const costoAnterior=parseFloat(d.costo_total);
+        const costoNuevo=litros*cpp;
+        const dif=costoNuevo-costoAnterior;
+        difTotal+=dif;
+        if(Math.abs(dif)>1){
+          await client.query('UPDATE comb_movimientos SET precio_unitario=$1,costo_total=$2 WHERE mov_id=$3',
+            [cpp,costoNuevo,d.mov_id]);
+        }
+      }
+
+      // Register AJUSTE_VALORIZACION movement
+      if(Math.abs(difTotal)>1){
+        await client.query(`INSERT INTO comb_movimientos(tipo_mov,empresa_id,fecha,tipo_id,estanque_origen_id,litros,precio_unitario,costo_total,oc_referencia,observaciones,usuario,es_provisorio)
+          VALUES('AJUSTE_VALORIZACION',$1,NOW()::date,$2,$3,$4,$5,$6,$7,$8,$9,false)`,
+          [est.empresa_id,est.tipo_id,parseInt(estId),0,precioReal-cpp,difTotal,
+          'Cierre '+cierre.numero_factura,
+          'Ajuste CPP por cierre quincenal. Precio prov: $'+est.guias[0].precio_provisorio+' → real: $'+precioReal.toFixed(2)+'/lt',
+          req.user.email]);
+        ajustes.push({estanque_id:estId,dif_total:difTotal,cpp_nuevo:cpp});
+      }
+    }
+
+    // Mark cierre as processed
+    await client.query('UPDATE comb_cierres SET estado=$1,procesado_en=NOW(),procesado_por=$2 WHERE cierre_id=$3',
+      ['PROCESADO',req.user.email,req.params.id]);
+
+    await client.query('COMMIT');
+    res.json({ok:true,ajustes,precio_real:precioReal});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 
 // SPA fallback — must be AFTER all API routes
