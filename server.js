@@ -1483,6 +1483,7 @@ app.post('/api/ocr/factura', auth, async(req,res)=>{
   try{
     const{base64,mediaType}=req.body;
     if(!base64||!mediaType) return res.status(400).json({error:'Falta base64 o mediaType'});
+    if(!process.env.ANTHROPIC_API_KEY) return res.status(500).json({error:'ANTHROPIC_API_KEY no configurada en el servidor'});
     const isPdf=mediaType==='application/pdf';
     const content=[
       {
@@ -1513,9 +1514,9 @@ Responde SOLO con el JSON válido, sin texto adicional ni bloques markdown.`
     ];
     const response=await fetch('https://api.anthropic.com/v1/messages',{
       method:'POST',
-      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01'},
+      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','x-api-key':process.env.ANTHROPIC_API_KEY||''},
       body:JSON.stringify({
-        model:'claude-opus-4-5',
+        model:'claude-haiku-4-5-20251001',
         max_tokens:2000,
         messages:[{role:'user',content}]
       })
