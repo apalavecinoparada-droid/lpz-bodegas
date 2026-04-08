@@ -1669,6 +1669,40 @@ function CombReportes(p){
 
 
 
+
+function CombTiposAdmin(p){
+  const[items,setItems]=useState([]);const[modal,setModal]=useState(null);const[err,setErr]=useState('');
+  function load(){api('/comb/tipos','GET',null,p.tok).then(function(r){setItems(Array.isArray(r)?r:[]);}).catch(function(ex){setErr('Error: '+ex.message);});}
+  useEffect(load,[p.tok]);
+  function save(){
+    setErr('');
+    if(!modal.nombre){setErr('Nombre obligatorio');return;}
+    const m2=modal.tipo_id?api('/comb/tipos/'+modal.tipo_id,'PUT',modal,p.tok):api('/comb/tipos','POST',modal,p.tok);
+    m2.then(function(){setModal(null);load();p.onReload&&p.onReload();}).catch(function(ex){setErr(ex.message);alert('Error: '+ex.message);});
+  }
+  return h('div',null,
+    err&&h('div',{className:'al al-e',style:{marginBottom:8}},err),
+    h('div',{style:{display:'flex',gap:8,marginBottom:10}},h(Btn,{onClick:function(){setErr('');setModal({nombre:'',activo:true});}},null,'+ Nuevo Tipo')),
+    h('div',{className:'card'},h(TBL,{cols:[
+      {lbl:'Nombre',k:'nombre'},
+      {lbl:'Estado',render:function(r){return h(Bg,{c:r.activo?'g':'r'},r.activo?'Activo':'Inactivo');}},
+      {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:3}},
+        h(Btn,{v:'g',sm:true,onClick:function(){setErr('');setModal(Object.assign({},r));}},'✏'),
+        h(Btn,{v:r.activo?'a':'g',sm:true,onClick:function(){api('/comb/tipos/'+r.tipo_id+'/activo','PATCH',{},p.tok).then(load).catch(function(ex){alert(ex.message);});}},r.activo?'Inactivar':'Activar')
+      );}}
+    ],rows:items,empty:'Sin tipos registrados'})),
+    modal&&h(Modal,{title:(modal.tipo_id?'Editar':'Nuevo')+' Tipo Combustible',onClose:function(){setModal(null);}},
+      h(EB,null,
+        h('div',{className:'mb'},
+          err&&h('div',{className:'al al-e',style:{marginBottom:8}},err),
+          h(FI,{k:'nombre',l:'Nombre',req:true,item:modal,onChange:setModal,ph:'Diesel'})
+        ),
+        h('div',{className:'mf'},h(Btn,{v:'g',onClick:function(){setModal(null);}},'Cancelar'),h(Btn,{onClick:save},'Guardar'))
+      )
+    )
+  );
+}
+
 // ── APP ──
 const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Equipos',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios'};
 
@@ -1729,6 +1763,8 @@ function App(){
           navI('empresas','▸','Empresas',true),
           navI('bodegas','▸','Bodegas',true),
           navI('productos','▸','Productos',true),
+          navI('comb-estanques','▸','Estanques Combustible',true),
+          navI('comb-tipos','▸','Tipos Combustible',true),
           navI('categorias','▸','Categorias',true),
           navI('faenas','▸','Faenas',true),
           navI('equipos','▸','Equipos',true),
@@ -1750,6 +1786,7 @@ function App(){
       ),
       h('div',{className:'content'},
         h(EB,null,
+          view==='comb-tipos'&&h(CombTiposAdmin,{tok,m,onReload:reloadM}),
           view==='comb-panel'&&h(CombPanel,{tok,m}),
           view==='comb-compras'&&h(CombComprasDirectas,{tok,m}),
           view==='comb-ingresos'&&h(CombIngresosStock,{tok,m}),
