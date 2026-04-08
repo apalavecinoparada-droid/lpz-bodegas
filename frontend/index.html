@@ -551,11 +551,23 @@ function ReportesView(p){
 
 // ── CALCULADORA LITRO NETO COMBUSTIBLE ──
 function CalcCombustible(p){
-  // Tasas impuesto especifico (UTM por m3 = UTM por 1000 litros)
   var TASAS={diesel:1.5,gasolina:6.0};
-
   const[tipoComb,setTipoComb]=useState('diesel');
   const[utm,setUtm]=useState('');
+  const[utmLoading,setUtmLoading]=useState(false);
+
+  function fetchUTM(){
+    setUtmLoading(true);
+    fetch('https://mindicador.cl/api/utm')
+      .then(function(r){return r.json();})
+      .then(function(d){
+        var val=d&&d.serie&&d.serie[0]&&d.serie[0].valor;
+        if(val){setUtm(String(Math.round(val)));} 
+        else{alert('No se pudo obtener la UTM. Ingrésela manualmente.');}
+      })
+      .catch(function(){alert('Error al obtener la UTM. Verifique su conexión.');})
+      .finally(function(){setUtmLoading(false);});
+  }
   const[litros,setLitros]=useState('');
   const[totalGuia,setTotalGuia]=useState('');
 
@@ -596,9 +608,15 @@ function CalcCombustible(p){
       h('div',{className:'g2',style:{marginBottom:12}},
         h('div',null,
           h('label',{style:{fontSize:12,fontWeight:600,display:'block',marginBottom:4}},'UTM vigente ($)'),
-          h('input',{type:'number',value:utm,onChange:function(e){setUtm(e.target.value);},
-            style:{width:'100%',padding:'8px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,boxSizing:'border-box'},
-            placeholder:'Ej: 67.294'})
+          h('div',{style:{display:'flex',gap:6}},
+            h('input',{type:'number',value:utm,onChange:function(e){setUtm(e.target.value);},
+              style:{flex:1,padding:'8px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13},
+              placeholder:'Ej: 67.294'}),
+            h('button',{onClick:fetchUTM,disabled:utmLoading,
+              title:'Obtener UTM actual desde mindicador.cl',
+              style:{padding:'6px 10px',background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:5,fontSize:11,cursor:'pointer',whiteSpace:'nowrap',color:'#1D4ED8',fontWeight:600}},
+              utmLoading?'…':'↻ Obtener')
+          )
         ),
         h('div',null,
           h('label',{style:{fontSize:12,fontWeight:600,display:'block',marginBottom:4}},'Litros (guía)'),
@@ -924,7 +942,9 @@ function OCFormModal(p){
     const path=isNew?'/ordenes-compra':'/ordenes-compra/'+p.oc.oc_id;
     api(path,method,body,p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
   }
-  return h(Modal,{title:(isNew?'Nueva Orden de Compra':'Editar OC'),onClose:p.onClose,xl:true},
+  return h('div',null,
+    showCalcOC&&h(CalcCombustible,{onClose:function(){setShowCalcOC(false);}}),
+    h(Modal,{title:(isNew?'Nueva Orden de Compra':'Editar OC'),onClose:p.onClose,xl:true},
     h(EB,null,
       h('div',{className:'mb'},
         err&&h('div',{className:'al al-e'},err),
@@ -976,6 +996,7 @@ function OCFormModal(p){
       h('div',{style:{display:'flex',justifyContent:'flex-end',marginBottom:8}},h(Btn,{v:'teal',sm:true,onClick:function(){setShowCalcOC(true);}},null,'🧮 Calc. Litro Neto')),
       h('div',{className:'mf'},h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),h(Btn,{onClick:save,disabled:saving},saving?'Guardando...':'Guardar OC'))
     )
+  )
   );
 }
 
