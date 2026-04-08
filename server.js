@@ -6,6 +6,9 @@ const cors     = require('cors');
 const bcrypt   = require('bcryptjs');
 const jwt      = require('jsonwebtoken');
 const path     = require('path');
+let pdfParse=null;
+try{pdfParse=require('pdf-parse');console.log('[OK] pdf-parse cargado');}
+catch(e){console.log('[WARN] pdf-parse no disponible:',e.message);}
 
 const app        = express();
 const PORT       = process.env.PORT || 3000;
@@ -1487,10 +1490,17 @@ app.post('/api/ocr/factura', auth, async(req,res)=>{
     let textoCompleto='';
 
     if(isPdf){
-      if(!pdfParse) return res.status(500).json({error:'pdf-parse no instalado. Redespliegue el servidor.'});
       const buf=Buffer.from(base64,'base64');
-      const parsed=await pdfParse(buf);
-      textoCompleto=parsed.text||'';
+      if(pdfParse){
+        const parsed=await pdfParse(buf);
+        textoCompleto=parsed.text||'';
+      }else{
+        // Fallback sin pdf-parse: extraer texto legible del buffer PDF
+        const raw=buf.toString('binary');
+        const matches=raw.match(/\(([^)]{2,200})\)/g)||[];
+        textoCompleto=matches.map(m=>m.slice(1,-1)).join(' ');
+        if(!textoCompleto) textoCompleto=raw.replace(/[^\x20-\x7E\n]/g,' ').replace(/ {3,}/g,'\n');
+      }
     }else{
       // Para imágenes necesitamos API externa — intentar con Gemini si está configurado
       const apiKey=process.env.GEMINI_API_KEY||'';
