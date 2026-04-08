@@ -1525,134 +1525,125 @@ function parsearFacturaChilena(txt){
   const lineas=txt.split('\n').map(l=>l.trim()).filter(Boolean);
 
   function findFirst(patterns){
-    for(const p of patterns){
-      const m=txt.match(p);
-      if(m&&m[1]) return m[1].trim();
-    }
+    for(const p of patterns){const m=txt.match(p);if(m&&m[1])return m[1].trim();}
     return null;
   }
 
-  function parseMontoChileno(s){
-    if(!s) return null;
-    // Remove $ signs, spaces, then handle dot as thousand separator
+  function parseMonto(s){
+    if(!s)return null;
     s=s.replace(/[$\s]/g,'');
-    // If has comma, treat as decimal separator (rare in CLP but possible)
-    if(s.includes(',')){s=s.replace(/\./g,'').replace(',','.');}
-    else{s=s.replace(/\./g,'');} // dots are thousand separators in CLP
+    if(s.includes(','))s=s.replace(/\./g,'').replace(',','.');
+    else s=s.replace(/\./g,'');
     return parseFloat(s)||null;
   }
 
-  function cleanRut(r){
-    if(!r) return null;
-    return r.replace(/[\s]/g,'').toUpperCase();
-  }
+  function cleanRut(r){return r?r.replace(/\s/g,'').toUpperCase():null;}
 
   // Tipo documento
-  const tipoDoc=/FACTURA\s+ELECTR/i.test(txt)?'FACTURA':
-    /GU[IÍ]A\s+DE\s+DESPACHO/i.test(txt)?'GUIA':
-    /BOLETA/i.test(txt)?'BOLETA':'FACTURA';
+  const tipoDoc=/FACTURA/i.test(txt)?'FACTURA':/GU[IÍ]A/i.test(txt)?'GUIA':/BOLETA/i.test(txt)?'BOLETA':'FACTURA';
 
-  // Número documento
+  // Número documento — handle "N º", "Nº", "N°" with optional spaces
   const ndoc=findFirst([
+    /N\s*[°º]\s*0*(\d{4,})/,
+    /Nº\s*0*(\d{4,})/,
     /N[°º]\s*0*(\d{4,})/,
     /NUMERO\s*:?\s*0*(\d{4,})/i,
-    /Nº\s*0*(\d{4,})/
+    /Número\s*:?\s*0*(\d{4,})/i
   ]);
 
-  // Fecha — buscar DD-MM-YYYY o DD/MM/YYYY
+  // Fecha
   let fecha=null;
   const fm=txt.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
-  if(fm) fecha=`${fm[3]}-${fm[2].padStart(2,'0')}-${fm[1].padStart(2,'0')}`;
+  if(fm)fecha=`${fm[3]}-${fm[2].padStart(2,'0')}-${fm[1].padStart(2,'0')}`;
 
-  // RUTs — buscar todos los RUTs en el documento
-  const rutPattern=/(\d{1,2}\.?\d{3}\.?\d{3}-[\dkK])/g;
-  const ruts=[...txt.matchAll(rutPattern)].map(m=>cleanRut(m[1]));
-  const provRut=ruts[0]||null;
-  const clienteRut=ruts[1]||null;
+  // RUTs
+  const rutMatches=[...txt.matchAll(/(\d{1,2}\.?\d{3}\.?\d{3}-[\dkK])/g)];
+  const provRut=rutMatches[0]?cleanRut(rutMatches[0][1]):null;
+  const clienteRut=rutMatches[1]?cleanRut(rutMatches[1][1]):null;
 
-  // Nombres
+  // Proveedor nombre: primera línea larga con mayúsculas antes del primer RUT
   let provNombre=null;
-  // Proveedor: buscar nombre antes del primer RUT
-  const firstRutIdx=txt.search(/\d{1,2}\.?\d{3}\.?\d{3}-[\dkK]/);
-  if(firstRutIdx>0){
-    const antes=txt.substring(0,firstRutIdx);
-    const nombresAntes=antes.split('\n').map(l=>l.trim()).filter(l=>l.length>3&&!/^(RUT|R\.U\.T)/i.test(l));
-    provNombre=nombresAntes[nombresAntes.length-1]||null;
+  if(rutMatches[0]){
+    const primerRutPos=rutMatches[0].index;
+    const antesRut=txt.substring(0,primerRutPos).split('\n').map(l=>l.trim());
+    for(let i=antesRut.length-1;i>=0;i--){
+      const l=antesRut[i];
+      if(l.length>4&&!/^(RUT|R\.U\.T|DIREC|Direcc|Calle|colon|GIRO|Giro|SII|S\.I\.I)/i.test(l)){
+        provNombre=l;break;
+      }
+    }
   }
+  if(!provNombre&&lineas.length>0)provNombre=lineas[0];
 
-  // Cliente: buscar patrón Señor(es) o NOMBRE
+  // Cliente nombre
   const clienteNombre=findFirst([
     /[Ss]e[ñn]or(?:es)?\s*:?\s*([A-ZÁÉÍÓÚÑ][^\n]{5,60})/,
-    /NOMBRE\s*:\s*([^\n]{5,60})/,
-    /CLIENTE\s*:\s*([^\n]{5,60})/
+    /NOMBRE\s*:\s*([^\n]{5,60})/
   ]);
 
   // Condiciones pago
   const condPago=findFirst([
-    /[Cc]ondici[oó]n(?:es)?\s*de\s*[Pp]ago\s*:?\s*([^\n]{3,30})/,
+    /[Cc]ondici[oó]n(?:es)?\s*de\s*[Pp]ago\s*:?\s*([^\n]{2,30})/,
     /CTA\.?\s*CTE\.?\s*(\d+)/i
   ]);
 
-  // Montos finales
-  const neto=parseMontoChileno(findFirst([
-    /[Mm]onto\s+[Nn]eto\s*\$?\s*([\d.,]+)/,
-    /NETO\s*\$?\s*([\d.,]+)/,
-    /Neto\s*\$?\s*([\d.,]+)/
-  ]));
-  const iva=parseMontoChileno(findFirst([
-    /IVA\s*19%?\s*\$?\s*([\d.,]+)/,
-    /I\.?V\.?A\.?\s*\$?\s*([\d.,]+)/
-  ]));
-  const total=parseMontoChileno(findFirst([
-    /TOTAL\s*\$?\s*([\d.,]+)/,
-    /Total\s*\$?\s*([\d.,]+)/
-  ]));
+  // Montos
+  const neto=parseMonto(findFirst([/[Mm]onto\s*[Nn]eto\s*\$?\s*([\d.]+)/,/NETO\s*\$?\s*([\d.]+)/]));
+  const iva=parseMonto(findFirst([/IVA\s*19%?\s*\$?\s*([\d.]+)/,/I\.?V\.?A\.?\s*\$?\s*([\d.]+)/]));
+  const total=parseMonto(findFirst([/TOTAL\s*\$?\s*([\d.]+)/,/Total\s*\$?\s*([\d.]+)/]));
 
-  // LÍNEAS DE DETALLE
-  // Estrategia: buscar líneas que tengan: texto + número(cantidad) + monto
+  // LÍNEAS DE DETALLE — múltiples estrategias
   const detalleLineas=[];
-  
-  // Patrón 1: "DESCRIPCION cantidad $precio SI $total" (con SI o sin)
-  // Ejemplo: "TRAJE PU GOMA NARANJO MS S 1 $11.490 SI $11.490"
-  const re1=/^(.{4,60}?)\s+(\d{1,4})\s+\$?([\d.]{3,10})\s+(?:SI\s+|NO\s+)?\$?([\d.]{3,10})$/;
-  
-  // Patrón 2: sin $ explícito
-  // Ejemplo: "TRAJE PU GOMA NARANJO MS S 1 11.490 11.490"
-  const re2=/^(.{4,60}?)\s+(\d{1,4})\s+([\d.]{3,10})\s+([\d.]{3,10})$/;
+  const skipLine=/^(Glosa|DETALLE|Descripci|PRODUCTO|Cantidad|CANTIDAD|Precio|PRECIO|Monto|MONTO|TOTAL|Total|IVA|Neto|NETO|RUT|Fecha|Venc|Cond|Giro|GIRO|Señor|Direcc|Ciudad|Comuna|S\.I\.I|Timbre|Sistema|www\.|Afecto|Imp\.|Desc)/i;
+
+  // Estrategia A: línea con cantidad y dos montos (con o sin $, SI opcional)
+  // "DESCRIPCION N $PRECIO [SI] $TOTAL"
+  const reA=/^(.{4,70}?)\s+(\d{1,4})\s+\$?([\d.]{3,12})\s+(?:[A-Z]{2}\s+)?\$?([\d.]{3,12})$/;
+
+  // Estrategia B: buscar líneas con al menos dos montos al final
+  // Cualquier línea que termina en: "N $XXXX $XXXX" o "N XXXX XXXX"
+  const reB=/^(.+?)\s+(\d{1,4})\s+\$?([\d.]{4,12})\s+\$?([\d.]{4,12})$/;
 
   for(const l of lineas){
-    // Skip header-like lines
-    if(/^(Glosa|DETALLE|Descripci|PRODUCTO|Cantidad|CANTIDAD|Precio|PRECIO|Monto|MONTO|Total|IVA|Neto|RUT|Fecha|N[°º])/i.test(l)) continue;
-    if(l.length<8||l.length>120) continue;
+    if(l.length<8||l.length>150)continue;
+    if(skipLine.test(l))continue;
 
-    let m=l.match(re1)||l.match(re2);
+    const m=l.match(reA)||l.match(reB);
     if(m){
-      const desc=m[1].trim();
+      const desc=m[1].replace(/^\s+|\s+$/g,'');
       const qty=parseInt(m[2])||1;
-      const pu=parseMontoChileno(m[3]);
-      const tot=parseMontoChileno(m[4]);
-      // Sanity check: total should be approx qty*price
-      if(pu&&pu>0&&tot&&tot>0&&desc.length>=3&&qty>=1&&qty<=9999){
+      const pu=parseMonto(m[3]);
+      const tot=parseMonto(m[4]);
+      if(pu&&pu>=100&&tot&&tot>=100&&desc.length>=3&&qty>=1&&qty<=9999){
         const ratio=tot/(pu*qty);
-        if(ratio>=0.5&&ratio<=2.0){ // within 50-200% tolerance
+        if(ratio>=0.3&&ratio<=3.5){
           detalleLineas.push({descripcion:desc,cantidad:qty,precio_unitario:pu,total_linea:tot});
         }
       }
     }
   }
 
-  return{
-    numero_documento:ndoc,
-    fecha_emision:fecha,
-    tipo_doc:tipoDoc,
-    proveedor_rut:provRut,
-    proveedor_nombre:provNombre,
-    cliente_rut:clienteRut,
-    cliente_nombre:clienteNombre?clienteNombre.trim():null,
-    neto,iva,total,
-    condiciones_pago:condPago,
-    lineas:detalleLineas
-  };
+  // Si no se encontraron líneas, intentar estrategia por bloques
+  if(detalleLineas.length===0){
+    // Buscar cualquier línea con texto + número al final
+    const reC=/^(.{6,80})\s+\$?([\d.]{4,12})$/;
+    for(const l of lineas){
+      if(skipLine.test(l))continue;
+      const m=l.match(reC);
+      if(m){
+        const desc=m[1].trim();
+        const tot=parseMonto(m[2]);
+        if(tot&&tot>=500&&desc.length>=4&&!/^(Monto|Total|Neto|IVA|Exento)/i.test(desc)){
+          detalleLineas.push({descripcion:desc,cantidad:1,precio_unitario:tot,total_linea:tot});
+        }
+      }
+    }
+  }
+
+  return{numero_documento:ndoc,fecha_emision:fecha,tipo_doc:tipoDoc,
+    proveedor_rut:provRut,proveedor_nombre:provNombre,
+    cliente_rut:clienteRut,cliente_nombre:clienteNombre?clienteNombre.trim():null,
+    neto,iva,total,condiciones_pago:condPago,lineas:detalleLineas};
 }
 
 // SPA fallback — must be AFTER all API routes
