@@ -1483,47 +1483,47 @@ app.post('/api/ocr/factura', auth, async(req,res)=>{
   try{
     const{base64,mediaType}=req.body;
     if(!base64||!mediaType) return res.status(400).json({error:'Falta base64 o mediaType'});
-    if(!process.env.ANTHROPIC_API_KEY) return res.status(500).json({error:'ANTHROPIC_API_KEY no configurada en el servidor'});
-    const isPdf=mediaType==='application/pdf';
-    const content=[
-      {
-        type:isPdf?'document':'image',
-        source:{type:'base64',media_type:mediaType,data:base64}
-      },
-      {
-        type:'text',
-        text:`Analiza este documento (factura o guía de despacho chilena) y extrae los datos en formato JSON con esta estructura exacta:
+    // API key check handled below with GEMINI_API_KEY
+    const promptText=`Analiza este documento (factura o guia de despacho chilena) y extrae los datos en formato JSON con esta estructura exacta:
 {
   "numero_documento": "string o null",
   "fecha_emision": "YYYY-MM-DD o null",
   "tipo_doc": "FACTURA|GUIA|BOLETA",
-  "proveedor_rut": "string sin puntos ni guión o null",
+  "proveedor_rut": "string sin puntos ni guion o null",
   "proveedor_nombre": "string o null",
-  "cliente_rut": "string sin puntos ni guión o null",
+  "cliente_rut": "string sin puntos ni guion o null",
   "cliente_nombre": "string o null",
-  "neto": número o null,
-  "iva": número o null,
-  "total": número o null,
+  "neto": 0,
+  "iva": 0,
+  "total": 0,
   "condiciones_pago": "string o null",
   "lineas": [
-    {"descripcion":"string","cantidad":número,"precio_unitario":número,"total_linea":número}
+    {"descripcion":"string","cantidad":1,"precio_unitario":0,"total_linea":0}
   ]
 }
-Responde SOLO con el JSON válido, sin texto adicional ni bloques markdown.`
-      }
-    ];
-    const response=await fetch('https://api.anthropic.com/v1/messages',{
+Responde SOLO con el JSON valido, sin texto adicional ni bloques markdown.`;
+
+    const apiKey=process.env.GEMINI_API_KEY||'';
+    if(!apiKey) return res.status(500).json({error:'GEMINI_API_KEY no configurada en el servidor'});
+
+    // Gemini API: gemini-1.5-flash supports PDF and images natively
+    const geminiContent={
+      parts:[
+        {inline_data:{mime_type:mediaType,data:base64}},
+        {text:promptText}
+      ]
+    };
+    const geminiUrl='https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key='+apiKey;
+    const response=await fetch(geminiUrl,{
       method:'POST',
-      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01','x-api-key':process.env.ANTHROPIC_API_KEY||''},
-      body:JSON.stringify({
-        model:'claude-haiku-4-5-20251001',
-        max_tokens:2000,
-        messages:[{role:'user',content}]
-      })
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({contents:[geminiContent],generationConfig:{maxOutputTokens:2000,temperature:0}})
     });
     const data=await response.json();
-    if(!response.ok) return res.status(502).json({error:data.error?.message||'Error API Claude'});
-    const text=data.content&&data.content[0]&&data.content[0].text;
+    if(!response.ok) return res.status(502).json({error:(data.error&&data.error.message)||'Error API Gemini'});
+    const text=data.candidates&&data.candidates[0]&&data.candidates[0].content&&
+               data.candidates[0].content.parts&&data.candidates[0].content.parts[0]&&
+               data.candidates[0].content.parts[0].text;
     if(!text) return res.status(502).json({error:'Sin respuesta del modelo'});
     try{
       const clean=text.replace(/```json|```/g,'').trim();
