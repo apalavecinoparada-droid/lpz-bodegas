@@ -937,12 +937,22 @@ function OCRFactura(p){
     if(!file){alert('Seleccione un archivo primero');return;}
     setLoading(true);p.onMsg&&p.onMsg('Procesando documento...');
     // Send file directly as base64 — PDF goes as PDF, images as image
-    var reader=new FileReader();
-    reader.onload=function(ev){
-      var b64=ev.target.result.split(',')[1];
-      sendToOCR(b64,file.type);
-    };
-    reader.readAsDataURL(file);
+    if(file.name&&file.name.toLowerCase().endsWith('.xml')){
+      // XML: read as text to preserve encoding, then base64 encode
+      var rxml=new FileReader();
+      rxml.onload=function(ev){
+        var b64=btoa(unescape(encodeURIComponent(ev.target.result)));
+        sendToOCR(b64,'text/xml');
+      };
+      rxml.readAsText(file,'ISO-8859-1');
+    }else{
+      var reader=new FileReader();
+      reader.onload=function(ev){
+        var b64=ev.target.result.split(',')[1];
+        sendToOCR(b64,file.type);
+      };
+      reader.readAsDataURL(file);
+    }
   }
 
   function aplicar(){
@@ -987,8 +997,8 @@ function OCRFactura(p){
     h('div',{style:{fontWeight:600,fontSize:13,color:'#0369A1',marginBottom:10}},'📄 Importar datos desde factura o guía de despacho'),
     h('div',{style:{display:'flex',gap:10,alignItems:'flex-start',flexWrap:'wrap'}},
       h('div',{style:{flex:1,minWidth:200}},
-        h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:4,color:'#475569'}},'Seleccione archivo (PDF, JPG, PNG)'),
-        h('input',{type:'file',accept:'image/*,.pdf',onChange:onFileChange,style:{fontSize:11,width:'100%'}}),
+        h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:4,color:'#475569'}},'Seleccione archivo (XML recomendado · PDF · JPG · PNG)'),
+        h('input',{type:'file',accept:'image/*,.pdf,.xml,text/xml,application/xml',onChange:onFileChange,style:{fontSize:11,width:'100%'}}),
         file&&h('div',{style:{fontSize:10,color:'#64748B',marginTop:2}},file.name+' ('+Math.round(file.size/1024)+' KB)')
       ),
       h(Btn,{v:'teal',sm:true,onClick:extraer,disabled:!file||loading},loading?'Analizando...':'🔍 Extraer datos')
