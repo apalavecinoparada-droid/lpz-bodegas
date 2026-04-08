@@ -1478,64 +1478,120 @@ app.post('/api/comb/cierres/:id/procesar', auth, async(req,res)=>{
 });
 
 
-// OCR FACTURA — proxy al API de Claude (evita CORS)
+// OCR FACTURA — extracción de texto local con pdf-parse (sin API externa)
 app.post('/api/ocr/factura', auth, async(req,res)=>{
   try{
     const{base64,mediaType}=req.body;
     if(!base64||!mediaType) return res.status(400).json({error:'Falta base64 o mediaType'});
-    // API key check handled below with GEMINI_API_KEY
-    const promptText=`Analiza este documento (factura o guia de despacho chilena) y extrae los datos en formato JSON con esta estructura exacta:
-{
-  "numero_documento": "string o null",
-  "fecha_emision": "YYYY-MM-DD o null",
-  "tipo_doc": "FACTURA|GUIA|BOLETA",
-  "proveedor_rut": "string sin puntos ni guion o null",
-  "proveedor_nombre": "string o null",
-  "cliente_rut": "string sin puntos ni guion o null",
-  "cliente_nombre": "string o null",
-  "neto": 0,
-  "iva": 0,
-  "total": 0,
-  "condiciones_pago": "string o null",
-  "lineas": [
-    {"descripcion":"string","cantidad":1,"precio_unitario":0,"total_linea":0}
-  ]
-}
-Responde SOLO con el JSON valido, sin texto adicional ni bloques markdown.`;
+    const isPdf=mediaType==='application/pdf';
+    let textoCompleto='';
 
-    const apiKey=process.env.GEMINI_API_KEY||'';
-    if(!apiKey) return res.status(500).json({error:'GEMINI_API_KEY no configurada en el servidor'});
-
-    // Gemini API: gemini-1.5-flash supports PDF and images natively
-    const geminiContent={
-      parts:[
-        {inline_data:{mime_type:mediaType,data:base64}},
-        {text:promptText}
-      ]
-    };
-    const geminiUrl='https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+apiKey;
-    const response=await fetch(geminiUrl,{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({contents:[geminiContent],generationConfig:{maxOutputTokens:2000,temperature:0}})
-    });
-    const data=await response.json();
-    if(!response.ok) return res.status(502).json({error:(data.error&&data.error.message)||'Error API Gemini'});
-    const text=data.candidates&&data.candidates[0]&&data.candidates[0].content&&
-               data.candidates[0].content.parts&&data.candidates[0].content.parts[0]&&
-               data.candidates[0].content.parts[0].text;
-    if(!text) return res.status(502).json({error:'Sin respuesta del modelo'});
-    try{
-      const clean=text.replace(/```json|```/g,'').trim();
-      const parsed=JSON.parse(clean);
-      res.json({ok:true,data:parsed,raw:text});
-    }catch(e){
-      res.json({ok:false,raw:text,error:'No se pudo parsear la respuesta'});
+    if(isPdf){
+      if(!pdfParse) return res.status(500).json({error:'pdf-parse no instalado. Redespliegue el servidor.'});
+      const buf=Buffer.from(base64,'base64');
+      const parsed=await pdfParse(buf);
+      textoCompleto=parsed.text||'';
+    }else{
+      // Para imágenes necesitamos API externa — intentar con Gemini si está configurado
+      const apiKey=process.env.GEMINI_API_KEY||'';
+      if(!apiKey) return res.status(400).json({error:'Para imágenes se requiere GEMINI_API_KEY. Suba el documento como PDF.'});
+      const geminiContent={parts:[{inline_data:{mime_type:mediaType,data:base64}},{text:'Extrae todo el texto de esta imagen de factura o guía de despacho, tal como aparece, sin formato especial.'}]};
+      const geminiUrl='https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key='+apiKey;
+      const r=await fetch(geminiUrl,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[geminiContent]})});
+      const d=await r.json();
+      textoCompleto=d.candidates?.[0]?.content?.parts?.[0]?.text||'';
+      if(!textoCompleto) return res.status(502).json({error:'No se pudo extraer texto de la imagen'});
     }
+
+    // Parse Chilean invoice text with regex
+    const data=parsearFacturaChilena(textoCompleto);
+    res.json({ok:true,data,raw:textoCompleto});
   }catch(e){
     res.status(500).json({error:e.message});
   }
 });
+
+function parsearFacturaChilena(txt){
+  const t=txt.replace(/\r/g,'');
+  const lineas=t.split('\n').map(l=>l.trim()).filter(Boolean);
+
+  function find(patterns){
+    for(const p of patterns){
+      const m=t.match(p);
+      if(m&&m[1]) return m[1].trim();
+    }
+    return null;
+  }
+  function findNum(patterns){
+    const v=find(patterns);
+    if(!v) return null;
+    return parseFloat(v.replace(/[.$]/g,'').replace(/,/g,'.').trim())||null;
+  }
+  function cleanRut(r){return r?r.replace(/[.\s]/g,'').toUpperCase():null;}
+
+  // Tipo documento
+  const tipoDoc=t.match(/FACTURA/i)?'FACTURA':t.match(/GU[IÍ]A/i)?'GUIA':t.match(/BOLETA/i)?'BOLETA':'FACTURA';
+
+  // Número documento
+  const ndoc=find([/N[°º]\s*0*(\d+)/i,/Nº\s*0*(\d+)/i,/NUMERO[:\s]+0*(\d+)/i,/N[°.]\s*(\d{4,})/]);
+
+  // Fecha — buscar DD-MM-YYYY o DD/MM/YYYY
+  let fecha=null;
+  const fm=t.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if(fm) fecha=`${fm[3]}-${fm[2].padStart(2,'0')}-${fm[1].padStart(2,'0')}`;
+
+  // Proveedor — primeras líneas del documento
+  let provNombre=null,provRut=null;
+  // RUT proveedor: buscar RUT en primeras 10 líneas
+  for(let i=0;i<Math.min(10,lineas.length);i++){
+    const rm=lineas[i].match(/R\.?U\.?T\.?:?\s*([\d.]{7,12}-[\dkK])/i);
+    if(rm&&!provRut){provRut=cleanRut(rm[1]);provNombre=lineas[Math.max(0,i-1)];}
+  }
+  // Si no encontró, tomar primera línea como nombre proveedor
+  if(!provNombre&&lineas.length>0) provNombre=lineas[0];
+
+  // Cliente
+  let clienteNombre=find([/[Ss]e[ñn]or(?:es)?[:\s]+([^\n]+)/,/NOMBRE[:\s]+([^\n]+)/]);
+  let clienteRut=null;
+  const crm=t.match(/R\.?U\.?T\.?[:\s]+([\d.]{7,12}-[\dkK])/gi);
+  if(crm&&crm.length>1) clienteRut=cleanRut(crm[1].replace(/R\.?U\.?T\.?[:\s]+/i,''));
+
+  // Montos
+  const neto=findNum([/[Mm]onto\s*[Nn]eto\s*\$?\s*([\d.,]+)/,/NETO\s*\$?\s*([\d.,]+)/]);
+  const iva=findNum([/IVA\s*19%?\s*\$?\s*([\d.,]+)/,/I\.?V\.?A\.?\s*\$?\s*([\d.,]+)/]);
+  const total=findNum([/TOTAL\s*\$?\s*([\d.,]+)/,/Total\s*\$?\s*([\d.,]+)/]);
+
+  // Condiciones pago
+  const condPago=find([/[Cc]ondici[oó]n(?:es)?\s*de\s*[Pp]ago[:\s]+([^\n]+)/,/CTA\s+CTE\s+(\d+)/i]);
+
+  // Líneas de detalle — buscar patrones de items
+  const detalleLineas=[];
+  // Patrón: descripción + cantidad + precio + total en misma o líneas consecutivas
+  const itemRegex=/^(.{5,60?})\s+(\d+)\s+\$?\s*([\d.,]+)\s+(?:SI\s+)?\$?\s*([\d.,]+)$/;
+  for(const l of lineas){
+    const m=l.match(itemRegex);
+    if(m){
+      const desc=m[1].trim();
+      const qty=parseFloat(m[2])||1;
+      const pu=parseFloat(m[3].replace(/[.$]/g,'').replace(/,/g,'.'))||0;
+      const tot=parseFloat(m[4].replace(/[.$]/g,'').replace(/,/g,'.'))||0;
+      if(pu>0&&tot>0&&desc.length>2) detalleLineas.push({descripcion:desc,cantidad:qty,precio_unitario:pu,total_linea:tot});
+    }
+  }
+
+  return{
+    numero_documento:ndoc,
+    fecha_emision:fecha,
+    tipo_doc:tipoDoc,
+    proveedor_rut:provRut,
+    proveedor_nombre:provNombre,
+    cliente_rut:clienteRut,
+    cliente_nombre:clienteNombre?clienteNombre.trim():null,
+    neto,iva,total,
+    condiciones_pago:condPago,
+    lineas:detalleLineas
+  };
+}
 
 // SPA fallback — must be AFTER all API routes
 app.get('*', (req,res)=>res.sendFile(path.join(__dirname,'frontend','index.html')));
