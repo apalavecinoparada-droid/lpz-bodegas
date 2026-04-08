@@ -1560,57 +1560,148 @@ function CombDistribuciones(p){
 }
 
 function CombEstanques(p){
-  const[items,setItems]=useState([]);const[modal,setModal]=useState(null);const[err,setErr]=useState('');
+  const[items,setItems]=useState([]);
+  const[show,setShow]=useState(false);
+  const[editing,setEditing]=useState(null);
+  const[msg,setMsg]=useState('');
+  const[isErr,setIsErr]=useState(false);
+  // form fields
+  const[empresa,setEmpresa]=useState('');
+  const[codigo,setCodigo]=useState('');
+  const[nombre,setNombre]=useState('');
+  const[tipoEst,setTipoEst]=useState('FIJO');
+  const[tipoComb,setTipoComb]=useState('');
+  const[capMax,setCapMax]=useState('');
+  const[ubic,setUbic]=useState('');
+  const[obs,setObs]=useState('');
+
   const empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   const tipos=(p.m.combTipos||[]).filter(function(t){return t.activo;});
-  function load(){api('/comb/estanques','GET',null,p.tok).then(function(r){setItems(Array.isArray(r)?r:[]);}).catch(function(ex){setErr('Error al cargar: '+ex.message);});}
-  useEffect(load,[p.tok]);
-  function save(){
-    setErr('');
-    if(!modal.empresa_id){setErr('Debe seleccionar una empresa');return;}
-    if(!modal.codigo){setErr('El codigo es obligatorio');return;}
-    if(!modal.nombre){setErr('El nombre es obligatorio');return;}
-    const body=Object.assign({},modal,{
-      empresa_id:parseInt(modal.empresa_id)||null,
-      tipo_combustible_id:modal.tipo_combustible_id?parseInt(modal.tipo_combustible_id):null,
-      capacidad_max:modal.capacidad_max?parseFloat(modal.capacidad_max):null
-    });
-    const isNew=!modal.estanque_id;
-    const m2=isNew?api('/comb/estanques','POST',body,p.tok):api('/comb/estanques/'+modal.estanque_id,'PUT',body,p.tok);
-    m2.then(function(){setModal(null);load();}).catch(function(ex){setErr(ex.message);alert('Error: '+ex.message);});
+
+  function load(){
+    api('/comb/estanques','GET',null,p.tok)
+      .then(function(r){setItems(Array.isArray(r)?r:[]);})
+      .catch(function(ex){setMsg('Error al cargar: '+ex.message);setIsErr(true);});
   }
-  const blank={empresa_id:'',codigo:'',nombre:'',tipo_estanque:'FIJO',ubicacion:'',capacidad_max:'',tipo_combustible_id:'',observaciones:''};
-  const tipos_et=[{v:'FIJO',l:'Estanque fijo'},{v:'CAMION',l:'Camión estanque'},{v:'MOVIL',l:'Estanque móvil'},{v:'MENOR',l:'Estanque menor transportable'}];
+  useEffect(load,[p.tok]);
+
+  function openNew(){
+    setEditing(null);setMsg('');setIsErr(false);
+    setEmpresa('');setCodigo('');setNombre('');setTipoEst('FIJO');
+    setTipoComb('');setCapMax('');setUbic('');setObs('');
+    setShow(true);
+  }
+  function openEdit(r){
+    setEditing(r);setMsg('');setIsErr(false);
+    setEmpresa(String(r.empresa_id||''));
+    setCodigo(r.codigo||'');setNombre(r.nombre||'');
+    setTipoEst(r.tipo_estanque||'FIJO');
+    setTipoComb(r.tipo_combustible_id?String(r.tipo_combustible_id):'');
+    setCapMax(r.capacidad_max?String(r.capacidad_max):'');
+    setUbic(r.ubicacion||'');setObs(r.observaciones||'');
+    setShow(true);
+  }
+
+  function save(){
+    setMsg('');setIsErr(false);
+    if(!empresa){setMsg('Seleccione una empresa');setIsErr(true);return;}
+    if(!codigo.trim()){setMsg('El codigo es obligatorio');setIsErr(true);return;}
+    if(!nombre.trim()){setMsg('El nombre es obligatorio');setIsErr(true);return;}
+    var body={
+      empresa_id:parseInt(empresa),
+      codigo:codigo.trim(),
+      nombre:nombre.trim(),
+      tipo_estanque:tipoEst||'FIJO',
+      tipo_combustible_id:tipoComb?parseInt(tipoComb):null,
+      capacidad_max:capMax?parseFloat(capMax):null,
+      ubicacion:ubic||null,
+      observaciones:obs||null
+    };
+    var url=editing?'/comb/estanques/'+editing.estanque_id:'/comb/estanques';
+    var method=editing?'PUT':'POST';
+    api(url,method,body,p.tok)
+      .then(function(){setShow(false);load();setMsg('Guardado correctamente');setIsErr(false);})
+      .catch(function(ex){setMsg('Error: '+ex.message);setIsErr(true);});
+  }
+
+  var inpStyle={width:'100%',padding:'8px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,boxSizing:'border-box'};
+  var lblStyle={fontSize:12,fontWeight:600,color:'#475569',display:'block',marginBottom:4};
+
   return h('div',null,
-    h('div',{style:{display:'flex',gap:8,marginBottom:10}},
-      h(Btn,{onClick:function(){setErr('');setModal(blank);}},null,'+ Nuevo Estanque')
+    msg&&h('div',{className:'al '+(isErr?'al-e':'al-i'),style:{marginBottom:8}},msg),
+    h('div',{style:{marginBottom:10}},
+      h(Btn,{onClick:openNew},'+ Nuevo Estanque')
     ),
-    h('div',{className:'card'},h(TBL,{cols:[
-      {lbl:'Empresa',k:'empresa_nombre'},{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},
-      {lbl:'Tipo',k:'tipo_estanque'},{lbl:'Combustible',k:'tipo_comb_nombre'},{lbl:'Cap. máx.',render:function(r){return r.capacidad_max?parseFloat(r.capacidad_max).toFixed(0)+' lts':'—';}},
-      {lbl:'Stock actual',render:function(r){return r.litros_disponibles?h('span',{style:{color:'#0369A1',fontWeight:600}},parseFloat(r.litros_disponibles).toFixed(1)+' lts'):'0 lts';}},
-      {lbl:'Estado',render:function(r){return h(Bg,{c:r.activo?'g':'r'},r.activo?'Activo':'Inactivo');}},
-      {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:3}},
-        h('button',{className:'btn btn-g btn-xs',onClick:function(){setErr('');setModal(Object.assign({},r));}},null,'✏'),
-        h('button',{className:'btn btn-xs',style:{background:r.activo?'#FEF3C7':'#D1FAE5',color:r.activo?'#92400E':'#065F46',border:'none'},onClick:function(){api('/comb/estanques/'+r.estanque_id+'/activo','PATCH',{},p.tok).then(load).catch(function(ex){alert(ex.message);});}},r.activo?'Inactivar':'Activar')
-      );}}
-    ],rows:items,empty:'Sin estanques registrados'})),
-    modal&&h(Modal,{title:(modal.estanque_id?'Editar':'Nuevo')+' Estanque',onClose:function(){setModal(null);},lg:true},
-      h(EB,null,
-        h('div',{className:'mb'},
-          err&&h('div',{className:'al al-e',style:{marginBottom:8}},err),
-          h('div',{className:'g2'},
-            h(FS,{k:'empresa_id',l:'Empresa',req:true,item:modal,onChange:setModal,opts:empresas.map(function(e){return{v:e.empresa_id,l:e.razon_social};})}),
-            h(FI,{k:'codigo',l:'Codigo',req:true,item:modal,onChange:setModal,ph:'EST-001'}),
-            h(FI,{k:'nombre',l:'Nombre',req:true,item:modal,onChange:setModal,ph:'Estanque Principal'}),
-            h(FS,{k:'tipo_estanque',l:'Tipo',req:true,item:modal,onChange:setModal,opts:tipos_et}),
-            h(FS,{k:'tipo_combustible_id',l:'Combustible habitual',item:modal,onChange:setModal,opts:tipos.map(function(t){return{v:t.tipo_id,l:t.nombre};})}),
-            h(FI,{k:'capacidad_max',l:'Capacidad máx. (lts)',type:'number',item:modal,onChange:setModal}),
-            h(FI,{k:'ubicacion',l:'Ubicación',item:modal,onChange:setModal}),
-            h(FI,{k:'observaciones',l:'Observaciones',item:modal,onChange:setModal})
+    h('div',{className:'card'},
+      h(TBL,{cols:[
+        {lbl:'Empresa',k:'empresa_nombre'},
+        {lbl:'Codigo',k:'codigo',mono:true},
+        {lbl:'Nombre',k:'nombre'},
+        {lbl:'Tipo',k:'tipo_estanque'},
+        {lbl:'Combustible',render:function(r){return r.tipo_comb_nombre||'—';}},
+        {lbl:'Cap. max.',render:function(r){return r.capacidad_max?parseFloat(r.capacidad_max).toFixed(0)+' lts':'—';}},
+        {lbl:'Stock',render:function(r){return r.litros_disponibles?parseFloat(r.litros_disponibles).toFixed(1)+' lts':'0 lts';}},
+        {lbl:'Estado',render:function(r){return h(Bg,{c:r.activo?'g':'r'},r.activo?'Activo':'Inactivo');}},
+        {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:3}},
+          h(Btn,{v:'g',sm:true,onClick:function(){openEdit(r);}},'✏'),
+          h(Btn,{v:r.activo?'a':'g',sm:true,onClick:function(){
+            api('/comb/estanques/'+r.estanque_id+'/activo','PATCH',{},p.tok).then(load).catch(function(ex){alert(ex.message);});
+          }},r.activo?'Inactivar':'Activar')
+        );}}
+      ],rows:items,empty:'Sin estanques registrados'})
+    ),
+    show&&h(Modal,{title:(editing?'Editar':'Nuevo')+' Estanque',onClose:function(){setShow(false);},lg:true},
+      h('div',{style:{padding:'4px 0'}},
+        isErr&&h('div',{className:'al al-e',style:{marginBottom:12}},msg),
+        h('div',{className:'g2',style:{marginBottom:10}},
+          h('div',null,
+            h('label',{style:lblStyle},'Empresa *'),
+            h('select',{value:empresa,onChange:function(e){setEmpresa(e.target.value);},style:inpStyle},
+              h('option',{value:''},'Seleccione...'),
+              empresas.map(function(e){return h('option',{key:e.empresa_id,value:String(e.empresa_id)},e.razon_social);})
+            )
+          ),
+          h('div',null,
+            h('label',{style:lblStyle},'Codigo *'),
+            h('input',{type:'text',value:codigo,onChange:function(e){setCodigo(e.target.value);},placeholder:'EST-001',style:inpStyle})
+          ),
+          h('div',null,
+            h('label',{style:lblStyle},'Nombre *'),
+            h('input',{type:'text',value:nombre,onChange:function(e){setNombre(e.target.value);},placeholder:'Estanque Principal',style:inpStyle})
+          ),
+          h('div',null,
+            h('label',{style:lblStyle},'Tipo'),
+            h('select',{value:tipoEst,onChange:function(e){setTipoEst(e.target.value);},style:inpStyle},
+              h('option',{value:'FIJO'},'Estanque fijo'),
+              h('option',{value:'CAMION'},'Camion estanque'),
+              h('option',{value:'MOVIL'},'Estanque movil'),
+              h('option',{value:'MENOR'},'Estanque menor transportable')
+            )
+          ),
+          h('div',null,
+            h('label',{style:lblStyle},'Combustible habitual'),
+            h('select',{value:tipoComb,onChange:function(e){setTipoComb(e.target.value);},style:inpStyle},
+              h('option',{value:''},'Seleccione...'),
+              tipos.map(function(t){return h('option',{key:t.tipo_id,value:String(t.tipo_id)},t.nombre);})
+            )
+          ),
+          h('div',null,
+            h('label',{style:lblStyle},'Capacidad max. (lts)'),
+            h('input',{type:'number',value:capMax,onChange:function(e){setCapMax(e.target.value);},style:inpStyle})
+          ),
+          h('div',null,
+            h('label',{style:lblStyle},'Ubicacion'),
+            h('input',{type:'text',value:ubic,onChange:function(e){setUbic(e.target.value);},style:inpStyle})
+          ),
+          h('div',null,
+            h('label',{style:lblStyle},'Observaciones'),
+            h('input',{type:'text',value:obs,onChange:function(e){setObs(e.target.value);},style:inpStyle})
           )
         ),
-        h('div',{className:'mf'},h(Btn,{v:'g',onClick:function(){setModal(null);}},'Cancelar'),h(Btn,{onClick:save},'Guardar'))
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8,paddingTop:8,borderTop:'1px solid #E2E8F0'}},
+          h(Btn,{v:'g',onClick:function(){setShow(false);}},'Cancelar'),
+          h(Btn,{onClick:save},'Guardar')
+        )
       )
     )
   );
