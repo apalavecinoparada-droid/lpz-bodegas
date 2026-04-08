@@ -1225,8 +1225,28 @@ app.get('/api/comb/panel-stats', auth, async(req,res)=>{
 // KARDEX POR ESTANQUE
 app.get('/api/comb/kardex-est', auth, async(req,res)=>{
   try{
-    const{estanque_id,empresa_id,tipo_id,desde,hasta}=req.query;
+    const{estanque_id,tipo_id,desde,hasta}=req.query;
     if(!estanque_id) return res.status(400).json({error:'Debe indicar estanque_id'});
+    const estId=parseInt(estanque_id);
+
+    // 1. Calculate opening balance (all movements BEFORE 'desde')
+    let saldoInicial=0;
+    if(desde){
+      const preVals=[estanque_id,desde];
+      let preWhere=["m.estado='ACTIVO'","(m.estanque_origen_id=$1 OR m.estanque_destino_id=$1)","m.fecha<$2"];
+      if(tipo_id){preVals.push(tipo_id);preWhere.push(`m.tipo_id=$${preVals.length}`);}
+      const preMovs=await pool.query(`SELECT tipo_mov,estanque_origen_id,estanque_destino_id,litros FROM comb_movimientos m WHERE ${preWhere.join(' AND ')} ORDER BY m.fecha ASC,m.mov_id ASC`,preVals);
+      preMovs.rows.forEach(function(m){
+        if(m.tipo_mov==='INGRESO_STOCK'&&m.estanque_destino_id===estId) saldoInicial+=parseFloat(m.litros);
+        else if(m.tipo_mov==='DISTRIBUCION'&&m.estanque_origen_id===estId) saldoInicial-=parseFloat(m.litros);
+        else if(m.tipo_mov==='TRASPASO'){
+          if(m.estanque_destino_id===estId) saldoInicial+=parseFloat(m.litros);
+          else if(m.estanque_origen_id===estId) saldoInicial-=parseFloat(m.litros);
+        }
+      });
+    }
+
+    // 2. Get period movements
     let where=["m.estado='ACTIVO'","(m.estanque_origen_id=$1 OR m.estanque_destino_id=$1)"],vals=[estanque_id];
     if(desde){vals.push(desde);where.push(`m.fecha>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`m.fecha<=$${vals.length}`);}
@@ -1247,9 +1267,8 @@ app.get('/api/comb/kardex-est', auth, async(req,res)=>{
       WHERE ${where.join(' AND ')}
       ORDER BY m.fecha ASC,m.mov_id ASC`,vals);
 
-    // Calculate running balance
-    const estId=parseInt(estanque_id);
-    let saldo=0;
+    // 3. Build kardex with running balance starting from saldoInicial
+    let saldo=parseFloat(saldoInicial.toFixed(3));
     const rows=movs.rows.map(function(m){
       let entrada=0,salida=0;
       if(m.tipo_mov==='INGRESO_STOCK'&&m.estanque_destino_id===estId) entrada=parseFloat(m.litros);
@@ -1258,10 +1277,10 @@ app.get('/api/comb/kardex-est', auth, async(req,res)=>{
         if(m.estanque_destino_id===estId) entrada=parseFloat(m.litros);
         else if(m.estanque_origen_id===estId) salida=parseFloat(m.litros);
       }
-      saldo+=entrada-salida;
-      return Object.assign({},m,{entrada,salida,saldo_acumulado:parseFloat(saldo.toFixed(3))});
+      saldo=parseFloat((saldo+entrada-salida).toFixed(3));
+      return Object.assign({},m,{entrada,salida,saldo_acumulado:saldo});
     });
-    res.json(rows);
+    res.json({saldo_inicial:parseFloat(saldoInicial.toFixed(3)),rows});
   }catch(e){res.status(500).json({error:e.message});}
 });
 
