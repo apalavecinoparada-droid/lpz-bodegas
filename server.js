@@ -853,16 +853,22 @@ app.get('/api/comb/estanques', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.post('/api/comb/estanques', auth, async(req,res)=>{
+  console.log('[COMB-EST POST] body:', JSON.stringify(req.body));
   try{
     const{empresa_id,codigo,nombre,tipo_estanque,ubicacion,capacidad_max,tipo_combustible_id,observaciones}=req.body;
     const empId=parseInt(empresa_id);
+    console.log('[COMB-EST POST] empId:', empId, 'codigo:', codigo, 'nombre:', nombre);
     if(!empId) return res.status(400).json({error:'Debe seleccionar una empresa'});
     if(!codigo) return res.status(400).json({error:'El codigo es obligatorio'});
     if(!nombre) return res.status(400).json({error:'El nombre es obligatorio'});
     const r=await pool.query('INSERT INTO comb_estanques(empresa_id,codigo,nombre,tipo_estanque,ubicacion,capacidad_max,tipo_combustible_id,observaciones) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
       [empId,codigo.trim(),nombre.trim(),tipo_estanque||'FIJO',ubicacion||null,capacidad_max?parseFloat(capacidad_max):null,tipo_combustible_id?parseInt(tipo_combustible_id):null,observaciones||null]);
+    console.log('[COMB-EST POST] OK, id:', r.rows[0].estanque_id);
     res.status(201).json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
+  }catch(e){
+    console.error('[COMB-EST POST] ERROR:', e.message);
+    res.status(400).json({error:e.message});
+  }
 });
 app.put('/api/comb/estanques/:id', auth, async(req,res)=>{
   try{
@@ -1114,264 +1120,224 @@ app.listen(PORT,'0.0.0.0', async()=>{
 
 // ═══════════════════════════════════════════════════════════════════════════
 // MÓDULO CONTROL DE COMBUSTIBLES
+
+app.post('/api/setup/comb', auth, async(req,res)=>{
+  const errors=[];
+  async function run(sql){
+    try{ await pool.query(sql); }
+    catch(e){ errors.push(e.message.substring(0,120)); }
+  }
+  await run(`CREATE TABLE IF NOT EXISTS comb_tipos (tipo_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, activo BOOLEAN DEFAULT true)`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_estanques (estanque_id SERIAL PRIMARY KEY, empresa_id INT NOT NULL REFERENCES empresas(empresa_id), codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo_estanque VARCHAR(30) NOT NULL DEFAULT 'FIJO', ubicacion VARCHAR(150), capacidad_max NUMERIC(10,2), tipo_combustible_id INT REFERENCES comb_tipos(tipo_id), observaciones TEXT, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_stock (estanque_id INT NOT NULL REFERENCES comb_estanques(estanque_id), tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), litros_disponibles NUMERIC(12,3) DEFAULT 0, costo_promedio NUMERIC(14,4) DEFAULT 0, ultima_actualizacion TIMESTAMP DEFAULT NOW(), PRIMARY KEY(estanque_id,tipo_id))`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_movimientos (mov_id SERIAL PRIMARY KEY, tipo_mov VARCHAR(20) NOT NULL, empresa_id INT REFERENCES empresas(empresa_id), fecha DATE NOT NULL, tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), estanque_origen_id INT REFERENCES comb_estanques(estanque_id), estanque_destino_id INT REFERENCES comb_estanques(estanque_id), equipo_id INT REFERENCES equipos(equipo_id), faena_id INT REFERENCES faenas(faena_id), litros NUMERIC(12,3) NOT NULL, precio_unitario NUMERIC(14,4) DEFAULT 0, costo_total NUMERIC(14,2) DEFAULT 0, horometro NUMERIC(10,1), kilometraje NUMERIC(10,1), responsable VARCHAR(100), numero_documento VARCHAR(30), estado VARCHAR(10) DEFAULT 'ACTIVO', motivo_anulacion TEXT, usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100))`);
+  for(const t of ['Diesel','Gasolina 93','Gasolina 95','Gasolina 97']){
+    await run(`INSERT INTO comb_tipos(nombre) SELECT '${t}' WHERE NOT EXISTS(SELECT 1 FROM comb_tipos WHERE nombre='${t}')`);
+  }
+  if(errors.length) res.status(207).json({ok:false,errors});
+  else res.json({ok:true,msg:'Tablas de combustibles creadas correctamente'});
+});
+
+
+app.listen(PORT,'0.0.0.0', async()=>{
+  console.log('\n============================================================');
+  console.log('  LPZ Bodegas v2.0 — Puerto', PORT);
+  console.log('============================================================');
+  let tries=0;
+  while(tries<12){try{await pool.query('SELECT 1');console.log('  [OK] BD conectada');break;}catch{tries++;console.log(`  [ESPERA] BD... ${tries}/12`);await new Promise(r=>setTimeout(r,3000));}}
+  await autoSetup();
+  console.log('  [OK] Sistema listo — admin@lpz.cl / admin123');
+  console.log('============================================================\n');
+});
+
 // ═══════════════════════════════════════════════════════════════════════════
-
-// ── Tipos de combustible ────────────────────────────────────────────────────
-app.get('/api/comb/tipos', auth, async(req,res)=>{try{res.json((await pool.query('SELECT * FROM comb_tipos ORDER BY nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
-app.post('/api/comb/tipos', auth, async(req,res)=>{try{const r=await pool.query('INSERT INTO comb_tipos(nombre) VALUES($1) RETURNING *',[req.body.nombre]);res.status(201).json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}});
-app.patch('/api/comb/tipos/:id/activo', auth, async(req,res)=>{try{res.json((await pool.query('UPDATE comb_tipos SET activo=NOT activo WHERE tipo_id=$1 RETURNING *',[req.params.id])).rows[0]);}catch(e){res.status(400).json({error:e.message});}});
-
-// ── Estanques ───────────────────────────────────────────────────────────────
-app.get('/api/comb/estanques', auth, async(req,res)=>{
-  try{
-    const{empresa_id}=req.query;
-    let q='SELECT e.*,emp.razon_social AS empresa_nombre,t.nombre AS tipo_comb_nombre FROM comb_estanques e LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id LEFT JOIN comb_tipos t ON e.tipo_combustible_id=t.tipo_id';
-    const vals=[];
-    if(empresa_id){q+=' WHERE e.empresa_id=$1';vals.push(empresa_id);}
-    q+=' ORDER BY emp.razon_social,e.nombre';
-    res.json((await pool.query(q,vals)).rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-app.post('/api/comb/estanques', auth, async(req,res)=>{
-  try{
-    const{empresa_id,codigo,nombre,tipo_estanque,ubicacion,capacidad_max,tipo_combustible_id,observaciones}=req.body;
-    const r=await pool.query('INSERT INTO comb_estanques(empresa_id,codigo,nombre,tipo_estanque,ubicacion,capacidad_max,tipo_combustible_id,observaciones) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[empresa_id,codigo,nombre,tipo_estanque||null,ubicacion||null,capacidad_max||null,tipo_combustible_id||null,observaciones||null]);
-    res.status(201).json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
-});
-app.put('/api/comb/estanques/:id', auth, async(req,res)=>{
-  try{
-    const{empresa_id,codigo,nombre,tipo_estanque,ubicacion,capacidad_max,tipo_combustible_id,observaciones}=req.body;
-    const r=await pool.query('UPDATE comb_estanques SET empresa_id=$1,codigo=$2,nombre=$3,tipo_estanque=$4,ubicacion=$5,capacidad_max=$6,tipo_combustible_id=$7,observaciones=$8 WHERE estanque_id=$9 RETURNING *',[empresa_id,codigo,nombre,tipo_estanque||null,ubicacion||null,capacidad_max||null,tipo_combustible_id||null,observaciones||null,req.params.id]);
-    res.json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
-});
-app.patch('/api/comb/estanques/:id/activo', auth, async(req,res)=>{try{res.json((await pool.query('UPDATE comb_estanques SET activo=NOT activo WHERE estanque_id=$1 RETURNING *',[req.params.id])).rows[0]);}catch(e){res.status(400).json({error:e.message});}});
-
-// ── Compras directas ────────────────────────────────────────────────────────
-app.get('/api/comb/compras-directas', auth, async(req,res)=>{
-  try{
-    const{empresa_id,desde,hasta,equipo_id,faena_id,tipo_combustible_id}=req.query;
-    let where=['c.estado=\'ACTIVO\''],vals=[];
-    if(empresa_id){vals.push(empresa_id);where.push(`c.empresa_id=$${vals.length}`);}
-    if(desde){vals.push(desde);where.push(`c.fecha>=$${vals.length}`);}
-    if(hasta){vals.push(hasta);where.push(`c.fecha<=$${vals.length}`);}
-    if(equipo_id){vals.push(equipo_id);where.push(`c.equipo_id=$${vals.length}`);}
-    if(faena_id){vals.push(faena_id);where.push(`c.faena_id=$${vals.length}`);}
-    if(tipo_combustible_id){vals.push(tipo_combustible_id);where.push(`c.tipo_combustible_id=$${vals.length}`);}
-    const r=await pool.query(`SELECT c.*,emp.razon_social AS empresa_nombre,p.nombre AS proveedor_nombre,t.nombre AS tipo_comb_nombre,f.nombre AS faena_nombre,e.nombre AS equipo_nombre,e.codigo AS equipo_codigo FROM comb_compras_directas c LEFT JOIN empresas emp ON c.empresa_id=emp.empresa_id LEFT JOIN proveedores p ON c.proveedor_id=p.proveedor_id LEFT JOIN comb_tipos t ON c.tipo_combustible_id=t.tipo_id LEFT JOIN faenas f ON c.faena_id=f.faena_id LEFT JOIN equipos e ON c.equipo_id=e.equipo_id WHERE ${where.join(' AND ')} ORDER BY c.fecha DESC,c.compra_id DESC`,vals);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-app.post('/api/comb/compras-directas', auth, async(req,res)=>{
-  try{
-    const{empresa_id,fecha,proveedor_id,tipo_combustible_id,cantidad,precio_unitario,faena_id,equipo_id,numero_documento,oc_referencia,observaciones}=req.body;
-    const r=await pool.query('INSERT INTO comb_compras_directas(empresa_id,fecha,proveedor_id,tipo_combustible_id,cantidad,precio_unitario,faena_id,equipo_id,numero_documento,oc_referencia,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',[empresa_id,fecha,proveedor_id||null,tipo_combustible_id,parseFloat(cantidad),parseFloat(precio_unitario),faena_id||null,equipo_id,numero_documento||null,oc_referencia||null,observaciones||null,req.user.email]);
-    res.status(201).json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
-});
-app.patch('/api/comb/compras-directas/:id/anular', auth, async(req,res)=>{
-  try{
-    const{motivo}=req.body;
-    await pool.query("UPDATE comb_compras_directas SET estado='ANULADO',anulado_en=NOW(),anulado_por=$1,motivo_anulacion=$2 WHERE compra_id=$3",[req.user.email,motivo||'Sin motivo',req.params.id]);
-    res.json({ok:true});
-  }catch(e){res.status(400).json({error:e.message});}
+// MÓDULO CONTROL DE COMBUSTIBLES
+app.post('/api/setup/comb', auth, async(req,res)=>{
+  const errors=[];
+  async function run(sql){
+    try{ await pool.query(sql); }
+    catch(e){ errors.push(e.message.substring(0,120)); }
+  }
+  await run(`CREATE TABLE IF NOT EXISTS comb_tipos (tipo_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, activo BOOLEAN DEFAULT true)`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_estanques (estanque_id SERIAL PRIMARY KEY, empresa_id INT NOT NULL REFERENCES empresas(empresa_id), codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo_estanque VARCHAR(30) NOT NULL DEFAULT 'FIJO', ubicacion VARCHAR(150), capacidad_max NUMERIC(10,2), tipo_combustible_id INT REFERENCES comb_tipos(tipo_id), observaciones TEXT, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_stock (estanque_id INT NOT NULL REFERENCES comb_estanques(estanque_id), tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), litros_disponibles NUMERIC(12,3) DEFAULT 0, costo_promedio NUMERIC(14,4) DEFAULT 0, ultima_actualizacion TIMESTAMP DEFAULT NOW(), PRIMARY KEY(estanque_id,tipo_id))`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_movimientos (mov_id SERIAL PRIMARY KEY, tipo_mov VARCHAR(20) NOT NULL, empresa_id INT REFERENCES empresas(empresa_id), fecha DATE NOT NULL, tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), estanque_origen_id INT REFERENCES comb_estanques(estanque_id), estanque_destino_id INT REFERENCES comb_estanques(estanque_id), equipo_id INT REFERENCES equipos(equipo_id), faena_id INT REFERENCES faenas(faena_id), litros NUMERIC(12,3) NOT NULL, precio_unitario NUMERIC(14,4) DEFAULT 0, costo_total NUMERIC(14,2) DEFAULT 0, horometro NUMERIC(10,1), kilometraje NUMERIC(10,1), responsable VARCHAR(100), numero_documento VARCHAR(30), estado VARCHAR(10) DEFAULT 'ACTIVO', motivo_anulacion TEXT, usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100))`);
+  for(const t of ['Diesel','Gasolina 93','Gasolina 95','Gasolina 97']){
+    await run(`INSERT INTO comb_tipos(nombre) SELECT '${t}' WHERE NOT EXISTS(SELECT 1 FROM comb_tipos WHERE nombre='${t}')`);
+  }
+  if(errors.length) res.status(207).json({ok:false,errors});
+  else res.json({ok:true,msg:'Tablas de combustibles creadas correctamente'});
 });
 
-// ── Ingresos a estanque ─────────────────────────────────────────────────────
-app.get('/api/comb/ingresos', auth, async(req,res)=>{
-  try{
-    const{empresa_id,desde,hasta,estanque_id,tipo_combustible_id}=req.query;
-    let where=['i.estado=\'ACTIVO\''],vals=[];
-    if(empresa_id){vals.push(empresa_id);where.push(`i.empresa_id=$${vals.length}`);}
-    if(desde){vals.push(desde);where.push(`i.fecha>=$${vals.length}`);}
-    if(hasta){vals.push(hasta);where.push(`i.fecha<=$${vals.length}`);}
-    if(estanque_id){vals.push(estanque_id);where.push(`i.estanque_id=$${vals.length}`);}
-    if(tipo_combustible_id){vals.push(tipo_combustible_id);where.push(`i.tipo_combustible_id=$${vals.length}`);}
-    const r=await pool.query(`SELECT i.*,emp.razon_social AS empresa_nombre,p.nombre AS proveedor_nombre,t.nombre AS tipo_comb_nombre,est.nombre AS estanque_nombre FROM comb_ingresos i LEFT JOIN empresas emp ON i.empresa_id=emp.empresa_id LEFT JOIN proveedores p ON i.proveedor_id=p.proveedor_id LEFT JOIN comb_tipos t ON i.tipo_combustible_id=t.tipo_id LEFT JOIN comb_estanques est ON i.estanque_id=est.estanque_id WHERE ${where.join(' AND ')} ORDER BY i.fecha DESC,i.ingreso_id DESC`,vals);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-app.post('/api/comb/ingresos', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await client.query('BEGIN');
-    const{empresa_id,fecha,proveedor_id,tipo_combustible_id,estanque_id,cantidad,precio_unitario,numero_documento,oc_referencia,observaciones}=req.body;
-    const qty=parseFloat(cantidad),pu=parseFloat(precio_unitario);
-    // Actualizar CPP del estanque
-    const est=await client.query('SELECT saldo_actual,costo_promedio FROM comb_estanques WHERE estanque_id=$1',[estanque_id]);
-    const s=est.rows[0]||{saldo_actual:0,costo_promedio:0};
-    const saldoAnt=parseFloat(s.saldo_actual),cppAnt=parseFloat(s.costo_promedio);
-    const nuevoSaldo=saldoAnt+qty;
-    const nuevoCPP=nuevoSaldo>0?(saldoAnt*cppAnt+qty*pu)/nuevoSaldo:pu;
-    await client.query('UPDATE comb_estanques SET saldo_actual=$1,costo_promedio=$2 WHERE estanque_id=$3',[nuevoSaldo,nuevoCPP,estanque_id]);
-    const r=await client.query('INSERT INTO comb_ingresos(empresa_id,fecha,proveedor_id,tipo_combustible_id,estanque_id,cantidad,precio_unitario,numero_documento,oc_referencia,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[empresa_id,fecha,proveedor_id||null,tipo_combustible_id,estanque_id,qty,pu,numero_documento||null,oc_referencia||null,observaciones||null,req.user.email]);
-    await client.query('COMMIT');
-    res.status(201).json(r.rows[0]);
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
-});
-app.patch('/api/comb/ingresos/:id/anular', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await client.query('BEGIN');
-    const ing=await client.query('SELECT * FROM comb_ingresos WHERE ingreso_id=$1',[req.params.id]);
-    if(!ing.rows.length)throw new Error('Ingreso no encontrado');
-    const i=ing.rows[0];
-    if(i.estado==='ANULADO')throw new Error('Ya está anulado');
-    const est=await client.query('SELECT saldo_actual FROM comb_estanques WHERE estanque_id=$1',[i.estanque_id]);
-    const saldo=parseFloat(est.rows[0]?.saldo_actual||0);
-    if(saldo<parseFloat(i.cantidad))throw new Error('No se puede anular: saldo del estanque ('+saldo+' L) es menor que la cantidad del ingreso ('+i.cantidad+' L)');
-    await client.query('UPDATE comb_estanques SET saldo_actual=saldo_actual-$1 WHERE estanque_id=$2',[parseFloat(i.cantidad),i.estanque_id]);
-    await client.query("UPDATE comb_ingresos SET estado='ANULADO',anulado_en=NOW(),anulado_por=$1,motivo_anulacion=$2 WHERE ingreso_id=$3",[req.user.email,req.body.motivo||'Sin motivo',req.params.id]);
-    await client.query('COMMIT');
-    res.json({ok:true});
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
+
+app.listen(PORT,'0.0.0.0', async()=>{
+  console.log('\n============================================================');
+  console.log('  LPZ Bodegas v2.0 — Puerto', PORT);
+  console.log('============================================================');
+  let tries=0;
+  while(tries<12){try{await pool.query('SELECT 1');console.log('  [OK] BD conectada');break;}catch{tries++;console.log(`  [ESPERA] BD... ${tries}/12`);await new Promise(r=>setTimeout(r,3000));}}
+  await autoSetup();
+  console.log('  [OK] Sistema listo — admin@lpz.cl / admin123');
+  console.log('============================================================\n');
 });
 
-// ── Traspasos entre estanques ───────────────────────────────────────────────
-app.get('/api/comb/traspasos', auth, async(req,res)=>{
-  try{
-    const{empresa_id,desde,hasta}=req.query;
-    let where=['t.estado=\'ACTIVO\''],vals=[];
-    if(empresa_id){vals.push(empresa_id);where.push(`t.empresa_id=$${vals.length}`);}
-    if(desde){vals.push(desde);where.push(`t.fecha>=$${vals.length}`);}
-    if(hasta){vals.push(hasta);where.push(`t.fecha<=$${vals.length}`);}
-    const r=await pool.query(`SELECT t.*,emp.razon_social AS empresa_nombre,tc.nombre AS tipo_comb_nombre,eo.nombre AS origen_nombre,ed.nombre AS destino_nombre FROM comb_traspasos t LEFT JOIN empresas emp ON t.empresa_id=emp.empresa_id LEFT JOIN comb_tipos tc ON t.tipo_combustible_id=tc.tipo_id LEFT JOIN comb_estanques eo ON t.estanque_origen_id=eo.estanque_id LEFT JOIN comb_estanques ed ON t.estanque_destino_id=ed.estanque_id WHERE ${where.join(' AND ')} ORDER BY t.fecha DESC`,vals);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-app.post('/api/comb/traspasos', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await client.query('BEGIN');
-    const{empresa_id,fecha,estanque_origen_id,estanque_destino_id,tipo_combustible_id,cantidad,observaciones}=req.body;
-    const qty=parseFloat(cantidad);
-    const orig=await client.query('SELECT saldo_actual,costo_promedio FROM comb_estanques WHERE estanque_id=$1',[estanque_origen_id]);
-    if(!orig.rows.length)throw new Error('Estanque origen no encontrado');
-    const saldoOrig=parseFloat(orig.rows[0].saldo_actual);
-    if(saldoOrig<qty)throw new Error(`Stock insuficiente en estanque origen: ${saldoOrig.toFixed(2)} L disponibles`);
-    const cppOrig=parseFloat(orig.rows[0].costo_promedio);
-    await client.query('UPDATE comb_estanques SET saldo_actual=saldo_actual-$1 WHERE estanque_id=$2',[qty,estanque_origen_id]);
-    const dest=await client.query('SELECT saldo_actual,costo_promedio FROM comb_estanques WHERE estanque_id=$1',[estanque_destino_id]);
-    const saldoDest=parseFloat(dest.rows[0]?.saldo_actual||0),cppDest=parseFloat(dest.rows[0]?.costo_promedio||0);
-    const nuevoSaldo=saldoDest+qty;
-    const nuevoCPP=nuevoSaldo>0?(saldoDest*cppDest+qty*cppOrig)/nuevoSaldo:cppOrig;
-    await client.query('UPDATE comb_estanques SET saldo_actual=$1,costo_promedio=$2 WHERE estanque_id=$3',[nuevoSaldo,nuevoCPP,estanque_destino_id]);
-    const r=await client.query('INSERT INTO comb_traspasos(empresa_id,fecha,estanque_origen_id,estanque_destino_id,tipo_combustible_id,cantidad,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[empresa_id,fecha,estanque_origen_id,estanque_destino_id,tipo_combustible_id,qty,observaciones||null,req.user.email]);
-    await client.query('COMMIT');
-    res.status(201).json(r.rows[0]);
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
-});
-app.patch('/api/comb/traspasos/:id/anular', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await client.query('BEGIN');
-    const t=await client.query('SELECT * FROM comb_traspasos WHERE traspaso_id=$1',[req.params.id]);
-    if(!t.rows.length||t.rows[0].estado==='ANULADO')throw new Error('Traspaso no encontrado o ya anulado');
-    const tr=t.rows[0],qty=parseFloat(tr.cantidad);
-    const dest=await client.query('SELECT saldo_actual FROM comb_estanques WHERE estanque_id=$1',[tr.estanque_destino_id]);
-    if(parseFloat(dest.rows[0]?.saldo_actual||0)<qty)throw new Error('No se puede anular: el estanque destino ya no tiene suficiente combustible');
-    await client.query('UPDATE comb_estanques SET saldo_actual=saldo_actual+$1 WHERE estanque_id=$2',[qty,tr.estanque_origen_id]);
-    await client.query('UPDATE comb_estanques SET saldo_actual=saldo_actual-$1 WHERE estanque_id=$2',[qty,tr.estanque_destino_id]);
-    await client.query("UPDATE comb_traspasos SET estado='ANULADO',anulado_en=NOW(),anulado_por=$1,motivo_anulacion=$2 WHERE traspaso_id=$3",[req.user.email,req.body.motivo||'Sin motivo',req.params.id]);
-    await client.query('COMMIT');
-    res.json({ok:true});
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
+// ═══════════════════════════════════════════════════════════════════════════
+// MÓDULO CONTROL DE COMBUSTIBLES
+
+app.post('/api/setup/comb', auth, async(req,res)=>{
+  const errors=[];
+  async function run(sql){
+    try{ await pool.query(sql); }
+    catch(e){ errors.push(e.message.substring(0,120)); }
+  }
+  await run(`CREATE TABLE IF NOT EXISTS comb_tipos (tipo_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, activo BOOLEAN DEFAULT true)`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_estanques (estanque_id SERIAL PRIMARY KEY, empresa_id INT NOT NULL REFERENCES empresas(empresa_id), codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo_estanque VARCHAR(30) NOT NULL DEFAULT 'FIJO', ubicacion VARCHAR(150), capacidad_max NUMERIC(10,2), tipo_combustible_id INT REFERENCES comb_tipos(tipo_id), observaciones TEXT, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_stock (estanque_id INT NOT NULL REFERENCES comb_estanques(estanque_id), tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), litros_disponibles NUMERIC(12,3) DEFAULT 0, costo_promedio NUMERIC(14,4) DEFAULT 0, ultima_actualizacion TIMESTAMP DEFAULT NOW(), PRIMARY KEY(estanque_id,tipo_id))`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_movimientos (mov_id SERIAL PRIMARY KEY, tipo_mov VARCHAR(20) NOT NULL, empresa_id INT REFERENCES empresas(empresa_id), fecha DATE NOT NULL, tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), estanque_origen_id INT REFERENCES comb_estanques(estanque_id), estanque_destino_id INT REFERENCES comb_estanques(estanque_id), equipo_id INT REFERENCES equipos(equipo_id), faena_id INT REFERENCES faenas(faena_id), litros NUMERIC(12,3) NOT NULL, precio_unitario NUMERIC(14,4) DEFAULT 0, costo_total NUMERIC(14,2) DEFAULT 0, horometro NUMERIC(10,1), kilometraje NUMERIC(10,1), responsable VARCHAR(100), numero_documento VARCHAR(30), estado VARCHAR(10) DEFAULT 'ACTIVO', motivo_anulacion TEXT, usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100))`);
+  for(const t of ['Diesel','Gasolina 93','Gasolina 95','Gasolina 97']){
+    await run(`INSERT INTO comb_tipos(nombre) SELECT '${t}' WHERE NOT EXISTS(SELECT 1 FROM comb_tipos WHERE nombre='${t}')`);
+  }
+  if(errors.length) res.status(207).json({ok:false,errors});
+  else res.json({ok:true,msg:'Tablas de combustibles creadas correctamente'});
 });
 
-// ── Distribuciones a equipos ────────────────────────────────────────────────
-app.get('/api/comb/distribuciones', auth, async(req,res)=>{
-  try{
-    const{empresa_id,desde,hasta,equipo_id,faena_id,estanque_id,tipo_combustible_id}=req.query;
-    let where=['d.estado=\'ACTIVO\''],vals=[];
-    if(empresa_id){vals.push(empresa_id);where.push(`d.empresa_id=$${vals.length}`);}
-    if(desde){vals.push(desde);where.push(`d.fecha>=$${vals.length}`);}
-    if(hasta){vals.push(hasta);where.push(`d.fecha<=$${vals.length}`);}
-    if(equipo_id){vals.push(equipo_id);where.push(`d.equipo_id=$${vals.length}`);}
-    if(faena_id){vals.push(faena_id);where.push(`d.faena_id=$${vals.length}`);}
-    if(estanque_id){vals.push(estanque_id);where.push(`d.estanque_id=$${vals.length}`);}
-    if(tipo_combustible_id){vals.push(tipo_combustible_id);where.push(`d.tipo_combustible_id=$${vals.length}`);}
-    const r=await pool.query(`SELECT d.*,emp.razon_social AS empresa_nombre,f.nombre AS faena_nombre,e.nombre AS equipo_nombre,e.codigo AS equipo_codigo,est.nombre AS estanque_nombre,t.nombre AS tipo_comb_nombre FROM comb_distribuciones d LEFT JOIN empresas emp ON d.empresa_id=emp.empresa_id LEFT JOIN faenas f ON d.faena_id=f.faena_id LEFT JOIN equipos e ON d.equipo_id=e.equipo_id LEFT JOIN comb_estanques est ON d.estanque_id=est.estanque_id LEFT JOIN comb_tipos t ON d.tipo_combustible_id=t.tipo_id WHERE ${where.join(' AND ')} ORDER BY d.fecha DESC,d.dist_id DESC`,vals);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-app.post('/api/comb/distribuciones', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await client.query('BEGIN');
-    const{empresa_id,fecha,faena_id,estanque_id,tipo_combustible_id,equipo_id,cantidad,horometro,kilometraje,responsable,observaciones}=req.body;
-    const qty=parseFloat(cantidad);
-    const est=await client.query('SELECT saldo_actual,costo_promedio FROM comb_estanques WHERE estanque_id=$1',[estanque_id]);
-    if(!est.rows.length)throw new Error('Estanque no encontrado');
-    const saldo=parseFloat(est.rows[0].saldo_actual);
-    if(saldo<qty)throw new Error(`Stock insuficiente en estanque: ${saldo.toFixed(2)} L disponibles, solicita ${qty} L`);
-    const cpp=parseFloat(est.rows[0].costo_promedio);
-    const costoTotal=qty*cpp;
-    await client.query('UPDATE comb_estanques SET saldo_actual=saldo_actual-$1 WHERE estanque_id=$2',[qty,estanque_id]);
-    const r=await client.query('INSERT INTO comb_distribuciones(empresa_id,fecha,faena_id,estanque_id,tipo_combustible_id,equipo_id,cantidad,costo_unitario,costo_total,horometro,kilometraje,responsable,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *',[empresa_id,fecha,faena_id||null,estanque_id,tipo_combustible_id,equipo_id,qty,cpp,costoTotal,horometro||null,kilometraje||null,responsable||null,observaciones||null,req.user.email]);
-    await client.query('COMMIT');
-    res.status(201).json(r.rows[0]);
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
-});
-app.patch('/api/comb/distribuciones/:id/anular', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await client.query('BEGIN');
-    const d=await client.query('SELECT * FROM comb_distribuciones WHERE dist_id=$1',[req.params.id]);
-    if(!d.rows.length||d.rows[0].estado==='ANULADO')throw new Error('Distribución no encontrada o ya anulada');
-    const dist=d.rows[0];
-    await client.query('UPDATE comb_estanques SET saldo_actual=saldo_actual+$1 WHERE estanque_id=$2',[parseFloat(dist.cantidad),dist.estanque_id]);
-    await client.query("UPDATE comb_distribuciones SET estado='ANULADO',anulado_en=NOW(),anulado_por=$1,motivo_anulacion=$2 WHERE dist_id=$3",[req.user.email,req.body.motivo||'Sin motivo',req.params.id]);
-    await client.query('COMMIT');
-    res.json({ok:true});
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
+
+app.listen(PORT,'0.0.0.0', async()=>{
+  console.log('\n============================================================');
+  console.log('  LPZ Bodegas v2.0 — Puerto', PORT);
+  console.log('============================================================');
+  let tries=0;
+  while(tries<12){try{await pool.query('SELECT 1');console.log('  [OK] BD conectada');break;}catch{tries++;console.log(`  [ESPERA] BD... ${tries}/12`);await new Promise(r=>setTimeout(r,3000));}}
+  await autoSetup();
+  console.log('  [OK] Sistema listo — admin@lpz.cl / admin123');
+  console.log('============================================================\n');
 });
 
-// ── Stock y panel ────────────────────────────────────────────────────────────
-app.get('/api/comb/stock', auth, async(req,res)=>{
-  try{
-    const{empresa_id}=req.query;
-    let q='SELECT e.*,emp.razon_social AS empresa_nombre,t.nombre AS tipo_comb_nombre FROM comb_estanques e LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id LEFT JOIN comb_tipos t ON e.tipo_combustible_id=t.tipo_id WHERE e.activo=true';
-    const vals=[];
-    if(empresa_id){q+=' AND e.empresa_id=$1';vals.push(empresa_id);}
-    q+=' ORDER BY emp.razon_social,e.nombre';
-    res.json((await pool.query(q,vals)).rows);
-  }catch(e){res.status(500).json({error:e.message});}
+// ═══════════════════════════════════════════════════════════════════════════
+// MÓDULO CONTROL DE COMBUSTIBLES
+app.post('/api/setup/comb', auth, async(req,res)=>{
+  const errors=[];
+  async function run(sql){
+    try{ await pool.query(sql); }
+    catch(e){ errors.push(e.message.substring(0,120)); }
+  }
+  await run(`CREATE TABLE IF NOT EXISTS comb_tipos (tipo_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, activo BOOLEAN DEFAULT true)`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_estanques (estanque_id SERIAL PRIMARY KEY, empresa_id INT NOT NULL REFERENCES empresas(empresa_id), codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo_estanque VARCHAR(30) NOT NULL DEFAULT 'FIJO', ubicacion VARCHAR(150), capacidad_max NUMERIC(10,2), tipo_combustible_id INT REFERENCES comb_tipos(tipo_id), observaciones TEXT, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_stock (estanque_id INT NOT NULL REFERENCES comb_estanques(estanque_id), tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), litros_disponibles NUMERIC(12,3) DEFAULT 0, costo_promedio NUMERIC(14,4) DEFAULT 0, ultima_actualizacion TIMESTAMP DEFAULT NOW(), PRIMARY KEY(estanque_id,tipo_id))`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_movimientos (mov_id SERIAL PRIMARY KEY, tipo_mov VARCHAR(20) NOT NULL, empresa_id INT REFERENCES empresas(empresa_id), fecha DATE NOT NULL, tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), estanque_origen_id INT REFERENCES comb_estanques(estanque_id), estanque_destino_id INT REFERENCES comb_estanques(estanque_id), equipo_id INT REFERENCES equipos(equipo_id), faena_id INT REFERENCES faenas(faena_id), litros NUMERIC(12,3) NOT NULL, precio_unitario NUMERIC(14,4) DEFAULT 0, costo_total NUMERIC(14,2) DEFAULT 0, horometro NUMERIC(10,1), kilometraje NUMERIC(10,1), responsable VARCHAR(100), numero_documento VARCHAR(30), estado VARCHAR(10) DEFAULT 'ACTIVO', motivo_anulacion TEXT, usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100))`);
+  for(const t of ['Diesel','Gasolina 93','Gasolina 95','Gasolina 97']){
+    await run(`INSERT INTO comb_tipos(nombre) SELECT '${t}' WHERE NOT EXISTS(SELECT 1 FROM comb_tipos WHERE nombre='${t}')`);
+  }
+  if(errors.length) res.status(207).json({ok:false,errors});
+  else res.json({ok:true,msg:'Tablas de combustibles creadas correctamente'});
 });
-app.get('/api/comb/panel', auth, async(req,res)=>{
-  try{
-    const{empresa_id}=req.query;
-    const v=empresa_id?[empresa_id]:[];
-    const w=empresa_id?' WHERE empresa_id=$1':'';
-    const wj=empresa_id?' WHERE e.empresa_id=$1':'';
-    const [totalStock,totalValor,distribMes,comprasMes]=await Promise.all([
-      pool.query(`SELECT COALESCE(SUM(saldo_actual),0) AS total FROM comb_estanques${w}`,v),
-      pool.query(`SELECT COALESCE(SUM(saldo_actual*costo_promedio),0) AS total FROM comb_estanques${w}`,v),
-      pool.query(`SELECT COALESCE(SUM(cantidad),0) AS total,COALESCE(SUM(costo_total),0) AS costo FROM comb_distribuciones d${wj.replace('e.','d.')} AND d.estado='ACTIVO' AND d.fecha>=date_trunc('month',NOW())`.replace('WHERE d.','WHERE d.estado=\'ACTIVO\' AND d.'), empresa_id?[empresa_id]:[]),
-      pool.query(`SELECT COALESCE(SUM(cantidad),0) AS total,COALESCE(SUM(total),0) AS monto FROM comb_ingresos i${wj.replace('e.','i.')} AND i.estado='ACTIVO' AND i.fecha>=date_trunc('month',NOW())`.replace('WHERE i.','WHERE i.estado=\'ACTIVO\' AND i.'), empresa_id?[empresa_id]:[]),
-    ]).catch(async()=>{
-      return [
-        await pool.query(`SELECT COALESCE(SUM(saldo_actual),0) AS total FROM comb_estanques${w}`,v),
-        await pool.query(`SELECT COALESCE(SUM(saldo_actual*costo_promedio),0) AS total FROM comb_estanques${w}`,v),
-        {rows:[{total:0,costo:0}]},
-        {rows:[{total:0,monto:0}]},
-      ];
-    });
-    const estanques=await pool.query(`SELECT e.nombre,e.saldo_actual,e.costo_promedio,e.capacidad_max,t.nombre AS tipo FROM comb_estanques e LEFT JOIN comb_tipos t ON e.tipo_combustible_id=t.tipo_id WHERE e.activo=true${empresa_id?' AND e.empresa_id=$1':''}`,empresa_id?[empresa_id]:[]);
-    res.json({
-      totalStockLt:parseFloat(totalStock.rows[0].total),
-      totalValorStock:parseFloat(totalValor.rows[0].total),
-      distribMesLt:parseFloat(distribMes.rows[0]?.total||0),
-      distribMesCosto:parseFloat(distribMes.rows[0]?.costo||0),
-      comprasMesLt:parseFloat(comprasMes.rows[0]?.total||0),
-      comprasMesMonto:parseFloat(comprasMes.rows[0]?.monto||0),
-      estanques:estanques.rows,
-    });
-  }catch(e){res.status(500).json({error:e.message});}
+
+
+app.listen(PORT,'0.0.0.0', async()=>{
+  console.log('\n============================================================');
+  console.log('  LPZ Bodegas v2.0 — Puerto', PORT);
+  console.log('============================================================');
+  let tries=0;
+  while(tries<12){try{await pool.query('SELECT 1');console.log('  [OK] BD conectada');break;}catch{tries++;console.log(`  [ESPERA] BD... ${tries}/12`);await new Promise(r=>setTimeout(r,3000));}}
+  await autoSetup();
+  console.log('  [OK] Sistema listo — admin@lpz.cl / admin123');
+  console.log('============================================================\n');
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MÓDULO CONTROL DE COMBUSTIBLES
+
+app.post('/api/setup/comb', auth, async(req,res)=>{
+  const errors=[];
+  async function run(sql){
+    try{ await pool.query(sql); }
+    catch(e){ errors.push(e.message.substring(0,120)); }
+  }
+  await run(`CREATE TABLE IF NOT EXISTS comb_tipos (tipo_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, activo BOOLEAN DEFAULT true)`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_estanques (estanque_id SERIAL PRIMARY KEY, empresa_id INT NOT NULL REFERENCES empresas(empresa_id), codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo_estanque VARCHAR(30) NOT NULL DEFAULT 'FIJO', ubicacion VARCHAR(150), capacidad_max NUMERIC(10,2), tipo_combustible_id INT REFERENCES comb_tipos(tipo_id), observaciones TEXT, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_stock (estanque_id INT NOT NULL REFERENCES comb_estanques(estanque_id), tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), litros_disponibles NUMERIC(12,3) DEFAULT 0, costo_promedio NUMERIC(14,4) DEFAULT 0, ultima_actualizacion TIMESTAMP DEFAULT NOW(), PRIMARY KEY(estanque_id,tipo_id))`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_movimientos (mov_id SERIAL PRIMARY KEY, tipo_mov VARCHAR(20) NOT NULL, empresa_id INT REFERENCES empresas(empresa_id), fecha DATE NOT NULL, tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), estanque_origen_id INT REFERENCES comb_estanques(estanque_id), estanque_destino_id INT REFERENCES comb_estanques(estanque_id), equipo_id INT REFERENCES equipos(equipo_id), faena_id INT REFERENCES faenas(faena_id), litros NUMERIC(12,3) NOT NULL, precio_unitario NUMERIC(14,4) DEFAULT 0, costo_total NUMERIC(14,2) DEFAULT 0, horometro NUMERIC(10,1), kilometraje NUMERIC(10,1), responsable VARCHAR(100), numero_documento VARCHAR(30), estado VARCHAR(10) DEFAULT 'ACTIVO', motivo_anulacion TEXT, usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100))`);
+  for(const t of ['Diesel','Gasolina 93','Gasolina 95','Gasolina 97']){
+    await run(`INSERT INTO comb_tipos(nombre) SELECT '${t}' WHERE NOT EXISTS(SELECT 1 FROM comb_tipos WHERE nombre='${t}')`);
+  }
+  if(errors.length) res.status(207).json({ok:false,errors});
+  else res.json({ok:true,msg:'Tablas de combustibles creadas correctamente'});
+});
+
+
+app.listen(PORT,'0.0.0.0', async()=>{
+  console.log('\n============================================================');
+  console.log('  LPZ Bodegas v2.0 — Puerto', PORT);
+  console.log('============================================================');
+  let tries=0;
+  while(tries<12){try{await pool.query('SELECT 1');console.log('  [OK] BD conectada');break;}catch{tries++;console.log(`  [ESPERA] BD... ${tries}/12`);await new Promise(r=>setTimeout(r,3000));}}
+  await autoSetup();
+  console.log('  [OK] Sistema listo — admin@lpz.cl / admin123');
+  console.log('============================================================\n');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MÓDULO CONTROL DE COMBUSTIBLES
+app.post('/api/setup/comb', auth, async(req,res)=>{
+  const errors=[];
+  async function run(sql){
+    try{ await pool.query(sql); }
+    catch(e){ errors.push(e.message.substring(0,120)); }
+  }
+  await run(`CREATE TABLE IF NOT EXISTS comb_tipos (tipo_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, activo BOOLEAN DEFAULT true)`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_estanques (estanque_id SERIAL PRIMARY KEY, empresa_id INT NOT NULL REFERENCES empresas(empresa_id), codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo_estanque VARCHAR(30) NOT NULL DEFAULT 'FIJO', ubicacion VARCHAR(150), capacidad_max NUMERIC(10,2), tipo_combustible_id INT REFERENCES comb_tipos(tipo_id), observaciones TEXT, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_stock (estanque_id INT NOT NULL REFERENCES comb_estanques(estanque_id), tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), litros_disponibles NUMERIC(12,3) DEFAULT 0, costo_promedio NUMERIC(14,4) DEFAULT 0, ultima_actualizacion TIMESTAMP DEFAULT NOW(), PRIMARY KEY(estanque_id,tipo_id))`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_movimientos (mov_id SERIAL PRIMARY KEY, tipo_mov VARCHAR(20) NOT NULL, empresa_id INT REFERENCES empresas(empresa_id), fecha DATE NOT NULL, tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), estanque_origen_id INT REFERENCES comb_estanques(estanque_id), estanque_destino_id INT REFERENCES comb_estanques(estanque_id), equipo_id INT REFERENCES equipos(equipo_id), faena_id INT REFERENCES faenas(faena_id), litros NUMERIC(12,3) NOT NULL, precio_unitario NUMERIC(14,4) DEFAULT 0, costo_total NUMERIC(14,2) DEFAULT 0, horometro NUMERIC(10,1), kilometraje NUMERIC(10,1), responsable VARCHAR(100), numero_documento VARCHAR(30), estado VARCHAR(10) DEFAULT 'ACTIVO', motivo_anulacion TEXT, usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100))`);
+  for(const t of ['Diesel','Gasolina 93','Gasolina 95','Gasolina 97']){
+    await run(`INSERT INTO comb_tipos(nombre) SELECT '${t}' WHERE NOT EXISTS(SELECT 1 FROM comb_tipos WHERE nombre='${t}')`);
+  }
+  if(errors.length) res.status(207).json({ok:false,errors});
+  else res.json({ok:true,msg:'Tablas de combustibles creadas correctamente'});
+});
+
+
+app.listen(PORT,'0.0.0.0', async()=>{
+  console.log('\n============================================================');
+  console.log('  LPZ Bodegas v2.0 — Puerto', PORT);
+  console.log('============================================================');
+  let tries=0;
+  while(tries<12){try{await pool.query('SELECT 1');console.log('  [OK] BD conectada');break;}catch{tries++;console.log(`  [ESPERA] BD... ${tries}/12`);await new Promise(r=>setTimeout(r,3000));}}
+  await autoSetup();
+  console.log('  [OK] Sistema listo — admin@lpz.cl / admin123');
+  console.log('============================================================\n');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MÓDULO CONTROL DE COMBUSTIBLES
+
+app.post('/api/setup/comb', auth, async(req,res)=>{
+  const errors=[];
+  async function run(sql){
+    try{ await pool.query(sql); }
+    catch(e){ errors.push(e.message.substring(0,120)); }
+  }
+  await run(`CREATE TABLE IF NOT EXISTS comb_tipos (tipo_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, activo BOOLEAN DEFAULT true)`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_estanques (estanque_id SERIAL PRIMARY KEY, empresa_id INT NOT NULL REFERENCES empresas(empresa_id), codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo_estanque VARCHAR(30) NOT NULL DEFAULT 'FIJO', ubicacion VARCHAR(150), capacidad_max NUMERIC(10,2), tipo_combustible_id INT REFERENCES comb_tipos(tipo_id), observaciones TEXT, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_stock (estanque_id INT NOT NULL REFERENCES comb_estanques(estanque_id), tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), litros_disponibles NUMERIC(12,3) DEFAULT 0, costo_promedio NUMERIC(14,4) DEFAULT 0, ultima_actualizacion TIMESTAMP DEFAULT NOW(), PRIMARY KEY(estanque_id,tipo_id))`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_movimientos (mov_id SERIAL PRIMARY KEY, tipo_mov VARCHAR(20) NOT NULL, empresa_id INT REFERENCES empresas(empresa_id), fecha DATE NOT NULL, tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), estanque_origen_id INT REFERENCES comb_estanques(estanque_id), estanque_destino_id INT REFERENCES comb_estanques(estanque_id), equipo_id INT REFERENCES equipos(equipo_id), faena_id INT REFERENCES faenas(faena_id), litros NUMERIC(12,3) NOT NULL, precio_unitario NUMERIC(14,4) DEFAULT 0, costo_total NUMERIC(14,2) DEFAULT 0, horometro NUMERIC(10,1), kilometraje NUMERIC(10,1), responsable VARCHAR(100), numero_documento VARCHAR(30), estado VARCHAR(10) DEFAULT 'ACTIVO', motivo_anulacion TEXT, usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100))`);
+  for(const t of ['Diesel','Gasolina 93','Gasolina 95','Gasolina 97']){
+    await run(`INSERT INTO comb_tipos(nombre) SELECT '${t}' WHERE NOT EXISTS(SELECT 1 FROM comb_tipos WHERE nombre='${t}')`);
+  }
+  if(errors.length) res.status(207).json({ok:false,errors});
+  else res.json({ok:true,msg:'Tablas de combustibles creadas correctamente'});
+});
+
+
+app.listen(PORT,'0.0.0.0', async()=>{
+  console.log('\n============================================================');
+  console.log('  LPZ Bodegas v2.0 — Puerto', PORT);
+  console.log('============================================================');
+  let tries=0;
+  while(tries<12){try{await pool.query('SELECT 1');console.log('  [OK] BD conectada');break;}catch{tries++;console.log(`  [ESPERA] BD... ${tries}/12`);await new Promise(r=>setTimeout(r,3000));}}
+  await autoSetup();
+  console.log('  [OK] Sistema listo — admin@lpz.cl / admin123');
+  console.log('============================================================\n');
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// MÓDULO CONTROL DE COMBUSTIBLES
