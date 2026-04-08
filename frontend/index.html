@@ -553,119 +553,108 @@ function ReportesView(p){
 function CalcCombustible(p){
   var TASAS={diesel:1.5,gasolina:6.0};
   const[tipoComb,setTipoComb]=useState('diesel');
+  const[modoCalc,setModoCalc]=useState('utm');
   const[utm,setUtm]=useState('');
   const[utmLoading,setUtmLoading]=useState(false);
+  const[impEspDir,setImpEspDir]=useState('');
+  const[modoImpDir,setModoImpDir]=useState('total');
+  const[litros,setLitros]=useState('');
+  const[totalGuia,setTotalGuia]=useState('');
 
   function fetchUTM(){
     setUtmLoading(true);
     fetch('https://mindicador.cl/api/utm')
       .then(function(r){return r.json();})
-      .then(function(d){
-        var val=d&&d.serie&&d.serie[0]&&d.serie[0].valor;
-        if(val){setUtm(String(Math.round(val)));} 
-        else{alert('No se pudo obtener la UTM. Ingrésela manualmente.');}
-      })
-      .catch(function(){alert('Error al obtener la UTM. Verifique su conexión.');})
+      .then(function(d){var val=d&&d.serie&&d.serie[0]&&d.serie[0].valor;if(val)setUtm(String(Math.round(val)));else alert('No se pudo obtener la UTM.');})
+      .catch(function(){alert('Error al conectar con mindicador.cl');})
       .finally(function(){setUtmLoading(false);});
   }
-  const[litros,setLitros]=useState('');
-  const[totalGuia,setTotalGuia]=useState('');
 
   var litrosNum=parseFloat(litros)||0;
-  var utmNum=parseFloat(utm)||0;
   var totalNum=parseFloat(totalGuia)||0;
   var tasa=TASAS[tipoComb]||1.5;
-
-  // Calculos
-  var impEspTotal=utmNum*tasa/1000*litrosNum;      // $ impuesto especifico total
-  var impEspPorLt=litrosNum>0?impEspTotal/litrosNum:0;
-  var baseIVA=totalNum-impEspTotal;                 // base para IVA (neto+IVA)
-  var neto=baseIVA/1.19;                            // neto sin IVA
+  var utmNum=parseFloat(utm)||0;
+  var impEspDirNum=parseFloat(impEspDir)||0;
+  var impEspTotal=modoCalc==='utm'
+    ? utmNum*tasa/1000*litrosNum
+    : (modoImpDir==='por_litro'?impEspDirNum*litrosNum:impEspDirNum);
+  var baseIVA=totalNum-impEspTotal;
+  var neto=baseIVA/1.19;
   var iva=neto*0.19;
   var netoPorLitro=litrosNum>0?neto/litrosNum:0;
-  var ok=litrosNum>0&&utmNum>0&&totalNum>0&&baseIVA>0;
+  var ok=litrosNum>0&&totalNum>0&&baseIVA>0&&(modoCalc==='utm'?utmNum>0:impEspDirNum>0);
 
-  var rowStyle={display:'flex',justifyContent:'space-between',alignItems:'center',padding:'6px 0',borderBottom:'1px solid #F1F5F9',fontSize:13};
-  var labelStyle={color:'#64748B'};
-  var valueStyle={fontWeight:600,fontFamily:'monospace'};
+  var rowS={display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:'1px solid #F1F5F9',fontSize:13};
+  var tabBtn=function(active){return {flex:1,padding:'7px',borderRadius:5,border:'1px solid '+(active?'#3B82F6':'#E2E8F0'),background:active?'#EFF6FF':'#F8FAFC',fontWeight:active?700:400,fontSize:12,cursor:'pointer',color:active?'#1D4ED8':'#64748B'};};
 
   return h(Modal,{title:'Calculadora — Precio Neto del Litro',onClose:p.onClose,lg:false},
     h('div',{style:{padding:'4px 0'}},
-      // Tipo combustible selector
-      h('div',{style:{display:'flex',gap:8,marginBottom:14}},
-        h('button',{
-          onClick:function(){setTipoComb('diesel');},
-          style:{flex:1,padding:'8px 0',borderRadius:6,border:'2px solid '+(tipoComb==='diesel'?'#F59E0B':'#E2E8F0'),
-            background:tipoComb==='diesel'?'#FEF3C7':'#F8FAFC',fontWeight:600,fontSize:13,cursor:'pointer',color:tipoComb==='diesel'?'#92400E':'#64748B'}
-        },'🚛 Diesel  (1.5 UTM/m³)'),
-        h('button',{
-          onClick:function(){setTipoComb('gasolina');},
-          style:{flex:1,padding:'8px 0',borderRadius:6,border:'2px solid '+(tipoComb==='gasolina'?'#3B82F6':'#E2E8F0'),
-            background:tipoComb==='gasolina'?'#EFF6FF':'#F8FAFC',fontWeight:600,fontSize:13,cursor:'pointer',color:tipoComb==='gasolina'?'#1D4ED8':'#64748B'}
-        },'⛽ Gasolina  (6 UTM/m³)')
+      // Tipo combustible
+      h('div',{style:{display:'flex',gap:8,marginBottom:12}},
+        h('button',{onClick:function(){setTipoComb('diesel');},style:{flex:1,padding:'8px',borderRadius:6,border:'2px solid '+(tipoComb==='diesel'?'#F59E0B':'#E2E8F0'),background:tipoComb==='diesel'?'#FEF3C7':'#F8FAFC',fontWeight:600,fontSize:13,cursor:'pointer',color:tipoComb==='diesel'?'#92400E':'#64748B'}},'🚛 Diesel  (1.5 UTM/m³)'),
+        h('button',{onClick:function(){setTipoComb('gasolina');},style:{flex:1,padding:'8px',borderRadius:6,border:'2px solid '+(tipoComb==='gasolina'?'#3B82F6':'#E2E8F0'),background:tipoComb==='gasolina'?'#EFF6FF':'#F8FAFC',fontWeight:600,fontSize:13,cursor:'pointer',color:tipoComb==='gasolina'?'#1D4ED8':'#64748B'}},'⛽ Gasolina  (6 UTM/m³)')
       ),
-      // Inputs
-      h('div',{className:'g2',style:{marginBottom:12}},
-        h('div',null,
-          h('label',{style:{fontSize:12,fontWeight:600,display:'block',marginBottom:4}},'UTM vigente ($)'),
+      // Modo calculo
+      h('div',{style:{display:'flex',gap:4,marginBottom:12,background:'#F1F5F9',borderRadius:6,padding:3}},
+        h('button',{onClick:function(){setModoCalc('utm');},style:tabBtn(modoCalc==='utm')},'Calcular con UTM (sin desglose)'),
+        h('button',{onClick:function(){setModoCalc('directo');},style:tabBtn(modoCalc==='directo')},'Tengo el imp. específico')
+      ),
+      // Inputs comunes
+      h('div',{className:'g2',style:{marginBottom:10}},
+        h(FI,{k:'litros',l:'Litros (guía)',type:'number',item:{litros},onChange:function(v){setLitros(v.litros);},ph:'Ej: 2899'}),
+        h(FI,{k:'totalGuia',l:'Total guía ($)',type:'number',item:{totalGuia},onChange:function(v){setTotalGuia(v.totalGuia);},ph:'Ej: 4.380.389'})
+      ),
+      // Modo-specific
+      modoCalc==='utm'?h('div',{style:{marginBottom:10}},
+        h(FR,{label:'UTM vigente ($)'},
           h('div',{style:{display:'flex',gap:6}},
-            h('input',{type:'number',value:utm,onChange:function(e){setUtm(e.target.value);},
-              style:{flex:1,padding:'8px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13},
-              placeholder:'Ej: 67.294'}),
-            h('button',{onClick:fetchUTM,disabled:utmLoading,
-              title:'Obtener UTM actual desde mindicador.cl',
-              style:{padding:'6px 10px',background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:5,fontSize:11,cursor:'pointer',whiteSpace:'nowrap',color:'#1D4ED8',fontWeight:600}},
-              utmLoading?'…':'↻ Obtener')
+            h('input',{type:'number',value:utm,onChange:function(e){setUtm(e.target.value);},style:{flex:1,padding:'8px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13},placeholder:'Ej: 67.294'}),
+            h(Btn,{v:'a',sm:true,onClick:fetchUTM,disabled:utmLoading},utmLoading?'…':'↻ Obtener UTM')
           )
         ),
-        h('div',null,
-          h('label',{style:{fontSize:12,fontWeight:600,display:'block',marginBottom:4}},'Litros (guía)'),
-          h('input',{type:'number',value:litros,onChange:function(e){setLitros(e.target.value);},
-            style:{width:'100%',padding:'8px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,boxSizing:'border-box'},
-            placeholder:'Ej: 8600'})
-        ),
-        h('div',{style:{gridColumn:'1 / -1'}},
-          h('label',{style:{fontSize:12,fontWeight:600,display:'block',marginBottom:4}},'Total guía de despacho ($)'),
-          h('input',{type:'number',value:totalGuia,onChange:function(e){setTotalGuia(e.target.value);},
-            style:{width:'100%',padding:'8px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,boxSizing:'border-box'},
-            placeholder:'Ej: 13.209.618'})
+        utmNum>0&&litrosNum>0&&h('div',{style:{fontSize:11,color:'#64748B',marginTop:2}},'Imp. esp. calculado: '+CLP(Math.round(impEspTotal))+' ('+tasa+' UTM × $'+utmNum+' / 1000 × '+litrosNum+' lts)')
+      ):h('div',{style:{marginBottom:10}},
+        h(FR,{label:'Impuesto específico'},
+          h('div',null,
+            h('div',{style:{display:'flex',gap:12,marginBottom:6}},
+              h('label',{style:{fontSize:12,display:'flex',alignItems:'center',gap:4,cursor:'pointer'}},
+                h('input',{type:'radio',name:'modoImpDir2',checked:modoImpDir==='total',onChange:function(){setModoImpDir('total');}}),
+                'Monto total ($)'
+              ),
+              h('label',{style:{fontSize:12,display:'flex',alignItems:'center',gap:4,cursor:'pointer'}},
+                h('input',{type:'radio',name:'modoImpDir2',checked:modoImpDir==='por_litro',onChange:function(){setModoImpDir('por_litro');}}),
+                'Por litro ($/lt)'
+              )
+            ),
+            h('input',{type:'number',value:impEspDir,onChange:function(e){setImpEspDir(e.target.value);},style:{width:'100%',padding:'8px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,boxSizing:'border-box'},
+              placeholder:modoImpDir==='total'?'Monto total del imp. específico de la factura':'$/lt de imp. específico'}),
+            litrosNum>0&&modoImpDir==='por_litro'&&impEspDirNum>0&&h('div',{style:{fontSize:11,color:'#64748B',marginTop:2}},'Total imp. esp.: '+CLP(Math.round(impEspTotal)))
+          )
         )
       ),
       h('hr',{className:'divider'}),
-      // Resultado
+      // Result
       h('div',{style:{background:ok?'#F0FDF4':'#F8FAFC',border:'1px solid '+(ok?'#BBF7D0':'#E2E8F0'),borderRadius:8,padding:'12px 16px'}},
         ok?h('div',null,
-          // Desglose
-          h('div',{style:{marginBottom:10}},
-            h('div',{style:{fontSize:11,fontWeight:600,color:'#64748B',marginBottom:6,textTransform:'uppercase',letterSpacing:'.5px'}},'Desglose de la guia'),
-            h('div',{style:rowStyle},h('span',{style:labelStyle},'Total guia'),h('span',{style:valueStyle},CLP(Math.round(totalNum)))),
-            h('div',{style:rowStyle},
-              h('span',{style:labelStyle},'Imp. especifico ('+tasa+' UTM/m³)'),
-              h('span',{style:Object.assign({},valueStyle,{color:'#DC2626'})},'-'+CLP(Math.round(impEspTotal)))
-            ),
-            h('div',{style:rowStyle},h('span',{style:labelStyle},'= Base IVA'),h('span',{style:valueStyle},CLP(Math.round(baseIVA)))),
-            h('div',{style:rowStyle},h('span',{style:labelStyle},'IVA 19%'),h('span',{style:Object.assign({},valueStyle,{color:'#DC2626'})},'-'+CLP(Math.round(iva)))),
-            h('div',{style:Object.assign({},rowStyle,{borderBottom:'none'})},h('span',{style:labelStyle},'= Neto total'),h('span',{style:valueStyle},CLP(Math.round(neto))))
+          h('div',{style:{marginBottom:8}},
+            h('div',{style:{fontSize:11,fontWeight:600,color:'#64748B',marginBottom:4,textTransform:'uppercase',letterSpacing:'.5px'}},'Desglose'),
+            h('div',{style:rowS},h('span',{style:{color:'#64748B'}},'Total guía'),h('span',{style:{fontWeight:600}},CLP(Math.round(totalNum)))),
+            h('div',{style:rowS},h('span',{style:{color:'#64748B'}},'− Imp. específico'),h('span',{style:{fontWeight:600,color:'#DC2626'}},'-'+CLP(Math.round(impEspTotal)))),
+            h('div',{style:rowS},h('span',{style:{color:'#64748B'}},'= Base IVA'),h('span',{style:{fontWeight:600}},CLP(Math.round(baseIVA)))),
+            h('div',{style:rowS},h('span',{style:{color:'#64748B'}},'− IVA 19%'),h('span',{style:{fontWeight:600,color:'#DC2626'}},'-'+CLP(Math.round(iva)))),
+            h('div',{style:{display:'flex',justifyContent:'space-between',padding:'5px 0',fontSize:13}},h('span',{style:{color:'#64748B'}},'= Neto total'),h('span',{style:{fontWeight:600}},CLP(Math.round(neto))))
           ),
-          // Resultado principal
-          h('div',{style:{background:'#DCFCE7',borderRadius:6,padding:'10px 14px',textAlign:'center',marginTop:6}},
-            h('div',{style:{fontSize:11,color:'#166534',marginBottom:2}},'PRECIO NETO POR LITRO — '+tipoComb.toUpperCase()),
-            h('div',{style:{fontSize:30,fontWeight:700,color:'#15803D'}},CLP(Math.round(netoPorLitro))),
-            h('div',{style:{fontSize:11,color:'#166534',marginTop:4}},
-              'Imp. esp./lt: '+CLP(Math.round(impEspPorLt))+
-              '  |  IVA/lt: '+CLP(Math.round(iva/litrosNum))+
-              '  |  Precio guia/lt: '+CLP(Math.round(totalNum/litrosNum))
+          h('div',{style:{background:'#DCFCE7',borderRadius:6,padding:'10px 14px',textAlign:'center'}},
+            h('div',{style:{fontSize:11,color:'#166534'}},'PRECIO NETO POR LITRO'),
+            h('div',{style:{fontSize:28,fontWeight:700,color:'#15803D'}},CLP(Math.round(netoPorLitro))),
+            h('div',{style:{fontSize:11,color:'#166534',marginTop:2}},
+              'Imp. esp./lt: '+CLP(Math.round(impEspTotal/litrosNum))+'  |  IVA/lt: '+CLP(Math.round(iva/litrosNum))
             ),
-            p.onUsar&&h('div',{style:{marginTop:8}},
-              h(Btn,{v:'g',onClick:function(){p.onUsar(Math.round(netoPorLitro));}},'Usar este valor en la OC')
-            )
+            p.onUsar&&h('div',{style:{marginTop:8}},h(Btn,{v:'g',onClick:function(){p.onUsar(Math.round(netoPorLitro));}},'Usar este valor en la OC'))
           )
         ):h('div',{style:{color:'#94A3B8',fontSize:13,textAlign:'center'}},'Complete los campos para ver el resultado')
       ),
-      // Nota
-      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:10,lineHeight:1.5}},
-        'Fórmula: Imp. específico = UTM × tasa / 1000 × litros. Neto = (Total − Imp. esp.) ÷ 1.19 ÷ litros. No incluye variaciones MEPCO.'
-      )
+      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Modo UTM: Imp. esp. = UTM × tasa / 1000 × lts. Modo directo: use el valor de la factura. Neto = (Total − Imp. esp.) ÷ 1.19 ÷ lts.')
     )
   );
 }
@@ -908,69 +897,104 @@ function OCDocView(p){
 function CalcCombustibleInline(){
   var TASAS={diesel:1.5,gasolina:6.0};
   const[tipoComb,setTipoComb]=useState('diesel');
+  const[modoCalc,setModoCalc]=useState('utm'); // 'utm' | 'directo'
+  // Modo UTM
   const[utm,setUtm]=useState('');
+  const[utmLoading,setUtmLoading]=useState(false);
+  // Modo directo
+  const[impEspDir,setImpEspDir]=useState(''); // monto total imp especifico
+  const[modoImpDir,setModoImpDir]=useState('total'); // 'total' | 'por_litro'
+  // Comunes
   const[litros,setLitros]=useState('');
   const[totalGuia,setTotalGuia]=useState('');
-  const[utmLoading,setUtmLoading]=useState(false);
 
   function fetchUTM(){
     setUtmLoading(true);
     fetch('https://mindicador.cl/api/utm')
       .then(function(r){return r.json();})
-      .then(function(d){
-        var val=d&&d.serie&&d.serie[0]&&d.serie[0].valor;
-        if(val){setUtm(String(Math.round(val)));} else{alert('No se pudo obtener la UTM.');}
-      })
+      .then(function(d){var val=d&&d.serie&&d.serie[0]&&d.serie[0].valor;if(val)setUtm(String(Math.round(val)));else alert('No se pudo obtener la UTM.');})
       .catch(function(){alert('Error al conectar con mindicador.cl');})
       .finally(function(){setUtmLoading(false);});
   }
 
   var litrosNum=parseFloat(litros)||0;
-  var utmNum=parseFloat(utm)||0;
   var totalNum=parseFloat(totalGuia)||0;
   var tasa=TASAS[tipoComb]||1.5;
-  var impEspTotal=utmNum*tasa/1000*litrosNum;
+  var utmNum=parseFloat(utm)||0;
+  var impEspDirNum=parseFloat(impEspDir)||0;
+
+  // Calculate specific tax based on mode
+  var impEspTotal=modoCalc==='utm'
+    ? utmNum*tasa/1000*litrosNum
+    : (modoImpDir==='por_litro'?impEspDirNum*litrosNum:impEspDirNum);
+
   var baseIVA=totalNum-impEspTotal;
   var neto=baseIVA/1.19;
   var iva=neto*0.19;
   var netoPorLitro=litrosNum>0?neto/litrosNum:0;
-  var ok=litrosNum>0&&utmNum>0&&totalNum>0&&baseIVA>0;
+  var ok=litrosNum>0&&totalNum>0&&baseIVA>0&&(modoCalc==='utm'?utmNum>0:impEspDirNum>0);
 
   var inpS={width:'100%',padding:'6px 8px',border:'1px solid #FDE68A',borderRadius:4,fontSize:12,boxSizing:'border-box',background:'#FFFDE7'};
+  var tabBtn=function(active){return {padding:'5px 10px',borderRadius:4,border:'1px solid '+(active?'#F59E0B':'#FDE68A'),background:active?'#FEF3C7':'transparent',fontWeight:active?700:400,fontSize:11,cursor:'pointer',color:active?'#92400E':'#78350F'};};
 
   return h('div',null,
-    h('div',{style:{display:'flex',gap:6,marginBottom:10}},
-      h('button',{onClick:function(){setTipoComb('diesel');},style:{flex:1,padding:'6px',borderRadius:5,border:'2px solid '+(tipoComb==='diesel'?'#F59E0B':'#FDE68A'),background:tipoComb==='diesel'?'#FEF3C7':'transparent',fontWeight:600,fontSize:11,cursor:'pointer',color:tipoComb==='diesel'?'#92400E':'#78350F'}},'🚛 Diesel (1.5 UTM/m³)'),
-      h('button',{onClick:function(){setTipoComb('gasolina');},style:{flex:1,padding:'6px',borderRadius:5,border:'2px solid '+(tipoComb==='gasolina'?'#3B82F6':'#FDE68A'),background:tipoComb==='gasolina'?'#EFF6FF':'transparent',fontWeight:600,fontSize:11,cursor:'pointer',color:tipoComb==='gasolina'?'#1D4ED8':'#78350F'}},'⛽ Gasolina (6 UTM/m³)')
+    // Tipo combustible
+    h('div',{style:{display:'flex',gap:6,marginBottom:8}},
+      h('button',{onClick:function(){setTipoComb('diesel');},style:{flex:1,padding:'5px',borderRadius:4,border:'2px solid '+(tipoComb==='diesel'?'#F59E0B':'#FDE68A'),background:tipoComb==='diesel'?'#FEF3C7':'transparent',fontWeight:600,fontSize:11,cursor:'pointer',color:tipoComb==='diesel'?'#92400E':'#78350F'}},'🚛 Diesel (1.5 UTM/m³)'),
+      h('button',{onClick:function(){setTipoComb('gasolina');},style:{flex:1,padding:'5px',borderRadius:4,border:'2px solid '+(tipoComb==='gasolina'?'#3B82F6':'#FDE68A'),background:tipoComb==='gasolina'?'#EFF6FF':'transparent',fontWeight:600,fontSize:11,cursor:'pointer',color:tipoComb==='gasolina'?'#1D4ED8':'#78350F'}},'⛽ Gasolina (6 UTM/m³)')
     ),
-    h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:8}},
-      h('div',null,
-        h('label',{style:{fontSize:10,fontWeight:600,display:'block',marginBottom:2,color:'#92400E'}},'UTM vigente ($)'),
-        h('div',{style:{display:'flex',gap:4}},
-          h('input',{type:'number',value:utm,onChange:function(e){setUtm(e.target.value);},style:inpS,placeholder:'Ej: 67.294'}),
-          h('button',{onClick:fetchUTM,disabled:utmLoading,style:{padding:'4px 6px',background:'#FEF3C7',border:'1px solid #FDE68A',borderRadius:4,fontSize:10,cursor:'pointer',whiteSpace:'nowrap',fontWeight:600}},utmLoading?'…':'↻')
-        )
-      ),
+    // Modo calculo
+    h('div',{style:{display:'flex',gap:4,marginBottom:8,background:'#FEF3C7',borderRadius:5,padding:3}},
+      h('button',{onClick:function(){setModoCalc('utm');},style:tabBtn(modoCalc==='utm')},'Calcular con UTM'),
+      h('button',{onClick:function(){setModoCalc('directo');},style:tabBtn(modoCalc==='directo')},'Ingresar imp. específico')
+    ),
+    // Inputs comunes
+    h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:6}},
       h('div',null,
         h('label',{style:{fontSize:10,fontWeight:600,display:'block',marginBottom:2,color:'#92400E'}},'Litros (guía)'),
         h('input',{type:'number',value:litros,onChange:function(e){setLitros(e.target.value);},style:inpS,placeholder:'Ej: 2899'})
       ),
       h('div',null,
         h('label',{style:{fontSize:10,fontWeight:600,display:'block',marginBottom:2,color:'#92400E'}},'Total guía ($)'),
-        h('input',{type:'number',value:totalGuia,onChange:function(e){setTotalGuia(e.target.value);},style:inpS,placeholder:'Ej: 4380389'})
+        h('input',{type:'number',value:totalGuia,onChange:function(e){setTotalGuia(e.target.value);},style:inpS,placeholder:'Ej: 4.380.389'})
       )
     ),
-    ok?h('div',{style:{background:'#DCFCE7',borderRadius:6,padding:'8px 12px',display:'flex',alignItems:'center',gap:16,flexWrap:'wrap'}},
-      h('div',null,
-        h('div',{style:{fontSize:9,color:'#166534',textTransform:'uppercase',letterSpacing:'.5px'}},'Neto/litro'),
-        h('div',{style:{fontSize:20,fontWeight:700,color:'#15803D'}},CLP(Math.round(netoPorLitro)))
+    // Modo-specific inputs
+    modoCalc==='utm'?h('div',null,
+      h('label',{style:{fontSize:10,fontWeight:600,display:'block',marginBottom:2,color:'#92400E'}},'UTM vigente ($)'),
+      h('div',{style:{display:'flex',gap:4}},
+        h('input',{type:'number',value:utm,onChange:function(e){setUtm(e.target.value);},style:inpS,placeholder:'Ej: 67.294'}),
+        h('button',{onClick:fetchUTM,disabled:utmLoading,style:{padding:'4px 8px',background:'#FEF3C7',border:'1px solid #FDE68A',borderRadius:4,fontSize:10,cursor:'pointer',fontWeight:700,color:'#92400E'}},utmLoading?'…':'↻ Obtener UTM')
       ),
-      h('div',{style:{fontSize:10,color:'#166534'}},
-        h('div',null,'Imp. esp.: '+CLP(Math.round(impEspTotal/litrosNum))+'/lt'),
-        h('div',null,'IVA: '+CLP(Math.round(iva/litrosNum))+'/lt'),
-        h('div',null,'Base IVA: '+CLP(Math.round(baseIVA)))
+      h('div',{style:{fontSize:9,color:'#78350F',marginTop:2}},'Fórmula: '+tasa+' UTM × $'+utmNum+' / 1000 × '+litrosNum+' lts = '+CLP(Math.round(impEspTotal)))
+    ):h('div',null,
+      h('div',{style:{display:'flex',gap:8,marginBottom:4,alignItems:'center'}},
+        h('label',{style:{fontSize:10,fontWeight:600,color:'#92400E'}},'Impuesto específico:'),
+        h('label',{style:{fontSize:10,display:'flex',alignItems:'center',gap:3,cursor:'pointer'}},
+          h('input',{type:'radio',name:'modoImpDir',checked:modoImpDir==='total',onChange:function(){setModoImpDir('total');}}),
+          'Monto total ($)'
+        ),
+        h('label',{style:{fontSize:10,display:'flex',alignItems:'center',gap:3,cursor:'pointer'}},
+          h('input',{type:'radio',name:'modoImpDir',checked:modoImpDir==='por_litro',onChange:function(){setModoImpDir('por_litro');}}),
+          'Por litro ($/lt)'
+        )
+      ),
+      h('input',{type:'number',value:impEspDir,onChange:function(e){setImpEspDir(e.target.value);},style:inpS,
+        placeholder:modoImpDir==='total'?'Monto total del imp. específico':'$/lt de imp. específico'}),
+      litrosNum>0&&modoImpDir==='por_litro'&&impEspDirNum>0&&h('div',{style:{fontSize:9,color:'#78350F',marginTop:2}},'Total imp. esp.: '+CLP(Math.round(impEspTotal)))
+    ),
+    // Result
+    ok?h('div',{style:{background:'#DCFCE7',borderRadius:6,padding:'8px 12px',display:'flex',alignItems:'center',gap:16,flexWrap:'wrap',marginTop:8}},
+      h('div',null,
+        h('div',{style:{fontSize:9,color:'#166534',textTransform:'uppercase'}},'Precio neto/litro'),
+        h('div',{style:{fontSize:22,fontWeight:700,color:'#15803D'}},CLP(Math.round(netoPorLitro)))
+      ),
+      h('div',{style:{fontSize:10,color:'#166534',lineHeight:1.6}},
+        h('div',null,'Imp. esp./lt: '+CLP(Math.round(impEspTotal/litrosNum))),
+        h('div',null,'IVA/lt: '+CLP(Math.round(iva/litrosNum))),
+        h('div',null,'Base IVA total: '+CLP(Math.round(baseIVA)))
       )
-    ):h('div',{style:{fontSize:11,color:'#92400E',fontStyle:'italic'}},'Complete los campos para ver el precio neto')
+    ):h('div',{style:{fontSize:11,color:'#92400E',fontStyle:'italic',marginTop:6}},'Complete los campos para calcular')
   );
 }
 
