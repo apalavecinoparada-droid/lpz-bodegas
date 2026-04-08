@@ -1522,70 +1522,122 @@ app.post('/api/ocr/factura', auth, async(req,res)=>{
 });
 
 function parsearFacturaChilena(txt){
-  const t=txt.replace(/\r/g,'');
-  const lineas=t.split('\n').map(l=>l.trim()).filter(Boolean);
+  const lineas=txt.split('\n').map(l=>l.trim()).filter(Boolean);
 
-  function find(patterns){
+  function findFirst(patterns){
     for(const p of patterns){
-      const m=t.match(p);
+      const m=txt.match(p);
       if(m&&m[1]) return m[1].trim();
     }
     return null;
   }
-  function findNum(patterns){
-    const v=find(patterns);
-    if(!v) return null;
-    return parseFloat(v.replace(/[.$]/g,'').replace(/,/g,'.').trim())||null;
+
+  function parseMontoChileno(s){
+    if(!s) return null;
+    // Remove $ signs, spaces, then handle dot as thousand separator
+    s=s.replace(/[$\s]/g,'');
+    // If has comma, treat as decimal separator (rare in CLP but possible)
+    if(s.includes(',')){s=s.replace(/\./g,'').replace(',','.');}
+    else{s=s.replace(/\./g,'');} // dots are thousand separators in CLP
+    return parseFloat(s)||null;
   }
-  function cleanRut(r){return r?r.replace(/[.\s]/g,'').toUpperCase():null;}
+
+  function cleanRut(r){
+    if(!r) return null;
+    return r.replace(/[\s]/g,'').toUpperCase();
+  }
 
   // Tipo documento
-  const tipoDoc=t.match(/FACTURA/i)?'FACTURA':t.match(/GU[IÍ]A/i)?'GUIA':t.match(/BOLETA/i)?'BOLETA':'FACTURA';
+  const tipoDoc=/FACTURA\s+ELECTR/i.test(txt)?'FACTURA':
+    /GU[IÍ]A\s+DE\s+DESPACHO/i.test(txt)?'GUIA':
+    /BOLETA/i.test(txt)?'BOLETA':'FACTURA';
 
   // Número documento
-  const ndoc=find([/N[°º]\s*0*(\d+)/i,/Nº\s*0*(\d+)/i,/NUMERO[:\s]+0*(\d+)/i,/N[°.]\s*(\d{4,})/]);
+  const ndoc=findFirst([
+    /N[°º]\s*0*(\d{4,})/,
+    /NUMERO\s*:?\s*0*(\d{4,})/i,
+    /Nº\s*0*(\d{4,})/
+  ]);
 
   // Fecha — buscar DD-MM-YYYY o DD/MM/YYYY
   let fecha=null;
-  const fm=t.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  const fm=txt.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
   if(fm) fecha=`${fm[3]}-${fm[2].padStart(2,'0')}-${fm[1].padStart(2,'0')}`;
 
-  // Proveedor — primeras líneas del documento
-  let provNombre=null,provRut=null;
-  // RUT proveedor: buscar RUT en primeras 10 líneas
-  for(let i=0;i<Math.min(10,lineas.length);i++){
-    const rm=lineas[i].match(/R\.?U\.?T\.?:?\s*([\d.]{7,12}-[\dkK])/i);
-    if(rm&&!provRut){provRut=cleanRut(rm[1]);provNombre=lineas[Math.max(0,i-1)];}
+  // RUTs — buscar todos los RUTs en el documento
+  const rutPattern=/(\d{1,2}\.?\d{3}\.?\d{3}-[\dkK])/g;
+  const ruts=[...txt.matchAll(rutPattern)].map(m=>cleanRut(m[1]));
+  const provRut=ruts[0]||null;
+  const clienteRut=ruts[1]||null;
+
+  // Nombres
+  let provNombre=null;
+  // Proveedor: buscar nombre antes del primer RUT
+  const firstRutIdx=txt.search(/\d{1,2}\.?\d{3}\.?\d{3}-[\dkK]/);
+  if(firstRutIdx>0){
+    const antes=txt.substring(0,firstRutIdx);
+    const nombresAntes=antes.split('\n').map(l=>l.trim()).filter(l=>l.length>3&&!/^(RUT|R\.U\.T)/i.test(l));
+    provNombre=nombresAntes[nombresAntes.length-1]||null;
   }
-  // Si no encontró, tomar primera línea como nombre proveedor
-  if(!provNombre&&lineas.length>0) provNombre=lineas[0];
 
-  // Cliente
-  let clienteNombre=find([/[Ss]e[ñn]or(?:es)?[:\s]+([^\n]+)/,/NOMBRE[:\s]+([^\n]+)/]);
-  let clienteRut=null;
-  const crm=t.match(/R\.?U\.?T\.?[:\s]+([\d.]{7,12}-[\dkK])/gi);
-  if(crm&&crm.length>1) clienteRut=cleanRut(crm[1].replace(/R\.?U\.?T\.?[:\s]+/i,''));
-
-  // Montos
-  const neto=findNum([/[Mm]onto\s*[Nn]eto\s*\$?\s*([\d.,]+)/,/NETO\s*\$?\s*([\d.,]+)/]);
-  const iva=findNum([/IVA\s*19%?\s*\$?\s*([\d.,]+)/,/I\.?V\.?A\.?\s*\$?\s*([\d.,]+)/]);
-  const total=findNum([/TOTAL\s*\$?\s*([\d.,]+)/,/Total\s*\$?\s*([\d.,]+)/]);
+  // Cliente: buscar patrón Señor(es) o NOMBRE
+  const clienteNombre=findFirst([
+    /[Ss]e[ñn]or(?:es)?\s*:?\s*([A-ZÁÉÍÓÚÑ][^\n]{5,60})/,
+    /NOMBRE\s*:\s*([^\n]{5,60})/,
+    /CLIENTE\s*:\s*([^\n]{5,60})/
+  ]);
 
   // Condiciones pago
-  const condPago=find([/[Cc]ondici[oó]n(?:es)?\s*de\s*[Pp]ago[:\s]+([^\n]+)/,/CTA\s+CTE\s+(\d+)/i]);
+  const condPago=findFirst([
+    /[Cc]ondici[oó]n(?:es)?\s*de\s*[Pp]ago\s*:?\s*([^\n]{3,30})/,
+    /CTA\.?\s*CTE\.?\s*(\d+)/i
+  ]);
 
-  // Líneas de detalle — buscar patrones de items
+  // Montos finales
+  const neto=parseMontoChileno(findFirst([
+    /[Mm]onto\s+[Nn]eto\s*\$?\s*([\d.,]+)/,
+    /NETO\s*\$?\s*([\d.,]+)/,
+    /Neto\s*\$?\s*([\d.,]+)/
+  ]));
+  const iva=parseMontoChileno(findFirst([
+    /IVA\s*19%?\s*\$?\s*([\d.,]+)/,
+    /I\.?V\.?A\.?\s*\$?\s*([\d.,]+)/
+  ]));
+  const total=parseMontoChileno(findFirst([
+    /TOTAL\s*\$?\s*([\d.,]+)/,
+    /Total\s*\$?\s*([\d.,]+)/
+  ]));
+
+  // LÍNEAS DE DETALLE
+  // Estrategia: buscar líneas que tengan: texto + número(cantidad) + monto
   const detalleLineas=[];
-  // Patrón: descripción + cantidad + precio + total en misma o líneas consecutivas
-  const itemRegex=/^(.{5,60?})\s+(\d+)\s+\$?\s*([\d.,]+)\s+(?:SI\s+)?\$?\s*([\d.,]+)$/;
+  
+  // Patrón 1: "DESCRIPCION cantidad $precio SI $total" (con SI o sin)
+  // Ejemplo: "TRAJE PU GOMA NARANJO MS S 1 $11.490 SI $11.490"
+  const re1=/^(.{4,60}?)\s+(\d{1,4})\s+\$?([\d.]{3,10})\s+(?:SI\s+|NO\s+)?\$?([\d.]{3,10})$/;
+  
+  // Patrón 2: sin $ explícito
+  // Ejemplo: "TRAJE PU GOMA NARANJO MS S 1 11.490 11.490"
+  const re2=/^(.{4,60}?)\s+(\d{1,4})\s+([\d.]{3,10})\s+([\d.]{3,10})$/;
+
   for(const l of lineas){
-    const m=l.match(itemRegex);
+    // Skip header-like lines
+    if(/^(Glosa|DETALLE|Descripci|PRODUCTO|Cantidad|CANTIDAD|Precio|PRECIO|Monto|MONTO|Total|IVA|Neto|RUT|Fecha|N[°º])/i.test(l)) continue;
+    if(l.length<8||l.length>120) continue;
+
+    let m=l.match(re1)||l.match(re2);
     if(m){
       const desc=m[1].trim();
-      const qty=parseFloat(m[2])||1;
-      const pu=parseFloat(m[3].replace(/[.$]/g,'').replace(/,/g,'.'))||0;
-      const tot=parseFloat(m[4].replace(/[.$]/g,'').replace(/,/g,'.'))||0;
-      if(pu>0&&tot>0&&desc.length>2) detalleLineas.push({descripcion:desc,cantidad:qty,precio_unitario:pu,total_linea:tot});
+      const qty=parseInt(m[2])||1;
+      const pu=parseMontoChileno(m[3]);
+      const tot=parseMontoChileno(m[4]);
+      // Sanity check: total should be approx qty*price
+      if(pu&&pu>0&&tot&&tot>0&&desc.length>=3&&qty>=1&&qty<=9999){
+        const ratio=tot/(pu*qty);
+        if(ratio>=0.5&&ratio<=2.0){ // within 50-200% tolerance
+          detalleLineas.push({descripcion:desc,cantidad:qty,precio_unitario:pu,total_linea:tot});
+        }
+      }
     }
   }
 
