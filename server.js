@@ -697,52 +697,64 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
     if(oc.estado!=='CERRADA') throw new Error('Solo se pueden recibir ordenes CERRADAS');
     if(oc.movimiento_id) throw new Error('Esta OC ya fue recibida en bodega');
     const{bodega_id}=req.body;
-    // Buscar lineas marcadas; si ninguna tiene ingresa_bodega=true (OC antigua), usar todas las que no tienen false
-    let lineas=await client.query('SELECT * FROM ordenes_compra_detalle WHERE oc_id=$1 AND ingresa_bodega=true',[req.params.id]);
-    if(!lineas.rows.length){
-      // Fallback para OCs creadas antes de que existiera la columna ingresa_bodega
-      lineas=await client.query('SELECT * FROM ordenes_compra_detalle WHERE oc_id=$1 AND (ingresa_bodega IS NULL OR ingresa_bodega=true)',[req.params.id]);
-    }
-    if(!lineas.rows.length) throw new Error('No hay lineas marcadas para ingresar a bodega. Edite la OC y active el checkbox "A Bodega" en las lineas que deben entrar al inventario.');
-    const conProducto=lineas.rows.filter(function(l){return l.producto_id;});
-    const prod_map_check=req.body.prod_map||{};
-    const anyMapped=Object.values(prod_map_check).some(function(v){return !!v;});
-    if(!conProducto.length&&!anyMapped){
-      throw new Error('Debe asignar un producto de inventario a al menos una linea antes de recibir en bodega.');
-    }
-    // Accept prod_map from frontend to assign products at reception time
     const prod_map=req.body.prod_map||{};
-    // Build final list: use prod_map overrides, fallback to producto_id on line
-    const lineasParaRecibir=lineas.rows.map(function(l){
+    const factor_map=req.body.factor_map||{};
+    const comb_map=req.body.comb_map||{};
+    let lineas=await client.query('SELECT * FROM ordenes_compra_detalle WHERE oc_id=$1 AND ingresa_bodega=true',[req.params.id]);
+    if(!lineas.rows.length) lineas=await client.query('SELECT * FROM ordenes_compra_detalle WHERE oc_id=$1 AND (ingresa_bodega IS NULL OR ingresa_bodega=true)',[req.params.id]);
+    if(!lineas.rows.length) throw new Error('No hay lineas marcadas para ingresar.');
+    const lineasComb=lineas.rows.filter(function(l){return !!comb_map[String(l.detalle_id)];});
+    const lineasInv=lineas.rows.filter(function(l){
       const pid=prod_map[String(l.detalle_id)]?parseInt(prod_map[String(l.detalle_id)]):l.producto_id;
-      return Object.assign({},l,{producto_id:pid});
-    }).filter(function(l){return l.producto_id;});
-    if(!lineasParaRecibir.length) throw new Error('Debe asignar un producto de inventario a al menos una linea antes de recibir.');
-    const bodegaEfectiva=bodega_id||oc.bodega_ingreso_id||(await client.query('SELECT bodega_id FROM bodegas WHERE activo=true ORDER BY bodega_id LIMIT 1')).rows[0]?.bodega_id;
-    if(!bodegaEfectiva) throw new Error('Debe seleccionar una bodega de recepcion.');
-    const mr=await client.query('INSERT INTO movimiento_encabezado(tipo_movimiento,fecha,bodega_id,proveedor_id,tipo_doc_id,numero_documento,fecha_documento,oc_referencia,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING movimiento_id',['INGRESO',oc.fecha_documento||new Date().toISOString().split('T')[0],bodegaEfectiva,oc.proveedor_id,oc.tipo_doc_id,oc.numero_documento,oc.fecha_documento,oc.numero_oc,'Recepcion OC '+oc.numero_oc,req.user.email]);
-    const movId=mr.rows[0].movimiento_id;
-    for(const l of lineasParaRecibir){
-      const pid=l.producto_id,cantCompra=parseFloat(l.cantidad),cu=parseFloat(l.precio_unitario)||0;
-      const bodDest=l.bodega_destino_id||bodegaEfectiva;
-      // Obtener factor de conversion del producto
-      const pInfo=await client.query('SELECT factor_conversion,unidad_compra,unidad_medida FROM productos WHERE producto_id=$1',[pid]);
-      const factor_map=req.body.factor_map||{};
-      const factorOverride=factor_map[String(l.detalle_id)];
-      const factor=factorOverride?parseFloat(factorOverride)||1:parseFloat((pInfo.rows[0]||{}).factor_conversion)||1;
-      const qty=cantCompra*factor;  // unidades base a ingresar al stock
-      const cuBase=factor>1?cu/factor:cu;  // costo por unidad base
-      const sr=await client.query('SELECT cantidad_disponible,costo_promedio_actual FROM stock_actual WHERE producto_id=$1 AND bodega_id=$2',[pid,bodDest]);
-      const cur=sr.rows[0]||{cantidad_disponible:0,costo_promedio_actual:0};
-      const curQ=parseFloat(cur.cantidad_disponible),curCpp=parseFloat(cur.costo_promedio_actual);
-      const newQ=curQ+qty,newCpp=newQ>0?(curQ*curCpp+qty*cuBase)/newQ:cuBase;
-      await client.query('INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) VALUES($1,$2,$3,$4)',[mr.rows[0].movimiento_id,pid,qty,cuBase]);
-      await client.query('INSERT INTO stock_actual(producto_id,bodega_id,cantidad_disponible,costo_promedio_actual,ultima_actualizacion) VALUES($1,$2,$3,$4,NOW()) ON CONFLICT(producto_id,bodega_id) DO UPDATE SET cantidad_disponible=$3,costo_promedio_actual=$4,ultima_actualizacion=NOW()',[pid,bodDest,newQ,newCpp]);
+      return !!pid&&!comb_map[String(l.detalle_id)];
+    }).map(function(l){
+      return Object.assign({},l,{producto_id:prod_map[String(l.detalle_id)]?parseInt(prod_map[String(l.detalle_id)]):l.producto_id});
+    });
+    if(!lineasComb.length&&!lineasInv.length) throw new Error('Debe asignar destino a al menos una linea.');
+    let movId=null;
+    // Inventory lines → bodega
+    if(lineasInv.length>0){
+      const bodegaEfectiva=bodega_id||oc.bodega_ingreso_id||(await client.query('SELECT bodega_id FROM bodegas WHERE activo=true ORDER BY bodega_id LIMIT 1')).rows[0]?.bodega_id;
+      if(!bodegaEfectiva) throw new Error('Debe seleccionar una bodega de recepcion.');
+      const mr=await client.query('INSERT INTO movimiento_encabezado(tipo_movimiento,fecha,bodega_id,proveedor_id,tipo_doc_id,numero_documento,fecha_documento,oc_referencia,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING movimiento_id',['INGRESO',oc.fecha_documento||new Date().toISOString().split('T')[0],bodegaEfectiva,oc.proveedor_id,oc.tipo_doc_id,oc.numero_documento,oc.fecha_documento,oc.numero_oc,'Recepcion OC '+oc.numero_oc,req.user.email]);
+      movId=mr.rows[0].movimiento_id;
+      for(const l of lineasInv){
+        const pid=l.producto_id,cantCompra=parseFloat(l.cantidad),cu=parseFloat(l.precio_unitario)||0;
+        const bodDest=l.bodega_destino_id||bodegaEfectiva;
+        const pInfo=await client.query('SELECT factor_conversion FROM productos WHERE producto_id=$1',[pid]);
+        const factorOverride=factor_map[String(l.detalle_id)];
+        const factor=factorOverride?parseFloat(factorOverride)||1:parseFloat((pInfo.rows[0]||{}).factor_conversion)||1;
+        const qty=cantCompra*factor,cuBase=factor>1?cu/factor:cu;
+        const sr=await client.query('SELECT cantidad_disponible,costo_promedio_actual FROM stock_actual WHERE producto_id=$1 AND bodega_id=$2',[pid,bodDest]);
+        const cur=sr.rows[0]||{cantidad_disponible:0,costo_promedio_actual:0};
+        const curQ=parseFloat(cur.cantidad_disponible),curCpp=parseFloat(cur.costo_promedio_actual);
+        const newQ=curQ+qty,newCpp=newQ>0?(curQ*curCpp+qty*cuBase)/newQ:cuBase;
+        await client.query('INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) VALUES($1,$2,$3,$4)',[movId,pid,qty,cuBase]);
+        await client.query('INSERT INTO stock_actual(producto_id,bodega_id,cantidad_disponible,costo_promedio_actual,ultima_actualizacion) VALUES($1,$2,$3,$4,NOW()) ON CONFLICT(producto_id,bodega_id) DO UPDATE SET cantidad_disponible=$3,costo_promedio_actual=$4,ultima_actualizacion=NOW()',[pid,bodDest,newQ,newCpp]);
+      }
     }
-
-    await client.query('UPDATE ordenes_compra SET movimiento_id=$1,bodega_ingreso_id=$2,modificado_en=NOW() WHERE oc_id=$3',[movId,bodegaEfectiva,req.params.id]);
+    // Combustible lines → comb_stock
+    for(const l of lineasComb){
+      const estanqueId=parseInt(comb_map[String(l.detalle_id)]);
+      const lts=parseFloat(l.cantidad),pu=parseFloat(l.precio_unitario)||0;
+      const estQ=await client.query('SELECT tipo_combustible_id,empresa_id FROM comb_estanques WHERE estanque_id=$1',[estanqueId]);
+      if(!estQ.rows.length) throw new Error('Estanque no encontrado');
+      const tipoId=estQ.rows[0].tipo_combustible_id,empresaId=estQ.rows[0].empresa_id;
+      if(!tipoId) throw new Error('El estanque no tiene tipo de combustible asignado. Configure el estanque primero.');
+      const stk=await client.query('SELECT litros_disponibles,costo_promedio FROM comb_stock WHERE estanque_id=$1 AND tipo_id=$2',[estanqueId,tipoId]);
+      if(stk.rows.length){
+        const curQ=parseFloat(stk.rows[0].litros_disponibles),curCpp=parseFloat(stk.rows[0].costo_promedio);
+        const newQ=curQ+lts,newCpp=newQ>0?(curQ*curCpp+lts*pu)/newQ:pu;
+        await client.query('UPDATE comb_stock SET litros_disponibles=$1,costo_promedio=$2,ultima_actualizacion=NOW() WHERE estanque_id=$3 AND tipo_id=$4',[newQ,newCpp,estanqueId,tipoId]);
+      }else{
+        await client.query('INSERT INTO comb_stock(estanque_id,tipo_id,litros_disponibles,costo_promedio) VALUES($1,$2,$3,$4)',[estanqueId,tipoId,lts,pu]);
+      }
+      await client.query('INSERT INTO comb_movimientos(tipo_mov,empresa_id,fecha,tipo_id,estanque_destino_id,litros,precio_unitario,costo_total,proveedor_id,numero_documento,oc_referencia,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+        ['INGRESO_STOCK',empresaId,oc.fecha_documento||new Date().toISOString().split('T')[0],tipoId,estanqueId,lts,pu,lts*pu,oc.proveedor_id,oc.numero_documento,oc.numero_oc,req.user.email]);
+    }
+    await client.query('UPDATE ordenes_compra SET movimiento_id=$1,modificado_en=NOW() WHERE oc_id=$2',[movId,req.params.id]);
     await client.query('COMMIT');
-    res.json({ok:true,movimiento_id:movId});
+    res.json({ok:true,movimiento_id:movId,comb_lines:lineasComb.length});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
