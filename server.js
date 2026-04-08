@@ -1705,6 +1705,81 @@ function parsearDteXml(xmlStr){
 }
 
 
+
+// ══════════════════════════════════════════════════════
+// INTEGRACIÓN FACTO — DTE RECIBIDOS
+// ══════════════════════════════════════════════════════
+
+// Cache simple del token Facto (se renueva automáticamente)
+let factoToken=null, factoTokenExp=0;
+
+async function getFactoToken(){
+  if(factoToken&&Date.now()<factoTokenExp) return factoToken;
+  const creds={
+    grant_type:'password',
+    username:process.env.FACTO_USER||'',
+    password:process.env.FACTO_PASS||'',
+    client_id:process.env.FACTO_CLIENT_ID||'',
+    client_secret:process.env.FACTO_CLIENT_SECRET||''
+  };
+  const params=new URLSearchParams(creds).toString();
+  const r=await fetch('https://api.facto.cl/oauth/token',{
+    method:'POST',
+    headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
+    body:params
+  });
+  const d=await r.json();
+  if(!r.ok||!d.access_token) throw new Error(d.error_description||d.message||'Error autenticando en Facto');
+  factoToken=d.access_token;
+  factoTokenExp=Date.now()+(((d.expires_in||3600)-60)*1000);
+  return factoToken;
+}
+
+// Listar DTE recibidos
+app.get('/api/facto/dte-recibidos', auth, async(req,res)=>{
+  try{
+    if(!process.env.FACTO_USER) return res.status(400).json({error:'Credenciales Facto no configuradas en el servidor'});
+    const{desde,hasta,tipo}=req.query;
+    const token=await getFactoToken();
+    // Try common Facto API patterns
+    let url='https://api.facto.cl/api/v1/dte/recibidos?';
+    const params=[];
+    if(desde) params.push('fecha_desde='+desde);
+    if(hasta) params.push('fecha_hasta='+hasta);
+    if(tipo) params.push('tipo_dte='+tipo);
+    params.push('per_page=50');
+    url+=params.join('&');
+    const r=await fetch(url,{headers:{'Authorization':'Bearer '+token,'Accept':'application/json'}});
+    const d=await r.json();
+    if(!r.ok) return res.status(r.status).json({error:d.message||d.error||'Error consultando Facto',detail:d});
+    res.json(d);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// Descargar XML de un DTE
+app.get('/api/facto/dte/:id/xml', auth, async(req,res)=>{
+  try{
+    if(!process.env.FACTO_USER) return res.status(400).json({error:'Credenciales Facto no configuradas'});
+    const token=await getFactoToken();
+    const url='https://api.facto.cl/api/v1/dte/'+req.params.id+'/xml';
+    const r=await fetch(url,{headers:{'Authorization':'Bearer '+token,'Accept':'application/xml,text/xml,*/*'}});
+    if(!r.ok){const d=await r.json().catch(()=>({}));return res.status(r.status).json({error:d.message||'Error descargando XML'});}
+    const xml=await r.text();
+    // Parse and return structured data
+    const data=parsearDteXml(xml);
+    res.json({ok:true,data,raw_xml:xml});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// Test conexión Facto
+app.get('/api/facto/test', auth, async(req,res)=>{
+  try{
+    if(!process.env.FACTO_USER) return res.json({ok:false,msg:'Variables de entorno no configuradas'});
+    const token=await getFactoToken();
+    res.json({ok:true,msg:'Conexión exitosa con Facto',token_preview:token.substring(0,20)+'...'});
+  }catch(e){res.json({ok:false,msg:e.message});}
+});
+
 // SPA fallback — must be AFTER all API routes
 app.get('*', (req,res)=>res.sendFile(path.join(__dirname,'frontend','index.html')));
 
