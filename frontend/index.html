@@ -930,27 +930,23 @@ function OCRFactura(p){
         type:'text',
         text:'Analiza este documento (factura o guía de despacho chilena) y extrae los datos en formato JSON exacto con esta estructura:\n{\n  "numero_documento": "string o null",\n  "fecha_emision": "YYYY-MM-DD o null",\n  "tipo_doc": "FACTURA|GUIA|BOLETA|otro",\n  "proveedor_rut": "string sin puntos ni guión o null",\n  "proveedor_nombre": "string o null",\n  "cliente_rut": "string o null",\n  "cliente_nombre": "string o null",\n  "neto": número o null,\n  "iva": número o null,\n  "total": número o null,\n  "lineas": [\n    {"descripcion":"string","cantidad":número,"precio_unitario":número,"total_linea":número}\n  ]\n}\nResponde SOLO con el JSON, sin texto adicional ni markdown.'
       }];
-      fetch('https://api.anthropic.com/v1/messages',{
+      // Call our backend proxy (avoids CORS)
+      var tok=p.tok;
+      fetch('/api/ocr/factura',{
         method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({
-          model:'claude-sonnet-4-20250514',
-          max_tokens:1000,
-          messages:[{role:'user',content:content}]
-        })
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
+        body:JSON.stringify({base64:b64,mediaType:file.type})
       }).then(function(r){return r.json();})
       .then(function(data){
-        var text=data.content&&data.content[0]&&data.content[0].text;
-        if(!text){setRawText('Sin respuesta');setLoading(false);p.onMsg&&p.onMsg('');return;}
-        setRawText(text);
-        try{
-          var clean=text.replace(/```json|```/g,'').trim();
-          var parsed=JSON.parse(clean);
-          setResult(parsed);
-          p.onMsg&&p.onMsg('Documento analizado. Confirme los datos.');
-        }catch(ex){
-          p.onMsg&&p.onMsg('Error al parsear respuesta. Use los datos manuales.');
+        if(!data.ok&&!data.data){
+          setLoading(false);
+          p.onMsg&&p.onMsg('Error: '+(data.error||'Sin respuesta'));
+          return;
         }
+        var parsed=data.data||{};
+        setRawText(data.raw||'');
+        setResult(parsed);
+        p.onMsg&&p.onMsg('Documento analizado. Revise y confirme los datos.');
         setLoading(false);
       })
       .catch(function(ex){setLoading(false);p.onMsg&&p.onMsg('Error: '+ex.message);});
