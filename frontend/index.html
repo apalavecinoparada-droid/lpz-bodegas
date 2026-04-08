@@ -935,38 +935,13 @@ function OCRFactura(p){
   function extraer(){
     if(!file){alert('Seleccione un archivo primero');return;}
     setLoading(true);p.onMsg&&p.onMsg('Procesando documento...');
-    var isPdf=file.type==='application/pdf';
-    if(isPdf){
-      var reader=new FileReader();
-      reader.onload=function(ev){
-        var pdfData=new Uint8Array(ev.target.result);
-        if(typeof pdfjsLib==='undefined'){
-          // PDF.js not loaded fallback
-          var b64=btoa(String.fromCharCode.apply(null,Array.from(pdfData)));
-          sendToOCR(b64,'application/pdf');
-          return;
-        }
-        pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-        pdfjsLib.getDocument({data:pdfData}).promise
-          .then(function(pdf){return pdf.getPage(1);})
-          .then(function(page){
-            var viewport=page.getViewport({scale:2.0});
-            var canvas=document.createElement('canvas');
-            canvas.width=viewport.width;canvas.height=viewport.height;
-            return page.render({canvasContext:canvas.getContext('2d'),viewport:viewport}).promise
-              .then(function(){
-                var b64=canvas.toDataURL('image/png').split(',')[1];
-                sendToOCR(b64,'image/png');
-              });
-          })
-          .catch(function(ex){setLoading(false);p.onMsg&&p.onMsg('Error PDF: '+ex.message);});
-      };
-      reader.readAsArrayBuffer(file);
-    }else{
-      var reader2=new FileReader();
-      reader2.onload=function(ev){sendToOCR(ev.target.result.split(',')[1],file.type);};
-      reader2.readAsDataURL(file);
-    }
+    // Send file directly as base64 — PDF goes as PDF, images as image
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      var b64=ev.target.result.split(',')[1];
+      sendToOCR(b64,file.type);
+    };
+    reader.readAsDataURL(file);
   }
 
   function aplicar(){
