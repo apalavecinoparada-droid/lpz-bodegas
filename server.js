@@ -1720,30 +1720,37 @@ async function getFactoToken(){
   const secret=process.env.FACTO_CLIENT_SECRET||''; // Client Secret
   if(!apiKey||!secret) throw new Error('Credenciales Facto/Koywe no configuradas (FACTO_CLIENT_ID, FACTO_CLIENT_SECRET)');
 
-  // Try multiple auth endpoints
-  const authUrls=[
-    'https://api-billing.koywe.com/V1/authentication',
-    'https://api-billing.koywe.com/V1/auth',
-    'https://api-billing.koywe.com/V1/auth/login',
-    'https://api-billing.koywe.com/V1/auth/sign-in',
-    'https://api-billing.koywe.com/V1/login',
+  // The 400 "invalid_request" means endpoint found, body field names wrong
+  // Try all credential combinations
+  const BASE='https://api-billing.koywe.com/V1/authentication';
+  const attempts=[
+    // Attempt 1: apiKey=user, secret=pass (Resource Owner credentials)
+    {apiKey:user, secret:pass},
+    // Attempt 2: apiKey=clientId, secret=clientSecret
+    {apiKey, secret},
+    // Attempt 3: username+password field names
+    {username:user, password:pass},
+    // Attempt 4: all four fields
+    {apiKey:user, secret:pass, client_id:apiKey, client_secret:secret},
+    // Attempt 5: email-style (user might be email format)
+    {email:user, password:pass},
   ];
   let d=null,lastStatus=0,lastText='';
-  for(const authUrl of authUrls){
-    const r2=await fetch(authUrl,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify({apiKey,secret})});
-    const text2=await r2.text();
-    console.log('[Facto auth try]',authUrl,'→ HTTP',r2.status,text2.substring(0,150));
-    try{d=JSON.parse(text2);}catch(e){d={raw:text2};}
-    lastStatus=r2.status;lastText=text2;
+  for(let i=0;i<attempts.length;i++){
+    const body=attempts[i];
+    const r2=await fetch(BASE,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify(body)});
+    lastText=await r2.text();
+    console.log('[Facto auth attempt',i+1,'] body:',JSON.stringify(body),'→ HTTP',r2.status,lastText.substring(0,150));
+    try{d=JSON.parse(lastText);}catch(e){d={raw:lastText};}
+    lastStatus=r2.status;
     if(r2.ok&&d&&d.token){
       factoToken=d.token;
       factoTokenExp=Date.now()+(23*3600*1000);
-      console.log('[Facto] auth OK via',authUrl);
+      console.log('[Facto] auth OK attempt',i+1);
       return factoToken;
     }
-    if(r2.status!==404) break; // non-404 error = found endpoint, wrong credentials
   }
-  if(!d||!d.token) throw new Error(`Auth Koywe HTTP ${lastStatus}: ${(d&&(d.message||d.error))||lastText.substring(0,100)}`);
+  throw new Error(`Auth Koywe HTTP ${lastStatus}: ${(d&&(d.message||d.error||d.title))||lastText.substring(0,150)}`);
   factoToken=d.token;
   factoTokenExp=Date.now()+(23*3600*1000); // JWT dura 24h, renovar a las 23h
   return factoToken;
