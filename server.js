@@ -1531,16 +1531,13 @@ function parsearFacturaChilena(txt){
 
   function parseMonto(s){
     if(!s)return null;
-    s=s.replace(/[$\s]/g,'');
-    if(s.includes(','))s=s.replace(/\./g,'').replace(',','.');
-    else s=s.replace(/\./g,'');
+    s=s.replace(/[$\s]/g,'').replace(/\./g,'');
     return parseFloat(s)||null;
   }
 
   function cleanRut(r){return r?r.replace(/\s/g,'').toUpperCase():null;}
 
   const tipoDoc=/FACTURA/i.test(txt)?'FACTURA':/GU[IÍ]A/i.test(txt)?'GUIA':/BOLETA/i.test(txt)?'BOLETA':'FACTURA';
-
   const ndoc=findFirst([/N\s*[°º]\s*0*(\d{4,})/,/Nº\s*0*(\d{4,})/,/NUMERO\s*:?\s*0*(\d{4,})/i]);
 
   let fecha=null;
@@ -1551,13 +1548,10 @@ function parsearFacturaChilena(txt){
   const provRut=rutMatches[0]?cleanRut(rutMatches[0][1]):null;
   const clienteRut=rutMatches[1]?cleanRut(rutMatches[1][1]):null;
 
-  // Proveedor: primera línea con mayúsculas que no sea dirección/giro/sigla
   let provNombre=null;
-  const skipProv=/^(RUT|R\.U\.T|DIREC|Direcc|Calle|colon|GIRO|Giro|SII|S\.I\.I|SEGU|Segu|SERV|Serv|VENTAS|COME|FERR|INDU|www\.|http)/i;
+  const skipProv=/^(RUT|R\.U\.T|DIREC|Direcc|Calle|colon|GIRO|Giro|SII|S\.I\.I|SEGU|Serv|SERV|VENTAS|FERR|INDU|www\.|http)/i;
   for(const l of lineas){
-    if(l.length>4&&!skipProv.test(l)&&/[A-ZÁÉÍÓÚ]{3}/.test(l)){
-      provNombre=l;break;
-    }
+    if(l.length>4&&!skipProv.test(l)&&/[A-ZÁÉÍÓÚ]{3}/.test(l)){provNombre=l;break;}
   }
 
   const clienteNombre=findFirst([/[Ss]e[ñn]or(?:es)?\s*:?\s*([A-ZÁÉÍÓÚÑ][^\n]{5,60})/,/NOMBRE\s*:\s*([^\n]{5,60})/]);
@@ -1567,53 +1561,50 @@ function parsearFacturaChilena(txt){
   const iva=parseMonto(findFirst([/IVA\s*19%?\s*\$?\s*([\d.]+)/,/I\.?V\.?A\.?\s*\$?\s*([\d.]+)/]));
   const total=parseMonto(findFirst([/TOTAL\s*\$?\s*([\d.]+)/,/Total\s*\$?\s*([\d.]+)/]));
 
-  // LÍNEAS — el pdf a veces pega el precio a la descripción sin espacio
-  // Limpiar línea: insertar espacio antes de dígito que sigue a letra (S1$11 → S 1 $11)
-  const detalleLineas=[];
   const skipLine=/^(Glosa|DETALLE|Descripci|PRODUCTO|Cantidad|CANTIDAD|Precio|PRECIO|Monto|MONTO|TOTAL|Total|IVA|Neto|NETO|RUT|Fecha|Venc|Cond|Giro|GIRO|Señor|Direcc|Ciudad|Comuna|S\.I\.I|Timbre|Sistema|www\.|Afecto|Imp\.|Desc)/i;
 
-  // Normalizar: agregar espacio antes de dígito que sigue inmediatamente a letra mayúscula
-  // "MS S1$11.490" → "MS S 1 $11.490"
-  function normalizeLine(l){
-    return l
-      .replace(/([A-Za-záéíóú])(\d)/g,'$1 $2')  // letra+dígito → letra espacio dígito
-      .replace(/(\d)(\$)/g,'$1 $2')               // dígito+$ → dígito espacio $
-      .replace(/\s{2,}/g,' ');
-  }
-
-  const reA=/^(.{4,70}?)\s+(\d{1,4})\s+\$?([\d.]{3,12})\s+(?:[A-Z]{2}\s+)?\$?([\d.]{3,12})$/;
-  const reB=/^(.+?)\s+(\d{1,4})\s+\$?([\d.]{4,12})\s+\$?([\d.]{4,12})$/;
-
-  for(const l of lineas){
-    if(l.length<8||l.length>150)continue;
-    if(skipLine.test(l))continue;
-    const ln=normalizeLine(l);
-    const m=ln.match(reA)||ln.match(reB);
-    if(m){
-      const desc=m[1].replace(/^\s+|\s+$/g,'');
-      const qty=parseInt(m[2])||1;
-      const pu=parseMonto(m[3]);
-      const tot=parseMonto(m[4]);
-      if(pu&&pu>=100&&tot&&tot>=100&&desc.length>=3&&qty>=1&&qty<=9999){
-        const ratio=tot/(pu*qty);
-        if(ratio>=0.3&&ratio<=3.5){
-          detalleLineas.push({descripcion:desc,cantidad:qty,precio_unitario:pu,total_linea:tot});
-        }
+  function parseLinea(l){
+    // Find $precio XX $total at end (XX = SI, NO, or any 2-letter code)
+    const m=l.match(/\$([\d.]+)\s+[A-Z]{2}\s+\$([\d.]+)$/);
+    if(!m)return null;
+    const pu=parseMonto(m[1]);
+    const tot=parseMonto(m[2]);
+    if(!pu||!tot||pu<=0||tot<=0)return null;
+    const prefix=l.slice(0,m.index).replace(/\s+$/,'');
+    // Extract trailing digits as candidate qty
+    const trailMatch=prefix.match(/(\d+)$/);
+    if(!trailMatch)return null;
+    const trailing=trailMatch[1];
+    // Try qty lengths 1, 2, 3 — pick where total ≈ qty × price (within 5%)
+    for(let qLen=1;qLen<=Math.min(3,trailing.length);qLen++){
+      const qty=parseInt(trailing.slice(-qLen));
+      if(qty<=0)continue;
+      const desc=prefix.slice(0,prefix.length-qLen).replace(/\s+$/,'');
+      if(desc.length<2)continue;
+      const ratio=tot/(pu*qty);
+      if(ratio>=0.95&&ratio<=1.05){
+        return{descripcion:desc,cantidad:qty,precio_unitario:pu,total_linea:tot};
       }
     }
+    return null;
   }
 
-  // Fallback: líneas con texto + monto al final
+  const detalleLineas=[];
+  for(const l of lineas){
+    if(l.length<8||l.length>150||skipLine.test(l))continue;
+    const item=parseLinea(l);
+    if(item)detalleLineas.push(item);
+  }
+
+  // Fallback: precio al final de la línea sin patrón SI
   if(detalleLineas.length===0){
-    const reC=/^(.{6,80})\s+\$?([\d.]{4,12})$/;
     for(const l of lineas){
       if(skipLine.test(l))continue;
-      const m=normalizeLine(l).match(reC);
+      const m=l.match(/^(.{6,80})\s+\$?([\d.]{4,12})$/);
       if(m){
-        const desc=m[1].trim();
         const tot=parseMonto(m[2]);
-        if(tot&&tot>=500&&desc.length>=4&&!/^(Monto|Total|Neto|IVA|Exento)/i.test(desc)){
-          detalleLineas.push({descripcion:desc,cantidad:1,precio_unitario:tot,total_linea:tot});
+        if(tot&&tot>=500&&!/^(Monto|Total|Neto|IVA|Exento)/i.test(m[1])){
+          detalleLineas.push({descripcion:m[1].trim(),cantidad:1,precio_unitario:tot,total_linea:tot});
         }
       }
     }
