@@ -104,6 +104,7 @@ tr:hover>td{background:#F8FAFC}
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
 'use strict';
 const {useState,useEffect,useMemo,useCallback,useRef,Component}=React;
@@ -915,43 +916,57 @@ function OCRFactura(p){
     reader.readAsDataURL(f);
   }
 
+  function sendToOCR(b64,mimeType){
+    var tok=p.tok;
+    fetch('/api/ocr/factura',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
+      body:JSON.stringify({base64:b64,mediaType:mimeType})
+    }).then(function(r){return r.json();})
+    .then(function(data){
+      if(!data.ok&&!data.data){setLoading(false);p.onMsg&&p.onMsg('Error: '+(data.error||'Sin respuesta'));return;}
+      setRawText(data.raw||'');setResult(data.data||{});
+      p.onMsg&&p.onMsg('Documento analizado. Revise y confirme los datos.');
+      setLoading(false);
+    })
+    .catch(function(ex){setLoading(false);p.onMsg&&p.onMsg('Error: '+ex.message);});
+  }
+
   function extraer(){
     if(!file){alert('Seleccione un archivo primero');return;}
-    setLoading(true);p.onMsg&&p.onMsg('Analizando documento...');
-    var reader=new FileReader();
-    reader.onload=function(ev){
-      var b64=ev.target.result.split(',')[1];
-      var isImg=file.type.startsWith('image/');
-      var isPdf=file.type==='application/pdf';
-      var content=[{
-        type:isPdf?'document':'image',
-        source:{type:'base64',media_type:file.type,data:b64}
-      },{
-        type:'text',
-        text:'Analiza este documento (factura o guía de despacho chilena) y extrae los datos en formato JSON exacto con esta estructura:\n{\n  "numero_documento": "string o null",\n  "fecha_emision": "YYYY-MM-DD o null",\n  "tipo_doc": "FACTURA|GUIA|BOLETA|otro",\n  "proveedor_rut": "string sin puntos ni guión o null",\n  "proveedor_nombre": "string o null",\n  "cliente_rut": "string o null",\n  "cliente_nombre": "string o null",\n  "neto": número o null,\n  "iva": número o null,\n  "total": número o null,\n  "lineas": [\n    {"descripcion":"string","cantidad":número,"precio_unitario":número,"total_linea":número}\n  ]\n}\nResponde SOLO con el JSON, sin texto adicional ni markdown.'
-      }];
-      // Call our backend proxy (avoids CORS)
-      var tok=p.tok;
-      fetch('/api/ocr/factura',{
-        method:'POST',
-        headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},
-        body:JSON.stringify({base64:b64,mediaType:file.type})
-      }).then(function(r){return r.json();})
-      .then(function(data){
-        if(!data.ok&&!data.data){
-          setLoading(false);
-          p.onMsg&&p.onMsg('Error: '+(data.error||'Sin respuesta'));
+    setLoading(true);p.onMsg&&p.onMsg('Procesando documento...');
+    var isPdf=file.type==='application/pdf';
+    if(isPdf){
+      var reader=new FileReader();
+      reader.onload=function(ev){
+        var pdfData=new Uint8Array(ev.target.result);
+        if(typeof pdfjsLib==='undefined'){
+          // PDF.js not loaded fallback
+          var b64=btoa(String.fromCharCode.apply(null,Array.from(pdfData)));
+          sendToOCR(b64,'application/pdf');
           return;
         }
-        var parsed=data.data||{};
-        setRawText(data.raw||'');
-        setResult(parsed);
-        p.onMsg&&p.onMsg('Documento analizado. Revise y confirme los datos.');
-        setLoading(false);
-      })
-      .catch(function(ex){setLoading(false);p.onMsg&&p.onMsg('Error: '+ex.message);});
-    };
-    reader.readAsDataURL(file);
+        pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+        pdfjsLib.getDocument({data:pdfData}).promise
+          .then(function(pdf){return pdf.getPage(1);})
+          .then(function(page){
+            var viewport=page.getViewport({scale:2.0});
+            var canvas=document.createElement('canvas');
+            canvas.width=viewport.width;canvas.height=viewport.height;
+            return page.render({canvasContext:canvas.getContext('2d'),viewport:viewport}).promise
+              .then(function(){
+                var b64=canvas.toDataURL('image/png').split(',')[1];
+                sendToOCR(b64,'image/png');
+              });
+          })
+          .catch(function(ex){setLoading(false);p.onMsg&&p.onMsg('Error PDF: '+ex.message);});
+      };
+      reader.readAsArrayBuffer(file);
+    }else{
+      var reader2=new FileReader();
+      reader2.onload=function(ev){sendToOCR(ev.target.result.split(',')[1],file.type);};
+      reader2.readAsDataURL(file);
+    }
   }
 
   function aplicar(){
