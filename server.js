@@ -1477,6 +1477,65 @@ app.post('/api/comb/cierres/:id/procesar', auth, async(req,res)=>{
   finally{client.release();}
 });
 
+
+// OCR FACTURA — proxy al API de Claude (evita CORS)
+app.post('/api/ocr/factura', auth, async(req,res)=>{
+  try{
+    const{base64,mediaType}=req.body;
+    if(!base64||!mediaType) return res.status(400).json({error:'Falta base64 o mediaType'});
+    const isPdf=mediaType==='application/pdf';
+    const content=[
+      {
+        type:isPdf?'document':'image',
+        source:{type:'base64',media_type:mediaType,data:base64}
+      },
+      {
+        type:'text',
+        text:`Analiza este documento (factura o guía de despacho chilena) y extrae los datos en formato JSON con esta estructura exacta:
+{
+  "numero_documento": "string o null",
+  "fecha_emision": "YYYY-MM-DD o null",
+  "tipo_doc": "FACTURA|GUIA|BOLETA",
+  "proveedor_rut": "string sin puntos ni guión o null",
+  "proveedor_nombre": "string o null",
+  "cliente_rut": "string sin puntos ni guión o null",
+  "cliente_nombre": "string o null",
+  "neto": número o null,
+  "iva": número o null,
+  "total": número o null,
+  "condiciones_pago": "string o null",
+  "lineas": [
+    {"descripcion":"string","cantidad":número,"precio_unitario":número,"total_linea":número}
+  ]
+}
+Responde SOLO con el JSON válido, sin texto adicional ni bloques markdown.`
+      }
+    ];
+    const response=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','anthropic-version':'2023-06-01'},
+      body:JSON.stringify({
+        model:'claude-opus-4-5',
+        max_tokens:2000,
+        messages:[{role:'user',content}]
+      })
+    });
+    const data=await response.json();
+    if(!response.ok) return res.status(502).json({error:data.error?.message||'Error API Claude'});
+    const text=data.content&&data.content[0]&&data.content[0].text;
+    if(!text) return res.status(502).json({error:'Sin respuesta del modelo'});
+    try{
+      const clean=text.replace(/```json|```/g,'').trim();
+      const parsed=JSON.parse(clean);
+      res.json({ok:true,data:parsed,raw:text});
+    }catch(e){
+      res.json({ok:false,raw:text,error:'No se pudo parsear la respuesta'});
+    }
+  }catch(e){
+    res.status(500).json({error:e.message});
+  }
+});
+
 // SPA fallback — must be AFTER all API routes
 app.get('*', (req,res)=>res.sendFile(path.join(__dirname,'frontend','index.html')));
 
