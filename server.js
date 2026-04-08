@@ -1715,24 +1715,37 @@ let factoToken=null, factoTokenExp=0;
 
 async function getFactoToken(){
   if(factoToken&&Date.now()<factoTokenExp) return factoToken;
-  const creds={
-    grant_type:'password',
-    username:process.env.FACTO_USER||'',
-    password:process.env.FACTO_PASS||'',
-    client_id:process.env.FACTO_CLIENT_ID||'',
-    client_secret:process.env.FACTO_CLIENT_SECRET||''
-  };
+  const user=process.env.FACTO_USER||'';
+  const pass=process.env.FACTO_PASS||'';
+  const clientId=process.env.FACTO_CLIENT_ID||'';
+  const clientSecret=process.env.FACTO_CLIENT_SECRET||'';
+  const creds={grant_type:'password',username:user,password:pass,client_id:clientId,client_secret:clientSecret};
   const params=new URLSearchParams(creds).toString();
-  const r=await fetch('https://api.facto.cl/oauth/token',{
-    method:'POST',
-    headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},
-    body:params
-  });
-  const d=await r.json();
-  if(!r.ok||!d.access_token) throw new Error(d.error_description||d.message||'Error autenticando en Facto');
-  factoToken=d.access_token;
-  factoTokenExp=Date.now()+(((d.expires_in||3600)-60)*1000);
-  return factoToken;
+  // Try multiple known Facto token endpoints
+  const tokenUrls=[
+    'https://api.facto.cl/oauth/token',
+    'https://api.facto.cl/v1/oauth/token',
+    'https://api.facto.cl/auth/token',
+    'https://api.facto.cl/token',
+    'https://api.facto.cl/cl/oauth/token',
+  ];
+  let lastErr='';
+  for(const url of tokenUrls){
+    try{
+      const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/json'},body:params});
+      const text=await r.text();
+      let d;try{d=JSON.parse(text);}catch(e){d={raw:text};}
+      console.log('[Facto token attempt]',url,'→ HTTP',r.status,'body:',text.substring(0,200));
+      if(r.ok&&d.access_token){
+        factoToken=d.access_token;
+        factoTokenExp=Date.now()+(((d.expires_in||3600)-60)*1000);
+        console.log('[Facto] token OK from',url);
+        return factoToken;
+      }
+      lastErr=`HTTP ${r.status} ${url}: ${d.error_description||d.message||d.error||text.substring(0,100)}`;
+    }catch(e){lastErr=url+': '+e.message;}
+  }
+  throw new Error('Facto auth failed. Último error: '+lastErr);
 }
 
 // Listar DTE recibidos
