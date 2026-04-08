@@ -984,64 +984,145 @@ function OCCerrarModal(p){
 
 // ── OC RECIBIR BODEGA MODAL ──
 function OCRecibirModal(p){
-  const bodegas=p.m&&Array.isArray(p.m.bodegas)?p.m.bodegas:[];
-  const prods=p.m&&Array.isArray(p.m.prods)?p.m.prods.filter(function(x){return x.activo;}):[];
+  const bodegas=(p.m.bodegas||[]).filter(function(b){return b.activo;});
+  const prods=(p.m.prods||[]).filter(function(x){return x.activo;});
+  const combTipos=(p.m.combTipos||[]).filter(function(t){return t.activo;});
+  const combEstanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
   const lineas=Array.isArray(p.oc&&p.oc.lineas)?p.oc.lineas:[];
   const lineasBodega=lineas.filter(function(l){return l.ingresa_bodega||l.ingresa_bodega===null;});
-  // Map de asignacion de productos por linea: {detalle_id: producto_id}
-  const initMap={};lineasBodega.forEach(function(l){initMap[l.detalle_id]=str(l.producto_id||'');});
+
+  // Detect if a line is combustible by matching subcategoria or description with comb_tipos
+  function esCombustible(l){
+    var nombres=combTipos.map(function(t){return t.nombre.toLowerCase();});
+    var desc=(l.descripcion||'').toLowerCase();
+    var subcat=(l.subcategoria_nombre||'').toLowerCase();
+    return nombres.some(function(n){return desc.includes(n)||subcat.includes(n)||n.includes(desc);});
+  }
+
+  // Find matching comb tipo for a line
+  function getCombTipo(l){
+    var desc=(l.descripcion||'').toLowerCase();
+    var subcat=(l.subcategoria_nombre||'').toLowerCase();
+    return combTipos.find(function(t){
+      var n=t.nombre.toLowerCase();
+      return desc.includes(n)||subcat.includes(n)||n.includes(desc);
+    });
+  }
+
+  // Separate lines
+  const lineasComb=lineasBodega.filter(esCombustible);
+  const lineasInv=lineasBodega.filter(function(l){return !esCombustible(l);});
+
+  // State for inventory lines
+  const initMap={};lineasInv.forEach(function(l){initMap[l.detalle_id]=str(l.producto_id||'');});
   const[prodMap,setProdMap]=useState(initMap);
-  const[factorMap,setFactorMap]=useState({});  // override de factor por linea
-  const[bodega_id,setBodega]=useState('');const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
-  function setProd(detalle_id,val){setProdMap(function(m){var n=Object.assign({},m);n[detalle_id]=val;return n;});}
-  function setFactor(detalle_id,val){setFactorMap(function(m){var n=Object.assign({},m);n[detalle_id]=val;return n;});}
-  function getEffectiveFactor(detalle_id,selProd){
-    if(factorMap[detalle_id]!==undefined&&factorMap[detalle_id]!=='')return parseFloat(factorMap[detalle_id])||1;
+  const[factorMap,setFactorMap]=useState({});
+  const[bodega_id,setBodega]=useState('');
+
+  // State for combustible lines: {detalle_id: estanque_id}
+  const initEstMap={};lineasComb.forEach(function(l){initEstMap[l.detalle_id]='';});
+  const[estMap,setEstMap]=useState(initEstMap);
+
+  const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
+
+  function setProd(did,val){setProdMap(function(m){var n=Object.assign({},m);n[did]=val;return n;});}
+  function setFactor(did,val){setFactorMap(function(m){var n=Object.assign({},m);n[did]=val;return n;});}
+  function setEst(did,val){setEstMap(function(m){var n=Object.assign({},m);n[did]=val;return n;});}
+
+  function getEffectiveFactor(did,selProd){
+    if(factorMap[did]!==undefined&&factorMap[did]!=='')return parseFloat(factorMap[did])||1;
     return parseFloat((selProd||{}).factor_conversion||1);
   }
-  const lineasListas=lineasBodega.filter(function(l){return !!prodMap[l.detalle_id];});
-  function calcLinea(l){
-    var sel=prods.find(function(pr){return String(pr.producto_id)===String(prodMap[l.detalle_id]);});
-    var fc=getEffectiveFactor(l.detalle_id,sel);
-    var qtyBase=(parseFloat(l.cantidad)||0)*fc;
-    var cuBase=(parseFloat(l.precio_unitario)||0)/(fc||1);
-    return {sel:sel,fc:fc,qtyBase:qtyBase,cuBase:cuBase};
-  }
+
+  const lineasInvListas=lineasInv.filter(function(l){return !!prodMap[l.detalle_id];});
+  const lineasCombListas=lineasComb.filter(function(l){return !!estMap[l.detalle_id];});
+  const totalListas=lineasInvListas.length+lineasCombListas.length;
+
   function save(){
-    if(!lineasListas.length){setErr('Debe asignar un producto de inventario a al menos una linea.');return;}
+    setErr('');
+    if(totalListas===0){setErr('Debe asignar destino a al menos una linea.');return;}
     setSaving(true);
-    // Enrich lines with selected products before sending
-    api('/ordenes-compra/'+p.oc.oc_id+'/recibir-bodega','POST',{bodega_id:bodega_id||null,prod_map:prodMap,factor_map:factorMap},p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
+    var payload={
+      bodega_id:bodega_id||null,
+      prod_map:prodMap,
+      factor_map:factorMap,
+      comb_map:estMap  // {detalle_id: estanque_id}
+    };
+    api('/ordenes-compra/'+p.oc.oc_id+'/recibir-bodega','POST',payload,p.tok)
+      .then(function(){p.onSave();})
+      .catch(function(ex){setErr(ex.message);})
+      .finally(function(){setSaving(false);});
   }
+
+  var thStyle={textAlign:'left',padding:'4px 6px',background:'#F1F5F9',fontSize:11};
+  var tdStyle={padding:'4px 6px',fontSize:11,borderBottom:'1px solid #E2E8F0'};
+
   return h(Modal,{title:'Recibir en Bodega — '+str(p.oc.numero_oc),onClose:p.onClose,lg:true},
     h(EB,null,
       h('div',{className:'mb'},
         h('div',{className:'al al-i',style:{marginBottom:10}},
-          h('strong',null,'Proceso de recepcion: '),'Al confirmar, el sistema generara un movimiento de INGRESO en inventario usando la fecha del documento tributario ('+str(p.oc.fecha_documento||'').split('T')[0]+'). No se exige faena ni equipo — eso se registra al momento del consumo.'
+          h('strong',null,'Proceso de recepcion: '),
+          'Al confirmar se generaran los movimientos correspondientes usando la fecha del documento tributario ('+str(p.oc.fecha_documento||'').split('T')[0]+').'
         ),
-        lineasBodega.length===0&&h('div',{className:'al al-e',style:{marginBottom:10}},
-          '⚠ No hay lineas marcadas con "A Bodega". Edite la OC y active el checkbox en las lineas que deben ingresar al inventario.'
-        ),
-        lineasBodega.length>0&&h('div',null,
-          h('div',{style:{fontWeight:600,fontSize:13,marginBottom:6}},'Asigne el producto de inventario a cada linea ('+lineasBodega.length+' linea(s)):'),
-          h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},'Solo las lineas con producto asignado se recibiran en bodega.'),
+        lineasBodega.length===0&&h('div',{className:'al al-e'},'No hay lineas marcadas con "A Bodega".'),
+
+        // COMBUSTIBLE LINES
+        lineasComb.length>0&&h('div',{style:{marginBottom:14}},
+          h('div',{style:{fontWeight:600,fontSize:13,marginBottom:6,color:'#D97706'}},'⛽ Lineas de combustible ('+lineasComb.length+') — ingreso a estanque'),
+          h('div',{style:{fontSize:11,color:'#64748B',marginBottom:6}},'Seleccione el estanque de destino para cada linea.'),
           h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
             h('thead',null,h('tr',null,
-              h('th',{style:{textAlign:'left',padding:'4px 6px',background:'#F1F5F9'}},'Detalle'),
-              h('th',{style:{textAlign:'left',padding:'4px 6px',background:'#F1F5F9'}},'Clasif.'),
-              h('th',{style:{textAlign:'right',padding:'4px 6px',background:'#F1F5F9'}},'Cant.'),
-              h('th',{style:{textAlign:'left',padding:'4px 6px',background:'#F1F5F9'}},'Producto inventario'),h('th',{style:{textAlign:'right',padding:'4px 6px',background:'#F1F5F9'}},'Ing. stock')
+              h('th',{style:thStyle},'Detalle'),
+              h('th',{style:thStyle},'Litros'),
+              h('th',{style:thStyle},'Tipo combustible'),
+              h('th',{style:thStyle},'Estanque destino'),
+              h('th',{style:Object.assign({},thStyle,{textAlign:'right'})},'Costo/lt')
             )),
-            h('tbody',null,...lineasBodega.map(function(l,i){
+            h('tbody',null,...lineasComb.map(function(l,i){
+              var ct=getCombTipo(l);
+              var estsFilt=ct?combEstanques.filter(function(e){return !e.tipo_combustible_id||e.tipo_combustible_id===ct.tipo_id;}):combEstanques;
+              return h('tr',{key:i},
+                h('td',{style:tdStyle},l.descripcion||'—'),
+                h('td',{style:Object.assign({},tdStyle,{textAlign:'right',fontFamily:'monospace'})},(parseFloat(l.cantidad)||0).toFixed(1)),
+                h('td',{style:tdStyle},ct?h(Bg,{c:'y'},ct.nombre):'—'),
+                h('td',{style:tdStyle},
+                  h('select',{value:estMap[l.detalle_id]||'',onChange:function(e){setEst(l.detalle_id,e.target.value);},
+                    style:{width:'100%',padding:'3px 5px',fontSize:11,border:'1px solid #CBD5E1',borderRadius:4}},
+                    h('option',{value:''},'— Seleccione estanque —'),
+                    estsFilt.map(function(e){return h('option',{key:e.estanque_id,value:e.estanque_id},e.nombre+(e.litros_disponibles?' ('+parseFloat(e.litros_disponibles).toFixed(0)+' lts)':''));})
+                  )
+                ),
+                h('td',{style:Object.assign({},tdStyle,{textAlign:'right'})},(parseFloat(l.precio_unitario)||0)>0?CLP(Math.round(l.precio_unitario)):'—')
+              );
+            }))
+          ),
+          lineasCombListas.length>0&&h('div',{className:'al al-s',style:{marginTop:4}},lineasCombListas.length+' linea(s) de combustible listas.')
+        ),
+
+        // INVENTORY LINES
+        lineasInv.length>0&&h('div',{style:{marginBottom:14}},
+          h('div',{style:{fontWeight:600,fontSize:13,marginBottom:6}},'📦 Lineas de inventario ('+lineasInv.length+') — ingreso a bodega'),
+          h('div',{style:{fontSize:11,color:'#64748B',marginBottom:6}},'Asigne el producto de inventario a cada linea.'),
+          h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
+            h('thead',null,h('tr',null,
+              h('th',{style:thStyle},'Detalle'),h('th',{style:thStyle},'Clasif.'),
+              h('th',{style:Object.assign({},thStyle,{textAlign:'right'})},'Cant.'),
+              h('th',{style:thStyle},'Producto inventario'),
+              h('th',{style:Object.assign({},thStyle,{textAlign:'right'})},'Ing. stock')
+            )),
+            h('tbody',null,...lineasInv.map(function(l,i){
               return h('tr',{key:i,style:{borderBottom:'1px solid #E2E8F0'}},
-                h('td',{style:{padding:'4px 6px'}},l.descripcion||'—'),
-                h('td',{style:{padding:'4px 6px',color:'#64748B'}},l.subcategoria_nombre||'—'),
-                h('td',{style:{padding:'4px 6px',textAlign:'right',fontFamily:'monospace'}},l.cantidad),
-                h('td',{style:{padding:'4px 6px'}},
+                h('td',{style:tdStyle},l.descripcion||'—'),
+                h('td',{style:tdStyle},l.subcategoria_nombre||'—'),
+                h('td',{style:Object.assign({},tdStyle,{textAlign:'right',fontFamily:'monospace'})},l.cantidad),
+                h('td',{style:tdStyle},
                   h('div',null,
-                    h('select',{value:prodMap[l.detalle_id]||'',onChange:function(e){setProd(l.detalle_id,e.target.value);},style:{width:'100%',padding:'3px 5px',fontSize:11,border:'1px solid #CBD5E1',borderRadius:4}},
+                    h('select',{value:prodMap[l.detalle_id]||'',onChange:function(e){setProd(l.detalle_id,e.target.value);},
+                      style:{width:'100%',padding:'3px 5px',fontSize:11,border:'1px solid #CBD5E1',borderRadius:4}},
                       h('option',{value:''},'— Seleccione producto —'),
-                      prods.sort(function(a,b){return a.nombre.localeCompare(b.nombre);}).map(function(pr){return h('option',{key:pr.producto_id,value:pr.producto_id},pr.codigo+' — '+pr.nombre.substring(0,35)+(parseFloat(pr.factor_conversion||1)>1?' ['+pr.unidad_compra+' x'+parseFloat(pr.factor_conversion)+']':''));})
+                      prods.sort(function(a,b){return a.nombre.localeCompare(b.nombre);}).map(function(pr){
+                        return h('option',{key:pr.producto_id,value:pr.producto_id},pr.codigo+' — '+pr.nombre.substring(0,35)+(parseFloat(pr.factor_conversion||1)>1?' ['+pr.unidad_compra+' x'+parseFloat(pr.factor_conversion)+']':''));
+                      })
                     ),
                     (function(){
                       var sel=prods.find(function(pr){return String(pr.producto_id)===String(prodMap[l.detalle_id]);});
@@ -1060,45 +1141,44 @@ function OCRecibirModal(p){
                           h('input',{type:'number',min:'1',step:'any',
                             value:factorMap[l.detalle_id]!==undefined?factorMap[l.detalle_id]:defaultFc,
                             onChange:function(e){setFactor(l.detalle_id,e.target.value);},
-                            style:{width:55,padding:'2px 4px',fontSize:10,border:'1px solid #CBD5E1',borderRadius:3},
-                            title:'Cambiar factor de conversion para esta linea'
+                            style:{width:55,padding:'2px 4px',fontSize:10,border:'1px solid #CBD5E1',borderRadius:3}
                           }),
-                          h('span',{style:{color:'#64748B'}},sel.unidad_compra?'(default: '+defaultFc+' para '+sel.unidad_compra+')':'(sin conversion configurada)')
+                          h('span',{style:{color:'#64748B'}},sel.unidad_compra?'('+defaultFc+' para '+sel.unidad_compra+')':'')
                         )
                       );
                     })()
                   )
                 ),
-                h('td',{style:{padding:'4px 6px',textAlign:'right',fontSize:11,color:'#0369A1'}},
+                h('td',{style:Object.assign({},tdStyle,{textAlign:'right',color:'#0369A1'})},
                   (function(){
                     var selProd=prods.find(function(pr){return String(pr.producto_id)===String(prodMap[l.detalle_id]);});
                     if(!selProd)return '—';
                     var f=getEffectiveFactor(l.detalle_id,selProd);
-                    var qty=((parseFloat(l.cantidad)||0)*f).toFixed(2);
-                    if(f>1)return h('span',null,
-                      h('strong',null,qty+' '+(selProd.unidad_medida||'UN')),
-                      h('span',{style:{color:'#64748B',fontSize:10}},' ('+parseFloat(l.cantidad)+'×'+f+')')
-                    );
-                    return h('span',null,qty+' '+(selProd.unidad_medida||'UN'));
+                    return ((parseFloat(l.cantidad)||0)*f).toFixed(2)+' '+(selProd.unidad_medida||'UN');
                   })()
                 )
               );
             }))
           ),
-          lineasListas.length>0&&h('div',{className:'al al-s',style:{marginTop:6}},lineasListas.length+' linea(s) listas para recibir.')
-        ),
-        h('hr',{className:'divider'}),
-        err&&h('div',{className:'al al-e'},err),
-        h(FR,{label:'Bodega de recepcion'},
-          h(Sel,{value:bodega_id,onChange:setBodega},
-            h('option',{value:''},'Bodega por defecto de cada linea'),
-            bodegas.filter(function(b){return b.activo;}).map(function(b){return h('option',{key:b.bodega_id,value:b.bodega_id},b.nombre);})
+          lineasInvListas.length>0&&h('div',{className:'al al-s',style:{marginTop:4}},lineasInvListas.length+' linea(s) de inventario listas.'),
+          h('div',{style:{marginTop:8}},
+            h(FR,{label:'Bodega de recepcion'},
+              h(Sel,{value:bodega_id,onChange:setBodega},
+                h('option',{value:''},'Bodega por defecto de cada linea'),
+                bodegas.map(function(b){return h('option',{key:b.bodega_id,value:b.bodega_id},b.nombre);})
+              )
+            )
           )
-        )
+        ),
+
+        h('hr',{className:'divider'}),
+        err&&h('div',{className:'al al-e'},err)
       ),
       h('div',{className:'mf'},
         h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),
-        h(Btn,{v:'teal',onClick:save,disabled:saving||lineasListas.length===0},saving?'Procesando...':'Recibir '+lineasListas.length+' producto(s) en Bodega')
+        h(Btn,{v:'teal',onClick:save,disabled:saving||totalListas===0},
+          saving?'Procesando...':'Recibir '+totalListas+' linea(s)'
+        )
       )
     )
   );
