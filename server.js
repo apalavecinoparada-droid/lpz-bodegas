@@ -1481,13 +1481,21 @@ app.post('/api/comb/cierres/:id/procesar', auth, async(req,res)=>{
 });
 
 
-// OCR FACTURA — extracción de texto local con pdf-parse (sin API externa)
+// OCR FACTURA — extracción local PDF/XML + parseo DTE chileno
 app.post('/api/ocr/factura', auth, async(req,res)=>{
   try{
     const{base64,mediaType}=req.body;
     if(!base64||!mediaType) return res.status(400).json({error:'Falta base64 o mediaType'});
     const isPdf=mediaType==='application/pdf';
+    const isXml=mediaType==='text/xml'||mediaType==='application/xml';
     let textoCompleto='';
+
+    // XML: decode and parse directly
+    if(isXml){
+      const xmlStr=Buffer.from(base64,'base64').toString('latin1');
+      const data=parsearDteXml(xmlStr);
+      return res.json({ok:true,data,raw:xmlStr.substring(0,500)+'...'});
+    }
 
     if(isPdf){
       const buf=Buffer.from(base64,'base64');
@@ -1561,51 +1569,77 @@ function parsearFacturaChilena(txt){
   const iva=parseMonto(findFirst([/IVA\s*19%?\s*\$?\s*([\d.]+)/,/I\.?V\.?A\.?\s*\$?\s*([\d.]+)/]));
   const total=parseMonto(findFirst([/TOTAL\s*\$?\s*([\d.]+)/,/Total\s*\$?\s*([\d.]+)/]));
 
-  const skipLine=/^(Glosa|DETALLE|Descripci|PRODUCTO|Cantidad|CANTIDAD|Precio|PRECIO|Monto|MONTO|TOTAL|Total|IVA|Neto|NETO|RUT|Fecha|Venc|Cond|Giro|GIRO|Señor|Direcc|Ciudad|Comuna|S\.I\.I|Timbre|Sistema|www\.|Afecto|Imp\.|Desc)/i;
+  const skipLine=/^(Glosa|DETALLE|Descripci|PRODUCTO|Cantidad|CANTIDAD|Precio|PRECIO|Monto|MONTO|TOTAL|Total|IVA|Neto|NETO|RUT|Fecha|Venc|Cond|Giro|GIRO|Señor|Direcc|Ciudad|Comuna|S\.I\.I|Timbre|Sistema|www\.|Afecto|Imp\.|Desc|Item$|REFERENCIA|Orden de|^I\d+\s|^paulo|Exento|^\*\*)/i;
 
-  function parseLinea(l){
-    // Find $precio XX $total at end (XX = SI, NO, or any 2-letter code)
+  // Strategy A: single line — description+qty$price SI $total
+  function parseLineaUnica(l){
     const m=l.match(/\$([\d.]+)\s+[A-Z]{2}\s+\$([\d.]+)$/);
     if(!m)return null;
     const pu=parseMonto(m[1]);
     const tot=parseMonto(m[2]);
     if(!pu||!tot||pu<=0||tot<=0)return null;
     const prefix=l.slice(0,m.index).replace(/\s+$/,'');
-    // Extract trailing digits as candidate qty
     const trailMatch=prefix.match(/(\d+)$/);
     if(!trailMatch)return null;
     const trailing=trailMatch[1];
-    // Try qty lengths 1, 2, 3 — pick where total ≈ qty × price (within 5%)
     for(let qLen=1;qLen<=Math.min(3,trailing.length);qLen++){
       const qty=parseInt(trailing.slice(-qLen));
       if(qty<=0)continue;
       const desc=prefix.slice(0,prefix.length-qLen).replace(/\s+$/,'');
       if(desc.length<2)continue;
       const ratio=tot/(pu*qty);
-      if(ratio>=0.95&&ratio<=1.05){
-        return{descripcion:desc,cantidad:qty,precio_unitario:pu,total_linea:tot};
-      }
+      if(ratio>=0.95&&ratio<=1.05)return{descripcion:desc,cantidad:qty,precio_unitario:pu,total_linea:tot};
     }
     return null;
   }
 
+  // Strategy B: multi-line — qty$price on one line, description on previous line(s)
+  // Line format: "4$30.716 SI $122.861" or "4 $30.716 SI $122.861"
+  const rePrecioSolo=/^(\d{1,4})\s*\$?([\d.]+)\s+[A-Z]{2}\s+\$([\d.]+)$/;
+
   const detalleLineas=[];
-  for(const l of lineas){
-    if(l.length<8||l.length>150||skipLine.test(l))continue;
-    const item=parseLinea(l);
-    if(item)detalleLineas.push(item);
+  for(let i=0;i<lineas.length;i++){
+    const l=lineas[i];
+    if(l.length<8||l.length>200)continue;
+    if(skipLine.test(l))continue;
+
+    // Try single-line strategy first
+    const item=parseLineaUnica(l);
+    if(item){detalleLineas.push(item);continue;}
+
+    // Try multi-line: is this a price-only line?
+    const pm=l.match(rePrecioSolo);
+    if(pm){
+      const qty=parseInt(pm[1]);
+      const pu=parseMonto(pm[2]);
+      const tot=parseMonto(pm[3]);
+      if(qty>0&&pu>0&&tot>0){
+        const ratio=tot/(pu*qty);
+        if(ratio>=0.95&&ratio<=1.05){
+          // Find description: look back for last non-skip, non-price line
+          let desc='';
+          for(let j=i-1;j>=Math.max(0,i-3);j--){
+            const prev=lineas[j];
+            if(!skipLine.test(prev)&&!prev.match(rePrecioSolo)&&prev.length>=3&&!/^\d+$/.test(prev)){
+              desc=(desc?prev+' '+desc:prev);
+              break; // take just the immediately previous description line
+            }
+          }
+          if(desc.length>=2)detalleLineas.push({descripcion:desc.trim(),cantidad:qty,precio_unitario:pu,total_linea:tot});
+        }
+      }
+    }
   }
 
-  // Fallback: precio al final de la línea sin patrón SI
+  // Fallback: price at end of line
   if(detalleLineas.length===0){
     for(const l of lineas){
       if(skipLine.test(l))continue;
       const m=l.match(/^(.{6,80})\s+\$?([\d.]{4,12})$/);
       if(m){
         const tot=parseMonto(m[2]);
-        if(tot&&tot>=500&&!/^(Monto|Total|Neto|IVA|Exento)/i.test(m[1])){
+        if(tot&&tot>=500&&!/^(Monto|Total|Neto|IVA|Exento)/i.test(m[1]))
           detalleLineas.push({descripcion:m[1].trim(),cantidad:1,precio_unitario:tot,total_linea:tot});
-        }
       }
     }
   }
@@ -1615,6 +1649,61 @@ function parsearFacturaChilena(txt){
     cliente_rut:clienteRut,cliente_nombre:clienteNombre?clienteNombre.trim():null,
     neto,iva,total,condiciones_pago:condPago,lineas:detalleLineas};
 }
+
+function parsearDteXml(xmlStr){
+  function tag(name){
+    // Extract first occurrence of <name>value</name>
+    const m=xmlStr.match(new RegExp('<'+name+'[^>]*>([^<]*)<\/'+name+'>'));
+    return m?m[1].trim():null;
+  }
+  function tagAll(name){
+    // Extract all occurrences
+    const re=new RegExp('<'+name+'[^>]*>([^<]*)<\/'+name+'>','g');
+    return [...xmlStr.matchAll(re)].map(m=>m[1].trim());
+  }
+  function num(s){return s?parseFloat(s)||null:null;}
+
+  // Tipo DTE: 33=Factura, 52=Guía, 39=Boleta
+  const tipoDte=tag('TipoDTE');
+  const tipoDoc=tipoDte==='33'||tipoDte==='34'?'FACTURA':tipoDte==='52'?'GUIA':tipoDte==='39'?'BOLETA':'FACTURA';
+
+  // Encabezado
+  const ndoc=tag('Folio');
+  const fecha=tag('FchEmis');
+  const condPago=tag('TermPagoGlosa')||tag('FmaPago');
+
+  // Emisor (proveedor)
+  const provRut=tag('RUTEmisor');
+  const provNombre=tag('RznSoc');
+
+  // Receptor (cliente)
+  const clienteRut=tag('RUTRecep');
+  const clienteNombre=tag('RznSocRecep');
+
+  // Totales
+  const neto=num(tag('MntNeto'));
+  const iva=num(tag('IVA'));
+  const total=num(tag('MntTotal'));
+
+  // Líneas de detalle — extraer todos los bloques <Detalle>
+  const lineas=[];
+  const detalleBlocks=[...xmlStr.matchAll(/<Detalle>([\s\S]*?)<\/Detalle>/g)];
+  for(const block of detalleBlocks){
+    const b=block[1];
+    function tagB(name){const m=b.match(new RegExp('<'+name+'[^>]*>([^<]*)<\/'+name+'>'));return m?m[1].trim():null;}
+    const desc=tagB('NmbItem');
+    const qty=parseFloat(tagB('QtyItem')||'1')||1;
+    const prc=num(tagB('PrcItem'));
+    const monto=num(tagB('MontoItem'));
+    if(desc&&monto)lineas.push({descripcion:desc,cantidad:qty,precio_unitario:prc||monto,total_linea:monto});
+  }
+
+  return{numero_documento:ndoc,fecha_emision:fecha,tipo_doc:tipoDoc,
+    proveedor_rut:provRut,proveedor_nombre:provNombre,
+    cliente_rut:clienteRut,cliente_nombre:clienteNombre,
+    neto,iva,total,condiciones_pago:condPago,lineas};
+}
+
 
 // SPA fallback — must be AFTER all API routes
 app.get('*', (req,res)=>res.sendFile(path.join(__dirname,'frontend','index.html')));
