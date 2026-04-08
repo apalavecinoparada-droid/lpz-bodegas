@@ -1082,6 +1082,25 @@ app.get('/api/comb/kardex', auth, async(req,res)=>{
 });
 // ════════════════════════════════════════════════════
 
+// Endpoint de inicialización manual tablas combustibles
+app.post('/api/setup/comb', auth, async(req,res)=>{
+  const errors=[];
+  async function run(sql){
+    try{ await pool.query(sql); }
+    catch(e){ errors.push(e.message.substring(0,120)); }
+  }
+  await run(`CREATE TABLE IF NOT EXISTS comb_tipos (tipo_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, activo BOOLEAN DEFAULT true)`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_estanques (estanque_id SERIAL PRIMARY KEY, empresa_id INT NOT NULL REFERENCES empresas(empresa_id), codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo_estanque VARCHAR(30) NOT NULL DEFAULT 'FIJO', ubicacion VARCHAR(150), capacidad_max NUMERIC(10,2), tipo_combustible_id INT REFERENCES comb_tipos(tipo_id), observaciones TEXT, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_stock (estanque_id INT NOT NULL REFERENCES comb_estanques(estanque_id), tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), litros_disponibles NUMERIC(12,3) DEFAULT 0, costo_promedio NUMERIC(14,4) DEFAULT 0, ultima_actualizacion TIMESTAMP DEFAULT NOW(), PRIMARY KEY(estanque_id,tipo_id))`);
+  await run(`CREATE TABLE IF NOT EXISTS comb_movimientos (mov_id SERIAL PRIMARY KEY, tipo_mov VARCHAR(20) NOT NULL, empresa_id INT REFERENCES empresas(empresa_id), fecha DATE NOT NULL, tipo_id INT NOT NULL REFERENCES comb_tipos(tipo_id), estanque_origen_id INT REFERENCES comb_estanques(estanque_id), estanque_destino_id INT REFERENCES comb_estanques(estanque_id), equipo_id INT REFERENCES equipos(equipo_id), faena_id INT REFERENCES faenas(faena_id), litros NUMERIC(12,3) NOT NULL, precio_unitario NUMERIC(14,4) DEFAULT 0, costo_total NUMERIC(14,2) DEFAULT 0, horometro NUMERIC(10,1), kilometraje NUMERIC(10,1), responsable VARCHAR(100), numero_documento VARCHAR(30), estado VARCHAR(10) DEFAULT 'ACTIVO', motivo_anulacion TEXT, usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), anulado_en TIMESTAMP, anulado_por VARCHAR(100))`);
+  for(const t of ['Diesel','Gasolina 93','Gasolina 95','Gasolina 97']){
+    await run(`INSERT INTO comb_tipos(nombre) SELECT '${t}' WHERE NOT EXISTS(SELECT 1 FROM comb_tipos WHERE nombre='${t}')`);
+  }
+  if(errors.length) res.status(207).json({ok:false,errors});
+  else res.json({ok:true,msg:'Tablas de combustibles creadas correctamente'});
+});
+
+
 app.listen(PORT,'0.0.0.0', async()=>{
   console.log('\n============================================================');
   console.log('  LPZ Bodegas v2.0 — Puerto', PORT);
