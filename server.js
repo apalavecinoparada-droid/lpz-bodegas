@@ -865,7 +865,7 @@ mvR.post('/', auth, async(req,res)=>{
       if(tipo_movimiento==='INGRESO'){cu=cuIn;newQ=curQ+qty;newCpp=newQ>0?(curQ*curCpp+qty*cu)/newQ:cu;}
       else if(tipo_movimiento==='SALIDA'){cu=curCpp;newQ=Math.max(0,curQ-qty);newCpp=curCpp;}
       else{cu=cuIn||curCpp;newQ=Math.max(0,curQ+qty);newCpp=qty>0&&newQ>0?(curQ*curCpp+qty*cu)/newQ:curCpp;}
-      await client.query('INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) VALUES($1,$2,$3,$4)',[movId,pid,qty,cu]);
+      await client.query('INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario,ot_id) VALUES($1,$2,$3,$4,$5)',[movId,pid,qty,cu,l.ot_id||null]);
       await client.query('INSERT INTO stock_actual(producto_id,bodega_id,cantidad_disponible,costo_promedio_actual,ultima_actualizacion) VALUES($1,$2,$3,$4,NOW()) ON CONFLICT(producto_id,bodega_id) DO UPDATE SET cantidad_disponible=$3,costo_promedio_actual=$4,ultima_actualizacion=NOW()',[pid,bidI,newQ,newCpp]);
     }
     await client.query('COMMIT');
