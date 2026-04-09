@@ -2443,6 +2443,21 @@ app.get('/api/mant/ot/:id/compras', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
+
+// Enlazar OC completa (líneas sin ingresa_bodega) a una OT
+app.patch('/api/oc/link-ot', auth, async(req,res)=>{
+  try{
+    const{oc_id,ot_id}=req.body;
+    if(!oc_id||!ot_id) return res.status(400).json({error:'oc_id y ot_id requeridos'});
+    // Solo enlazar líneas que NO van a inventario (ingresa_bodega=false o null)
+    const r=await pool.query(
+      `UPDATE ordenes_compra_detalle SET ot_id=$1 WHERE oc_id=$2 AND (ingresa_bodega IS NULL OR ingresa_bodega=false) RETURNING *`,
+      [ot_id,oc_id]
+    );
+    res.json({ok:true,lineas_enlazadas:r.rowCount});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 // SPA fallback — must be AFTER all API routes
 app.get('*', (req,res)=>res.sendFile(path.join(__dirname,'frontend','index.html')));
 
