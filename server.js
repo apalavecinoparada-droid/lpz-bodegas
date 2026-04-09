@@ -2220,6 +2220,9 @@ app.patch('/api/mant/ot/tareas/:id', auth, async(req,res)=>{
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
+app.delete('/api/mant/ot/tareas/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM mant_ot_tareas WHERE tarea_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+});
 
 // OT Materiales
 app.get('/api/mant/ot/:id/materiales', auth, async(req,res)=>{
@@ -2438,24 +2441,34 @@ app.patch('/api/oc/detalle/:id/ot', auth, async(req,res)=>{
 // OC líneas asociadas a una OT
 app.get('/api/mant/ot/:id/compras', auth, async(req,res)=>{
   try{
-    const r=await pool.query(`SELECT d.*,oc.numero_oc,oc.fecha_emision,oc.estado AS oc_estado,prov.razon_social AS proveedor FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON d.oc_id=oc.oc_id LEFT JOIN proveedores prov ON oc.proveedor_id=prov.proveedor_id WHERE d.ot_id=$1 ORDER BY oc.fecha_emision DESC`,[req.params.id]);
+    console.log('[GET-COMPRAS] ot_id=',req.params.id);
+    const r=await pool.query(`SELECT d.*,oc.numero_oc,oc.fecha_emision,oc.estado AS oc_estado,prov.nombre AS proveedor FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON d.oc_id=oc.oc_id LEFT JOIN proveedores prov ON oc.proveedor_id=prov.proveedor_id WHERE d.ot_id=$1 ORDER BY oc.fecha_emision DESC`,[req.params.id]);
+    console.log('[GET-COMPRAS] filas encontradas:',r.rows.length);
     res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
+  }catch(e){console.error('[GET-COMPRAS ERROR]',e.message);res.status(500).json({error:e.message});}
 });
 
 
 // Enlazar OC completa a una OT
 app.patch('/api/oc/link-ot', auth, async(req,res)=>{
   try{
-    const{oc_id,ot_id}=req.body;
+    const oc_id=parseInt(req.body.oc_id), ot_id=parseInt(req.body.ot_id);
     if(!oc_id||!ot_id) return res.status(400).json({error:'oc_id y ot_id requeridos'});
+    console.log('[LINK-OT] oc_id=',oc_id,'ot_id=',ot_id);
     // Verificar si la OC ya está enlazada a otra OT
-    const chk=await pool.query(`SELECT d.ot_id,o.numero_ot FROM ordenes_compra_detalle d JOIN mant_ot o ON d.ot_id=o.ot_id WHERE d.oc_id=$1 AND d.ot_id IS NOT NULL AND d.ot_id!=$2 LIMIT 1`,[oc_id,ot_id]);
-    if(chk.rows.length>0) return res.status(400).json({error:'Esta OC ya esta enlazada a '+chk.rows[0].numero_ot+'. Debe desenlazarla primero.'});
+    const chk=await pool.query(`SELECT d.ot_id FROM ordenes_compra_detalle d WHERE d.oc_id=$1 AND d.ot_id IS NOT NULL AND d.ot_id!=$2 LIMIT 1`,[oc_id,ot_id]);
+    if(chk.rows.length>0) return res.status(400).json({error:'Esta OC ya esta enlazada a OT #'+chk.rows[0].ot_id+'. Debe desenlazarla primero.'});
+    // Verificar columna ot_id existe
+    const colChk=await pool.query(`SELECT column_name FROM information_schema.columns WHERE table_name='ordenes_compra_detalle' AND column_name='ot_id'`);
+    if(colChk.rows.length===0){
+      await pool.query('ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS ot_id INT');
+      console.log('[LINK-OT] Columna ot_id creada on-demand');
+    }
     const r=await pool.query(
-      `UPDATE ordenes_compra_detalle SET ot_id=$1 WHERE oc_id=$2 RETURNING *`,
+      `UPDATE ordenes_compra_detalle SET ot_id=$1::int WHERE oc_id=$2::int RETURNING *`,
       [ot_id,oc_id]
     );
+    console.log('[LINK-OT] Filas actualizadas:',r.rowCount,'ot_id en primera fila:',r.rows[0]?.ot_id);
     // Auto-insertar líneas OC como materiales de la OT
     for(const ln of r.rows){
       await pool.query(
@@ -2465,8 +2478,11 @@ app.patch('/api/oc/link-ot', auth, async(req,res)=>{
         [ot_id, ln.producto_id||null, ln.descripcion||'Producto OC', ln.cantidad||0, ln.precio_unitario||0, (ln.cantidad||0)*(ln.precio_unitario||0)]
       );
     }
+    // Verificación final
+    const verify=await pool.query('SELECT ot_id FROM ordenes_compra_detalle WHERE oc_id=$1',[oc_id]);
+    console.log('[LINK-OT] Verificacion - ot_id en BD:',verify.rows.map(function(r){return r.ot_id;}));
     res.json({ok:true,lineas_enlazadas:r.rowCount});
-  }catch(e){res.status(400).json({error:e.message});}
+  }catch(e){console.error('[LINK-OT ERROR]',e.message);res.status(400).json({error:e.message});}
 });
 
 // Desenlazar OC de una OT
