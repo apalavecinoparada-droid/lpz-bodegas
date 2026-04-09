@@ -355,11 +355,13 @@ function SalidaView(p){
   const[movs,setMovs]=useState([]);const[stock,setStock]=useState({});
   const[modal,setModal]=useState(false);const[anularId,setAnularId]=useState(null);
   const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
-  const blank={fecha:TODAY,bodega_id:'',faena_id:'',eq_id:'',mot_id:'',re:'',rr:'',obs:'',lineas:[{prod_id:'',qty:'1'}]};
+  const[otsAbiertas,setOtsAbiertas]=useState([]);
+  const blank={fecha:TODAY,bodega_id:'',faena_id:'',eq_id:'',mot_id:'',re:'',rr:'',obs:'',ot_id:'',lineas:[{prod_id:'',qty:'1'}]};
   const[form,setForm]=useState(blank);
   function load(){
     api('/movimientos?tipo=SALIDA','GET',null,p.tok).then(function(r){setMovs(Array.isArray(r)?r:[]);}).catch(function(){});
     api('/stock','GET',null,p.tok).then(function(rows){var m={};(rows||[]).forEach(function(r){m[r.producto_id+'_'+r.bodega_id]={q:parseFloat(r.cantidad_disponible),cpp:parseFloat(r.costo_promedio_actual)};});setStock(m);}).catch(function(){});
+    api('/mant/ot?estado=abierta','GET',null,p.tok).then(function(r){setOtsAbiertas(Array.isArray(r)?r.concat([]):[]); api('/mant/ot?estado=en_proceso','GET',null,p.tok).then(function(r2){setOtsAbiertas(function(prev){return prev.concat(Array.isArray(r2)?r2:[]);});}).catch(function(){});}).catch(function(){});
   }
   useEffect(function(){load();},[p.tok]);
   function sf(k,v){setForm(function(f){var x=Object.assign({},f);x[k]=v;return x;});}
@@ -377,7 +379,7 @@ function SalidaView(p){
     if(!form.mot_id){setErr('Motivo es obligatorio');return;}
     for(var i=0;i<form.lineas.length;i++){var l=form.lineas[i];if(!l.prod_id||!parseFloat(l.qty)){setErr('Complete todas las lineas');return;}var d=getDisp(l.prod_id,form.bodega_id);if(d!==null&&parseFloat(l.qty)>d){setErr('Stock insuficiente: "'+((prods.find(function(q){return String(q.producto_id)===l.prod_id;}))||{}).nombre+'"');return;}}
     setSaving(true);
-    api('/movimientos','POST',{tipo_movimiento:'SALIDA',fecha:form.fecha,bodega_id:parseInt(form.bodega_id),faena_id:parseInt(form.faena_id),equipo_id:parseInt(form.eq_id),motivo_id:parseInt(form.mot_id),observaciones:form.obs||null,responsable_entrega:form.re||null,responsable_recepcion:form.rr||null,lineas:form.lineas.map(function(l){return{producto_id:parseInt(l.prod_id),cantidad:parseFloat(l.qty),costo_unitario:getCpp(l.prod_id,form.bodega_id)};})},p.tok).then(function(){setModal(false);setForm(blank);load();p.onMov&&p.onMov();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
+    api('/movimientos','POST',{tipo_movimiento:'SALIDA',fecha:form.fecha,bodega_id:parseInt(form.bodega_id),faena_id:parseInt(form.faena_id),equipo_id:parseInt(form.eq_id),motivo_id:parseInt(form.mot_id),observaciones:form.obs||null,responsable_entrega:form.re||null,responsable_recepcion:form.rr||null,lineas:form.lineas.map(function(l){return{producto_id:parseInt(l.prod_id),cantidad:parseFloat(l.qty),costo_unitario:getCpp(l.prod_id,form.bodega_id),ot_id:form.ot_id?parseInt(form.ot_id):null};})},p.tok).then(function(){setModal(false);setForm(blank);load();p.onMov&&p.onMov();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
   }
   return h('div',null,
     h('div',{className:'tb'},
@@ -402,6 +404,7 @@ function SalidaView(p){
             h(FR,{label:'Faena destino',req:true},h(Sel,{value:form.faena_id,onChange:v=>{sf('faena_id',v);sf('eq_id','');}},h('option',{value:''},'Seleccione...'),faenas.filter(f=>f.activo).map(f=>h('option',{key:f.faena_id,value:f.faena_id},f.nombre)))),
             h(FR,{label:'Equipo / Cargo',req:true},h(Sel,{value:form.eq_id,onChange:v=>sf('eq_id',v)},h('option',{value:''},'Seleccione...'),eqFlt.map(e=>h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' - '+e.nombre)))),
             h(FR,{label:'Motivo',req:true},h(Sel,{value:form.mot_id,onChange:v=>sf('mot_id',v)},h('option',{value:''},'Seleccione...'),motivos.filter(m=>m.activo).map(m=>h('option',{key:m.motivo_id,value:m.motivo_id},m.nombre)))),
+            h(FR,{label:'Orden de Trabajo (OT)'},h(Sel,{value:form.ot_id||'',onChange:v=>sf('ot_id',v)},h('option',{value:''},'Sin OT (opcional)'),otsAbiertas.filter(function(ot){return !form.eq_id||String(ot.equipo_id)===String(form.eq_id);}).map(function(ot){return h('option',{key:ot.ot_id,value:ot.ot_id},ot.numero_ot+' — '+(ot.equipo_nombre||'')+' ('+ot.tipo_mantencion+')');}))),
             h(FR,{label:'Responsable entrega'},h(Inp,{value:form.re,onChange:v=>sf('re',v)})),
             h(FR,{label:'Responsable recepcion'},h(Inp,{value:form.rr,onChange:v=>sf('rr',v)})),
             h(FR,{label:'Observaciones'},h(Inp,{value:form.obs,onChange:v=>sf('obs',v)}))
@@ -3126,37 +3129,7 @@ function MantOTDetalle(p){
         h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Trabajo realizado'),h('textarea',{value:form.trabajo_realizado||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{trabajo_realizado:e.target.value});});},rows:2,style:Object.assign({},inpS,{resize:'vertical'})}))
       )
     ),
-    // Sistemas
-    h('div',{className:'card',style:{marginBottom:12}},
-      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}},
-        h('div',{style:{fontWeight:600,fontSize:13}},'Sistemas intervenidos'),
-        h(Btn,{sm:true,v:'a',onClick:function(){setSelSist(sistemas.map(function(s){return{sistema:s.sistema,es_principal:s.es_principal};}));setShowSistEdit(!showSistEdit);}},showSistEdit?'Cancelar':'Editar')
-      ),
-      !showSistEdit&&h('div',{style:{display:'flex',gap:6,flexWrap:'wrap',minHeight:22}},sistemas.length===0?h('span',{style:{fontSize:12,color:'#94A3B8'}},'Sin sistemas'):sistemas.map(function(s){return h('span',{key:s.sistema,style:{padding:'3px 8px',borderRadius:12,fontSize:11,fontWeight:600,background:s.es_principal?'#DBEAFE':'#F1F5F9',color:s.es_principal?'#1D4ED8':'#475569'}},s.sistema.replace(/_/g,' ')+(s.es_principal?' *':''));})),
-      showSistEdit&&h('div',null,
-        h('div',{style:{fontSize:11,color:'#64748B',marginBottom:6}},'Primer seleccionado = principal (*)'),
-        h('div',{style:{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8}},
-          ['motor','hidraulico','transmision','mandos_finales','electrico','enfriamiento','rodado','estructura','combustible','frenos','direccion','cabezal_forestal','lubricacion','general','otros'].map(function(s){var i2=selSist.findIndex(function(x){return x.sistema===s;});var active=i2>=0;var isPrinc=active&&selSist[i2].es_principal;return h('button',{key:s,onClick:function(){setSelSist(function(prev){if(i2>=0){var n=prev.slice();n.splice(i2,1);if(n.length&&isPrinc)n[0]=Object.assign({},n[0],{es_principal:true});return n;}return prev.concat([{sistema:s,es_principal:!prev.length}]);});},style:{padding:'4px 10px',borderRadius:16,fontSize:11,cursor:'pointer',border:active?'2px solid #10B981':'1px solid #CBD5E1',background:active?'#DCFCE7':'#F8FAFC',fontWeight:active?600:400}},s.replace(/_/g,' ')+(isPrinc?' *':''));})
-        ),
-        h('div',{style:{display:'flex',justifyContent:'flex-end'}},h(Btn,{sm:true,onClick:guardarSistemas},'Guardar'))
-      )
-    ),
-    // Personal
-    h('div',{className:'card',style:{marginBottom:12}},
-      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Personal asignado ('+personalOT.length+')'),
-      personalOT.length>0&&h(TBL,{cols:[{lbl:'Nombre',k:'nombre_completo'},{lbl:'Cargo',k:'cargo'},{lbl:'Rol',k:'rol'},{lbl:'Horas',r:true,render:function(r){return (r.horas_trabajadas||0)+'h';}},{lbl:'$/hora',r:true,render:function(r){return r.valor_hora_aplicado?CLP(Math.round(r.valor_hora_aplicado)):'—';}},{lbl:'Costo MO',r:true,render:function(r){return CLP(Math.round(r.costo_total||0));}},{lbl:'',render:function(r){return h('button',{onClick:function(){delPersona(r.id);},style:{color:'#EF4444',background:'none',border:'none',cursor:'pointer'}},'X');}}],rows:personalOT,empty:''}),
-      personalOT.length>0&&h('div',{style:{textAlign:'right',fontSize:12,fontWeight:700,padding:'4px 8px'}},'Total MO: '+CLP(Math.round(personalOT.reduce(function(s,r){return s+(parseFloat(r.costo_total)||0);},0)))),
-      h('div',{style:{display:'grid',gridTemplateColumns:'2fr 1fr 70px 90px 1fr auto',gap:6,marginTop:8,alignItems:'center'}},
-        hSel({value:newPers.persona_id,onChange:function(e){var px=personalMant.find(function(x){return String(x.persona_id)===e.target.value;});setNewPers(function(f){return Object.assign({},f,{persona_id:e.target.value,valor_hora_aplicado:px?(px.valor_hora_hombre||''):'',rol:px&&px.cargo?px.cargo:f.rol});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
-          [h('option',{value:''},'Persona...')].concat(personalMant.map(function(px){return h('option',{key:px.persona_id,value:px.persona_id},px.nombre_completo);}))),
-        hSel({value:newPers.rol,onChange:function(e){setNewPers(function(f){return Object.assign({},f,{rol:e.target.value});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
-          (function(){var cargos=[];personalMant.forEach(function(x){if(x.cargo&&cargos.indexOf(x.cargo)<0)cargos.push(x.cargo);});['ejecutor','responsable','supervisor','ayudante','electricista','soldador'].forEach(function(r){if(cargos.indexOf(r)<0)cargos.push(r);});return cargos.map(function(rl){return h('option',{key:rl,value:rl},rl);});})()),
-        h('input',{type:'number',placeholder:'Hrs',value:newPers.horas_trabajadas,onChange:function(e){setNewPers(function(f){return Object.assign({},f,{horas_trabajadas:e.target.value});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:'100%'}}),
-        h('input',{type:'number',placeholder:'$/hr',value:newPers.valor_hora_aplicado,onChange:function(e){setNewPers(function(f){return Object.assign({},f,{valor_hora_aplicado:e.target.value});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:'100%'}}),
-        h('span',{style:{fontSize:11,color:'#475569'}},'Total: $'+Math.round((parseFloat(newPers.horas_trabajadas)||0)*(parseFloat(newPers.valor_hora_aplicado)||0)).toLocaleString()),
-        h(Btn,{sm:true,onClick:addPersona},'+ Agregar')
-      )
-    ),
+    /* Sistemas intervenidos y Personal asignado global se gestionan ahora por tarea */
     // Compras OC vinculadas
     h('div',{className:'card',style:{marginBottom:12}},
       h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Ordenes de Compra vinculadas ('+comprasOT.length+')'),
