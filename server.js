@@ -2444,12 +2444,14 @@ app.get('/api/mant/ot/:id/compras', auth, async(req,res)=>{
 });
 
 
-// Enlazar OC completa (líneas sin ingresa_bodega) a una OT
+// Enlazar OC completa a una OT
 app.patch('/api/oc/link-ot', auth, async(req,res)=>{
   try{
     const{oc_id,ot_id}=req.body;
     if(!oc_id||!ot_id) return res.status(400).json({error:'oc_id y ot_id requeridos'});
-    // Solo enlazar líneas que NO van a inventario (ingresa_bodega=false o null)
+    // Verificar si la OC ya está enlazada a otra OT
+    const chk=await pool.query(`SELECT d.ot_id,o.numero_ot FROM ordenes_compra_detalle d JOIN mant_ot o ON d.ot_id=o.ot_id WHERE d.oc_id=$1 AND d.ot_id IS NOT NULL AND d.ot_id!=$2 LIMIT 1`,[oc_id,ot_id]);
+    if(chk.rows.length>0) return res.status(400).json({error:'Esta OC ya esta enlazada a '+chk.rows[0].numero_ot+'. Debe desenlazarla primero.'});
     const r=await pool.query(
       `UPDATE ordenes_compra_detalle SET ot_id=$1 WHERE oc_id=$2 RETURNING *`,
       [ot_id,oc_id]
@@ -2465,6 +2467,26 @@ app.patch('/api/oc/link-ot', auth, async(req,res)=>{
     }
     res.json({ok:true,lineas_enlazadas:r.rowCount});
   }catch(e){res.status(400).json({error:e.message});}
+});
+
+// Desenlazar OC de una OT
+app.patch('/api/oc/unlink-ot', auth, async(req,res)=>{
+  try{
+    const{oc_id,ot_id}=req.body;
+    if(!oc_id||!ot_id) return res.status(400).json({error:'oc_id y ot_id requeridos'});
+    await pool.query(`UPDATE ordenes_compra_detalle SET ot_id=NULL WHERE oc_id=$1 AND ot_id=$2`,[oc_id,ot_id]);
+    // Eliminar materiales insertados desde esa OC
+    await pool.query(`DELETE FROM mant_ot_materiales WHERE ot_id=$1 AND origen='compra' AND descripcion IN (SELECT descripcion FROM ordenes_compra_detalle WHERE oc_id=$2)`,[ot_id,oc_id]);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// OCs disponibles para enlazar (no anuladas, sin enlace a otra OT)
+app.get('/api/oc/disponibles-ot', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT DISTINCT oc.oc_id,oc.numero_oc,oc.fecha_emision,oc.estado,oc.total,pr.nombre AS proveedor FROM ordenes_compra oc LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id WHERE oc.estado NOT IN ('ANULADA') AND NOT EXISTS (SELECT 1 FROM ordenes_compra_detalle d WHERE d.oc_id=oc.oc_id AND d.ot_id IS NOT NULL) ORDER BY oc.fecha_emision DESC`);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
 });
 
 // SPA fallback — must be AFTER all API routes
