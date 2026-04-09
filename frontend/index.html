@@ -361,7 +361,7 @@ function SalidaView(p){
   function load(){
     api('/movimientos?tipo=SALIDA','GET',null,p.tok).then(function(r){setMovs(Array.isArray(r)?r:[]);}).catch(function(){});
     api('/stock','GET',null,p.tok).then(function(rows){var m={};(rows||[]).forEach(function(r){m[r.producto_id+'_'+r.bodega_id]={q:parseFloat(r.cantidad_disponible),cpp:parseFloat(r.costo_promedio_actual)};});setStock(m);}).catch(function(){});
-    api('/mant/ot?estado=abierta','GET',null,p.tok).then(function(r){setOtsAbiertas(Array.isArray(r)?r.concat([]):[]); api('/mant/ot?estado=en_proceso','GET',null,p.tok).then(function(r2){setOtsAbiertas(function(prev){return prev.concat(Array.isArray(r2)?r2:[]);});}).catch(function(){});}).catch(function(){});
+    api('/mant/ot','GET',null,p.tok).then(function(r){setOtsAbiertas(Array.isArray(r)?r.filter(function(o){return o.estado==='abierta'||o.estado==='en_ejecucion'||o.estado==='programada';}):[]); }).catch(function(){});
   }
   useEffect(function(){load();},[p.tok]);
   function sf(k,v){setForm(function(f){var x=Object.assign({},f);x[k]=v;return x;});}
@@ -2984,6 +2984,7 @@ function MantOTDetalle(p){
   const[editTareaId,setEditTareaId]=useState(null);const[editTareaDesc,setEditTareaDesc]=useState('');
   const[newMat,setNewMat]=useState({tipo:'repuesto',descripcion:'',cantidad:1,precio_unitario:0,origen:'inventario'});
   const[showLinkOC,setShowLinkOC]=useState(false);const[ocsDisp,setOcsDisp]=useState([]);
+  const[showLinkSalida,setShowLinkSalida]=useState(false);const[salidasDisp,setSalidasDisp]=useState([]);
   const[catSistemas,setCatSistemas]=useState([]);const[catTareas,setCatTareas]=useState([]);
   const[salidasInv,setSalidasInv]=useState([]);const[expandTarea,setExpandTarea]=useState(null);const[tareaPersonal,setTareaPersonal]=useState({});
   const[newTareaForm,setNewTareaForm]=useState({sistema_id:'',tarea_std_id:'',descripcion:''});
@@ -3040,7 +3041,10 @@ function MantOTDetalle(p){
     api('/mant/ot/materiales/'+id,'DELETE',null,p.tok).then(function(){setMateriales(function(a){return a.filter(function(m){return m.material_id!==id;});});refreshOT();}).catch(function(){});
   }
   function openLinkOC(){setShowLinkOC(true);api('/oc/disponibles-ot','GET',null,p.tok).then(function(r){setOcsDisp(Array.isArray(r)?r:[]);}).catch(function(){});}
-  function doLinkOC(oc_id){api('/oc/link-ot','PATCH',{oc_id:oc_id,ot_id:ot.ot_id},p.tok).then(function(){setShowLinkOC(false);loadDetail();}).catch(function(e){alert(e.message);});}
+  function doLinkOC(oc_id){api('/oc/link-ot','PATCH',{oc_id:oc_id,ot_id:ot.ot_id},p.tok).then(function(){setShowLinkOC(false);loadDetail();refreshOT();}).catch(function(e){alert(e.message);});}
+  function openLinkSalida(){setShowLinkSalida(true);api('/mant/salidas-disponibles-ot?equipo_id='+ot.equipo_id,'GET',null,p.tok).then(function(r){setSalidasDisp(Array.isArray(r)?r:[]);}).catch(function(){});}
+  function doLinkSalida(mov_id){api('/mant/salida-link-ot','PATCH',{movimiento_id:mov_id,ot_id:ot.ot_id},p.tok).then(function(){setShowLinkSalida(false);loadDetail();refreshOT();}).catch(function(e){alert(e.message);});}
+  function unlinkSalida(mov_id){if(!confirm('Desenlazar esta salida de la OT?'))return;api('/mant/salida-unlink-ot','PATCH',{movimiento_id:mov_id,ot_id:ot.ot_id},p.tok).then(function(){loadDetail();refreshOT();}).catch(function(e){alert(e.message);});}
   function unlinkOC(oc_id){if(!confirm('Desenlazar esta OC?'))return;api('/oc/unlink-ot','PATCH',{oc_id:oc_id,ot_id:ot.ot_id},p.tok).then(function(){loadDetail();}).catch(function(e){alert(e.message);});}
   function exportarOT(){
     exportXLSX([Object.assign({},ot,{tareas:tareas.length,materiales_n:materiales.length})],[
@@ -3228,15 +3232,44 @@ function MantOTDetalle(p){
       )
     ),
     // Salidas de inventario enlazadas
-    salidasInv.length>0&&h('div',{className:'card',style:{marginBottom:12}},
-      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Salidas de Inventario vinculadas ('+salidasInv.length+')'),
-      h(TBL,{cols:[
-        {lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},
-        {lbl:'Bodega',k:'bodega_nombre'},
-        {lbl:'Producto',render:function(r){return (r.producto_codigo||'')+' '+r.producto_nombre;}},
-        {lbl:'Cant.',r:true,render:function(r){return r.cantidad;}},
-        {lbl:'Costo',r:true,render:function(r){return CLP(Math.round(parseFloat(r.costo_total)||0));}}
-      ],rows:salidasInv,empty:''})
+    h('div',{className:'card',style:{marginBottom:12}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+        h('div',{style:{fontWeight:600,fontSize:13}},'Salidas de Inventario vinculadas ('+salidasInv.length+')'),
+        ot.estado!=='cerrada'&&h(Btn,{sm:true,v:'a',onClick:openLinkSalida},'🔗 Enlazar salida')
+      ),
+      salidasInv.length>0&&h('div',{style:{marginBottom:8}},
+        (function(){var grouped={};salidasInv.forEach(function(r){var k=r.mov_id||r.movimiento_id;if(!grouped[k])grouped[k]={mov_id:k,fecha:r.fecha,bodega:r.bodega_nombre,doc:r.numero_documento,items:[]};grouped[k].items.push(r);});return Object.values(grouped).map(function(g){
+          return h('div',{key:g.mov_id,style:{border:'1px solid #D1FAE5',borderRadius:6,padding:8,marginBottom:6,background:'#F0FDF4'}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
+              h('span',{style:{fontWeight:600,fontSize:12,color:'#065F46'}},'Salida #',g.mov_id,' — ',g.bodega||'',' ',fmtD(g.fecha),g.doc?' ('+g.doc+')':''),
+              ot.estado!=='cerrada'&&h('button',{onClick:function(){unlinkSalida(g.mov_id);},style:{fontSize:10,color:'#EF4444',cursor:'pointer',border:'none',background:'none'}},'✕ Desenlazar')
+            ),
+            h(TBL,{cols:[
+              {lbl:'Producto',render:function(r){return (r.producto_codigo||'')+' '+r.producto_nombre;}},
+              {lbl:'Cant.',r:true,render:function(r){return r.cantidad;}},
+              {lbl:'Costo unit.',r:true,render:function(r){return CLP(Math.round(parseFloat(r.costo_unitario)||0));}},
+              {lbl:'Total',r:true,render:function(r){return CLP(Math.round(parseFloat(r.costo_total)||0));}}
+            ],rows:g.items,empty:''})
+          );
+        });})()
+      ),
+      salidasInv.length===0&&h('div',{style:{color:'#94A3B8',fontSize:12,padding:'8px 0'}},'Sin salidas enlazadas. Use el botón "Enlazar salida" o seleccione la OT al registrar una salida de bodega.'),
+      // Modal enlazar salida
+      showLinkSalida&&h('div',{style:{marginTop:8,padding:10,border:'1px solid #10B981',borderRadius:6,background:'#ECFDF5'}},
+        h('div',{style:{fontWeight:600,fontSize:12,marginBottom:6,color:'#065F46'}},'Seleccionar salida de inventario para enlazar'),
+        h('div',{style:{fontSize:11,color:'#64748B',marginBottom:6}},'Mostrando salidas del equipo '+ot.equipo_nombre+' sin OT asignada'),
+        salidasDisp.length===0&&h('div',{style:{color:'#94A3B8',fontSize:12,padding:8}},'No hay salidas disponibles para enlazar'),
+        salidasDisp.length>0&&h(TBL,{cols:[
+          {lbl:'N°',render:function(r){return r.movimiento_id;}},
+          {lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},
+          {lbl:'Bodega',k:'bodega_nombre'},
+          {lbl:'Motivo',k:'motivo_nombre'},
+          {lbl:'Líneas',r:true,render:function(r){return r.n_sin_ot+'/'+r.n_lineas;}},
+          {lbl:'Total',r:true,render:function(r){return CLP(Math.round(parseFloat(r.total_disp)||0));}},
+          {lbl:'',render:function(r){return h(Btn,{sm:true,onClick:function(){doLinkSalida(r.movimiento_id);}},'Enlazar');}}
+        ],rows:salidasDisp,empty:''}),
+        h('div',{style:{textAlign:'right',marginTop:6}},h(Btn,{sm:true,v:'g',onClick:function(){setShowLinkSalida(false);}},'Cerrar'))
+      )
     )
   );
 }
