@@ -207,7 +207,50 @@ async function setupMantenciones(q){
     UNIQUE(equipo_id,plan_id)
   )`);
 
-  // Indices
+  // ── Tabla personal (maestro general de personas) ──
+  await q(`CREATE TABLE IF NOT EXISTS personal (
+    persona_id SERIAL PRIMARY KEY,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    nombre_completo VARCHAR(150) NOT NULL,
+    rut VARCHAR(20),
+    cargo VARCHAR(80),
+    especialidad VARCHAR(80),
+    telefono VARCHAR(30),
+    correo VARCHAR(100),
+    participa_mantencion BOOLEAN DEFAULT false,
+    valor_hora_hombre NUMERIC(12,2),
+    moneda VARCHAR(5) DEFAULT 'CLP',
+    activo BOOLEAN DEFAULT true,
+    observaciones TEXT,
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  // ── OT Sistemas (muchos a muchos OT ↔ sistema) ──
+  await q(`CREATE TABLE IF NOT EXISTS mant_ot_sistemas (
+    id SERIAL PRIMARY KEY,
+    ot_id INT NOT NULL REFERENCES mant_ot(ot_id) ON DELETE CASCADE,
+    sistema VARCHAR(60) NOT NULL,
+    es_principal BOOLEAN DEFAULT false,
+    UNIQUE(ot_id, sistema)
+  )`);
+
+  // ── OT Personal (muchos a muchos OT ↔ persona) ──
+  await q(`CREATE TABLE IF NOT EXISTS mant_ot_personal (
+    id SERIAL PRIMARY KEY,
+    ot_id INT NOT NULL REFERENCES mant_ot(ot_id) ON DELETE CASCADE,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    rol VARCHAR(60) DEFAULT 'ejecutor',
+    horas_trabajadas NUMERIC(7,2) DEFAULT 0,
+    valor_hora_aplicado NUMERIC(12,2) DEFAULT 0,
+    costo_total NUMERIC(14,2) GENERATED ALWAYS AS (horas_trabajadas * valor_hora_aplicado) STORED,
+    observacion TEXT,
+    UNIQUE(ot_id, persona_id)
+  )`);
+
+  // ── Agregar ot_id a ordenes_compra_detalle ──
+  try{ await q('ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS ot_id INT REFERENCES mant_ot(ot_id)'); }catch(e){}
+
+    // Indices
   const idxs=[
     'CREATE INDEX IF NOT EXISTS idx_mant_ot_equipo ON mant_ot(equipo_id)',
     'CREATE INDEX IF NOT EXISTS idx_mant_ot_estado ON mant_ot(estado)',
@@ -2278,6 +2321,124 @@ app.get('/api/mant/reporte/costos', auth, async(req,res)=>{
     else if(agrupacion==='tipo') groupBy='o.tipo_mantencion';
     else if(agrupacion==='empresa') groupBy='emp.razon_social';
     const r=await pool.query(`SELECT ${groupBy} AS grupo,COUNT(*) AS ots,SUM(o.costo_total) AS costo_total,SUM(o.costo_repuestos) AS repuestos,SUM(o.costo_lubricantes) AS lubricantes,SUM(o.costo_mano_obra_interna+o.costo_mano_obra_externa) AS mano_obra,SUM(o.tiempo_detenido_hrs) AS hrs_detencion FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} GROUP BY ${groupBy} ORDER BY costo_total DESC`,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+
+// ══════════════════════════════════════════════════════
+// PERSONAL — CRUD
+// ══════════════════════════════════════════════════════
+app.get('/api/personal', auth, async(req,res)=>{
+  try{
+    const{empresa_id,activo,mantencion}=req.query;
+    let where=['1=1'],vals=[];
+    if(empresa_id){vals.push(empresa_id);where.push(`p.empresa_id=$${vals.length}`);}
+    if(activo!==undefined){vals.push(activo==='true');where.push(`p.activo=$${vals.length}`);}
+    if(mantencion==='true'){where.push('p.participa_mantencion=true');}
+    const r=await pool.query(`SELECT p.*,e.razon_social AS empresa_nombre FROM personal p LEFT JOIN empresas e ON p.empresa_id=e.empresa_id WHERE ${where.join(' AND ')} ORDER BY p.nombre_completo`,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/personal', auth, async(req,res)=>{
+  try{
+    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,observaciones}=req.body;
+    if(!nombre_completo) return res.status(400).json({error:'Nombre requerido'});
+    const r=await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,observaciones) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',observaciones||null]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/personal/:id', auth, async(req,res)=>{
+  try{
+    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,activo,observaciones}=req.body;
+    const r=await pool.query(`UPDATE personal SET empresa_id=$1,nombre_completo=$2,rut=$3,cargo=$4,especialidad=$5,telefono=$6,correo=$7,participa_mantencion=$8,valor_hora_hombre=$9,moneda=$10,activo=$11,observaciones=$12 WHERE persona_id=$13 RETURNING *`,
+      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',activo!==false,observaciones||null,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.patch('/api/personal/:id/activo', auth, async(req,res)=>{
+  try{const r=await pool.query('UPDATE personal SET activo=NOT activo WHERE persona_id=$1 RETURNING *',[req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+
+// ══════════════════════════════════════════════════════
+// OT SISTEMAS (muchos a muchos)
+// ══════════════════════════════════════════════════════
+app.get('/api/mant/ot/:id/sistemas', auth, async(req,res)=>{
+  try{const r=await pool.query('SELECT * FROM mant_ot_sistemas WHERE ot_id=$1 ORDER BY es_principal DESC,sistema',[req.params.id]);res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/mant/ot/:id/sistemas', auth, async(req,res)=>{
+  try{
+    const{sistemas}=req.body; // array: [{sistema:'motor',es_principal:true}, ...]
+    if(!Array.isArray(sistemas)||!sistemas.length) return res.status(400).json({error:'Sistemas requeridos'});
+    await pool.query('DELETE FROM mant_ot_sistemas WHERE ot_id=$1',[req.params.id]);
+    for(const s of sistemas){
+      await pool.query('INSERT INTO mant_ot_sistemas(ot_id,sistema,es_principal) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[req.params.id,s.sistema,s.es_principal||false]);
+    }
+    // Update sistema field in OT with principal one
+    const principal=sistemas.find(function(s){return s.es_principal;})||sistemas[0];
+    await pool.query('UPDATE mant_ot SET sistema=$1 WHERE ot_id=$2',[principal.sistema,req.params.id]);
+    const r=await pool.query('SELECT * FROM mant_ot_sistemas WHERE ot_id=$1 ORDER BY es_principal DESC',[req.params.id]);
+    res.json(r.rows);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ══════════════════════════════════════════════════════
+// OT PERSONAL (muchos a muchos)
+// ══════════════════════════════════════════════════════
+app.get('/api/mant/ot/:id/personal', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT op.*,p.nombre_completo,p.cargo,p.especialidad,p.valor_hora_hombre AS valor_hh_maestro FROM mant_ot_personal op JOIN personal p ON op.persona_id=p.persona_id WHERE op.ot_id=$1 ORDER BY op.rol,p.nombre_completo`,[req.params.id]);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/mant/ot/:id/personal', auth, async(req,res)=>{
+  try{
+    const{persona_id,rol,horas_trabajadas,valor_hora_aplicado,observacion}=req.body;
+    if(!persona_id) return res.status(400).json({error:'Persona requerida'});
+    // Get default valor_hh from maestro if not provided
+    let vhh=parseFloat(valor_hora_aplicado)||0;
+    if(!vhh){
+      const p=await pool.query('SELECT valor_hora_hombre FROM personal WHERE persona_id=$1',[persona_id]);
+      if(p.rows.length) vhh=parseFloat(p.rows[0].valor_hora_hombre)||0;
+    }
+    const r=await pool.query(`INSERT INTO mant_ot_personal(ot_id,persona_id,rol,horas_trabajadas,valor_hora_aplicado,observacion) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(ot_id,persona_id) DO UPDATE SET rol=$3,horas_trabajadas=$4,valor_hora_aplicado=$5,observacion=$6 RETURNING *`,
+      [req.params.id,persona_id,rol||'ejecutor',parseFloat(horas_trabajadas)||0,vhh,observacion||null]);
+    // Recalculate costo_mano_obra_interna in OT
+    const totMO=await pool.query('SELECT COALESCE(SUM(costo_total),0) AS total FROM mant_ot_personal WHERE ot_id=$1',[req.params.id]);
+    const moTotal=parseFloat(totMO.rows[0].total)||0;
+    await pool.query(`UPDATE mant_ot SET costo_mano_obra_interna=$1, costo_total=costo_repuestos+costo_lubricantes+$1+costo_mano_obra_externa+costo_servicios+costo_traslado+costo_otros WHERE ot_id=$2`,[moTotal,req.params.id]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/mant/ot/personal/:id', auth, async(req,res)=>{
+  try{
+    const p=await pool.query('SELECT ot_id FROM mant_ot_personal WHERE id=$1',[req.params.id]);
+    await pool.query('DELETE FROM mant_ot_personal WHERE id=$1',[req.params.id]);
+    if(p.rows.length){
+      const ot_id=p.rows[0].ot_id;
+      const totMO=await pool.query('SELECT COALESCE(SUM(costo_total),0) AS total FROM mant_ot_personal WHERE ot_id=$1',[ot_id]);
+      const moTotal=parseFloat(totMO.rows[0].total)||0;
+      await pool.query(`UPDATE mant_ot SET costo_mano_obra_interna=$1, costo_total=costo_repuestos+costo_lubricantes+$1+costo_mano_obra_externa+costo_servicios+costo_traslado+costo_otros WHERE ot_id=$2`,[moTotal,ot_id]);
+    }
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ══════════════════════════════════════════════════════
+// OC DETALLE — Vincular a OT
+// ══════════════════════════════════════════════════════
+app.patch('/api/oc/detalle/:id/ot', auth, async(req,res)=>{
+  try{
+    const{ot_id}=req.body;
+    const r=await pool.query('UPDATE ordenes_compra_detalle SET ot_id=$1 WHERE detalle_id=$2 RETURNING *',[ot_id||null,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+// OC líneas asociadas a una OT
+app.get('/api/mant/ot/:id/compras', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT d.*,oc.numero_oc,oc.fecha_emision,oc.estado AS oc_estado,prov.razon_social AS proveedor FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON d.oc_id=oc.oc_id LEFT JOIN proveedores prov ON oc.proveedor_id=prov.proveedor_id WHERE d.ot_id=$1 ORDER BY oc.fecha_emision DESC`,[req.params.id]);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
