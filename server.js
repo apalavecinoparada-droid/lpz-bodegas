@@ -2166,9 +2166,10 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
     const{estado,fecha_inicio,fecha_termino,horometro_servicio,kilometraje_servicio,diagnostico,causa,trabajo_realizado,observaciones,responsable,mecanico_asignado,taller_tipo,taller_nombre,tiempo_detenido_hrs,costo_mano_obra_interna,costo_mano_obra_externa,costo_servicios,costo_traslado,costo_otros,prioridad,sistema}=req.body;
     // Recalculate total costs
     const matQ=await pool.query(`SELECT COALESCE(SUM(CASE WHEN tipo IN ('repuesto','filtro') THEN costo_total ELSE 0 END),0) AS rep, COALESCE(SUM(CASE WHEN tipo IN ('lubricante','grasa','refrigerante') THEN costo_total ELSE 0 END),0) AS lub FROM mant_ot_materiales WHERE ot_id=$1`,[req.params.id]);
+    const moQ=await pool.query('SELECT COALESCE(SUM(costo_total),0) AS total FROM mant_ot_personal WHERE ot_id=$1',[req.params.id]);
     const costoRep=parseFloat(matQ.rows[0].rep)||0;
     const costoLub=parseFloat(matQ.rows[0].lub)||0;
-    const moInt=parseFloat(costo_mano_obra_interna)||0;
+    const moInt=parseFloat(moQ.rows[0].total)||parseFloat(costo_mano_obra_interna)||0;
     const moExt=parseFloat(costo_mano_obra_externa)||0;
     const srv2=parseFloat(costo_servicios)||0;
     const tras=parseFloat(costo_traslado)||0;
@@ -2201,6 +2202,14 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
     const full=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
     res.json(full.rows[0]||ot);
   }catch(e){res.status(400).json({error:e.message});}
+});
+
+// GET single OT with joins
+app.get('/api/mant/ot/:id/full', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
+    res.json(r.rows[0]||null);
+  }catch(e){res.status(500).json({error:e.message});}
 });
 
 // Eliminar OT completa
