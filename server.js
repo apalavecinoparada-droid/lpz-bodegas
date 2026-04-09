@@ -247,8 +247,7 @@ async function setupMantenciones(q){
     UNIQUE(ot_id, persona_id)
   )`);
 
-  // ── Agregar ot_id a ordenes_compra_detalle ──
-  try{ await q('ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS ot_id INT REFERENCES mant_ot(ot_id)'); }catch(e){}
+  // ── ot_id se agrega en ocPatch después de crear ordenes_compra_detalle ──
 
     // Indices
   const idxs=[
@@ -391,6 +390,7 @@ async function autoSetup() {
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS equipo_id INT",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS ingresa_bodega BOOLEAN DEFAULT false",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS bodega_destino_id INT",
+    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS ot_id INT REFERENCES mant_ot(ot_id)",
   ];
   for (const sql of ocPatch) { await q(sql); }
   // ── Indices (cada uno independiente) ─────────────────────
