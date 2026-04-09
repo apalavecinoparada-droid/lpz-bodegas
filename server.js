@@ -2426,7 +2426,9 @@ app.patch('/api/mant/ot/tareas/:id', auth, async(req,res)=>{
     if(tarea_std_id!==undefined){vals.push(tarea_std_id||null);sets.push('tarea_std_id=$'+vals.length);}
     vals.push(req.params.id);
     const r=await pool.query('UPDATE mant_ot_tareas SET '+sets.join(',')+' WHERE tarea_id=$'+vals.length+' RETURNING *',vals);
-    res.json(r.rows[0]);
+    // Re-fetch with joins
+    const full=await pool.query('SELECT t.*,s.nombre AS sistema_nombre,s.codigo AS sistema_codigo,ts.nombre AS tarea_std_nombre FROM mant_ot_tareas t LEFT JOIN mant_sistemas s ON t.sistema_id=s.sistema_id LEFT JOIN mant_tareas_std ts ON t.tarea_std_id=ts.tarea_std_id WHERE t.tarea_id=$1',[req.params.id]);
+    res.json(full.rows[0]||r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.delete('/api/mant/ot/tareas/:id', auth, async(req,res)=>{
