@@ -2899,6 +2899,21 @@ function MantAvisos(p){
 }
 
 
+function TareaAddPersonal(p2){
+  var[tipo,setTipo]=useState('interno');var[pid,setPid]=useState('');var[nom,setNom]=useState('');var[hrs,setHrs]=useState(0);var[vhh,setVhh]=useState('');var[tc,setTc]=useState(true);
+  var st={fontSize:11,padding:'4px 6px',border:'1px solid #CBD5E1',borderRadius:3};
+  return h('div',{style:{display:'flex',gap:4,flexWrap:'wrap',alignItems:'end',marginTop:4}},
+    h('select',{value:tipo,onChange:function(e){setTipo(e.target.value);},style:Object.assign({},st,{width:80})},h('option',{value:'interno'},'Interno'),h('option',{value:'externo'},'Externo')),
+    tipo==='interno'?h('select',{value:pid,onChange:function(e){setPid(e.target.value);var px=p2.personalMant.find(function(x){return String(x.persona_id)===e.target.value;});if(px)setVhh(px.valor_hora_hombre||'');},style:Object.assign({},st,{width:180})},
+      h('option',{value:''},'Persona...'),p2.personalMant.map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo);})):
+      h('input',{value:nom,onChange:function(e){setNom(e.target.value);},placeholder:'Nombre externo',style:Object.assign({},st,{width:160})}),
+    h('input',{type:'number',value:hrs,onChange:function(e){setHrs(e.target.value);},placeholder:'Hrs',style:Object.assign({},st,{width:50})}),
+    h('input',{type:'number',value:vhh,onChange:function(e){setVhh(e.target.value);},placeholder:'$/hr',style:Object.assign({},st,{width:70})}),
+    tipo==='externo'&&h('label',{style:{fontSize:10,display:'flex',alignItems:'center',gap:3}},h('input',{type:'checkbox',checked:tc,onChange:function(e){setTc(e.target.checked);}}),tc?'Con costo':'Sin costo (OC)'),
+    h('button',{onClick:function(){if(tipo==='interno'&&!pid)return;if(tipo==='externo'&&!nom)return;p2.onAdd({tipo_personal:tipo,persona_id:tipo==='interno'?pid:null,nombre_externo:tipo==='externo'?nom:null,horas_trabajadas:parseFloat(hrs)||0,valor_hora_aplicado:parseFloat(vhh)||0,tiene_costo:tc});setPid('');setNom('');setHrs(0);setVhh('');},style:{fontSize:10,padding:'4px 8px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'+ Agregar')
+  );
+}
+
 function MantOT(p){
   const[ots,setOts]=useState([]);const[selOT,setSelOT]=useState(null);
   const[showForm,setShowForm]=useState(false);const[form,setForm]=useState({empresa_id:'',equipo_id:'',faena_id:'',tipo_mantencion:'preventivo',origen:'manual',fecha_apertura:new Date().toISOString().split('T')[0],prioridad:'normal',sistema:'',sintoma_reportado:'',responsable:'',mecanico_asignado:'',taller_tipo:'interno'});
@@ -2950,7 +2965,7 @@ function MantOT(p){
         {lbl:'Sistema',render:function(r){return r.sistema?(r.sistema.replace(/_/g,' ')):'—';}},
         {lbl:'Prioridad',render:function(r){return h(Bg,{c:r.prioridad==='urgente'?'r':r.prioridad==='alta'?'y':r.prioridad==='normal'?'b':'gray'},r.prioridad);}},
         {lbl:'Estado',render:function(r){return h(Bg,{c:ESTADO_COLORS[r.estado]||'b'},r.estado.replace(/_/g,' '));}},
-        {lbl:'Costo',r:true,render:function(r){var t=(parseFloat(r.costo_total)||0)+(parseFloat(r.costo_oc)||0);return t>0?CLP(Math.round(t)):'—';}},
+        {lbl:'Costo',r:true,render:function(r){var t=(parseFloat(r.costo_total)||0)+(parseFloat(r.costo_oc)||0)+(parseFloat(r.costo_salidas)||0);return t>0?CLP(Math.round(t)):'—';}},
         {lbl:'',render:function(r){return h(Btn,{v:'a',sm:true,onClick:function(){setSelOT(r);}},null,'Ver');}}
       ],rows:ots,empty:'Sin órdenes de trabajo'})
     )
@@ -2966,6 +2981,9 @@ function MantOTDetalle(p){
   const[editTareaId,setEditTareaId]=useState(null);const[editTareaDesc,setEditTareaDesc]=useState('');
   const[newMat,setNewMat]=useState({tipo:'repuesto',descripcion:'',cantidad:1,precio_unitario:0,origen:'inventario'});
   const[showLinkOC,setShowLinkOC]=useState(false);const[ocsDisp,setOcsDisp]=useState([]);
+  const[catSistemas,setCatSistemas]=useState([]);const[catTareas,setCatTareas]=useState([]);
+  const[salidasInv,setSalidasInv]=useState([]);const[expandTarea,setExpandTarea]=useState(null);const[tareaPersonal,setTareaPersonal]=useState({});
+  const[newTareaForm,setNewTareaForm]=useState({sistema_id:'',tarea_std_id:'',descripcion:''});
 
   function loadDetail(){
     api('/mant/ot/'+ot.ot_id+'/tareas','GET',null,p.tok).then(function(r){setTareas(r||[]);}).catch(function(){});
@@ -2973,6 +2991,12 @@ function MantOTDetalle(p){
     api('/mant/ot/'+ot.ot_id+'/sistemas','GET',null,p.tok).then(function(r){setSistemas(r||[]);}).catch(function(){});
     api('/mant/ot/'+ot.ot_id+'/personal','GET',null,p.tok).then(function(r){setPersonalOT(r||[]);}).catch(function(){});
     api('/mant/ot/'+ot.ot_id+'/compras','GET',null,p.tok).then(function(r){setComprasOT(r||[]);}).catch(function(){});
+    api('/mant/ot/'+ot.ot_id+'/salidas-inv','GET',null,p.tok).then(function(r){setSalidasInv(r||[]);}).catch(function(){});
+  }
+  useEffect(function(){
+    api('/mant/sistemas','GET',null,p.tok).then(function(r){setCatSistemas(r||[]);}).catch(function(){});
+    api('/mant/tareas-std','GET',null,p.tok).then(function(r){setCatTareas(r||[]);}).catch(function(){});
+  },[p.tok]);
   }
   useEffect(loadDetail,[ot.ot_id]);
 
@@ -2984,8 +3008,20 @@ function MantOTDetalle(p){
   function addPersona(){if(!newPers.persona_id){setMsg('Seleccione persona');return;}var px=personalMant.find(function(x){return String(x.persona_id)===String(newPers.persona_id);});var vhh=parseFloat(newPers.valor_hora_aplicado)||(px?parseFloat(px.valor_hora_hombre)||0:0);api('/mant/ot/'+ot.ot_id+'/personal','POST',Object.assign({},newPers,{valor_hora_aplicado:vhh}),p.tok).then(function(){loadDetail();refreshOT();setNewPers({persona_id:'',rol:'ejecutor',horas_trabajadas:0,valor_hora_aplicado:''});setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});}
   function delPersona(id){if(!confirm('Eliminar?'))return;api('/mant/ot/personal/'+id,'DELETE',null,p.tok).then(function(){loadDetail();refreshOT();}).catch(function(){});}
     function addTarea(){
-    if(!newTarea)return;
-    api('/mant/ot/'+ot.ot_id+'/tareas','POST',{descripcion:newTarea},p.tok).then(function(r){setTareas(function(a){return [...a,r];});setNewTarea('');}).catch(function(){});
+    if(!newTareaForm.descripcion&&!newTareaForm.tarea_std_id)return;
+    var desc=newTareaForm.descripcion;
+    if(!desc&&newTareaForm.tarea_std_id){var ts=catTareas.find(function(t){return String(t.tarea_std_id)===String(newTareaForm.tarea_std_id);});desc=ts?ts.nombre:'';}
+    api('/mant/ot/'+ot.ot_id+'/tareas','POST',{descripcion:desc,sistema_id:newTareaForm.sistema_id||null,tarea_std_id:newTareaForm.tarea_std_id||null},p.tok).then(function(r){setTareas(function(a){return [...a,r];});setNewTareaForm({sistema_id:'',tarea_std_id:'',descripcion:''});}).catch(function(){});
+  }
+  function loadTareaPersonal(tarea_id){
+    api('/mant/ot/tareas/'+tarea_id+'/personal','GET',null,p.tok).then(function(r){setTareaPersonal(function(prev){var n=Object.assign({},prev);n[tarea_id]=r||[];return n;});}).catch(function(){});
+  }
+  function addTareaPersonal(tarea_id,data2){
+    api('/mant/ot/tareas/'+tarea_id+'/personal','POST',data2,p.tok).then(function(){loadTareaPersonal(tarea_id);refreshOT();}).catch(function(e){alert(e.message);});
+  }
+  function delTareaPersonal(id,tarea_id){
+    if(!confirm('Eliminar?'))return;
+    api('/mant/ot/tarea-personal/'+id,'DELETE',null,p.tok).then(function(){loadTareaPersonal(tarea_id);refreshOT();}).catch(function(){});
   }
   function updateTarea(id,estado){
     api('/mant/ot/tareas/'+id,'PATCH',{estado},p.tok).then(function(r){setTareas(function(a){return a.map(function(t){return t.tarea_id===id?r:t;});});}).catch(function(){});
@@ -3023,6 +3059,11 @@ function MantOTDetalle(p){
   var calcMOInterna=personalOT.reduce(function(s,p){return s+parseFloat(p.costo_total||0);},0);
   var calcRepuestos=materiales.filter(function(m){return ['repuesto','filtro'].indexOf(m.tipo)>=0;}).reduce(function(s,m){return s+parseFloat(m.costo_total||0);},0);
   var calcLubricantes=materiales.filter(function(m){return ['lubricante','grasa','refrigerante'].indexOf(m.tipo)>=0;}).reduce(function(s,m){return s+parseFloat(m.costo_total||0);},0);
+  var calcSalidasInv=salidasInv.reduce(function(s,r){return s+parseFloat(r.costo_total||0);},0);
+  // MO from tarea personal (new structure)
+  var allTareaPersonal=Object.values(tareaPersonal).flat();
+  var calcMOTareas=allTareaPersonal.filter(function(tp){return tp.tiene_costo;}).reduce(function(s,tp){return s+parseFloat(tp.costo_total||0);},0);
+  var calcMOInternaTotal=Math.max(calcMOInterna,calcMOTareas); // use whichever is populated
 
   return h('div',null,
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
@@ -3061,13 +3102,14 @@ function MantOTDetalle(p){
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'4px 12px',fontSize:12}},
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Repuestos: '),CLP(Math.round(calcRepuestos))),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Lubricantes: '),CLP(Math.round(calcLubricantes))),
-          h('div',null,h('span',{style:{color:'#94A3B8'}},'MO interna: '),CLP(Math.round(calcMOInterna))),
+          h('div',null,h('span',{style:{color:'#94A3B8'}},'MO interna: '),CLP(Math.round(calcMOInternaTotal))),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'MO externa: '),CLP(Math.round(parseFloat(ot.costo_mano_obra_externa)||0))),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Servicios: '),CLP(Math.round(parseFloat(ot.costo_servicios)||0))),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Traslado: '),CLP(Math.round(parseFloat(ot.costo_traslado)||0))),
           totalOC>0&&h('div',{style:{gridColumn:'1/-1',borderTop:'1px dashed #CBD5E1',paddingTop:4,marginTop:2}},h('span',{style:{fontWeight:600,fontSize:11,color:'#3B82F6'}},'Compras OC: '),CLP(Math.round(totalOC))),
           totalOC>0&&Object.entries(costosOC).map(function(e){return h('div',{key:e[0],style:{paddingLeft:8}},h('span',{style:{color:'#64748B',fontSize:11}},e[0]+': '),h('span',{style:{fontSize:11}},CLP(Math.round(e[1]))));}),
-          h('div',{style:{gridColumn:'1/-1',borderTop:'1px solid #F1F5F9',paddingTop:4}},h('span',{style:{color:'#94A3B8'}},'TOTAL: '),h('strong',{style:{fontSize:14,color:'#1E293B'}},CLP(Math.round(calcRepuestos+calcLubricantes+calcMOInterna+(parseFloat(ot.costo_mano_obra_externa)||0)+(parseFloat(ot.costo_servicios)||0)+(parseFloat(ot.costo_traslado)||0)+(parseFloat(ot.costo_otros)||0)+totalOC)))),
+          calcSalidasInv>0&&h('div',{style:{gridColumn:'1/-1',borderTop:'1px dashed #CBD5E1',paddingTop:4,marginTop:2}},h('span',{style:{fontWeight:600,fontSize:11,color:'#10B981'}},'Salidas Inventario: '),CLP(Math.round(calcSalidasInv))),
+          h('div',{style:{gridColumn:'1/-1',borderTop:'1px solid #F1F5F9',paddingTop:4}},h('span',{style:{color:'#94A3B8'}},'TOTAL: '),h('strong',{style:{fontSize:14,color:'#1E293B'}},CLP(Math.round(calcRepuestos+calcLubricantes+calcMOInternaTotal+(parseFloat(ot.costo_mano_obra_externa)||0)+(parseFloat(ot.costo_servicios)||0)+(parseFloat(ot.costo_traslado)||0)+(parseFloat(ot.costo_otros)||0)+totalOC+calcSalidasInv)))),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Horas detenido: '),h('strong',null,(ot.tiempo_detenido_hrs||0)+' h'))
         )
       )
@@ -3132,29 +3174,56 @@ function MantOTDetalle(p){
       ),
       comprasOT.length===0&&h('div',{style:{color:'#94A3B8',fontSize:12,padding:'8px 0'}},'Sin ordenes de compra enlazadas. Enlace desde el modulo Ordenes de Compra.')
     ),
-        // Tareas
+        // Tareas (nueva estructura: sistema + tarea std + personal por tarea)
     h('div',{className:'card',style:{marginBottom:12}},
-      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Tareas / Checklist ('+tareasOk+'/'+tareas.length+')'),
+      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Tareas / Intervenciones ('+tareasOk+'/'+tareas.length+')'),
       tareas.length>0&&h('div',{style:{marginBottom:8}},
         tareas.map(function(t){
-          var c=t.estado==='ok'?'#10B981':t.estado==='observado'?'#F59E0B':'#94A3B8';
+          var isExp=expandTarea===t.tarea_id;
+          var tPers=tareaPersonal[t.tarea_id]||[];
+          var tCost=tPers.filter(function(tp){return tp.tiene_costo;}).reduce(function(s,tp){return s+parseFloat(tp.costo_total||0);},0);
           var isEditing=editTareaId===t.tarea_id;
-          return h('div',{key:t.tarea_id,style:{display:'flex',alignItems:'center',gap:6,padding:'6px 4px',borderBottom:'1px solid #F1F5F9'}},
-            isEditing?h('div',{style:{flex:1,display:'flex',gap:4}},
-              h('input',{type:'text',value:editTareaDesc,onChange:function(e){setEditTareaDesc(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')saveTareaDesc(t.tarea_id);if(e.key==='Escape')setEditTareaId(null);},style:{flex:1,fontSize:12,padding:'3px 6px',border:'1px solid #3B82F6',borderRadius:3},autoFocus:true}),
-              h('button',{onClick:function(){saveTareaDesc(t.tarea_id);},style:{fontSize:11,color:'#10B981',background:'none',border:'none',cursor:'pointer'}},'✓'),
-              h('button',{onClick:function(){setEditTareaId(null);},style:{fontSize:11,color:'#94A3B8',background:'none',border:'none',cursor:'pointer'}},'✗')
-            ):h('span',{onClick:function(){setEditTareaId(t.tarea_id);setEditTareaDesc(t.descripcion);},style:{flex:1,fontSize:12,color:t.estado==='ok'?'#94A3B8':'#1E293B',textDecoration:t.estado==='ok'?'line-through':'none',minWidth:0,wordBreak:'break-word',cursor:'pointer'},title:'Click para editar'},t.descripcion),
-            h('select',{value:t.sistema||'',onChange:function(e){api('/mant/ot/tareas/'+t.tarea_id,'PATCH',{estado:t.estado,sistema:e.target.value},p.tok).then(function(r){setTareas(function(a){return a.map(function(x){return x.tarea_id===t.tarea_id?r:x;});});}).catch(function(){});},style:{fontSize:10,padding:'2px 4px',border:'1px solid #CBD5E1',borderRadius:3,flexShrink:0,width:'auto',color:t.sistema?'#1D4ED8':'#94A3B8'}},
-              h('option',{value:''},'sistema...'),SISTEMAS_OPS.map(function(s){return h('option',{key:s,value:s},s.replace(/_/g,' '));})),
-            h('select',{value:t.estado,onChange:function(e){updateTarea(t.tarea_id,e.target.value);},style:{fontSize:11,padding:'3px 6px',border:'1px solid #CBD5E1',borderRadius:3,flexShrink:0,width:'auto'}},
-              ['pendiente','en_proceso','ok','no_aplica','observado'].map(function(s){return h('option',{key:s,value:s},s);})),
-            h('button',{onClick:function(){delTarea(t.tarea_id);},style:{color:'#EF4444',background:'none',border:'none',cursor:'pointer',fontSize:12,flexShrink:0}},'✕')
+          return h('div',{key:t.tarea_id,style:{border:'1px solid '+(isExp?'#3B82F6':'#E2E8F0'),borderRadius:6,padding:8,marginBottom:6,background:isExp?'#F8FAFC':'#fff'}},
+            // Header row
+            h('div',{style:{display:'flex',alignItems:'center',gap:6}},
+              h('button',{onClick:function(){if(isExp){setExpandTarea(null);}else{setExpandTarea(t.tarea_id);if(!tareaPersonal[t.tarea_id])loadTareaPersonal(t.tarea_id);}},style:{background:'none',border:'none',cursor:'pointer',fontSize:12,flexShrink:0}},isExp?'▼':'▶'),
+              t.sistema_nombre?h('span',{style:{fontSize:10,padding:'2px 6px',background:'#DBEAFE',color:'#1D4ED8',borderRadius:10,fontWeight:600,flexShrink:0}},t.sistema_nombre):
+                h('select',{value:t.sistema_id||'',onChange:function(e){api('/mant/ot/tareas/'+t.tarea_id,'PATCH',{estado:t.estado,sistema_id:e.target.value||null},p.tok).then(function(r){setTareas(function(a){return a.map(function(x){return x.tarea_id===t.tarea_id?r:x;});});}).catch(function(){});},style:{fontSize:10,padding:'2px 4px',border:'1px solid #CBD5E1',borderRadius:3,width:'auto',color:'#94A3B8'}},
+                  h('option',{value:''},'sistema...'),catSistemas.map(function(s){return h('option',{key:s.sistema_id,value:s.sistema_id},s.nombre);})),
+              isEditing?h('div',{style:{flex:1,display:'flex',gap:4}},
+                h('input',{type:'text',value:editTareaDesc,onChange:function(e){setEditTareaDesc(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')saveTareaDesc(t.tarea_id);if(e.key==='Escape')setEditTareaId(null);},style:{flex:1,fontSize:12,padding:'3px 6px',border:'1px solid #3B82F6',borderRadius:3},autoFocus:true}),
+                h('button',{onClick:function(){saveTareaDesc(t.tarea_id);},style:{fontSize:11,color:'#10B981',background:'none',border:'none',cursor:'pointer'}},'✓')
+              ):h('span',{onClick:function(){setEditTareaId(t.tarea_id);setEditTareaDesc(t.descripcion);},style:{flex:1,fontSize:12,color:t.estado==='ok'?'#94A3B8':'#1E293B',textDecoration:t.estado==='ok'?'line-through':'none',cursor:'pointer'},title:'Click para editar'},t.descripcion),
+              tCost>0&&h('span',{style:{fontSize:10,color:'#64748B',flexShrink:0}},CLP(Math.round(tCost))),
+              h('select',{value:t.estado,onChange:function(e){updateTarea(t.tarea_id,e.target.value);},style:{fontSize:11,padding:'3px 6px',border:'1px solid #CBD5E1',borderRadius:3,flexShrink:0,width:'auto'}},
+                ['pendiente','en_proceso','ok','no_aplica','observado'].map(function(s){return h('option',{key:s,value:s},s);})),
+              h('button',{onClick:function(){delTarea(t.tarea_id);},style:{color:'#EF4444',background:'none',border:'none',cursor:'pointer',fontSize:12,flexShrink:0}},'✕')
+            ),
+            // Expanded: personal por tarea
+            isExp&&h('div',{style:{marginTop:8,paddingTop:8,borderTop:'1px solid #E2E8F0'}},
+              h('div',{style:{fontSize:11,fontWeight:600,marginBottom:4}},'Personal asignado a esta tarea'),
+              tPers.length>0&&h('div',{style:{marginBottom:6}},tPers.map(function(tp){
+                return h('div',{key:tp.id,style:{display:'flex',gap:8,alignItems:'center',padding:'3px 0',fontSize:11}},
+                  h(Bg,{c:tp.tipo_personal==='interno'?'b':'y'},tp.tipo_personal),
+                  h('span',{style:{flex:1}},tp.nombre_completo||tp.nombre_externo||'—'),
+                  h('span',null,tp.horas_trabajadas+'h'),
+                  h('span',null,tp.tiene_costo?CLP(Math.round(parseFloat(tp.costo_total)||0)):'(sin costo)'),
+                  h('button',{onClick:function(){delTareaPersonal(tp.id,t.tarea_id);},style:{color:'#EF4444',background:'none',border:'none',cursor:'pointer',fontSize:10}},'✕')
+                );
+              })),
+              // Add personal form
+              h(TareaAddPersonal,{tarea_id:t.tarea_id,personalMant:personalMant,tok:p.tok,onAdd:function(d){addTareaPersonal(t.tarea_id,d);}})
+            )
           );
         })
       ),
-      h('div',{style:{display:'flex',gap:6}},
-        h('input',{type:'text',value:newTarea,onChange:function(e){setNewTarea(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')addTarea();},placeholder:'+ Agregar tarea...',style:Object.assign({},inpS,{flex:1})}),
+      // Add new tarea form
+      h('div',{style:{display:'grid',gridTemplateColumns:'180px 200px 1fr auto',gap:6,alignItems:'end'}},
+        h('select',{value:newTareaForm.sistema_id,onChange:function(e){setNewTareaForm(function(f){return Object.assign({},f,{sistema_id:e.target.value,tarea_std_id:''});});},style:Object.assign({},inpS,{fontSize:11})},
+          h('option',{value:''},'Sistema...'),catSistemas.map(function(s){return h('option',{key:s.sistema_id,value:s.sistema_id},s.nombre);})),
+        h('select',{value:newTareaForm.tarea_std_id,onChange:function(e){setNewTareaForm(function(f){return Object.assign({},f,{tarea_std_id:e.target.value});});},style:Object.assign({},inpS,{fontSize:11})},
+          h('option',{value:''},'Tarea estándar...'),catTareas.filter(function(t){return !newTareaForm.sistema_id||String(t.sistema_id)===String(newTareaForm.sistema_id);}).map(function(t){return h('option',{key:t.tarea_std_id,value:t.tarea_std_id},t.nombre);})),
+        h('input',{type:'text',value:newTareaForm.descripcion,onChange:function(e){setNewTareaForm(function(f){return Object.assign({},f,{descripcion:e.target.value});});},onKeyDown:function(e){if(e.key==='Enter')addTarea();},placeholder:'Descripción / nota técnica...',style:Object.assign({},inpS,{fontSize:11})}),
         h(Btn,{sm:true,onClick:addTarea},'Agregar')
       )
     ),
@@ -3179,6 +3248,17 @@ function MantOTDetalle(p){
           ['inventario','compra_directa','externo'].map(function(t){return h('option',{key:t,value:t},t);})),
         h(Btn,{sm:true,onClick:addMaterial},'+ Agregar')
       )
+    ),
+    // Salidas de inventario enlazadas
+    salidasInv.length>0&&h('div',{className:'card',style:{marginBottom:12}},
+      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Salidas de Inventario vinculadas ('+salidasInv.length+')'),
+      h(TBL,{cols:[
+        {lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},
+        {lbl:'Bodega',k:'bodega_nombre'},
+        {lbl:'Producto',render:function(r){return (r.producto_codigo||'')+' '+r.producto_nombre;}},
+        {lbl:'Cant.',r:true,render:function(r){return r.cantidad;}},
+        {lbl:'Costo',r:true,render:function(r){return CLP(Math.round(parseFloat(r.costo_total)||0));}}
+      ],rows:salidasInv,empty:''})
     )
   );
 }
@@ -3306,6 +3386,88 @@ function MantHistorial(p){
   );
 }
 
+// ══ MANTENEDOR DE SISTEMAS ══
+function MantSistemasAdmin(p){
+  const[items,setItems]=useState([]);const[form,setForm]=useState(null);const[msg,setMsg]=useState('');
+  function load(){api('/mant/sistemas','GET',null,p.tok).then(function(r){setItems(Array.isArray(r)?r:[]);}).catch(function(){});}
+  useEffect(load,[p.tok]);
+  function save(){
+    var m=form.sistema_id?'PUT':'POST';var url='/mant/sistemas'+(form.sistema_id?'/'+form.sistema_id:'');
+    api(url,m,form,p.tok).then(function(){load();setForm(null);setMsg('Guardado');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  return h('div',null,
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
+      h('span',{style:{fontSize:13,color:'#64748B'}},items.length+' sistemas'),
+      h(Btn,{onClick:function(){setForm({codigo:'',nombre:'',descripcion:'',orden:0,activo:true});}},'+ Nuevo Sistema')
+    ),
+    msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
+    form&&h('div',{className:'card',style:{marginBottom:12}},
+      h('div',{style:{display:'grid',gridTemplateColumns:'100px 1fr 1fr auto',gap:8,alignItems:'end'}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600}},'Código'),h('input',{value:form.codigo||'',onChange:function(e){setForm(Object.assign({},form,{codigo:e.target.value}));},style:inpS})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600}},'Nombre *'),h('input',{value:form.nombre||'',onChange:function(e){setForm(Object.assign({},form,{nombre:e.target.value}));},style:inpS})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600}},'Descripción'),h('input',{value:form.descripcion||'',onChange:function(e){setForm(Object.assign({},form,{descripcion:e.target.value}));},style:inpS})),
+        h('div',{style:{display:'flex',gap:4}},h(Btn,{onClick:save},'Guardar'),h('button',{onClick:function(){setForm(null);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:11}},'Cancelar'))
+      )
+    ),
+    h('div',{className:'card'},
+      h(TBL,{cols:[
+        {lbl:'Código',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.codigo);}},
+        {lbl:'Nombre',k:'nombre'},
+        {lbl:'Descripción',k:'descripcion'},
+        {lbl:'Estado',render:function(r){return h(Bg,{c:r.activo?'g':'r'},r.activo?'Activo':'Inactivo');}},
+        {lbl:'',render:function(r){return h(Btn,{v:'a',sm:true,onClick:function(){setForm(Object.assign({},r));}},'Editar');}}
+      ],rows:items,empty:'Sin sistemas — se crearán al reiniciar'})
+    )
+  );
+}
+
+// ══ MANTENEDOR DE TAREAS ESTÁNDAR ══
+function MantTareasStdAdmin(p){
+  const[items,setItems]=useState([]);const[sistemas,setSistemas]=useState([]);const[form,setForm]=useState(null);const[msg,setMsg]=useState('');const[filtSist,setFiltSist]=useState('');
+  function load(){
+    api('/mant/tareas-std'+(filtSist?'?sistema_id='+filtSist:''),'GET',null,p.tok).then(function(r){setItems(Array.isArray(r)?r:[]);}).catch(function(){});
+    api('/mant/sistemas','GET',null,p.tok).then(function(r){setSistemas(Array.isArray(r)?r:[]);}).catch(function(){});
+  }
+  useEffect(load,[p.tok,filtSist]);
+  function save(){
+    var m=form.tarea_std_id?'PUT':'POST';var url='/mant/tareas-std'+(form.tarea_std_id?'/'+form.tarea_std_id:'');
+    api(url,m,form,p.tok).then(function(){load();setForm(null);setMsg('Guardado');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  return h('div',null,
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,flexWrap:'wrap',gap:8}},
+      h('div',{style:{display:'flex',gap:6,alignItems:'center'}},
+        h('select',{value:filtSist,onChange:function(e){setFiltSist(e.target.value);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
+          h('option',{value:''},'Todos los sistemas'),
+          sistemas.map(function(s){return h('option',{key:s.sistema_id,value:s.sistema_id},s.nombre);})),
+        h('span',{style:{fontSize:13,color:'#64748B'}},items.length+' tareas')
+      ),
+      h(Btn,{onClick:function(){setForm({sistema_id:filtSist||'',nombre:'',descripcion:'',tipo_tarea:'preventiva',tipo_activo:'todos',activo:true});}},'+ Nueva Tarea')
+    ),
+    msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
+    form&&h('div',{className:'card',style:{marginBottom:12}},
+      h('div',{style:{display:'grid',gridTemplateColumns:'200px 1fr 140px 140px auto',gap:8,alignItems:'end'}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600}},'Sistema *'),h('select',{value:form.sistema_id||'',onChange:function(e){setForm(Object.assign({},form,{sistema_id:e.target.value}));},style:inpS},h('option',{value:''},'Seleccione...'),sistemas.map(function(s){return h('option',{key:s.sistema_id,value:s.sistema_id},s.nombre);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600}},'Nombre tarea *'),h('input',{value:form.nombre||'',onChange:function(e){setForm(Object.assign({},form,{nombre:e.target.value}));},style:inpS})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600}},'Tipo'),h('select',{value:form.tipo_tarea||'preventiva',onChange:function(e){setForm(Object.assign({},form,{tipo_tarea:e.target.value}));},style:inpS},['preventiva','correctiva','predictiva','inspeccion'].map(function(t){return h('option',{key:t,value:t},t);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600}},'Aplica a'),h('select',{value:form.tipo_activo||'todos',onChange:function(e){setForm(Object.assign({},form,{tipo_activo:e.target.value}));},style:inpS},['todos','maquinaria','vehiculo'].map(function(t){return h('option',{key:t,value:t},t);}))),
+        h('div',{style:{display:'flex',gap:4}},h(Btn,{onClick:save},'Guardar'),h('button',{onClick:function(){setForm(null);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:11}},'Cancelar'))
+      )
+    ),
+    h('div',{className:'card'},
+      h(TBL,{cols:[
+        {lbl:'Sistema',render:function(r){return h(Bg,{c:'b'},r.sistema_nombre||'—');}},
+        {lbl:'Tarea',k:'nombre'},
+        {lbl:'Tipo',render:function(r){return r.tipo_tarea;}},
+        {lbl:'Aplica',render:function(r){return r.tipo_activo;}},
+        {lbl:'Estado',render:function(r){return h(Bg,{c:r.activo?'g':'r'},r.activo?'Activo':'Inact.');}},
+        {lbl:'',render:function(r){return h(Btn,{v:'a',sm:true,onClick:function(){setForm(Object.assign({},r));}},'Editar');}}
+      ],rows:items,empty:'Sin tareas estándar — se crearán al reiniciar'})
+    )
+  );
+}
+
 
 function Personal(p){
   const[personas,setPersonas]=useState([]);
@@ -3392,7 +3554,7 @@ function Personal(p){
 
 function hSel(props,opts){return h.apply(null,['select',props].concat(opts));}
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Equipos',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Equipos',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar'};
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
@@ -3454,7 +3616,9 @@ function App(){
           navI('mant-ot','📋','Órdenes de Trabajo',true),
           navI('mant-planes','📐','Plan Maestro',true),
           navI('mant-programacion','📅','Programación',true),
-          navI('mant-historial','📜','Historial Técnico',true)
+          navI('mant-historial','📜','Historial Técnico',true),
+          navI('mant-sistemas','⚙','Sistemas',true),
+          navI('mant-tareas-std','🔩','Tareas Estándar',true)
         ),
         
         grpHdr('man','MANTENEDORES'),
@@ -3501,6 +3665,8 @@ function App(){
           view==='mant-planes'&&h(MantPlanes,{tok,m}),
           view==='mant-programacion'&&h(MantProgramacion,{tok,m}),
           view==='mant-historial'&&h(MantHistorial,{tok,m}),
+          view==='mant-sistemas'&&h(MantSistemasAdmin,{tok,m}),
+          view==='mant-tareas-std'&&h(MantTareasStdAdmin,{tok,m}),
           view==='personal'&&h(Personal,{tok,m}),
           view==='dashboard'&&h(Dashboard,{tok,alerts,setView}),
           view==='ingresos'&&h(IngresoView,{tok,m,onMov}),
