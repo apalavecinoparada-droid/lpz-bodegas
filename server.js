@@ -2292,7 +2292,53 @@ app.patch('/api/mov-detalle/:id/ot', auth, async(req,res)=>{
   try{const{ot_id}=req.body;const r=await pool.query('UPDATE movimiento_detalle SET ot_id=$1 WHERE detalle_id=$2 RETURNING *',[ot_id||null,req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
 app.get('/api/mant/ot/:id/salidas-inv', auth, async(req,res)=>{
-  try{const r=await pool.query(`SELECT md.*,p.nombre AS producto_nombre,p.codigo AS producto_codigo,me.fecha,me.numero_documento,b.nombre AS bodega_nombre FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id JOIN productos p ON md.producto_id=p.producto_id JOIN bodegas b ON me.bodega_id=b.bodega_id WHERE md.ot_id=$1 AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO' ORDER BY me.fecha DESC`,[req.params.id]);res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
+  try{const r=await pool.query(`SELECT md.*,p.nombre AS producto_nombre,p.codigo AS producto_codigo,me.fecha,me.numero_documento,b.nombre AS bodega_nombre,me.movimiento_id AS mov_id FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id JOIN productos p ON md.producto_id=p.producto_id JOIN bodegas b ON me.bodega_id=b.bodega_id WHERE md.ot_id=$1 AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO' ORDER BY me.fecha DESC`,[req.params.id]);res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
+});
+
+// Salidas disponibles para enlazar a una OT (no enlazadas aún, filtro por equipo)
+app.get('/api/mant/salidas-disponibles-ot', auth, async(req,res)=>{
+  try{
+    const{equipo_id}=req.query;
+    let where=["me.tipo_movimiento='SALIDA'","me.estado='ACTIVO'"],vals=[];
+    if(equipo_id){vals.push(equipo_id);where.push(`me.equipo_id=$${vals.length}`);}
+    // Solo movimientos que tienen al menos 1 línea sin ot_id
+    const r=await pool.query(`SELECT DISTINCT me.movimiento_id,me.fecha,b.nombre AS bodega_nombre,e.nombre AS equipo_nombre,f.nombre AS faena_nombre,mot.nombre AS motivo_nombre,
+      (SELECT COUNT(*) FROM movimiento_detalle md2 WHERE md2.movimiento_id=me.movimiento_id) AS n_lineas,
+      (SELECT COUNT(*) FROM movimiento_detalle md3 WHERE md3.movimiento_id=me.movimiento_id AND md3.ot_id IS NULL) AS n_sin_ot,
+      (SELECT SUM(md4.cantidad*md4.costo_unitario) FROM movimiento_detalle md4 WHERE md4.movimiento_id=me.movimiento_id AND md4.ot_id IS NULL) AS total_disp
+      FROM movimiento_encabezado me
+      JOIN bodegas b ON me.bodega_id=b.bodega_id
+      LEFT JOIN equipos e ON me.equipo_id=e.equipo_id
+      LEFT JOIN faenas f ON me.faena_id=f.faena_id
+      LEFT JOIN motivos_movimiento mot ON me.motivo_id=mot.motivo_id
+      WHERE ${where.join(' AND ')}
+      AND EXISTS(SELECT 1 FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id AND md.ot_id IS NULL)
+      ORDER BY me.fecha DESC`
+    ,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// Enlazar todas las líneas sin OT de un movimiento a una OT
+app.patch('/api/mant/salida-link-ot', auth, async(req,res)=>{
+  try{
+    const{movimiento_id,ot_id}=req.body;
+    if(!movimiento_id||!ot_id) return res.status(400).json({error:'movimiento_id y ot_id requeridos'});
+    const r=await pool.query('UPDATE movimiento_detalle SET ot_id=$1 WHERE movimiento_id=$2 AND ot_id IS NULL RETURNING *',[ot_id,movimiento_id]);
+    await recalcOTCosts(ot_id);
+    res.json({ok:true,lineas_enlazadas:r.rowCount});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// Desenlazar líneas de un movimiento de una OT
+app.patch('/api/mant/salida-unlink-ot', auth, async(req,res)=>{
+  try{
+    const{movimiento_id,ot_id}=req.body;
+    if(!movimiento_id||!ot_id) return res.status(400).json({error:'movimiento_id y ot_id requeridos'});
+    await pool.query('UPDATE movimiento_detalle SET ot_id=NULL WHERE movimiento_id=$1 AND ot_id=$2',[movimiento_id,ot_id]);
+    await recalcOTCosts(ot_id);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
 });
 
 app.get('/api/mant/ot', auth, async(req,res)=>{
