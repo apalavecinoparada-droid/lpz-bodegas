@@ -2197,7 +2197,23 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
         }
       }
     }
-    res.json(ot);
+    // Re-fetch con joins para devolver datos completos
+    const full=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
+    res.json(full.rows[0]||ot);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// Eliminar OT completa
+app.delete('/api/mant/ot/:id', auth, async(req,res)=>{
+  try{
+    const ot=await pool.query('SELECT * FROM mant_ot WHERE ot_id=$1',[req.params.id]);
+    if(!ot.rows.length) return res.status(404).json({error:'OT no encontrada'});
+    if(ot.rows[0].estado==='cerrada') return res.status(400).json({error:'No se puede eliminar una OT cerrada'});
+    // Desenlazar OCs
+    await pool.query('UPDATE ordenes_compra_detalle SET ot_id=NULL WHERE ot_id=$1',[req.params.id]);
+    // Borrar dependencias (CASCADE debería cubrir la mayoría)
+    await pool.query('DELETE FROM mant_ot WHERE ot_id=$1',[req.params.id]);
+    res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
 });
 
@@ -2215,8 +2231,11 @@ app.post('/api/mant/ot/:id/tareas', auth, async(req,res)=>{
 });
 app.patch('/api/mant/ot/tareas/:id', auth, async(req,res)=>{
   try{
-    const{estado,observacion}=req.body;
-    const r=await pool.query('UPDATE mant_ot_tareas SET estado=$1,observacion=$2 WHERE tarea_id=$3 RETURNING *',[estado,observacion||null,req.params.id]);
+    const{estado,observacion,descripcion}=req.body;
+    let sets=['estado=$1','observacion=$2'],vals=[estado,observacion||null];
+    if(descripcion!==undefined){vals.push(descripcion);sets.push('descripcion=$'+vals.length);}
+    vals.push(req.params.id);
+    const r=await pool.query('UPDATE mant_ot_tareas SET '+sets.join(',')+' WHERE tarea_id=$'+vals.length+' RETURNING *',vals);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -2455,9 +2474,9 @@ app.patch('/api/oc/link-ot', auth, async(req,res)=>{
     const oc_id=parseInt(req.body.oc_id), ot_id=parseInt(req.body.ot_id);
     if(!oc_id||!ot_id) return res.status(400).json({error:'oc_id y ot_id requeridos'});
     console.log('[LINK-OT] oc_id=',oc_id,'ot_id=',ot_id);
-    // Verificar si la OC ya está enlazada a otra OT
-    const chk=await pool.query(`SELECT d.ot_id FROM ordenes_compra_detalle d WHERE d.oc_id=$1 AND d.ot_id IS NOT NULL AND d.ot_id!=$2 LIMIT 1`,[oc_id,ot_id]);
-    if(chk.rows.length>0) return res.status(400).json({error:'Esta OC ya esta enlazada a OT #'+chk.rows[0].ot_id+'. Debe desenlazarla primero.'});
+    // Verificar si la OC ya está enlazada a alguna OT
+    const chk=await pool.query(`SELECT d.ot_id,o.numero_ot FROM ordenes_compra_detalle d LEFT JOIN mant_ot o ON d.ot_id=o.ot_id WHERE d.oc_id=$1 AND d.ot_id IS NOT NULL LIMIT 1`,[oc_id]);
+    if(chk.rows.length>0) return res.status(400).json({error:'Esta OC ya esta enlazada a '+(chk.rows[0].numero_ot||'OT #'+chk.rows[0].ot_id)+'. Debe desenlazarla primero.'});
     // Verificar columna ot_id existe
     const colChk=await pool.query(`SELECT column_name FROM information_schema.columns WHERE table_name='ordenes_compra_detalle' AND column_name='ot_id'`);
     if(colChk.rows.length===0){
