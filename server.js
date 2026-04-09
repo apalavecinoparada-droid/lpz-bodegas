@@ -2467,6 +2467,14 @@ app.patch('/api/oc/detalle/:id/ot', auth, async(req,res)=>{
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
+
+// GET líneas de una OC con info de OT asignada
+app.get('/api/oc/:id/lineas', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT d.*,ot.numero_ot,ot.equipo_id,eq.nombre AS equipo_nombre,sc.nombre AS subcategoria_nombre,cat.nombre AS categoria_nombre FROM ordenes_compra_detalle d LEFT JOIN mant_ot ot ON d.ot_id=ot.ot_id LEFT JOIN equipos eq ON ot.equipo_id=eq.equipo_id LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,(SELECT p.subcategoria_id FROM productos p WHERE p.producto_id=d.producto_id))=sc.subcategoria_id LEFT JOIN categorias cat ON sc.categoria_id=cat.categoria_id WHERE d.oc_id=$1 ORDER BY d.linea_num,d.detalle_id`,[req.params.id]);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
 // OC líneas asociadas a una OT
 app.get('/api/mant/ot/:id/compras', auth, async(req,res)=>{
   try{
