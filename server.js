@@ -167,7 +167,7 @@ async function setupMantenciones(q){
     material_id SERIAL PRIMARY KEY,
     ot_id INT NOT NULL REFERENCES mant_ot(ot_id) ON DELETE CASCADE,
     tipo VARCHAR(20) DEFAULT 'repuesto',
-    prod_id INT REFERENCES productos(prod_id),
+    prod_id INT REFERENCES productos(producto_id),
     descripcion VARCHAR(200) NOT NULL,
     cantidad NUMERIC(10,3) NOT NULL,
     unidad VARCHAR(20),
