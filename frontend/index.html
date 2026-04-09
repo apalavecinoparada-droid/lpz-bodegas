@@ -2952,6 +2952,7 @@ function MantOTDetalle(p){
   const[editMode,setEditMode]=useState(false);
   const[form,setForm]=useState(Object.assign({},p.ot));
   const[newTarea,setNewTarea]=useState('');const[msg,setMsg]=useState('');
+  const[editTareaId,setEditTareaId]=useState(null);const[editTareaDesc,setEditTareaDesc]=useState('');
   const[newMat,setNewMat]=useState({tipo:'repuesto',descripcion:'',cantidad:1,precio_unitario:0,origen:'inventario'});
   const[showLinkOC,setShowLinkOC]=useState(false);const[ocsDisp,setOcsDisp]=useState([]);
 
@@ -2978,6 +2979,8 @@ function MantOTDetalle(p){
     api('/mant/ot/tareas/'+id,'PATCH',{estado},p.tok).then(function(r){setTareas(function(a){return a.map(function(t){return t.tarea_id===id?r:t;});});}).catch(function(){});
   }
   function delTarea(id){if(!confirm('Eliminar tarea?'))return;api('/mant/ot/tareas/'+id,'DELETE',null,p.tok).then(function(){setTareas(function(a){return a.filter(function(t){return t.tarea_id!==id;});});}).catch(function(){});}
+  function saveTareaDesc(id){api('/mant/ot/tareas/'+id,'PATCH',{estado:tareas.find(function(t){return t.tarea_id===id;}).estado,descripcion:editTareaDesc},p.tok).then(function(r){setTareas(function(a){return a.map(function(t){return t.tarea_id===id?r:t;});});setEditTareaId(null);}).catch(function(){});}
+  function deleteOT(){if(!confirm('ELIMINAR esta OT completa? Esta accion no se puede deshacer.'))return;api('/mant/ot/'+ot.ot_id,'DELETE',null,p.tok).then(function(){p.onBack();}).catch(function(e){setMsg('Error: '+e.message);});}
   function addMaterial(){
     if(!newMat.descripcion){return;}
     api('/mant/ot/'+ot.ot_id+'/materiales','POST',newMat,p.tok).then(function(r){setMateriales(function(a){return [...a,r];});setNewMat({tipo:'repuesto',descripcion:'',cantidad:1,precio_unitario:0,origen:'inventario'});}).catch(function(){});
@@ -3016,7 +3019,8 @@ function MantOTDetalle(p){
         h(Btn,{v:'teal',sm:true,onClick:exportarOT},'⬇ Excel'),
         ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&h(Btn,{v:'a',sm:true,onClick:function(){setEditMode(!editMode);}},editMode?'Cancelar':'✏ Editar'),
         ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&h(Btn,{onClick:guardar},'💾 Guardar'),
-        ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&!editMode&&h(Btn,{v:'g',sm:true,onClick:function(){if(!confirm('Cerrar esta OT? Se actualizara el estado a cerrada.'))return;var f2=Object.assign({},form,{estado:'cerrada'});api('/mant/ot/'+ot.ot_id,'PUT',f2,p.tok).then(function(r){setOt(r);setForm(r);setMsg('OT cerrada correctamente');}).catch(function(e){setMsg('Error: '+e.message);});}},'✓ Cerrar OT')
+        ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&!editMode&&h(Btn,{v:'g',sm:true,onClick:function(){if(!confirm('Cerrar esta OT? Se actualizara el estado a cerrada.'))return;var f2=Object.assign({},form,{estado:'cerrada'});api('/mant/ot/'+ot.ot_id,'PUT',f2,p.tok).then(function(r){setOt(r);setForm(r);setMsg('OT cerrada correctamente');}).catch(function(e){setMsg('Error: '+e.message);});}},'✓ Cerrar OT'),
+        ot.estado!=='cerrada'&&h('button',{onClick:deleteOT,style:{padding:'4px 10px',fontSize:11,color:'#EF4444',border:'1px solid #FCA5A5',borderRadius:5,background:'#FFF1F2',cursor:'pointer'}},'🗑 Eliminar')
       )
     ),
     msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
@@ -3115,8 +3119,13 @@ function MantOTDetalle(p){
       tareas.length>0&&h('div',{style:{marginBottom:8}},
         tareas.map(function(t){
           var c=t.estado==='ok'?'#10B981':t.estado==='observado'?'#F59E0B':'#94A3B8';
+          var isEditing=editTareaId===t.tarea_id;
           return h('div',{key:t.tarea_id,style:{display:'flex',alignItems:'center',gap:8,padding:'6px 4px',borderBottom:'1px solid #F1F5F9'}},
-            h('span',{style:{flex:1,fontSize:12,color:t.estado==='ok'?'#94A3B8':'#1E293B',textDecoration:t.estado==='ok'?'line-through':'none',minWidth:0,wordBreak:'break-word'}},t.descripcion),
+            isEditing?h('div',{style:{flex:1,display:'flex',gap:4}},
+              h('input',{type:'text',value:editTareaDesc,onChange:function(e){setEditTareaDesc(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')saveTareaDesc(t.tarea_id);if(e.key==='Escape')setEditTareaId(null);},style:{flex:1,fontSize:12,padding:'3px 6px',border:'1px solid #3B82F6',borderRadius:3},autoFocus:true}),
+              h('button',{onClick:function(){saveTareaDesc(t.tarea_id);},style:{fontSize:11,color:'#10B981',background:'none',border:'none',cursor:'pointer'}},'✓'),
+              h('button',{onClick:function(){setEditTareaId(null);},style:{fontSize:11,color:'#94A3B8',background:'none',border:'none',cursor:'pointer'}},'✗')
+            ):h('span',{onClick:function(){setEditTareaId(t.tarea_id);setEditTareaDesc(t.descripcion);},style:{flex:1,fontSize:12,color:t.estado==='ok'?'#94A3B8':'#1E293B',textDecoration:t.estado==='ok'?'line-through':'none',minWidth:0,wordBreak:'break-word',cursor:'pointer'},title:'Click para editar'},t.descripcion),
             h('select',{value:t.estado,onChange:function(e){updateTarea(t.tarea_id,e.target.value);},style:{fontSize:11,padding:'3px 6px',border:'1px solid #CBD5E1',borderRadius:3,flexShrink:0,width:'auto'}},
               ['pendiente','en_proceso','ok','no_aplica','observado'].map(function(s){return h('option',{key:s,value:s},s);})),
             h('button',{onClick:function(){delTarea(t.tarea_id);},style:{color:'#EF4444',background:'none',border:'none',cursor:'pointer',fontSize:12,flexShrink:0}},'✕')
