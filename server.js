@@ -2231,9 +2231,10 @@ app.post('/api/mant/ot/:id/tareas', auth, async(req,res)=>{
 });
 app.patch('/api/mant/ot/tareas/:id', auth, async(req,res)=>{
   try{
-    const{estado,observacion,descripcion}=req.body;
+    const{estado,observacion,descripcion,sistema}=req.body;
     let sets=['estado=$1','observacion=$2'],vals=[estado,observacion||null];
     if(descripcion!==undefined){vals.push(descripcion);sets.push('descripcion=$'+vals.length);}
+    if(sistema!==undefined){vals.push(sistema||null);sets.push('sistema=$'+vals.length);}
     vals.push(req.params.id);
     const r=await pool.query('UPDATE mant_ot_tareas SET '+sets.join(',')+' WHERE tarea_id=$'+vals.length+' RETURNING *',vals);
     res.json(r.rows[0]);
@@ -2460,11 +2461,9 @@ app.patch('/api/oc/detalle/:id/ot', auth, async(req,res)=>{
 // OC líneas asociadas a una OT
 app.get('/api/mant/ot/:id/compras', auth, async(req,res)=>{
   try{
-    console.log('[GET-COMPRAS] ot_id=',req.params.id);
-    const r=await pool.query(`SELECT d.*,oc.numero_oc,oc.fecha_emision,oc.estado AS oc_estado,prov.nombre AS proveedor FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON d.oc_id=oc.oc_id LEFT JOIN proveedores prov ON oc.proveedor_id=prov.proveedor_id WHERE d.ot_id=$1 ORDER BY oc.fecha_emision DESC`,[req.params.id]);
-    console.log('[GET-COMPRAS] filas encontradas:',r.rows.length);
+    const r=await pool.query(`SELECT d.*,oc.numero_oc,oc.fecha_emision,oc.estado AS oc_estado,prov.nombre AS proveedor,p.nombre AS producto_nombre,p.codigo AS producto_codigo,sc.nombre AS subcategoria_nombre,cat.nombre AS categoria_nombre FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON d.oc_id=oc.oc_id LEFT JOIN proveedores prov ON oc.proveedor_id=prov.proveedor_id LEFT JOIN productos p ON d.producto_id=p.producto_id LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,p.subcategoria_id)=sc.subcategoria_id LEFT JOIN categorias cat ON sc.categoria_id=cat.categoria_id WHERE d.ot_id=$1 ORDER BY oc.fecha_emision DESC`,[req.params.id]);
     res.json(r.rows);
-  }catch(e){console.error('[GET-COMPRAS ERROR]',e.message);res.status(500).json({error:e.message});}
+  }catch(e){res.status(500).json({error:e.message});}
 });
 
 
