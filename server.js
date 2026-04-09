@@ -2451,9 +2451,18 @@ app.patch('/api/oc/link-ot', auth, async(req,res)=>{
     if(!oc_id||!ot_id) return res.status(400).json({error:'oc_id y ot_id requeridos'});
     // Solo enlazar líneas que NO van a inventario (ingresa_bodega=false o null)
     const r=await pool.query(
-      `UPDATE ordenes_compra_detalle SET ot_id=$1 WHERE oc_id=$2 AND (ingresa_bodega IS NULL OR ingresa_bodega=false) RETURNING *`,
+      `UPDATE ordenes_compra_detalle SET ot_id=$1 WHERE oc_id=$2 RETURNING *`,
       [ot_id,oc_id]
     );
+    // Auto-insertar líneas OC como materiales de la OT
+    for(const ln of r.rows){
+      await pool.query(
+        `INSERT INTO mant_ot_materiales(ot_id,tipo,prod_id,descripcion,cantidad,precio_unitario,costo_total,origen)
+         VALUES($1,'repuesto',$2,$3,$4,$5,$6,'compra')
+         ON CONFLICT DO NOTHING`,
+        [ot_id, ln.producto_id||null, ln.descripcion||'Producto OC', ln.cantidad||0, ln.precio_unitario||0, (ln.cantidad||0)*(ln.precio_unitario||0)]
+      );
+    }
     res.json({ok:true,lineas_enlazadas:r.rowCount});
   }catch(e){res.status(400).json({error:e.message});}
 });
