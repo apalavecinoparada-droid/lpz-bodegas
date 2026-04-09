@@ -37,6 +37,187 @@ async function audit(tabla, id, accion, antes, despues, usr) {
   try { await pool.query('INSERT INTO auditoria(tabla_afectada,registro_id,accion,datos_anteriores,datos_nuevos,usuario) VALUES($1,$2,$3,$4,$5,$6)',[tabla,id,accion,antes?JSON.stringify(antes):null,despues?JSON.stringify(despues):null,usr]); } catch {}
 }
 
+
+// ══════════════════════════════════════════════════════
+// MÓDULO MANTENCIÓN — CREACIÓN DE TABLAS
+// ══════════════════════════════════════════════════════
+async function setupMantenciones(q){
+  // Ampliar equipos con campos técnicos de mantenimiento
+  const equipoCols=[
+    ["tipo_activo","VARCHAR(20) DEFAULT 'maquinaria'"],
+    ["familia","VARCHAR(50)"],["marca","VARCHAR(50)"],
+    ["modelo_equipo","VARCHAR(100)"],["anio_fabricacion","INT"],
+    ["numero_serie","VARCHAR(80)"],["patente","VARCHAR(20)"],
+    ["motor_descripcion","VARCHAR(80)"],["transmision_descripcion","VARCHAR(80)"],
+    ["cap_aceite_motor","NUMERIC(8,2)"],["cap_aceite_hidraulico","NUMERIC(8,2)"],
+    ["cap_transmision","NUMERIC(8,2)"],["cap_refrigerante","NUMERIC(8,2)"],
+    ["cap_combustible_equipo","NUMERIC(8,2)"],["tipo_combustible_equipo","VARCHAR(20)"],
+    ["horometro_actual","NUMERIC(10,1) DEFAULT 0"],["kilometraje_actual","INT DEFAULT 0"],
+    ["fecha_puesta_servicio","DATE"],
+    ["estado_operativo","VARCHAR(20) DEFAULT 'operativo'"],
+    ["criticidad","VARCHAR(10) DEFAULT 'media'"],
+    ["observaciones_tecnicas","TEXT"]
+  ];
+  for(const [nm,def] of equipoCols){
+    try{await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS ${nm} ${def}`);}catch(e){}
+  }
+
+  await q(`CREATE TABLE IF NOT EXISTS mant_planes (
+    plan_id SERIAL PRIMARY KEY,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    nombre VARCHAR(150) NOT NULL,
+    descripcion TEXT,
+    tipo_activo VARCHAR(20) DEFAULT 'todos',
+    familia VARCHAR(50),
+    marca VARCHAR(50),
+    modelo_filtro VARCHAR(100),
+    equipo_id INT REFERENCES equipos(equipo_id),
+    sistema VARCHAR(60),
+    componente VARCHAR(100),
+    tipo_mantencion VARCHAR(30) DEFAULT 'preventivo',
+    intervalo_horas NUMERIC(8,1),
+    intervalo_km INT,
+    intervalo_dias INT,
+    tolerancia_horas NUMERIC(6,1) DEFAULT 10,
+    tolerancia_km INT DEFAULT 200,
+    tolerancia_dias INT DEFAULT 5,
+    tiempo_estimado_hrs NUMERIC(5,1),
+    prioridad VARCHAR(10) DEFAULT 'normal',
+    checklist_items JSONB DEFAULT '[]',
+    repuestos_sugeridos JSONB DEFAULT '[]',
+    lubricantes_sugeridos JSONB DEFAULT '[]',
+    activo BOOLEAN DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS mant_avisos (
+    aviso_id SERIAL PRIMARY KEY,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    equipo_id INT NOT NULL REFERENCES equipos(equipo_id),
+    faena_id INT REFERENCES faenas(faena_id),
+    fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+    reportado_por VARCHAR(100),
+    criticidad VARCHAR(10) DEFAULT 'media',
+    equipo_detenido BOOLEAN DEFAULT false,
+    sistema VARCHAR(60),
+    sintoma TEXT NOT NULL,
+    observaciones TEXT,
+    estado VARCHAR(20) DEFAULT 'pendiente',
+    ot_id INT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS mant_ot (
+    ot_id SERIAL PRIMARY KEY,
+    numero_ot VARCHAR(30) UNIQUE NOT NULL,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    equipo_id INT NOT NULL REFERENCES equipos(equipo_id),
+    faena_id INT REFERENCES faenas(faena_id),
+    plan_id INT REFERENCES mant_planes(plan_id),
+    aviso_id INT REFERENCES mant_avisos(aviso_id),
+    tipo_mantencion VARCHAR(30) NOT NULL DEFAULT 'preventivo',
+    origen VARCHAR(30) DEFAULT 'manual',
+    fecha_apertura DATE NOT NULL DEFAULT CURRENT_DATE,
+    fecha_programada DATE,
+    fecha_inicio TIMESTAMP,
+    fecha_termino TIMESTAMP,
+    horometro_servicio NUMERIC(10,1),
+    kilometraje_servicio INT,
+    estado VARCHAR(20) DEFAULT 'abierta',
+    prioridad VARCHAR(10) DEFAULT 'normal',
+    sistema VARCHAR(60),
+    sintoma_reportado TEXT,
+    diagnostico TEXT,
+    causa TEXT,
+    trabajo_realizado TEXT,
+    observaciones TEXT,
+    responsable VARCHAR(100),
+    mecanico_asignado VARCHAR(100),
+    taller_tipo VARCHAR(15) DEFAULT 'interno',
+    taller_nombre VARCHAR(100),
+    tiempo_detenido_hrs NUMERIC(7,2) DEFAULT 0,
+    costo_repuestos NUMERIC(14,2) DEFAULT 0,
+    costo_lubricantes NUMERIC(14,2) DEFAULT 0,
+    costo_mano_obra_interna NUMERIC(14,2) DEFAULT 0,
+    costo_mano_obra_externa NUMERIC(14,2) DEFAULT 0,
+    costo_servicios NUMERIC(14,2) DEFAULT 0,
+    costo_traslado NUMERIC(14,2) DEFAULT 0,
+    costo_otros NUMERIC(14,2) DEFAULT 0,
+    costo_total NUMERIC(14,2) DEFAULT 0,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    actualizado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS mant_ot_tareas (
+    tarea_id SERIAL PRIMARY KEY,
+    ot_id INT NOT NULL REFERENCES mant_ot(ot_id) ON DELETE CASCADE,
+    orden INT DEFAULT 0,
+    descripcion VARCHAR(300) NOT NULL,
+    sistema VARCHAR(60),
+    tipo VARCHAR(20) DEFAULT 'tarea',
+    estado VARCHAR(20) DEFAULT 'pendiente',
+    observacion TEXT,
+    desde_plan BOOLEAN DEFAULT false,
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS mant_ot_materiales (
+    material_id SERIAL PRIMARY KEY,
+    ot_id INT NOT NULL REFERENCES mant_ot(ot_id) ON DELETE CASCADE,
+    tipo VARCHAR(20) DEFAULT 'repuesto',
+    prod_id INT REFERENCES productos(prod_id),
+    descripcion VARCHAR(200) NOT NULL,
+    cantidad NUMERIC(10,3) NOT NULL,
+    unidad VARCHAR(20),
+    precio_unitario NUMERIC(14,2) DEFAULT 0,
+    costo_total NUMERIC(14,2) DEFAULT 0,
+    origen VARCHAR(20) DEFAULT 'inventario',
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS mant_lecturas (
+    lectura_id SERIAL PRIMARY KEY,
+    equipo_id INT NOT NULL REFERENCES equipos(equipo_id),
+    fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+    horometro NUMERIC(10,1),
+    kilometraje INT,
+    origen VARCHAR(30) DEFAULT 'manual',
+    ot_id INT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS mant_programacion (
+    prog_id SERIAL PRIMARY KEY,
+    equipo_id INT NOT NULL REFERENCES equipos(equipo_id),
+    plan_id INT NOT NULL REFERENCES mant_planes(plan_id),
+    empresa_id INT REFERENCES empresas(empresa_id),
+    proxima_fecha DATE,
+    proxima_horas NUMERIC(10,1),
+    proxima_km INT,
+    ultima_ejecucion_fecha DATE,
+    ultima_ejecucion_horas NUMERIC(10,1),
+    ultima_ejecucion_km INT,
+    ultima_ot_id INT,
+    estado VARCHAR(20) DEFAULT 'vigente',
+    creado_en TIMESTAMP DEFAULT NOW(),
+    actualizado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(equipo_id,plan_id)
+  )`);
+
+  // Indices
+  const idxs=[
+    'CREATE INDEX IF NOT EXISTS idx_mant_ot_equipo ON mant_ot(equipo_id)',
+    'CREATE INDEX IF NOT EXISTS idx_mant_ot_estado ON mant_ot(estado)',
+    'CREATE INDEX IF NOT EXISTS idx_mant_avisos_equipo ON mant_avisos(equipo_id)',
+    'CREATE INDEX IF NOT EXISTS idx_mant_lecturas_equipo ON mant_lecturas(equipo_id,fecha DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_mant_prog_equipo ON mant_programacion(equipo_id)',
+  ];
+  for(const i of idxs){try{await q(i);}catch(e){}}
+}
+
 async function autoSetup() {
   // AUTO-REPARACION: si ordenes_compra existe con estructura incorrecta, la elimina
   try {
@@ -183,6 +364,7 @@ async function autoSetup() {
     "CREATE INDEX IF NOT EXISTS idx_oc_fecha ON ordenes_compra(fecha_emision)",
   ];
   for (const sql of idxList) { await q(sql); }
+  await setupMantenciones(q);
   console.log('  [OK] Tablas verificadas');
   // ── Datos iniciales ───────────────────────────────────────
   try {
@@ -211,6 +393,8 @@ async function autoSetup() {
       await pool.query("INSERT INTO condiciones_pago(nombre) VALUES('Contado'),('30 dias'),('60 dias'),('90 dias') ON CONFLICT DO NOTHING");
     }
   } catch(e) {}
+  // Mantención module tables
+  try{ await setupMantenciones(pool.query.bind(pool)); }catch(e){console.log('[WARN] mant tables:',e.message);}
 }
 
 async function insertarDatosIniciales(client) {
@@ -1725,30 +1909,30 @@ async function getFactoToken(){
   // The 400 "invalid_request" means endpoint found, body field names wrong
   // Try all credential combinations
   const BASE='https://api-billing.koywe.com/V1/authentication';
-  const attempts=[
-    // Attempt 1: apiKey=user, secret=pass (Resource Owner credentials)
-    {apiKey:user, secret:pass},
-    // Attempt 2: apiKey=clientId, secret=clientSecret
-    {apiKey, secret},
-    // Attempt 3: username+password field names
-    {username:user, password:pass},
-    // Attempt 4: all four fields
-    {apiKey:user, secret:pass, client_id:apiKey, client_secret:secret},
-    // Attempt 5: email-style (user might be email format)
-    {email:user, password:pass},
+  // Try multiple URL + body combinations
+  const combos=[
+    ['https://api-billing.koywe.com/V1/authentication',{apiKey:user,secret:pass}],
+    ['https://api-billing.koywe.com/V1/authentication',{apiKey,secret}],
+    ['https://api-billing.koywe.com/V1/auth',{apiKey:user,secret:pass}],
+    ['https://api-billing.koywe.com/V1/auth',{apiKey,secret}],
+    ['https://api-billing.koywe.com/V1/auth/sign-in',{apiKey:user,secret:pass}],
+    ['https://api-billing.koywe.com/V1/auth/sign-in',{apiKey,secret}],
+    ['https://api-billing.koywe.com/V1/sign-in',{apiKey:user,secret:pass}],
+    ['https://api-billing.koywe.com/V1/login',{apiKey:user,secret:pass}],
+    ['https://api-billing.koywe.com/auth',{apiKey:user,secret:pass}],
+    ['https://api-billing.koywe.com/authentication',{apiKey:user,secret:pass}],
   ];
   let d=null,lastStatus=0,lastText='';
-  for(let i=0;i<attempts.length;i++){
-    const body=attempts[i];
-    const r2=await fetch(BASE,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify(body)});
+  for(let i=0;i<combos.length;i++){
+    const [url,body]=combos[i];
+    const r2=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json'},body:JSON.stringify(body)});
     lastText=await r2.text();
-    console.log('[Facto auth attempt',i+1,'] body:',JSON.stringify(body),'→ HTTP',r2.status,lastText.substring(0,150));
+    console.log('[Facto auth]',url,JSON.stringify(body),'→',r2.status,lastText.substring(0,120));
     try{d=JSON.parse(lastText);}catch(e){d={raw:lastText};}
     lastStatus=r2.status;
     if(r2.ok&&d&&d.token){
-      factoToken=d.token;
-      factoTokenExp=Date.now()+(23*3600*1000);
-      console.log('[Facto] auth OK attempt',i+1);
+      factoToken=d.token;factoTokenExp=Date.now()+(23*3600*1000);
+      console.log('[Facto] auth OK:',url);
       return factoToken;
     }
   }
@@ -1826,6 +2010,276 @@ app.get('/api/facto/test', auth, async(req,res)=>{
     const token=await getFactoToken();
     res.json({ok:true,msg:'Conexión Koywe Billing exitosa',token_preview:token.substring(0,20)+'...'});
   }catch(e){res.json({ok:false,msg:e.message});}
+});
+
+
+// ══════════════════════════════════════════════════════
+// MÓDULO MANTENCIÓN — ENDPOINTS
+// ══════════════════════════════════════════════════════
+
+// ── PLANES MAESTROS ──
+app.get('/api/mant/planes', auth, async(req,res)=>{
+  try{
+    const{empresa_id,tipo_activo,activo}=req.query;
+    let where=['1=1'],vals=[];
+    if(empresa_id){vals.push(empresa_id);where.push(`p.empresa_id=$${vals.length}`);}
+    if(tipo_activo&&tipo_activo!=='todos'){vals.push(tipo_activo);where.push(`(p.tipo_activo=$${vals.length} OR p.tipo_activo='todos')`);}
+    if(activo!==undefined){vals.push(activo==='true');where.push(`p.activo=$${vals.length}`);}
+    const r=await pool.query(`SELECT p.*,e.razon_social AS empresa_nombre FROM mant_planes p LEFT JOIN empresas e ON p.empresa_id=e.empresa_id WHERE ${where.join(' AND ')} ORDER BY p.nombre`,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/mant/planes', auth, async(req,res)=>{
+  try{
+    const{empresa_id,nombre,descripcion,tipo_activo,familia,marca,modelo_filtro,equipo_id,sistema,componente,tipo_mantencion,intervalo_horas,intervalo_km,intervalo_dias,tolerancia_horas,tolerancia_km,tolerancia_dias,tiempo_estimado_hrs,prioridad,checklist_items,repuestos_sugeridos,lubricantes_sugeridos}=req.body;
+    if(!nombre) return res.status(400).json({error:'Nombre requerido'});
+    const r=await pool.query(`INSERT INTO mant_planes(empresa_id,nombre,descripcion,tipo_activo,familia,marca,modelo_filtro,equipo_id,sistema,componente,tipo_mantencion,intervalo_horas,intervalo_km,intervalo_dias,tolerancia_horas,tolerancia_km,tolerancia_dias,tiempo_estimado_hrs,prioridad,checklist_items,repuestos_sugeridos,lubricantes_sugeridos) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
+      [empresa_id||null,nombre,descripcion||null,tipo_activo||'todos',familia||null,marca||null,modelo_filtro||null,equipo_id||null,sistema||null,componente||null,tipo_mantencion||'preventivo',intervalo_horas||null,intervalo_km||null,intervalo_dias||null,tolerancia_horas||10,tolerancia_km||200,tolerancia_dias||5,tiempo_estimado_hrs||null,prioridad||'normal',JSON.stringify(checklist_items||[]),JSON.stringify(repuestos_sugeridos||[]),JSON.stringify(lubricantes_sugeridos||[])]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/mant/planes/:id', auth, async(req,res)=>{
+  try{
+    const{nombre,descripcion,tipo_activo,familia,marca,modelo_filtro,equipo_id,sistema,componente,tipo_mantencion,intervalo_horas,intervalo_km,intervalo_dias,tolerancia_horas,tolerancia_km,tolerancia_dias,tiempo_estimado_hrs,prioridad,checklist_items,repuestos_sugeridos,lubricantes_sugeridos,activo}=req.body;
+    const r=await pool.query(`UPDATE mant_planes SET nombre=$1,descripcion=$2,tipo_activo=$3,familia=$4,marca=$5,modelo_filtro=$6,equipo_id=$7,sistema=$8,componente=$9,tipo_mantencion=$10,intervalo_horas=$11,intervalo_km=$12,intervalo_dias=$13,tolerancia_horas=$14,tolerancia_km=$15,tolerancia_dias=$16,tiempo_estimado_hrs=$17,prioridad=$18,checklist_items=$19,repuestos_sugeridos=$20,lubricantes_sugeridos=$21,activo=$22 WHERE plan_id=$23 RETURNING *`,
+      [nombre,descripcion||null,tipo_activo||'todos',familia||null,marca||null,modelo_filtro||null,equipo_id||null,sistema||null,componente||null,tipo_mantencion||'preventivo',intervalo_horas||null,intervalo_km||null,intervalo_dias||null,tolerancia_horas||10,tolerancia_km||200,tolerancia_dias||5,tiempo_estimado_hrs||null,prioridad||'normal',JSON.stringify(checklist_items||[]),JSON.stringify(repuestos_sugeridos||[]),JSON.stringify(lubricantes_sugeridos||[]),activo!==false,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ── AVISOS DE FALLA ──
+app.get('/api/mant/avisos', auth, async(req,res)=>{
+  try{
+    const{empresa_id,equipo_id,estado}=req.query;
+    let where=['1=1'],vals=[];
+    if(empresa_id){vals.push(empresa_id);where.push(`a.empresa_id=$${vals.length}`);}
+    if(equipo_id){vals.push(equipo_id);where.push(`a.equipo_id=$${vals.length}`);}
+    if(estado){vals.push(estado);where.push(`a.estado=$${vals.length}`);}
+    const r=await pool.query(`SELECT a.*,eq.nombre AS equipo_nombre,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre FROM mant_avisos a LEFT JOIN equipos eq ON a.equipo_id=eq.equipo_id LEFT JOIN faenas f ON a.faena_id=f.faena_id LEFT JOIN empresas emp ON a.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY a.creado_en DESC`,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/mant/avisos', auth, async(req,res)=>{
+  try{
+    const{empresa_id,equipo_id,faena_id,fecha,reportado_por,criticidad,equipo_detenido,sistema,sintoma,observaciones}=req.body;
+    if(!equipo_id||!sintoma) return res.status(400).json({error:'Equipo y síntoma requeridos'});
+    // Si equipo detenido, actualizar estado_operativo
+    if(equipo_detenido) await pool.query("UPDATE equipos SET estado_operativo='detenido' WHERE equipo_id=$1",[equipo_id]);
+    const r=await pool.query(`INSERT INTO mant_avisos(empresa_id,equipo_id,faena_id,fecha,reportado_por,criticidad,equipo_detenido,sistema,sintoma,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [empresa_id||null,equipo_id,faena_id||null,fecha||new Date().toISOString().split('T')[0],reportado_por||null,criticidad||'media',equipo_detenido||false,sistema||null,sintoma,observaciones||null,req.user.email]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.patch('/api/mant/avisos/:id', auth, async(req,res)=>{
+  try{
+    const{estado,ot_id}=req.body;
+    const r=await pool.query('UPDATE mant_avisos SET estado=$1,ot_id=$2 WHERE aviso_id=$3 RETURNING *',[estado,ot_id||null,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ── ÓRDENES DE TRABAJO ──
+app.get('/api/mant/ot', auth, async(req,res)=>{
+  try{
+    const{empresa_id,equipo_id,estado,desde,hasta}=req.query;
+    let where=['1=1'],vals=[];
+    if(empresa_id){vals.push(empresa_id);where.push(`o.empresa_id=$${vals.length}`);}
+    if(equipo_id){vals.push(equipo_id);where.push(`o.equipo_id=$${vals.length}`);}
+    if(estado){vals.push(estado);where.push(`o.estado=$${vals.length}`);}
+    if(desde){vals.push(desde);where.push(`o.fecha_apertura>=$${vals.length}`);}
+    if(hasta){vals.push(hasta);where.push(`o.fecha_apertura<=$${vals.length}`);}
+    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY o.creado_en DESC`,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/mant/ot', auth, async(req,res)=>{
+  try{
+    const{empresa_id,equipo_id,faena_id,plan_id,aviso_id,tipo_mantencion,origen,fecha_apertura,fecha_programada,horometro_servicio,kilometraje_servicio,estado,prioridad,sistema,sintoma_reportado,responsable,mecanico_asignado,taller_tipo,taller_nombre,observaciones}=req.body;
+    if(!equipo_id||!tipo_mantencion) return res.status(400).json({error:'Equipo y tipo de mantención requeridos'});
+    // Generate OT number
+    const yr=new Date().getFullYear();
+    const cnt=await pool.query("SELECT COUNT(*)+1 AS n FROM mant_ot WHERE EXTRACT(YEAR FROM creado_en)=$1",[yr]);
+    const num=`OT-${yr}-${String(cnt.rows[0].n).padStart(4,'0')}`;
+    const r=await pool.query(`INSERT INTO mant_ot(numero_ot,empresa_id,equipo_id,faena_id,plan_id,aviso_id,tipo_mantencion,origen,fecha_apertura,fecha_programada,horometro_servicio,kilometraje_servicio,estado,prioridad,sistema,sintoma_reportado,responsable,mecanico_asignado,taller_tipo,taller_nombre,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
+      [num,empresa_id||null,equipo_id,faena_id||null,plan_id||null,aviso_id||null,tipo_mantencion,origen||'manual',fecha_apertura||new Date().toISOString().split('T')[0],fecha_programada||null,horometro_servicio||null,kilometraje_servicio||null,estado||'abierta',prioridad||'normal',sistema||null,sintoma_reportado||null,responsable||null,mecanico_asignado||null,taller_tipo||'interno',taller_nombre||null,observaciones||null,req.user.email]);
+    const ot=r.rows[0];
+    // Si viene de aviso, actualizar aviso
+    if(aviso_id) await pool.query("UPDATE mant_avisos SET estado='generado_ot',ot_id=$1 WHERE aviso_id=$2",[ot.ot_id,aviso_id]);
+    // Si viene de plan, cargar checklist
+    if(plan_id){
+      const plan=await pool.query('SELECT checklist_items FROM mant_planes WHERE plan_id=$1',[plan_id]);
+      if(plan.rows.length&&plan.rows[0].checklist_items){
+        const items=plan.rows[0].checklist_items;
+        for(let i=0;i<items.length;i++){
+          await pool.query('INSERT INTO mant_ot_tareas(ot_id,orden,descripcion,desde_plan) VALUES($1,$2,$3,true)',[ot.ot_id,i+1,items[i].descripcion||items[i]]);
+        }
+      }
+    }
+    res.status(201).json(ot);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/mant/ot/:id', auth, async(req,res)=>{
+  try{
+    const{estado,fecha_inicio,fecha_termino,horometro_servicio,kilometraje_servicio,diagnostico,causa,trabajo_realizado,observaciones,responsable,mecanico_asignado,taller_tipo,taller_nombre,tiempo_detenido_hrs,costo_mano_obra_interna,costo_mano_obra_externa,costo_servicios,costo_traslado,costo_otros,prioridad,sistema}=req.body;
+    // Recalculate total costs
+    const matQ=await pool.query(`SELECT COALESCE(SUM(CASE WHEN tipo IN ('repuesto','filtro') THEN costo_total ELSE 0 END),0) AS rep, COALESCE(SUM(CASE WHEN tipo IN ('lubricante','grasa','refrigerante') THEN costo_total ELSE 0 END),0) AS lub FROM mant_ot_materiales WHERE ot_id=$1`,[req.params.id]);
+    const costoRep=parseFloat(matQ.rows[0].rep)||0;
+    const costoLub=parseFloat(matQ.rows[0].lub)||0;
+    const moInt=parseFloat(costo_mano_obra_interna)||0;
+    const moExt=parseFloat(costo_mano_obra_externa)||0;
+    const srv2=parseFloat(costo_servicios)||0;
+    const tras=parseFloat(costo_traslado)||0;
+    const otros=parseFloat(costo_otros)||0;
+    const total=costoRep+costoLub+moInt+moExt+srv2+tras+otros;
+    const r=await pool.query(`UPDATE mant_ot SET estado=$1,fecha_inicio=$2,fecha_termino=$3,horometro_servicio=$4,kilometraje_servicio=$5,diagnostico=$6,causa=$7,trabajo_realizado=$8,observaciones=$9,responsable=$10,mecanico_asignado=$11,taller_tipo=$12,taller_nombre=$13,tiempo_detenido_hrs=$14,costo_repuestos=$15,costo_lubricantes=$16,costo_mano_obra_interna=$17,costo_mano_obra_externa=$18,costo_servicios=$19,costo_traslado=$20,costo_otros=$21,costo_total=$22,prioridad=$23,sistema=$24,actualizado_en=NOW() WHERE ot_id=$25 RETURNING *`,
+      [estado,fecha_inicio||null,fecha_termino||null,horometro_servicio||null,kilometraje_servicio||null,diagnostico||null,causa||null,trabajo_realizado||null,observaciones||null,responsable||null,mecanico_asignado||null,taller_tipo||'interno',taller_nombre||null,tiempo_detenido_hrs||0,costoRep,costoLub,moInt,moExt,srv2,tras,otros,total,prioridad||'normal',sistema||null,req.params.id]);
+    const ot=r.rows[0];
+    // Si se cierra: actualizar horómetro/km del equipo + recalcular programación
+    if(estado==='cerrada'){
+      if(horometro_servicio) await pool.query('UPDATE equipos SET horometro_actual=$1 WHERE equipo_id=$2',[horometro_servicio,ot.equipo_id]);
+      if(kilometraje_servicio) await pool.query('UPDATE equipos SET kilometraje_actual=$1 WHERE equipo_id=$2',[kilometraje_servicio,ot.equipo_id]);
+      await pool.query("UPDATE equipos SET estado_operativo='operativo' WHERE equipo_id=$1 AND estado_operativo='detenido'",[ot.equipo_id]);
+      // Registrar lectura
+      await pool.query('INSERT INTO mant_lecturas(equipo_id,fecha,horometro,kilometraje,origen,ot_id,usuario) VALUES($1,$2,$3,$4,$5,$6,$7)',[ot.equipo_id,new Date().toISOString().split('T')[0],horometro_servicio||null,kilometraje_servicio||null,'ot',ot.ot_id,req.user.email]);
+      // Recalcular programación si viene de plan
+      if(ot.plan_id){
+        const plan=await pool.query('SELECT * FROM mant_planes WHERE plan_id=$1',[ot.plan_id]);
+        if(plan.rows.length){
+          const p=plan.rows[0];
+          const proxFecha=p.intervalo_dias?new Date(Date.now()+p.intervalo_dias*86400000).toISOString().split('T')[0]:null;
+          const proxHoras=p.intervalo_horas&&horometro_servicio?parseFloat(horometro_servicio)+parseFloat(p.intervalo_horas):null;
+          const proxKm=p.intervalo_km&&kilometraje_servicio?parseInt(kilometraje_servicio)+parseInt(p.intervalo_km):null;
+          await pool.query(`INSERT INTO mant_programacion(equipo_id,plan_id,empresa_id,proxima_fecha,proxima_horas,proxima_km,ultima_ejecucion_fecha,ultima_ejecucion_horas,ultima_ejecucion_km,ultima_ot_id,estado) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'vigente') ON CONFLICT(equipo_id,plan_id) DO UPDATE SET proxima_fecha=$4,proxima_horas=$5,proxima_km=$6,ultima_ejecucion_fecha=$7,ultima_ejecucion_horas=$8,ultima_ejecucion_km=$9,ultima_ot_id=$10,estado='vigente',actualizado_en=NOW()`,
+            [ot.equipo_id,ot.plan_id,ot.empresa_id,proxFecha,proxHoras,proxKm,new Date().toISOString().split('T')[0],horometro_servicio||null,kilometraje_servicio||null,ot.ot_id]);
+        }
+      }
+    }
+    res.json(ot);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// OT Tareas
+app.get('/api/mant/ot/:id/tareas', auth, async(req,res)=>{
+  try{const r=await pool.query('SELECT * FROM mant_ot_tareas WHERE ot_id=$1 ORDER BY orden,tarea_id',[req.params.id]);res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/mant/ot/:id/tareas', auth, async(req,res)=>{
+  try{
+    const{descripcion,sistema,tipo,desde_plan}=req.body;
+    const cnt=await pool.query('SELECT COUNT(*)+1 AS n FROM mant_ot_tareas WHERE ot_id=$1',[req.params.id]);
+    const r=await pool.query('INSERT INTO mant_ot_tareas(ot_id,orden,descripcion,sistema,tipo,desde_plan) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[req.params.id,cnt.rows[0].n,descripcion,sistema||null,tipo||'tarea',desde_plan||false]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.patch('/api/mant/ot/tareas/:id', auth, async(req,res)=>{
+  try{
+    const{estado,observacion}=req.body;
+    const r=await pool.query('UPDATE mant_ot_tareas SET estado=$1,observacion=$2 WHERE tarea_id=$3 RETURNING *',[estado,observacion||null,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// OT Materiales
+app.get('/api/mant/ot/:id/materiales', auth, async(req,res)=>{
+  try{const r=await pool.query('SELECT m.*,p.nombre AS prod_nombre FROM mant_ot_materiales m LEFT JOIN productos p ON m.prod_id=p.prod_id WHERE m.ot_id=$1 ORDER BY m.creado_en',[req.params.id]);res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/mant/ot/:id/materiales', auth, async(req,res)=>{
+  try{
+    const{tipo,prod_id,descripcion,cantidad,unidad,precio_unitario,origen}=req.body;
+    const pu=parseFloat(precio_unitario)||0;
+    const ct=(parseFloat(cantidad)||0)*pu;
+    const r=await pool.query('INSERT INTO mant_ot_materiales(ot_id,tipo,prod_id,descripcion,cantidad,unidad,precio_unitario,costo_total,origen) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
+      [req.params.id,tipo||'repuesto',prod_id||null,descripcion,parseFloat(cantidad)||0,unidad||null,pu,ct,origen||'inventario']);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/mant/ot/materiales/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM mant_ot_materiales WHERE material_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+});
+
+// ── LECTURAS (horómetro/km) ──
+app.post('/api/mant/lecturas', auth, async(req,res)=>{
+  try{
+    const{equipo_id,fecha,horometro,kilometraje}=req.body;
+    if(!equipo_id) return res.status(400).json({error:'Equipo requerido'});
+    const r=await pool.query('INSERT INTO mant_lecturas(equipo_id,fecha,horometro,kilometraje,origen,usuario) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',
+      [equipo_id,fecha||new Date().toISOString().split('T')[0],horometro||null,kilometraje||null,'manual',req.user.email]);
+    // Update equipo
+    if(horometro) await pool.query('UPDATE equipos SET horometro_actual=$1 WHERE equipo_id=$2',[horometro,equipo_id]);
+    if(kilometraje) await pool.query('UPDATE equipos SET kilometraje_actual=$1 WHERE equipo_id=$2',[kilometraje,equipo_id]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ── PROGRAMACIÓN / ALERTAS ──
+app.get('/api/mant/programacion', auth, async(req,res)=>{
+  try{
+    const{empresa_id,equipo_id,estado}=req.query;
+    let where=['1=1'],vals=[];
+    if(empresa_id){vals.push(empresa_id);where.push(`e.empresa_id=$${vals.length}`);}
+    if(equipo_id){vals.push(equipo_id);where.push(`p.equipo_id=$${vals.length}`);}
+    if(estado){vals.push(estado);where.push(`p.estado=$${vals.length}`);}
+    // Update estados based on current readings
+    await pool.query(`UPDATE mant_programacion p SET estado=CASE
+      WHEN (p.proxima_horas IS NOT NULL AND eq.horometro_actual>=p.proxima_horas) THEN 'vencida'
+      WHEN (p.proxima_km IS NOT NULL AND eq.kilometraje_actual>=p.proxima_km) THEN 'vencida'
+      WHEN (p.proxima_fecha IS NOT NULL AND p.proxima_fecha<=CURRENT_DATE) THEN 'vencida'
+      WHEN (p.proxima_horas IS NOT NULL AND eq.horometro_actual>=p.proxima_horas-50) THEN 'proxima'
+      WHEN (p.proxima_km IS NOT NULL AND eq.kilometraje_actual>=p.proxima_km-500) THEN 'proxima'
+      WHEN (p.proxima_fecha IS NOT NULL AND p.proxima_fecha<=CURRENT_DATE+15) THEN 'proxima'
+      ELSE 'vigente' END
+      FROM equipos eq WHERE p.equipo_id=eq.equipo_id AND p.estado!='suspendida'`);
+    const r=await pool.query(`SELECT p.*,pl.nombre AS plan_nombre,pl.sistema,pl.tipo_mantencion,pl.intervalo_horas,pl.intervalo_km,pl.intervalo_dias,pl.prioridad AS plan_prioridad,eq.nombre AS equipo_nombre,eq.horometro_actual,eq.kilometraje_actual,eq.tipo_activo,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre FROM mant_programacion p JOIN mant_planes pl ON p.plan_id=pl.plan_id JOIN equipos eq ON p.equipo_id=eq.equipo_id LEFT JOIN faenas f ON eq.faena_id=f.faena_id LEFT JOIN empresas emp ON p.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY CASE p.estado WHEN 'vencida' THEN 1 WHEN 'proxima' THEN 2 ELSE 3 END`,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ── PANEL RESUMEN MANTENCIÓN ──
+app.get('/api/mant/panel', auth, async(req,res)=>{
+  try{
+    const{empresa_id}=req.query;
+    let emp='';let vals=[];
+    if(empresa_id){vals.push(empresa_id);emp=` AND o.empresa_id=$${vals.length}`;}
+    const [otEstados,alertas,costoMes]=await Promise.all([
+      pool.query(`SELECT estado,COUNT(*) AS n FROM mant_ot o WHERE 1=1${emp} GROUP BY estado`,vals),
+      pool.query(`SELECT COUNT(*) FILTER(WHERE estado='vencida') AS vencidas,COUNT(*) FILTER(WHERE estado='proxima') AS proximas FROM mant_programacion p ${empresa_id?'JOIN equipos eq ON p.equipo_id=eq.equipo_id WHERE eq.empresa_id=$1':'WHERE 1=1'}`,empresa_id?[empresa_id]:[]),
+      pool.query(`SELECT COALESCE(SUM(costo_total),0) AS total FROM mant_ot o WHERE estado='cerrada' AND fecha_termino>=date_trunc('month',CURRENT_DATE)${emp}`,vals)
+    ]);
+    res.json({ot_por_estado:otEstados.rows,alertas:alertas.rows[0],costo_mes:costoMes.rows[0].total});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ── HISTORIAL POR ACTIVO ──
+app.get('/api/mant/historial/:equipo_id', auth, async(req,res)=>{
+  try{
+    const{desde,hasta}=req.query;
+    let where=[`o.equipo_id=$1`],vals=[req.params.equipo_id];
+    if(desde){vals.push(desde);where.push(`o.fecha_apertura>=$${vals.length}`);}
+    if(hasta){vals.push(hasta);where.push(`o.fecha_apertura<=$${vals.length}`);}
+    const[ots,materiales,lecturas]=await Promise.all([
+      pool.query(`SELECT o.*,f.nombre AS faena_nombre FROM mant_ot o LEFT JOIN faenas f ON o.faena_id=f.faena_id WHERE ${where.join(' AND ')} ORDER BY o.fecha_apertura DESC`,vals),
+      pool.query(`SELECT m.*,o.numero_ot,o.fecha_apertura FROM mant_ot_materiales m JOIN mant_ot o ON m.ot_id=o.ot_id WHERE o.equipo_id=$1 ORDER BY o.fecha_apertura DESC`,[req.params.equipo_id]),
+      pool.query(`SELECT * FROM mant_lecturas WHERE equipo_id=$1 ORDER BY fecha DESC LIMIT 20`,[req.params.equipo_id])
+    ]);
+    const eq=await pool.query('SELECT * FROM equipos WHERE equipo_id=$1',[req.params.equipo_id]);
+    res.json({equipo:eq.rows[0],ots:ots.rows,materiales:materiales.rows,lecturas:lecturas.rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ── REPORTES ──
+app.get('/api/mant/reporte/costos', auth, async(req,res)=>{
+  try{
+    const{empresa_id,desde,hasta,agrupacion}=req.query;
+    let where=["o.estado='cerrada'"],vals=[];
+    if(empresa_id){vals.push(empresa_id);where.push(`o.empresa_id=$${vals.length}`);}
+    if(desde){vals.push(desde);where.push(`o.fecha_apertura>=$${vals.length}`);}
+    if(hasta){vals.push(hasta);where.push(`o.fecha_apertura<=$${vals.length}`);}
+    let groupBy='eq.nombre';
+    if(agrupacion==='faena') groupBy='f.nombre';
+    else if(agrupacion==='tipo') groupBy='o.tipo_mantencion';
+    else if(agrupacion==='empresa') groupBy='emp.razon_social';
+    const r=await pool.query(`SELECT ${groupBy} AS grupo,COUNT(*) AS ots,SUM(o.costo_total) AS costo_total,SUM(o.costo_repuestos) AS repuestos,SUM(o.costo_lubricantes) AS lubricantes,SUM(o.costo_mano_obra_interna+o.costo_mano_obra_externa) AS mano_obra,SUM(o.tiempo_detenido_hrs) AS hrs_detencion FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} GROUP BY ${groupBy} ORDER BY costo_total DESC`,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
 });
 
 // SPA fallback — must be AFTER all API routes
