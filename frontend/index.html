@@ -2968,8 +2968,9 @@ function MantOTDetalle(p){
     api('/mant/ot/'+ot.ot_id,'PUT',form,p.tok).then(function(r){setOt(r);setEditMode(false);setMsg('Guardado');}).catch(function(e){setMsg('Error: '+e.message);});
   }
   function guardarSistemas(){if(!selSist.length){setMsg('Seleccione al menos un sistema');return;}api('/mant/ot/'+ot.ot_id+'/sistemas','POST',{sistemas:selSist},p.tok).then(function(r){setSistemas(r);setShowSistEdit(false);setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});}
-  function addPersona(){if(!newPers.persona_id){setMsg('Seleccione persona');return;}var px=personalMant.find(function(x){return String(x.persona_id)===String(newPers.persona_id);});var vhh=parseFloat(newPers.valor_hora_aplicado)||(px?parseFloat(px.valor_hora_hombre)||0:0);api('/mant/ot/'+ot.ot_id+'/personal','POST',Object.assign({},newPers,{valor_hora_aplicado:vhh}),p.tok).then(function(){loadDetail();setNewPers({persona_id:'',rol:'ejecutor',horas_trabajadas:0,valor_hora_aplicado:''});setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});}
-  function delPersona(id){if(!confirm('Eliminar?'))return;api('/mant/ot/personal/'+id,'DELETE',null,p.tok).then(loadDetail).catch(function(){});}
+  function refreshOT(){api('/mant/ot/'+ot.ot_id+'/full','GET',null,p.tok).then(function(r){if(r){setOt(r);setForm(function(f){return Object.assign({},f,r);});}}).catch(function(){});}
+  function addPersona(){if(!newPers.persona_id){setMsg('Seleccione persona');return;}var px=personalMant.find(function(x){return String(x.persona_id)===String(newPers.persona_id);});var vhh=parseFloat(newPers.valor_hora_aplicado)||(px?parseFloat(px.valor_hora_hombre)||0:0);api('/mant/ot/'+ot.ot_id+'/personal','POST',Object.assign({},newPers,{valor_hora_aplicado:vhh}),p.tok).then(function(){loadDetail();refreshOT();setNewPers({persona_id:'',rol:'ejecutor',horas_trabajadas:0,valor_hora_aplicado:''});setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});}
+  function delPersona(id){if(!confirm('Eliminar?'))return;api('/mant/ot/personal/'+id,'DELETE',null,p.tok).then(function(){loadDetail();refreshOT();}).catch(function(){});}
     function addTarea(){
     if(!newTarea)return;
     api('/mant/ot/'+ot.ot_id+'/tareas','POST',{descripcion:newTarea},p.tok).then(function(r){setTareas(function(a){return [...a,r];});setNewTarea('');}).catch(function(){});
@@ -2982,11 +2983,11 @@ function MantOTDetalle(p){
   function deleteOT(){if(!confirm('ELIMINAR esta OT completa? Esta accion no se puede deshacer.'))return;api('/mant/ot/'+ot.ot_id,'DELETE',null,p.tok).then(function(){p.onBack();}).catch(function(e){setMsg('Error: '+e.message);});}
   function addMaterial(){
     if(!newMat.descripcion){return;}
-    api('/mant/ot/'+ot.ot_id+'/materiales','POST',newMat,p.tok).then(function(r){setMateriales(function(a){return [...a,r];});setNewMat({tipo:'repuesto',descripcion:'',cantidad:1,precio_unitario:0,origen:'inventario'});}).catch(function(){});
+    api('/mant/ot/'+ot.ot_id+'/materiales','POST',newMat,p.tok).then(function(r){setMateriales(function(a){return [...a,r];});setNewMat({tipo:'repuesto',descripcion:'',cantidad:1,precio_unitario:0,origen:'inventario'});refreshOT();}).catch(function(){});
   }
   function delMaterial(id){
     if(!confirm('¿Eliminar?'))return;
-    api('/mant/ot/materiales/'+id,'DELETE',null,p.tok).then(function(){setMateriales(function(a){return a.filter(function(m){return m.material_id!==id;});});}).catch(function(){});
+    api('/mant/ot/materiales/'+id,'DELETE',null,p.tok).then(function(){setMateriales(function(a){return a.filter(function(m){return m.material_id!==id;});});refreshOT();}).catch(function(){});
   }
   function openLinkOC(){setShowLinkOC(true);api('/oc/disponibles-ot','GET',null,p.tok).then(function(r){setOcsDisp(Array.isArray(r)?r:[]);}).catch(function(){});}
   function doLinkOC(oc_id){api('/oc/link-ot','PATCH',{oc_id:oc_id,ot_id:ot.ot_id},p.tok).then(function(){setShowLinkOC(false);loadDetail();}).catch(function(e){alert(e.message);});}
@@ -3090,10 +3091,10 @@ function MantOTDetalle(p){
       personalOT.length>0&&h(TBL,{cols:[{lbl:'Nombre',k:'nombre_completo'},{lbl:'Cargo',k:'cargo'},{lbl:'Rol',k:'rol'},{lbl:'Horas',r:true,render:function(r){return (r.horas_trabajadas||0)+'h';}},{lbl:'$/hora',r:true,render:function(r){return r.valor_hora_aplicado?CLP(Math.round(r.valor_hora_aplicado)):'—';}},{lbl:'Costo MO',r:true,render:function(r){return CLP(Math.round(r.costo_total||0));}},{lbl:'',render:function(r){return h('button',{onClick:function(){delPersona(r.id);},style:{color:'#EF4444',background:'none',border:'none',cursor:'pointer'}},'X');}}],rows:personalOT,empty:''}),
       personalOT.length>0&&h('div',{style:{textAlign:'right',fontSize:12,fontWeight:700,padding:'4px 8px'}},'Total MO: '+CLP(Math.round(personalOT.reduce(function(s,r){return s+(parseFloat(r.costo_total)||0);},0)))),
       h('div',{style:{display:'grid',gridTemplateColumns:'2fr 1fr 70px 90px 1fr auto',gap:6,marginTop:8,alignItems:'center'}},
-        hSel({value:newPers.persona_id,onChange:function(e){var px=personalMant.find(function(x){return String(x.persona_id)===e.target.value;});setNewPers(function(f){return Object.assign({},f,{persona_id:e.target.value,valor_hora_aplicado:px?(px.valor_hora_hombre||''):'',});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
+        hSel({value:newPers.persona_id,onChange:function(e){var px=personalMant.find(function(x){return String(x.persona_id)===e.target.value;});setNewPers(function(f){return Object.assign({},f,{persona_id:e.target.value,valor_hora_aplicado:px?(px.valor_hora_hombre||''):'',rol:px&&px.cargo?px.cargo:f.rol});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
           [h('option',{value:''},'Persona...')].concat(personalMant.map(function(px){return h('option',{key:px.persona_id,value:px.persona_id},px.nombre_completo);}))),
         hSel({value:newPers.rol,onChange:function(e){setNewPers(function(f){return Object.assign({},f,{rol:e.target.value});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
-          ['ejecutor','responsable','supervisor','ayudante','electricista','soldador'].map(function(rl){return h('option',{key:rl,value:rl},rl);})),
+          (function(){var cargos=[];personalMant.forEach(function(x){if(x.cargo&&cargos.indexOf(x.cargo)<0)cargos.push(x.cargo);});['ejecutor','responsable','supervisor','ayudante','electricista','soldador'].forEach(function(r){if(cargos.indexOf(r)<0)cargos.push(r);});return cargos.map(function(rl){return h('option',{key:rl,value:rl},rl);});})()),
         h('input',{type:'number',placeholder:'Hrs',value:newPers.horas_trabajadas,onChange:function(e){setNewPers(function(f){return Object.assign({},f,{horas_trabajadas:e.target.value});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:'100%'}}),
         h('input',{type:'number',placeholder:'$/hr',value:newPers.valor_hora_aplicado,onChange:function(e){setNewPers(function(f){return Object.assign({},f,{valor_hora_aplicado:e.target.value});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:'100%'}}),
         h('span',{style:{fontSize:11,color:'#475569'}},'Total: $'+Math.round((parseFloat(newPers.horas_trabajadas)||0)*(parseFloat(newPers.valor_hora_aplicado)||0)).toLocaleString()),
