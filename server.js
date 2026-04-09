@@ -390,7 +390,7 @@ async function autoSetup() {
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS equipo_id INT",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS ingresa_bodega BOOLEAN DEFAULT false",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS bodega_destino_id INT",
-    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS ot_id INT REFERENCES mant_ot(ot_id)",
+    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS ot_id INT",
   ];
   for (const sql of ocPatch) { await q(sql); }
   // ── Indices (cada uno independiente) ─────────────────────
