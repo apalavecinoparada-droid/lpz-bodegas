@@ -703,12 +703,14 @@ function OCView(p){
   }
   function openLinkOT(oc){
     setLinkOT(oc);
+    api('/oc/'+oc.oc_id+'/lineas','GET',null,p.tok).then(function(r){setLinkOT(function(prev){return Object.assign({},prev,{_lineas:Array.isArray(r)?r:[]});});}).catch(function(){});
     api('/mant/ot?estado=abierta','GET',null,p.tok).then(function(r){setOtsList(Array.isArray(r)?r:[]);}).catch(function(){});
     api('/mant/ot?estado=en_ejecucion','GET',null,p.tok).then(function(r){setOtsList(function(prev){return prev.concat(r||[]);});}).catch(function(){});
   }
-  function doLinkOT(oc_id, ot_id){
-    api('/oc/link-ot','PATCH',{oc_id:oc_id,ot_id:ot_id},p.tok)
-      .then(function(){setLinkOT(null);load2();}).catch(function(e){alert('Error: '+e.message);});
+  function saveLinkLinea(detalle_id,ot_id){
+    api('/oc/detalle/'+detalle_id+'/ot','PATCH',{ot_id:ot_id||null},p.tok).then(function(){
+      api('/oc/'+linkOT.oc_id+'/lineas','GET',null,p.tok).then(function(r){setLinkOT(function(prev){return Object.assign({},prev,{_lineas:Array.isArray(r)?r:[]});});}).catch(function(){});
+    }).catch(function(e){alert('Error: '+e.message);});
   }
   function openDoc(oc){
     api('/ordenes-compra/'+oc.oc_id,'GET',null,p.tok).then(function(full){setVerOC(full);}).catch(function(ex){alert(ex.message);});
@@ -796,17 +798,27 @@ function OCView(p){
     reabrirOC&&h(OCReabrirModal,{tok:p.tok,oc:reabrirOC,onClose:function(){setReabrirOC(null);},onSave:function(){setReabrirOC(null);load2();}}),
     verOC&&h(OCDocView,{oc:verOC,m:p.m,onClose:function(){setVerOC(null);}}),
     showCalc&&h(CalcCombustible,{onClose:function(){setShowCalc(false);}}),
-    linkOT&&h(Modal,{title:'Enlazar OC '+( linkOT.numero_oc||'')+' a Orden de Trabajo',onClose:function(){setLinkOT(null);}},
+    linkOT&&h(Modal,{title:'Asignar lineas OC '+(linkOT.numero_oc||'')+' a Ordenes de Trabajo',onClose:function(){setLinkOT(null);load2();}},
       h('div',{style:{padding:'12px 0'}},
-        h('p',{style:{fontSize:12,color:'#475569',marginBottom:12}},'Seleccione la OT a la que desea asociar esta Orden de Compra. Solo se enlazan las líneas que NO van a inventario.'),
-        h('div',{style:{marginBottom:12}},
-          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:4}},'Orden de Trabajo'),
-          hSel({value:linkOT._ot_sel||'',onChange:function(e){setLinkOT(function(prev){return Object.assign({},prev,{_ot_sel:e.target.value});});},style:{width:'100%',padding:'8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
-            [h('option',{value:''},'Seleccione una OT...')].concat(otsList.map(function(o){return h('option',{key:o.ot_id,value:o.ot_id},o.numero_ot+' — '+(o.equipo_nombre||'')+(o.faena_nombre?' / '+o.faena_nombre:''));})))
-        ),
-        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8}},
-          h('button',{className:'btn btn-g',onClick:function(){setLinkOT(null);}},'Cancelar'),
-          h('button',{className:'btn btn-b',disabled:!linkOT._ot_sel,onClick:function(){doLinkOT(linkOT.oc_id,linkOT._ot_sel);}},'Enlazar OC')
+        h('p',{style:{fontSize:12,color:'#475569',marginBottom:12}},'Seleccione a que OT asignar cada linea. Puede asignar diferentes lineas a diferentes OTs.'),
+        (linkOT._lineas||[]).map(function(ln){
+          var asignada=!!ln.ot_id;
+          return h('div',{key:ln.detalle_id,style:{display:'grid',gridTemplateColumns:'1fr auto',gap:8,padding:'8px 0',borderBottom:'1px solid #E2E8F0',alignItems:'center'}},
+            h('div',null,
+              h('div',{style:{fontSize:12,fontWeight:500}},ln.descripcion),
+              h('div',{style:{fontSize:11,color:'#64748B'}},(ln.categoria_nombre||''),' — Cant: ',ln.cantidad,' — ',CLP(Math.round(parseFloat(ln.total_linea)||0)))
+            ),
+            asignada?h('div',{style:{display:'flex',alignItems:'center',gap:6}},
+              h('span',{style:{fontSize:11,padding:'3px 8px',background:'#DBEAFE',color:'#1D4ED8',borderRadius:12,fontWeight:600}},ln.numero_ot||'OT #'+ln.ot_id),
+              h('button',{onClick:function(){saveLinkLinea(ln.detalle_id,'');},style:{fontSize:10,color:'#EF4444',cursor:'pointer',border:'none',background:'none'}},'✕ Desenlazar')
+            ):h('select',{value:'',onChange:function(e){if(e.target.value)saveLinkLinea(ln.detalle_id,e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:'220px'}},
+              h('option',{value:''},'Seleccione OT...'),
+              otsList.map(function(o){return h('option',{key:o.ot_id,value:o.ot_id},o.numero_ot+' — '+(o.equipo_nombre||''));}))
+          );
+        }),
+        (linkOT._lineas||[]).length===0&&h('div',{style:{color:'#94A3B8',fontSize:12,padding:12}},'Cargando lineas...'),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',marginTop:12}},
+          h('button',{className:'btn btn-b',onClick:function(){setLinkOT(null);load2();}},'Cerrar')
         )
       )
     )
