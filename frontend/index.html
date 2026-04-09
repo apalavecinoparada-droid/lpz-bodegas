@@ -2921,7 +2921,6 @@ function MantOT(p){
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Tipo mantención'),h('select',{value:form.tipo_mantencion,onChange:function(e){setForm(function(f){return Object.assign({},f,{tipo_mantencion:e.target.value});});},style:inpS},TIPO_MANT_OPS.map(function(t){return h('option',{key:t,value:t},t.replace(/_/g,' '));}))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Origen'),h('select',{value:form.origen,onChange:function(e){setForm(function(f){return Object.assign({},f,{origen:e.target.value});});},style:inpS},['manual','programado','aviso_falla','correctivo','inspeccion','emergencia'].map(function(t){return h('option',{key:t,value:t},t.replace(/_/g,' '));}))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Prioridad'),h('select',{value:form.prioridad,onChange:function(e){setForm(function(f){return Object.assign({},f,{prioridad:e.target.value});});},style:inpS},['urgente','alta','normal','baja'].map(function(t){return h('option',{key:t,value:t},t);}))),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Sistema'),h('select',{value:form.sistema,onChange:function(e){setForm(function(f){return Object.assign({},f,{sistema:e.target.value});});},style:inpS},h('option',{value:''},'General'),SISTEMAS_OPS.map(function(s){return h('option',{key:s,value:s},s.replace(/_/g,' '));}))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Responsable'),hSel({value:form.responsable||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{responsable:e.target.value});});},style:inpS},[h('option',{value:''},'—')].concat(personalMant2.map(function(x){return h('option',{key:x.persona_id,value:x.nombre_completo},x.nombre_completo);})))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Mecánico líder'),hSel({value:form.mecanico_asignado||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{mecanico_asignado:e.target.value});});},style:inpS},[h('option',{value:''},'—')].concat(personalMant2.map(function(x){return h('option',{key:x.persona_id,value:x.nombre_completo},x.nombre_completo);})))),
         h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Síntoma reportado'),h('textarea',{value:form.sintoma_reportado,onChange:function(e){setForm(function(f){return Object.assign({},f,{sintoma_reportado:e.target.value});});},rows:2,style:Object.assign({},inpS,{resize:'vertical'})}))
@@ -3006,6 +3005,8 @@ function MantOTDetalle(p){
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
   var ESTADO_COLORS={'abierta':'b','programada':'p','en_ejecucion':'teal','pausada':'y','cerrada':'g','cancelada':'r'};
   var tareasOk=tareas.filter(function(t){return t.estado==='ok';}).length;
+  var costosOC={};comprasOT.forEach(function(r){var cat=r.categoria_nombre||'Sin categoria';costosOC[cat]=(costosOC[cat]||0)+parseFloat(r.total_linea||0);});
+  var totalOC=Object.values(costosOC).reduce(function(s,v){return s+v;},0);
 
   return h('div',null,
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
@@ -3048,7 +3049,9 @@ function MantOTDetalle(p){
           h('div',null,h('span',{style:{color:'#94A3B8'}},'MO externa: '),CLP(Math.round(ot.costo_mano_obra_externa||0))),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Servicios: '),CLP(Math.round(ot.costo_servicios||0))),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Traslado: '),CLP(Math.round(ot.costo_traslado||0))),
-          h('div',{style:{gridColumn:'1/-1',borderTop:'1px solid #F1F5F9',paddingTop:4}},h('span',{style:{color:'#94A3B8'}},'TOTAL: '),h('strong',{style:{fontSize:14,color:'#1E293B'}},CLP(Math.round(ot.costo_total||0)))),
+          totalOC>0&&h('div',{style:{gridColumn:'1/-1',borderTop:'1px dashed #CBD5E1',paddingTop:4,marginTop:2}},h('span',{style:{fontWeight:600,fontSize:11,color:'#3B82F6'}},'Compras OC: '),CLP(Math.round(totalOC))),
+          totalOC>0&&Object.entries(costosOC).map(function(e){return h('div',{key:e[0],style:{paddingLeft:8}},h('span',{style:{color:'#64748B',fontSize:11}},e[0]+': '),h('span',{style:{fontSize:11}},CLP(Math.round(e[1]))));}),
+          h('div',{style:{gridColumn:'1/-1',borderTop:'1px solid #F1F5F9',paddingTop:4}},h('span',{style:{color:'#94A3B8'}},'TOTAL: '),h('strong',{style:{fontSize:14,color:'#1E293B'}},CLP(Math.round((ot.costo_total||0)+totalOC)))),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Horas detenido: '),h('strong',null,(ot.tiempo_detenido_hrs||0)+' h'))
         )
       )
@@ -3107,7 +3110,7 @@ function MantOTDetalle(p){
               h('span',{style:{fontWeight:600,fontSize:12}},g.numero_oc,' — ',g.proveedor||'','  ',fmtD(g.fecha)),
               ot.estado!=='cerrada'&&h('button',{onClick:function(){unlinkOC(g.oc_id);},style:{fontSize:10,color:'#EF4444',cursor:'pointer',border:'none',background:'none'}},'✕ Desenlazar')
             ),
-            h(TBL,{cols:[{lbl:'Descripcion',k:'descripcion'},{lbl:'Cant',r:true,render:function(r){return r.cantidad;}},{lbl:'P.Unit',r:true,render:function(r){return CLP(Math.round(r.precio_unitario||0));}},{lbl:'Total',r:true,render:function(r){return r.total_linea?CLP(Math.round(r.total_linea)):'—';}}],rows:g.items,empty:''})
+            h(TBL,{cols:[{lbl:'Categoria',render:function(r){return h('span',{style:{fontSize:10}},r.categoria_nombre||'—');}},{lbl:'Descripcion',k:'descripcion'},{lbl:'Cant',r:true,render:function(r){return r.cantidad;}},{lbl:'P.Unit',r:true,render:function(r){return CLP(Math.round(r.precio_unitario||0));}},{lbl:'Total',r:true,render:function(r){return r.total_linea?CLP(Math.round(r.total_linea)):'—';}}],rows:g.items,empty:''})
           );
         });})()
       ),
@@ -3120,12 +3123,14 @@ function MantOTDetalle(p){
         tareas.map(function(t){
           var c=t.estado==='ok'?'#10B981':t.estado==='observado'?'#F59E0B':'#94A3B8';
           var isEditing=editTareaId===t.tarea_id;
-          return h('div',{key:t.tarea_id,style:{display:'flex',alignItems:'center',gap:8,padding:'6px 4px',borderBottom:'1px solid #F1F5F9'}},
+          return h('div',{key:t.tarea_id,style:{display:'flex',alignItems:'center',gap:6,padding:'6px 4px',borderBottom:'1px solid #F1F5F9'}},
             isEditing?h('div',{style:{flex:1,display:'flex',gap:4}},
               h('input',{type:'text',value:editTareaDesc,onChange:function(e){setEditTareaDesc(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')saveTareaDesc(t.tarea_id);if(e.key==='Escape')setEditTareaId(null);},style:{flex:1,fontSize:12,padding:'3px 6px',border:'1px solid #3B82F6',borderRadius:3},autoFocus:true}),
               h('button',{onClick:function(){saveTareaDesc(t.tarea_id);},style:{fontSize:11,color:'#10B981',background:'none',border:'none',cursor:'pointer'}},'✓'),
               h('button',{onClick:function(){setEditTareaId(null);},style:{fontSize:11,color:'#94A3B8',background:'none',border:'none',cursor:'pointer'}},'✗')
             ):h('span',{onClick:function(){setEditTareaId(t.tarea_id);setEditTareaDesc(t.descripcion);},style:{flex:1,fontSize:12,color:t.estado==='ok'?'#94A3B8':'#1E293B',textDecoration:t.estado==='ok'?'line-through':'none',minWidth:0,wordBreak:'break-word',cursor:'pointer'},title:'Click para editar'},t.descripcion),
+            h('select',{value:t.sistema||'',onChange:function(e){api('/mant/ot/tareas/'+t.tarea_id,'PATCH',{estado:t.estado,sistema:e.target.value},p.tok).then(function(r){setTareas(function(a){return a.map(function(x){return x.tarea_id===t.tarea_id?r:x;});});}).catch(function(){});},style:{fontSize:10,padding:'2px 4px',border:'1px solid #CBD5E1',borderRadius:3,flexShrink:0,width:'auto',color:t.sistema?'#1D4ED8':'#94A3B8'}},
+              h('option',{value:''},'sistema...'),SISTEMAS_OPS.map(function(s){return h('option',{key:s,value:s},s.replace(/_/g,' '));})),
             h('select',{value:t.estado,onChange:function(e){updateTarea(t.tarea_id,e.target.value);},style:{fontSize:11,padding:'3px 6px',border:'1px solid #CBD5E1',borderRadius:3,flexShrink:0,width:'auto'}},
               ['pendiente','en_proceso','ok','no_aplica','observado'].map(function(s){return h('option',{key:s,value:s},s);})),
             h('button',{onClick:function(){delTarea(t.tarea_id);},style:{color:'#EF4444',background:'none',border:'none',cursor:'pointer',fontSize:12,flexShrink:0}},'✕')
