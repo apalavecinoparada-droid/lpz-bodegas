@@ -2953,6 +2953,7 @@ function MantOTDetalle(p){
   const[form,setForm]=useState(Object.assign({},p.ot));
   const[newTarea,setNewTarea]=useState('');const[msg,setMsg]=useState('');
   const[newMat,setNewMat]=useState({tipo:'repuesto',descripcion:'',cantidad:1,precio_unitario:0,origen:'inventario'});
+  const[showLinkOC,setShowLinkOC]=useState(false);const[ocsDisp,setOcsDisp]=useState([]);
 
   function loadDetail(){
     Promise.all([
@@ -2986,6 +2987,9 @@ function MantOTDetalle(p){
     if(!confirm('¿Eliminar?'))return;
     api('/mant/ot/materiales/'+id,'DELETE',null,p.tok).then(function(){setMateriales(function(a){return a.filter(function(m){return m.material_id!==id;});});}).catch(function(){});
   }
+  function openLinkOC(){setShowLinkOC(true);api('/oc/disponibles-ot','GET',null,p.tok).then(function(r){setOcsDisp(Array.isArray(r)?r:[]);}).catch(function(){});}
+  function doLinkOC(oc_id){api('/oc/link-ot','PATCH',{oc_id:oc_id,ot_id:ot.ot_id},p.tok).then(function(){setShowLinkOC(false);loadDetail();}).catch(function(e){alert(e.message);});}
+  function unlinkOC(oc_id){if(!confirm('Desenlazar esta OC?'))return;api('/oc/unlink-ot','PATCH',{oc_id:oc_id,ot_id:ot.ot_id},p.tok).then(function(){loadDetail();}).catch(function(e){alert(e.message);});}
   function exportarOT(){
     exportXLSX([Object.assign({},ot,{tareas:tareas.length,materiales_n:materiales.length})],[
       {header:'N° OT',value:function(r){return r.numero_ot;}},
@@ -3004,15 +3008,16 @@ function MantOTDetalle(p){
   return h('div',null,
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
       h('div',{style:{display:'flex',gap:8,alignItems:'center'}},
-        h('button',{onClick:p.onBack,style:{padding:'5px 12px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12}},'← Volver'),
+        h('button',{onClick:function(){if(editMode){if(!confirm('Tiene cambios sin guardar. Salir de todos modos?'))return;}p.onBack();},style:{padding:'5px 12px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12}},'← Volver'),
         h('span',{style:{fontWeight:700,fontSize:16}},ot.numero_ot),
         h(Bg,{c:ESTADO_COLORS[ot.estado]||'b'},ot.estado.replace(/_/g,' ')),
         h(Bg,{c:ot.prioridad==='urgente'?'r':ot.prioridad==='alta'?'y':'gray'},ot.prioridad)
       ),
       h('div',{style:{display:'flex',gap:6}},
         h(Btn,{v:'teal',sm:true,onClick:exportarOT},'⬇ Excel'),
-        h(Btn,{v:'a',sm:true,onClick:function(){setEditMode(!editMode);}},editMode?'Cancelar':'✏ Editar'),
-        editMode&&h(Btn,{onClick:guardar},'Guardar')
+        ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&h(Btn,{v:'a',sm:true,onClick:function(){setEditMode(!editMode);}},editMode?'Cancelar':'✏ Editar'),
+        editMode&&h(Btn,{onClick:guardar},'Guardar'),
+        ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&!editMode&&h(Btn,{v:'g',sm:true,onClick:function(){if(!confirm('Cerrar esta OT? Se actualizara el estado a cerrada.'))return;var f2=Object.assign({},form,{estado:'cerrada'});api('/mant/ot/'+ot.ot_id,'PUT',f2,p.tok).then(function(r){setOt(r);setForm(r);setMsg('OT cerrada correctamente');}).catch(function(e){setMsg('Error: '+e.message);});}},'✓ Cerrar OT')
       )
     ),
     msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
@@ -3089,10 +3094,33 @@ function MantOTDetalle(p){
         h(Btn,{sm:true,onClick:addPersona},'+ Agregar')
       )
     ),
-    // Compras
-    comprasOT.length>0&&h('div',{className:'card',style:{marginBottom:12}},
-      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Compras vinculadas ('+comprasOT.length+')'),
-      h(TBL,{cols:[{lbl:'N OC',render:function(r){return r.numero_oc;}},{lbl:'Fecha',render:function(r){return fmtD(r.fecha_emision);}},{lbl:'Descripcion',k:'descripcion'},{lbl:'Total',r:true,render:function(r){return r.total_linea?CLP(Math.round(r.total_linea)):'—';}},{lbl:'Proveedor',k:'proveedor'}],rows:comprasOT,empty:''})
+    // Compras OC vinculadas
+    h('div',{className:'card',style:{marginBottom:12}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+        h('div',{style:{fontWeight:600,fontSize:13}},'Ordenes de Compra vinculadas ('+comprasOT.length+')'),
+        ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&h(Btn,{sm:true,onClick:openLinkOC},'+ Enlazar OC')
+      ),
+      comprasOT.length>0&&h('div',{style:{marginBottom:8}},
+        (function(){var grouped={};comprasOT.forEach(function(r){if(!grouped[r.oc_id])grouped[r.oc_id]={numero_oc:r.numero_oc,oc_id:r.oc_id,proveedor:r.proveedor,fecha:r.fecha_emision,items:[]};grouped[r.oc_id].items.push(r);});return Object.values(grouped).map(function(g){
+          return h('div',{key:g.oc_id,style:{border:'1px solid #E2E8F0',borderRadius:6,padding:8,marginBottom:6}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
+              h('span',{style:{fontWeight:600,fontSize:12}},g.numero_oc,' — ',g.proveedor||'','  ',fmtD(g.fecha)),
+              ot.estado!=='cerrada'&&h('button',{onClick:function(){unlinkOC(g.oc_id);},style:{fontSize:10,color:'#EF4444',cursor:'pointer',border:'none',background:'none'}},'✕ Desenlazar')
+            ),
+            h(TBL,{cols:[{lbl:'Descripcion',k:'descripcion'},{lbl:'Cant',r:true,render:function(r){return r.cantidad;}},{lbl:'P.Unit',r:true,render:function(r){return CLP(Math.round(r.precio_unitario||0));}},{lbl:'Total',r:true,render:function(r){return r.total_linea?CLP(Math.round(r.total_linea)):'—';}}],rows:g.items,empty:''})
+          );
+        });})()
+      ),
+      comprasOT.length===0&&h('div',{style:{color:'#94A3B8',fontSize:12,padding:'8px 0'}},'Sin ordenes de compra enlazadas'),
+      showLinkOC&&h('div',{style:{marginTop:8,padding:10,border:'1px dashed #3B82F6',borderRadius:6,background:'#EFF6FF'}},
+        h('div',{style:{fontWeight:600,fontSize:12,marginBottom:6}},'Seleccione una OC para enlazar:'),
+        ocsDisp.length===0&&h('div',{style:{color:'#94A3B8',fontSize:12}},'No hay OCs disponibles sin enlazar'),
+        ocsDisp.map(function(oc){return h('div',{key:oc.oc_id,style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'4px 0',borderBottom:'1px solid #E2E8F0'}},
+          h('span',{style:{fontSize:12}},oc.numero_oc,' — ',oc.proveedor||'',' — ',CLP(Math.round(oc.total||0))),
+          h(Btn,{sm:true,onClick:function(){doLinkOC(oc.oc_id);}},'Enlazar')
+        );}),
+        h('div',{style:{marginTop:6,textAlign:'right'}},h('button',{onClick:function(){setShowLinkOC(false);},style:{fontSize:11,cursor:'pointer',border:'none',background:'none',color:'#64748B'}},'Cancelar'))
+      )
     ),
         // Tareas
     h('div',{className:'card',style:{marginBottom:12}},
