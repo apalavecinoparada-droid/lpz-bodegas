@@ -249,6 +249,49 @@ async function setupMantenciones(q){
 
   // ── ot_id se agrega en ocPatch después de crear ordenes_compra_detalle ──
 
+  // ── Mantenedor de sistemas técnicos (global) ──
+  await q(`CREATE TABLE IF NOT EXISTS mant_sistemas (
+    sistema_id SERIAL PRIMARY KEY,
+    codigo VARCHAR(10) NOT NULL UNIQUE,
+    nombre VARCHAR(100) NOT NULL,
+    descripcion TEXT,
+    orden INT DEFAULT 0,
+    activo BOOLEAN DEFAULT true
+  )`);
+
+  // ── Mantenedor de tareas estándar ──
+  await q(`CREATE TABLE IF NOT EXISTS mant_tareas_std (
+    tarea_std_id SERIAL PRIMARY KEY,
+    sistema_id INT NOT NULL REFERENCES mant_sistemas(sistema_id),
+    nombre VARCHAR(200) NOT NULL,
+    descripcion TEXT,
+    tipo_tarea VARCHAR(30) DEFAULT 'preventiva',
+    tipo_activo VARCHAR(20) DEFAULT 'todos',
+    activo BOOLEAN DEFAULT true,
+    UNIQUE(sistema_id, nombre)
+  )`);
+
+  // ── Personal por tarea de OT ──
+  await q(`CREATE TABLE IF NOT EXISTS mant_ot_tarea_personal (
+    id SERIAL PRIMARY KEY,
+    tarea_id INT NOT NULL REFERENCES mant_ot_tareas(tarea_id) ON DELETE CASCADE,
+    tipo_personal VARCHAR(10) DEFAULT 'interno',
+    persona_id INT REFERENCES personal(persona_id),
+    nombre_externo VARCHAR(150),
+    horas_trabajadas NUMERIC(7,2) DEFAULT 0,
+    valor_hora_aplicado NUMERIC(12,2) DEFAULT 0,
+    costo_total NUMERIC(14,2) GENERATED ALWAYS AS (horas_trabajadas * valor_hora_aplicado) STORED,
+    tiene_costo BOOLEAN DEFAULT true,
+    observacion TEXT
+  )`);
+
+  // ── ALTER tareas OT: agregar sistema_id y tarea_std_id ──
+  try{await q('ALTER TABLE mant_ot_tareas ADD COLUMN IF NOT EXISTS sistema_id INT REFERENCES mant_sistemas(sistema_id)');}catch(e){}
+  try{await q('ALTER TABLE mant_ot_tareas ADD COLUMN IF NOT EXISTS tarea_std_id INT REFERENCES mant_tareas_std(tarea_std_id)');}catch(e){}
+
+  // ── ALTER movimiento_detalle: enlace a OT ──
+  try{await q('ALTER TABLE movimiento_detalle ADD COLUMN IF NOT EXISTS ot_id INT');}catch(e){}
+
     // Indices
   const idxs=[
     'CREATE INDEX IF NOT EXISTS idx_mant_ot_equipo ON mant_ot(equipo_id)',
@@ -256,6 +299,9 @@ async function setupMantenciones(q){
     'CREATE INDEX IF NOT EXISTS idx_mant_avisos_equipo ON mant_avisos(equipo_id)',
     'CREATE INDEX IF NOT EXISTS idx_mant_lecturas_equipo ON mant_lecturas(equipo_id,fecha DESC)',
     'CREATE INDEX IF NOT EXISTS idx_mant_prog_equipo ON mant_programacion(equipo_id)',
+    'CREATE INDEX IF NOT EXISTS idx_mant_tareas_std_sistema ON mant_tareas_std(sistema_id)',
+    'CREATE INDEX IF NOT EXISTS idx_mant_ot_tarea_pers ON mant_ot_tarea_personal(tarea_id)',
+    'CREATE INDEX IF NOT EXISTS idx_mov_detalle_ot ON movimiento_detalle(ot_id)',
   ];
   for(const i of idxs){try{await q(i);}catch(e){}}
 }
@@ -438,6 +484,55 @@ async function autoSetup() {
   } catch(e) {}
   // Mantención module tables
   try{ await setupMantenciones(pool.query.bind(pool)); }catch(e){console.log('[WARN] mant tables:',e.message);}
+  // Seed sistemas y tareas estándar
+  try{
+    const sc=await pool.query('SELECT COUNT(*) FROM mant_sistemas');
+    if(parseInt(sc.rows[0].count)===0){
+      await pool.query(`INSERT INTO mant_sistemas(codigo,nombre,descripcion,orden) VALUES
+        ('MOT','Motor','Motor diésel, inyección, alimentación',1),
+        ('HID','Sistema hidráulico','Bombas, válvulas, cilindros, mangueras',2),
+        ('ELE','Sistema eléctrico','Alternador, baterías, cableado, sensores',3),
+        ('TRA','Transmisión','Caja de cambios, convertidor, diferenciales',4),
+        ('ENF','Enfriamiento','Radiador, termostato, ventilador, refrigerante',5),
+        ('COM','Combustible','Tanque, filtros, líneas, bombas de combustible',6),
+        ('FRE','Frenos','Discos, pastillas, líquido, ABS',7),
+        ('DIR','Dirección','Orbitrol, cilindros, bomba, barras',8),
+        ('EST','Estructura/Chasis','Bastidor, cabina, guardabarros, protecciones',9),
+        ('CAB','Cabezal forestal','Sierra, rodillos, cuchillas, alimentador',10),
+        ('ROD','Tren de rodado','Cadenas, rodillos, ruedas guía, tensores',11),
+        ('LUB','Lubricación','Sistema centralizado, engrase, puntos',12),
+        ('NEU','Neumáticos','Cubiertas, llantas, presión, alineación',13),
+        ('SUS','Suspensión','Amortiguadores, resortes, bujes',14),
+        ('CAR','Carrocería','Plataforma, tolva, baranda, accesorios',15),
+        ('CLI','Climatización','A/C, calefacción, filtro cabina',16),
+        ('SEG','Seguridad','Extintor, alarmas, luces, cinturones',17)
+      ON CONFLICT DO NOTHING`);
+      // Tareas estándar por sistema
+      const tareas=[
+        ['MOT','Cambio de aceite de motor'],['MOT','Cambio de filtro de aceite'],['MOT','Cambio de filtro de combustible'],['MOT','Cambio de filtro separador de agua'],['MOT','Revisión de fugas de aceite'],['MOT','Ajuste/cambio de correas'],['MOT','Inspección de inyectores'],['MOT','Medición de compresión'],['MOT','Limpieza de respiradero de cárter'],['MOT','Revisión de turbocompresor'],['MOT','Cambio de filtro de aire primario'],['MOT','Cambio de filtro de aire secundario'],['MOT','Revisión de soportes de motor'],
+        ['HID','Cambio de aceite hidráulico'],['HID','Cambio de filtro hidráulico de retorno'],['HID','Cambio de filtro hidráulico de presión'],['HID','Revisión de mangueras hidráulicas'],['HID','Inspección de fugas hidráulicas'],['HID','Cambio de sellos de cilindro'],['HID','Purga de circuito hidráulico'],['HID','Revisión de bomba hidráulica'],['HID','Ajuste de presiones de sistema'],['HID','Cambio de acumulador hidráulico'],['HID','Revisión de válvulas de control'],['HID','Cambio de acoples rápidos'],
+        ['ELE','Revisión de baterías'],['ELE','Limpieza de bornes'],['ELE','Revisión de alternador'],['ELE','Inspección de cableado general'],['ELE','Revisión de sensores'],['ELE','Diagnóstico de códigos de falla'],['ELE','Cambio de fusibles/relés'],['ELE','Revisión de luces de trabajo'],['ELE','Revisión de motor de arranque'],['ELE','Actualización de software/ECU'],
+        ['TRA','Cambio de aceite de transmisión'],['TRA','Revisión de convertidor de torque'],['TRA','Ajuste de embrague'],['TRA','Revisión de diferenciales'],['TRA','Cambio de filtro de transmisión'],['TRA','Revisión de mandos finales'],['TRA','Inspección de juntas universales'],
+        ['ENF','Revisión de nivel de refrigerante'],['ENF','Limpieza de radiador'],['ENF','Cambio de termostato'],['ENF','Revisión de ventilador'],['ENF','Cambio de mangueras de refrigeración'],['ENF','Revisión de bomba de agua'],['ENF','Cambio de refrigerante'],
+        ['COM','Drenaje de tanque de combustible'],['COM','Cambio de prefiltro de combustible'],['COM','Revisión de líneas de combustible'],['COM','Limpieza de tanque'],['COM','Revisión de bomba de alimentación'],
+        ['FRE','Cambio de pastillas de freno'],['FRE','Cambio de discos de freno'],['FRE','Revisión de líquido de frenos'],['FRE','Purga de sistema de frenos'],['FRE','Revisión de freno de estacionamiento'],['FRE','Inspección de cañerías de freno'],['FRE','Ajuste de frenos'],
+        ['DIR','Revisión de dirección hidráulica'],['DIR','Cambio de aceite de dirección'],['DIR','Revisión de barras de dirección'],['DIR','Ajuste de convergencia'],['DIR','Revisión de cilindros de dirección'],
+        ['EST','Inspección estructural general'],['EST','Reparación de soldaduras'],['EST','Revisión de cabina'],['EST','Cambio de vidrios/espejos'],['EST','Revisión de protecciones'],
+        ['CAB','Afilado de sierra/cuchillas'],['CAB','Cambio de cadena de sierra'],['CAB','Revisión de rodillos de alimentación'],['CAB','Cambio de cuchillas desramadoras'],['CAB','Ajuste de presión de rodillos'],['CAB','Revisión de motor de sierra'],['CAB','Lubricación de barra de sierra'],['CAB','Inspección de mangueras de cabezal'],['CAB','Cambio de espada de sierra'],['CAB','Calibración de diámetros'],
+        ['ROD','Revisión de tensión de cadenas'],['ROD','Cambio de zapatas'],['ROD','Revisión de rodillos superiores'],['ROD','Revisión de rodillos inferiores'],['ROD','Cambio de rueda guía'],['ROD','Revisión de sprocket'],['ROD','Ajuste de tensor de cadena'],['ROD','Inspección de pernos de zapata'],
+        ['LUB','Engrase general de puntos'],['LUB','Revisión de sistema de lubricación centralizado'],['LUB','Cambio de grasa de rodamientos'],['LUB','Lubricación de articulaciones'],['LUB','Revisión de niveles de aceite'],
+        ['NEU','Rotación de neumáticos'],['NEU','Revisión de presión'],['NEU','Alineación y balanceo'],['NEU','Cambio de neumáticos'],['NEU','Revisión de desgaste'],['NEU','Reparación de pinchazos'],
+        ['SUS','Revisión de amortiguadores'],['SUS','Cambio de bujes'],['SUS','Revisión de hojas de resorte'],['SUS','Inspección de brazos de suspensión'],
+        ['CAR','Revisión de plataforma/tolva'],['CAR','Reparación de barandas'],['CAR','Revisión de sistema de volteo'],['CAR','Inspección de anclajes'],
+        ['CLI','Revisión de A/C'],['CLI','Cambio de filtro de cabina'],['CLI','Recarga de gas refrigerante'],['CLI','Revisión de calefacción'],
+        ['SEG','Revisión de extintor'],['SEG','Revisión de alarma de retroceso'],['SEG','Revisión de cinturón de seguridad'],['SEG','Revisión de luces de emergencia'],['SEG','Inspección de sistema ROPS/FOPS']
+      ];
+      for(const[cod,nom] of tareas){
+        await pool.query(`INSERT INTO mant_tareas_std(sistema_id,nombre) SELECT sistema_id,$2 FROM mant_sistemas WHERE codigo=$1 ON CONFLICT DO NOTHING`,[cod,nom]);
+      }
+      console.log('  [OK] Sistemas ('+17+') y tareas estándar ('+tareas.length+') cargados');
+    }
+  }catch(e){console.log('[WARN] seed sistemas:',e.message);}
 }
 
 async function insertarDatosIniciales(client) {
@@ -2122,6 +2217,54 @@ app.patch('/api/mant/avisos/:id', auth, async(req,res)=>{
 });
 
 // ── ÓRDENES DE TRABAJO ──
+// ══ MANTENEDOR DE SISTEMAS ══
+app.get('/api/mant/sistemas', auth, async(req,res)=>{
+  try{res.json((await pool.query('SELECT * FROM mant_sistemas ORDER BY orden,nombre')).rows);}catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/mant/sistemas', auth, async(req,res)=>{
+  try{const{codigo,nombre,descripcion,orden}=req.body;const r=await pool.query('INSERT INTO mant_sistemas(codigo,nombre,descripcion,orden) VALUES($1,$2,$3,$4) RETURNING *',[codigo,nombre,descripcion||null,orden||0]);res.status(201).json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/mant/sistemas/:id', auth, async(req,res)=>{
+  try{const{codigo,nombre,descripcion,orden,activo}=req.body;const r=await pool.query('UPDATE mant_sistemas SET codigo=$1,nombre=$2,descripcion=$3,orden=$4,activo=$5 WHERE sistema_id=$6 RETURNING *',[codigo,nombre,descripcion||null,orden||0,activo!==false,req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+
+// ══ MANTENEDOR DE TAREAS ESTÁNDAR ══
+app.get('/api/mant/tareas-std', auth, async(req,res)=>{
+  try{const{sistema_id}=req.query;let q2='SELECT t.*,s.nombre AS sistema_nombre,s.codigo AS sistema_codigo FROM mant_tareas_std t JOIN mant_sistemas s ON t.sistema_id=s.sistema_id';if(sistema_id)q2+=' WHERE t.sistema_id='+parseInt(sistema_id);q2+=' ORDER BY s.orden,t.nombre';res.json((await pool.query(q2)).rows);}catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/mant/tareas-std', auth, async(req,res)=>{
+  try{const{sistema_id,nombre,descripcion,tipo_tarea,tipo_activo}=req.body;const r=await pool.query('INSERT INTO mant_tareas_std(sistema_id,nombre,descripcion,tipo_tarea,tipo_activo) VALUES($1,$2,$3,$4,$5) RETURNING *',[sistema_id,nombre,descripcion||null,tipo_tarea||'preventiva',tipo_activo||'todos']);res.status(201).json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/mant/tareas-std/:id', auth, async(req,res)=>{
+  try{const{sistema_id,nombre,descripcion,tipo_tarea,tipo_activo,activo}=req.body;const r=await pool.query('UPDATE mant_tareas_std SET sistema_id=$1,nombre=$2,descripcion=$3,tipo_tarea=$4,tipo_activo=$5,activo=$6 WHERE tarea_std_id=$7 RETURNING *',[sistema_id,nombre,descripcion||null,tipo_tarea||'preventiva',tipo_activo||'todos',activo!==false,req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+
+// ══ PERSONAL POR TAREA OT ══
+app.get('/api/mant/ot/tareas/:id/personal', auth, async(req,res)=>{
+  try{const r=await pool.query(`SELECT tp.*,p.nombre_completo,p.cargo,p.valor_hora_hombre AS valor_hh_maestro FROM mant_ot_tarea_personal tp LEFT JOIN personal p ON tp.persona_id=p.persona_id WHERE tp.tarea_id=$1 ORDER BY tp.id`,[req.params.id]);res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/mant/ot/tareas/:id/personal', auth, async(req,res)=>{
+  try{
+    const{tipo_personal,persona_id,nombre_externo,horas_trabajadas,valor_hora_aplicado,tiene_costo,observacion}=req.body;
+    let vhh=parseFloat(valor_hora_aplicado)||0;
+    if(tipo_personal==='interno'&&!vhh&&persona_id){const p=await pool.query('SELECT valor_hora_hombre FROM personal WHERE persona_id=$1',[persona_id]);if(p.rows.length)vhh=parseFloat(p.rows[0].valor_hora_hombre)||0;}
+    const r=await pool.query(`INSERT INTO mant_ot_tarea_personal(tarea_id,tipo_personal,persona_id,nombre_externo,horas_trabajadas,valor_hora_aplicado,tiene_costo,observacion) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [req.params.id,tipo_personal||'interno',persona_id||null,nombre_externo||null,parseFloat(horas_trabajadas)||0,vhh,tiene_costo!==false,observacion||null]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/mant/ot/tarea-personal/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM mant_ot_tarea_personal WHERE id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+});
+
+// ══ ENLACE SALIDA INVENTARIO A OT ══
+app.patch('/api/mov-detalle/:id/ot', auth, async(req,res)=>{
+  try{const{ot_id}=req.body;const r=await pool.query('UPDATE movimiento_detalle SET ot_id=$1 WHERE detalle_id=$2 RETURNING *',[ot_id||null,req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+app.get('/api/mant/ot/:id/salidas-inv', auth, async(req,res)=>{
+  try{const r=await pool.query(`SELECT md.*,p.nombre AS producto_nombre,p.codigo AS producto_codigo,me.fecha,me.numero_documento,b.nombre AS bodega_nombre FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id JOIN productos p ON md.producto_id=p.producto_id JOIN bodegas b ON me.bodega_id=b.bodega_id WHERE md.ot_id=$1 AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO' ORDER BY me.fecha DESC`,[req.params.id]);res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
+});
+
 app.get('/api/mant/ot', auth, async(req,res)=>{
   try{
     const{empresa_id,equipo_id,estado,desde,hasta}=req.query;
@@ -2131,7 +2274,7 @@ app.get('/api/mant/ot', auth, async(req,res)=>{
     if(estado){vals.push(estado);where.push(`o.estado=$${vals.length}`);}
     if(desde){vals.push(desde);where.push(`o.fecha_apertura>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`o.fecha_apertura<=$${vals.length}`);}
-    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY o.creado_en DESC`,vals);
+    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY o.creado_en DESC`,vals);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -2199,7 +2342,7 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
       }
     }
     // Re-fetch con joins para devolver datos completos
-    const full=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
+    const full=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
     res.json(full.rows[0]||ot);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -2207,7 +2350,7 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
 // GET single OT with joins
 app.get('/api/mant/ot/:id/full', auth, async(req,res)=>{
   try{
-    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
+    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
     res.json(r.rows[0]||null);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -2228,22 +2371,24 @@ app.delete('/api/mant/ot/:id', auth, async(req,res)=>{
 
 // OT Tareas
 app.get('/api/mant/ot/:id/tareas', auth, async(req,res)=>{
-  try{const r=await pool.query('SELECT * FROM mant_ot_tareas WHERE ot_id=$1 ORDER BY orden,tarea_id',[req.params.id]);res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
+  try{const r=await pool.query(`SELECT t.*,s.nombre AS sistema_nombre,s.codigo AS sistema_codigo,ts.nombre AS tarea_std_nombre FROM mant_ot_tareas t LEFT JOIN mant_sistemas s ON t.sistema_id=s.sistema_id LEFT JOIN mant_tareas_std ts ON t.tarea_std_id=ts.tarea_std_id WHERE t.ot_id=$1 ORDER BY t.orden,t.tarea_id`,[req.params.id]);res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
 });
 app.post('/api/mant/ot/:id/tareas', auth, async(req,res)=>{
   try{
     const{descripcion,sistema,tipo,desde_plan}=req.body;
     const cnt=await pool.query('SELECT COUNT(*)+1 AS n FROM mant_ot_tareas WHERE ot_id=$1',[req.params.id]);
-    const r=await pool.query('INSERT INTO mant_ot_tareas(ot_id,orden,descripcion,sistema,tipo,desde_plan) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',[req.params.id,cnt.rows[0].n,descripcion,sistema||null,tipo||'tarea',desde_plan||false]);
+    const r=await pool.query('INSERT INTO mant_ot_tareas(ot_id,orden,descripcion,sistema,tipo,desde_plan,sistema_id,tarea_std_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[req.params.id,cnt.rows[0].n,descripcion,sistema||null,tipo||'tarea',desde_plan||false,req.body.sistema_id||null,req.body.tarea_std_id||null]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.patch('/api/mant/ot/tareas/:id', auth, async(req,res)=>{
   try{
-    const{estado,observacion,descripcion,sistema}=req.body;
+    const{estado,observacion,descripcion,sistema,sistema_id,tarea_std_id}=req.body;
     let sets=['estado=$1','observacion=$2'],vals=[estado,observacion||null];
     if(descripcion!==undefined){vals.push(descripcion);sets.push('descripcion=$'+vals.length);}
     if(sistema!==undefined){vals.push(sistema||null);sets.push('sistema=$'+vals.length);}
+    if(sistema_id!==undefined){vals.push(sistema_id||null);sets.push('sistema_id=$'+vals.length);}
+    if(tarea_std_id!==undefined){vals.push(tarea_std_id||null);sets.push('tarea_std_id=$'+vals.length);}
     vals.push(req.params.id);
     const r=await pool.query('UPDATE mant_ot_tareas SET '+sets.join(',')+' WHERE tarea_id=$'+vals.length+' RETURNING *',vals);
     res.json(r.rows[0]);
