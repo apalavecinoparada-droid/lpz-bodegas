@@ -1171,6 +1171,74 @@ ocR.get('/buscar/filtros', auth, async(req,res)=>{
 
 app.use('/api/ordenes-compra', ocR);
 
+// ══ IMPORTACIÓN MASIVA DE OC DESDE XML (ZIP Facto) ══
+app.post('/api/import/bulk-oc', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const{items}=req.body;
+    if(!Array.isArray(items)||!items.length) throw new Error('Sin items para importar');
+    const results=[];
+    for(const item of items){
+      // Match or create proveedor
+      let prov_id=null;
+      if(item.proveedor_rut){
+        const rNorm=item.proveedor_rut.replace(/[\.\-]/g,'').toLowerCase();
+        const prov=await client.query("SELECT proveedor_id FROM proveedores WHERE REPLACE(REPLACE(rut,'.',''),'-','')=$1 LIMIT 1",[rNorm]);
+        if(prov.rows.length){
+          prov_id=prov.rows[0].proveedor_id;
+        }else{
+          // Auto-create proveedor
+          const np=await client.query('INSERT INTO proveedores(rut,nombre,giro,direccion,activo) VALUES($1,$2,$3,$4,true) ON CONFLICT(rut) DO UPDATE SET nombre=$2 RETURNING proveedor_id',
+            [item.proveedor_rut,item.proveedor_nombre||'Proveedor importado',item.proveedor_giro||null,item.proveedor_direccion||null]);
+          prov_id=np.rows[0].proveedor_id;
+        }
+      }
+      if(!prov_id){results.push({folio:item.folio,error:'Sin proveedor'});continue;}
+      // Match empresa
+      let emp_id=null;
+      if(item.cliente_rut){
+        const eNorm=item.cliente_rut.replace(/[\.\-]/g,'').toLowerCase();
+        const emp=await client.query("SELECT empresa_id FROM empresas WHERE REPLACE(REPLACE(rut,'.',''),'-','')=$1 LIMIT 1",[eNorm]);
+        if(emp.rows.length) emp_id=emp.rows[0].empresa_id;
+      }
+      // Check duplicate by numero_documento
+      if(item.folio){
+        const dup=await client.query("SELECT oc_id,numero_oc FROM ordenes_compra WHERE numero_documento=$1 AND proveedor_id=$2 LIMIT 1",[String(item.folio),prov_id]);
+        if(dup.rows.length){results.push({folio:item.folio,error:'Ya existe como '+dup.rows[0].numero_oc,oc_id:dup.rows[0].oc_id});continue;}
+      }
+      // Match tipo doc
+      let tdoc_id=null;
+      if(item.tipo_doc){
+        const td=await client.query("SELECT tipo_doc_id FROM tipos_documento WHERE UPPER(nombre) LIKE $1 OR UPPER(codigo) LIKE $1 LIMIT 1",['%'+item.tipo_doc.toUpperCase()+'%']);
+        if(td.rows.length) tdoc_id=td.rows[0].tipo_doc_id;
+      }
+      // Create OC
+      const year=new Date().getFullYear();
+      const seq=await client.query("SELECT nextval('seq_oc_num')");
+      const numero_oc='OC-'+year+'-'+String(seq.rows[0].nextval).padStart(4,'0');
+      const lineas=item.lineas||[];
+      const neto=lineas.reduce(function(s,l){return s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0);},0);
+      const iva=Math.round(neto*0.19);
+      const total=neto+iva;
+      const ocRes=await client.query(
+        "INSERT INTO ordenes_compra(numero_oc,empresa_id,proveedor_id,fecha_emision,tipo_doc_id,numero_documento,fecha_documento,neto,iva,total,estado,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'PENDIENTE',$11,$12) RETURNING oc_id",
+        [numero_oc,emp_id,prov_id,item.fecha_emision||new Date().toISOString().split('T')[0],tdoc_id,item.folio?String(item.folio):null,item.fecha_emision||null,neto,iva,total,'Importado desde XML Facto',req.user.email]
+      );
+      const ocId=ocRes.rows[0].oc_id;
+      for(let i=0;i<lineas.length;i++){
+        const l=lineas[i];
+        await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,cantidad,precio_unitario) VALUES($1,$2,$3,$4,$5)',
+          [ocId,i+1,l.descripcion||'Item '+(i+1),parseFloat(l.cantidad)||1,parseFloat(l.precio_unitario)||0]);
+      }
+      results.push({folio:item.folio,ok:true,oc_id:ocId,numero_oc,proveedor:item.proveedor_nombre,total});
+    }
+    await client.query('COMMIT');
+    res.json({ok:true,results});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
 // USUARIOS
 app.get('/api/usuarios', auth, async(req,res)=>{try{res.json((await pool.query('SELECT usuario_id,email,nombre,rol,activo,creado_en FROM usuarios ORDER BY nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
 app.post('/api/usuarios', auth, async(req,res)=>{
