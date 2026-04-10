@@ -1997,6 +1997,9 @@ function parsearDteXml(xmlStr){
   // Emisor (proveedor)
   const provRut=tag('RUTEmisor');
   const provNombre=tag('RznSoc');
+  const provGiro=tag('GiroEmis');
+  const provDir=tag('DirOrigen');
+  const provComuna=tag('CmnaOrigen');
 
   // Receptor (cliente)
   const clienteRut=tag('RUTRecep');
@@ -2022,6 +2025,7 @@ function parsearDteXml(xmlStr){
 
   return{numero_documento:ndoc,fecha_emision:fecha,tipo_doc:tipoDoc,
     proveedor_rut:provRut,proveedor_nombre:provNombre,
+    proveedor_giro:provGiro,proveedor_direccion:provDir?(provDir+(provComuna?' '+provComuna:'')):null,
     cliente_rut:clienteRut,cliente_nombre:clienteNombre,
     neto,iva,total,condiciones_pago:condPago,lineas};
 }
