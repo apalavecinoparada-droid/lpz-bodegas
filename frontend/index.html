@@ -3064,6 +3064,12 @@ function MantOTDetalle(p){
   const[catSistemas,setCatSistemas]=useState([]);const[catTareas,setCatTareas]=useState([]);
   const[salidasInv,setSalidasInv]=useState([]);const[expandTarea,setExpandTarea]=useState(null);const[tareaPersonal,setTareaPersonal]=useState({});
   const[newTareaForm,setNewTareaForm]=useState({sistema_id:'',tarea_std_id:'',descripcion:''});
+  const[trasForm,setTrasForm]=useState({vehiculo_traslado:p.ot.vehiculo_traslado||'',distancia_km:p.ot.distancia_km||'',costo_combustible_traslado:p.ot.costo_combustible_traslado||''});
+  const[trasEditing,setTrasEditing]=useState(false);
+  function guardarTraslado(){
+    var f2=Object.assign({},form,{vehiculo_traslado:trasForm.vehiculo_traslado,distancia_km:trasForm.distancia_km,costo_combustible_traslado:trasForm.costo_combustible_traslado,costo_traslado:trasForm.costo_combustible_traslado});
+    api('/mant/ot/'+ot.ot_id,'PUT',f2,p.tok).then(function(r){setOt(r);setForm(r);setTrasEditing(false);setMsg('Traslado guardado');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
 
   function loadDetail(){
     api('/mant/ot/'+ot.ot_id+'/tareas','GET',null,p.tok).then(function(r){setTareas(r||[]);(r||[]).forEach(function(t){loadTareaPersonal(t.tarea_id);});}).catch(function(){});
@@ -3314,14 +3320,22 @@ function MantOTDetalle(p){
     ),
     // Traslados
     h('div',{className:'card',style:{marginBottom:12}},
-      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8,color:'#0369A1'}},'🚛 Traslado'),
-      (ot.vehiculo_traslado||parseFloat(ot.distancia_km)>0||parseFloat(ot.costo_combustible_traslado)>0)?
-        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'6px 12px',fontSize:12,marginBottom:8}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+        h('div',{style:{fontWeight:600,fontSize:13,color:'#0369A1'}},'🚛 Traslado'),
+        !trasEditing&&ot.estado!=='cerrada'&&h(Btn,{sm:true,v:'a',onClick:function(){setTrasForm({vehiculo_traslado:ot.vehiculo_traslado||'',distancia_km:ot.distancia_km||'',costo_combustible_traslado:ot.costo_combustible_traslado||''});setTrasEditing(true);}},(ot.vehiculo_traslado||parseFloat(ot.costo_combustible_traslado)>0)?'✏ Editar':'+ Registrar traslado')
+      ),
+      !trasEditing&&(ot.vehiculo_traslado||parseFloat(ot.distancia_km)>0||parseFloat(ot.costo_combustible_traslado)>0)?
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:'6px 12px',fontSize:12}},
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Vehículo: '),h('strong',null,ot.vehiculo_traslado||'—')),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Distancia: '),h('strong',null,(parseFloat(ot.distancia_km)||0)+' km')),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Costo combustible: '),h('strong',null,CLP(Math.round(parseFloat(ot.costo_combustible_traslado)||0))))
-        ):
-        h('div',{style:{color:'#94A3B8',fontSize:12,padding:'4px 0'}},'Sin traslado registrado. Complete desde "Editar".')
+        ):!trasEditing?h('div',{style:{color:'#94A3B8',fontSize:12}},'Sin traslado registrado.'):null,
+      trasEditing&&h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr auto',gap:8,alignItems:'end'}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Vehículo'),h('input',{type:'text',value:trasForm.vehiculo_traslado||'',onChange:function(e){setTrasForm(function(f){return Object.assign({},f,{vehiculo_traslado:e.target.value});});},style:inpS,placeholder:'Camión pluma, Lowboy...'})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Distancia (km)'),h('input',{type:'number',value:trasForm.distancia_km||'',onChange:function(e){setTrasForm(function(f){return Object.assign({},f,{distancia_km:e.target.value});});},style:inpS,placeholder:'Km ida y vuelta'})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Costo combustible $'),h('input',{type:'number',value:trasForm.costo_combustible_traslado||'',onChange:function(e){setTrasForm(function(f){return Object.assign({},f,{costo_combustible_traslado:e.target.value});});},style:inpS,placeholder:'Costo aprox.'})),
+        h('div',{style:{display:'flex',gap:4}},h(Btn,{sm:true,onClick:guardarTraslado},'Guardar'),h('button',{onClick:function(){setTrasEditing(false);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:11}},'Cancelar'))
+      )
     ),
     // Misceláneos (compras y servicios menores)
     h('div',{className:'card'},
