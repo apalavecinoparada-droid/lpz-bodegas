@@ -1049,6 +1049,21 @@ ocR.patch('/:id/anular', auth, async(req,res)=>{
     res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
 });
+ocR.delete('/:id', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const chk=await client.query('SELECT estado,movimiento_id FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
+    if(!chk.rows.length) return res.status(404).json({error:'OC no encontrada'});
+    if(chk.rows[0].estado!=='PENDIENTE') return res.status(400).json({error:'Solo se pueden eliminar OC en estado PENDIENTE'});
+    if(chk.rows[0].movimiento_id) return res.status(400).json({error:'No se puede eliminar: tiene movimientos asociados'});
+    await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
+    await client.query('DELETE FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
+    await client.query('COMMIT');
+    res.json({ok:true});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
 ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
