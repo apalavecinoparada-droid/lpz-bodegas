@@ -105,6 +105,7 @@ tr:hover>td{background:#F8FAFC}
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script>
 'use strict';
 const {useState,useEffect,useMemo,useCallback,useRef,Component}=React;
@@ -700,6 +701,142 @@ function CalcCombustible(p){
   );
 }
 
+// ══ IMPORT ZIP DTE (Facto) ══
+function ImportZipDTE(p){
+  var[status,setStatus]=useState('idle');var[dtes,setDtes]=useState([]);var[sel,setSel]=useState({});
+  var[msg,setMsg]=useState('');var[results,setResults]=useState(null);var[filtTipo,setFiltTipo]=useState('');
+  var provs=p.m&&Array.isArray(p.m.provs)?p.m.provs:[];
+  function parseXmlDte(xmlStr){
+    try{
+      var parser=new DOMParser();var doc=parser.parseFromString(xmlStr,'text/xml');
+      var ns='http://www.sii.cl/SiiDte';
+      function tag(name){var el=doc.getElementsByTagNameNS(ns,name)[0]||doc.getElementsByTagName(name)[0];return el?el.textContent.trim():null;}
+      var tipoDte=tag('TipoDTE');
+      var tipoMap={'33':'Factura','34':'Factura Exenta','39':'Boleta','52':'Guía Despacho','56':'Nota Débito','61':'Nota Crédito'};
+      var detalles=doc.getElementsByTagNameNS(ns,'Detalle');if(!detalles.length)detalles=doc.getElementsByTagName('Detalle');
+      var lineas=[];
+      for(var i=0;i<detalles.length;i++){
+        var d=detalles[i];
+        function tagD(n){var el=d.getElementsByTagNameNS(ns,n)[0]||d.getElementsByTagName(n)[0];return el?el.textContent.trim():null;}
+        var desc=tagD('NmbItem');var qty=parseFloat(tagD('QtyItem')||'1')||1;
+        var prc=parseFloat(tagD('PrcItem')||'0')||0;var monto=parseFloat(tagD('MontoItem')||'0')||0;
+        if(desc)lineas.push({descripcion:desc,cantidad:qty,precio_unitario:prc||monto,total_linea:monto});
+      }
+      var provRut=tag('RUTEmisor');var rNorm=provRut?(provRut).replace(/[\.\-]/g,'').toLowerCase():'';
+      var provMatch=rNorm?provs.find(function(px){return(px.rut||'').replace(/[\.\-]/g,'').toLowerCase()===rNorm;}):null;
+      return{
+        tipo_dte:tipoDte,tipo_doc:tipoMap[tipoDte]||'Tipo '+tipoDte,
+        folio:tag('Folio'),fecha_emision:tag('FchEmis'),
+        proveedor_rut:provRut,proveedor_nombre:tag('RznSoc'),proveedor_giro:tag('GiroEmis'),
+        proveedor_direccion:(tag('DirOrigen')||'')+(tag('CmnaOrigen')?' '+tag('CmnaOrigen'):''),
+        proveedor_match:provMatch?provMatch.nombre:null,proveedor_id:provMatch?provMatch.proveedor_id:null,
+        cliente_rut:tag('RUTRecep'),cliente_nombre:tag('RznSocRecep'),
+        neto:parseFloat(tag('MntNeto'))||0,iva:parseFloat(tag('IVA'))||0,total:parseFloat(tag('MntTotal'))||0,
+        lineas:lineas,_filename:''
+      };
+    }catch(e){return null;}
+  }
+  function onFile(e){
+    var file=e.target.files[0];if(!file)return;
+    setStatus('loading');setMsg('Extrayendo archivos XML...');setDtes([]);setSel({});setResults(null);
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      JSZip.loadAsync(ev.target.result).then(function(zip){
+        var xmlFiles=[];
+        zip.forEach(function(path,entry){if(path.toLowerCase().endsWith('.xml')&&!entry.dir)xmlFiles.push(entry);});
+        setMsg('Parseando '+xmlFiles.length+' archivos XML...');
+        var parsed=[];var done=0;
+        xmlFiles.forEach(function(entry){
+          entry.async('string').then(function(content){
+            var dte=parseXmlDte(content);
+            if(dte){dte._filename=entry.name;parsed.push(dte);}
+            done++;
+            if(done===xmlFiles.length){
+              parsed.sort(function(a,b){return(a.fecha_emision||'').localeCompare(b.fecha_emision||'');});
+              setDtes(parsed);setStatus('preview');
+              setMsg(parsed.length+' DTE encontrados de '+xmlFiles.length+' archivos');
+            }
+          });
+        });
+        if(xmlFiles.length===0){setStatus('idle');setMsg('No se encontraron archivos XML en el ZIP');}
+      }).catch(function(err){setStatus('idle');setMsg('Error leyendo ZIP: '+err.message);});
+    };
+    reader.readAsArrayBuffer(file);
+  }
+  function toggleSel(folio){setSel(function(prev){var n=Object.assign({},prev);if(n[folio])delete n[folio];else n[folio]=true;return n;});}
+  function selAll(){var n={};var filtered=getFiltered();filtered.forEach(function(d){n[d.folio+'_'+d.proveedor_rut]=true;});setSel(n);}
+  function selNone(){setSel({});}
+  function dteKey(d){return d.folio+'_'+d.proveedor_rut;}
+  function getFiltered(){return dtes.filter(function(d){return!filtTipo||d.tipo_dte===filtTipo;});}
+  function importar(){
+    var items=dtes.filter(function(d){return sel[dteKey(d)];});
+    if(!items.length){setMsg('Seleccione al menos un DTE');return;}
+    setStatus('importing');setMsg('Creando '+items.length+' OC...');
+    api('/import/bulk-oc','POST',{items:items},p.tok).then(function(r){
+      setResults(r.results||[]);setStatus('done');
+      var ok=(r.results||[]).filter(function(x){return x.ok;}).length;
+      var dup=(r.results||[]).filter(function(x){return x.error&&x.error.indexOf('Ya existe')>=0;}).length;
+      var err=(r.results||[]).filter(function(x){return x.error&&x.error.indexOf('Ya existe')<0;}).length;
+      setMsg('Importación completada: '+ok+' creadas'+(dup?', '+dup+' duplicadas':'')+(err?', '+err+' con error':''));
+    }).catch(function(e){setStatus('preview');setMsg('Error: '+e.message);});
+  }
+  var filtered=getFiltered();
+  var selCount=Object.keys(sel).length;
+  var tipos={};dtes.forEach(function(d){tipos[d.tipo_dte]=d.tipo_doc;});
+  var inpS={padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
+  return h(Modal,{title:'📦 Importar XML desde ZIP (Facto)',onClose:p.onClose,xl:true},
+    h('div',{style:{padding:'0 4px'}},
+      status==='idle'&&h('div',null,
+        h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:8,padding:16,marginBottom:12}},
+          h('div',{style:{fontWeight:700,fontSize:13,color:'#1D4ED8',marginBottom:6}},'Importación masiva de DTE desde Facto'),
+          h('div',{style:{fontSize:12,color:'#475569',marginBottom:8}},'Suba el archivo ZIP exportado desde Facto. El sistema extraerá cada XML, identificará proveedores y le permitirá seleccionar cuáles crear como OC.'),
+          h('input',{type:'file',accept:'.zip',onChange:onFile,style:{fontSize:12}})
+        )
+      ),
+      status==='loading'&&h('div',{style:{textAlign:'center',padding:24}},h('div',{className:'spin'}),h('div',{style:{marginTop:8,fontSize:12}},msg)),
+      msg&&status!=='loading'&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
+      status==='preview'&&h('div',null,
+        h('div',{style:{display:'flex',gap:6,marginBottom:8,alignItems:'center',flexWrap:'wrap'}},
+          h('select',{value:filtTipo,onChange:function(e){setFiltTipo(e.target.value);},style:inpS},
+            h('option',{value:''},'Todos los tipos ('+dtes.length+')'),
+            Object.entries(tipos).map(function(e){var cnt=dtes.filter(function(d){return d.tipo_dte===e[0];}).length;return h('option',{key:e[0],value:e[0]},e[1]+' ('+cnt+')');})),
+          h('span',{style:{fontSize:12,color:'#64748B'}},filtered.length+' mostrados, '+selCount+' seleccionados'),
+          h(Btn,{sm:true,v:'a',onClick:selAll},'Seleccionar todos'),
+          h(Btn,{sm:true,v:'g',onClick:selNone},'Deseleccionar'),
+          selCount>0&&h(Btn,{sm:true,onClick:importar},'✓ Crear '+selCount+' OC')
+        ),
+        h('div',{style:{maxHeight:450,overflowY:'auto'}},
+          h(TBL,{cols:[
+            {lbl:'',w:35,render:function(r){return h('input',{type:'checkbox',checked:!!sel[dteKey(r)],onChange:function(){toggleSel(dteKey(r));},style:{cursor:'pointer'}});}},
+            {lbl:'Tipo',render:function(r){return h(Bg,{c:r.tipo_dte==='33'?'b':r.tipo_dte==='61'?'r':r.tipo_dte==='56'?'y':'gray'},r.tipo_doc);}},
+            {lbl:'Folio',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.folio);}},
+            {lbl:'Fecha',render:function(r){return fmtD(r.fecha_emision);}},
+            {lbl:'Proveedor',render:function(r){return h('div',null,h('div',{style:{fontSize:12,fontWeight:500}},r.proveedor_nombre||'—'),h('div',{style:{fontSize:10,color:r.proveedor_match?'#10B981':'#F59E0B'}},r.proveedor_match?'✓ '+r.proveedor_match:'⚠ No registrado — se creará'));}},
+            {lbl:'Líneas',r:true,render:function(r){return r.lineas.length;}},
+            {lbl:'Neto',r:true,render:function(r){return CLP(r.neto);}},
+            {lbl:'Total',r:true,render:function(r){return h('strong',null,CLP(r.total));}}
+          ],rows:filtered,empty:'Sin DTE'})
+        )
+      ),
+      status==='importing'&&h('div',{style:{textAlign:'center',padding:24}},h('div',{className:'spin'}),h('div',{style:{marginTop:8,fontSize:12}},msg)),
+      status==='done'&&results&&h('div',null,
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Resultado de importación'),
+        h('div',{style:{maxHeight:400,overflowY:'auto'}},
+          h(TBL,{cols:[
+            {lbl:'Folio',render:function(r){return r.folio;}},
+            {lbl:'Resultado',render:function(r){return r.ok?h(Bg,{c:'g'},'Creada: '+r.numero_oc):h(Bg,{c:r.error.indexOf('Ya existe')>=0?'y':'r'},r.error);}},
+            {lbl:'Proveedor',render:function(r){return r.proveedor||'—';}},
+            {lbl:'Total',r:true,render:function(r){return r.total?CLP(r.total):'—';}}
+          ],rows:results,empty:''})
+        ),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},
+          h(Btn,{onClick:function(){p.onClose();p.onRefresh&&p.onRefresh();}},'Cerrar y actualizar')
+        )
+      )
+    )
+  );
+}
+
 function OCView(p){
   const empresas=p.m&&Array.isArray(p.m.empresas)?p.m.empresas:[];
   const provs=p.m&&Array.isArray(p.m.provs)?p.m.provs:[];
@@ -720,6 +857,7 @@ function OCView(p){
   const[sortField,setSortField]=useState('oc_id');
   const[sortDir,setSortDir]=useState('desc');
   const[showCalc,setShowCalc]=useState(false);
+  const[showZipImport,setShowZipImport]=useState(false);
   function load2(){
     setLoad(true);
     const hasDetail=filtSubcat||filtFaena||filtEquipo;
@@ -796,6 +934,7 @@ function OCView(p){
   return h('div',null,
     h('div',{style:{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap',alignItems:'center'}},
       h(Btn,{onClick:function(){setFormOC({});}},'+ Nueva OC'),
+      h(Btn,{v:'a',onClick:function(){setShowZipImport(true);}},'📦 Importar ZIP'),
       h(Btn,{v:'teal',sm:true,onClick:function(){setShowCalc(true);},title:'Calculadora de valor neto del litro de combustible'},'🧮 Calc. Litro Neto'),
       h('select',{value:filtEst,onChange:function(e){setFiltEst(e.target.value);},style:{minWidth:115,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todos estados'),h('option',{value:'PENDIENTE'},'Pendiente'),h('option',{value:'CERRADA'},'Cerrada'),h('option',{value:'ANULADA'},'Anulada')),
       h('select',{value:filtEmp,onChange:function(e){setFiltEmp(e.target.value);},style:{minWidth:130,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todas empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})),
@@ -838,6 +977,7 @@ function OCView(p){
     reabrirOC&&h(OCReabrirModal,{tok:p.tok,oc:reabrirOC,onClose:function(){setReabrirOC(null);},onSave:function(){setReabrirOC(null);load2();}}),
     verOC&&h(OCDocView,{oc:verOC,m:p.m,onClose:function(){setVerOC(null);}}),
     showCalc&&h(CalcCombustible,{onClose:function(){setShowCalc(false);}}),
+    showZipImport&&h(ImportZipDTE,{tok:p.tok,m:p.m,onClose:function(){setShowZipImport(false);},onRefresh:load2}),
     linkOT&&h(Modal,{title:'Asignar lineas OC '+(linkOT.numero_oc||'')+' a Ordenes de Trabajo',onClose:function(){setLinkOT(null);load2();}},
       h('div',{style:{padding:'12px 0'}},
         h('p',{style:{fontSize:12,color:'#475569',marginBottom:12}},'Seleccione a que OT asignar cada linea. Puede asignar diferentes lineas a diferentes OTs.'),
@@ -1481,7 +1621,7 @@ function OCFormModal(p){
 // ── OC CERRAR MODAL ──
 function OCCerrarModal(p){
   const tdocs=p.m&&Array.isArray(p.m.tdocs)?p.m.tdocs:[];
-  const[tdoc,setTdoc]=useState('');const[ndoc,setNdoc]=useState('');const[fdoc,setFdoc]=useState(TODAY);
+  const[tdoc,setTdoc]=useState(p.oc.tipo_doc_id?String(p.oc.tipo_doc_id):'');const[ndoc,setNdoc]=useState(p.oc.numero_documento||'');const[fdoc,setFdoc]=useState(p.oc.fecha_documento||TODAY);
   const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
   function save(){
     setErr('');
