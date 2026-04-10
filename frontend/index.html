@@ -356,6 +356,7 @@ function SalidaView(p){
   const[modal,setModal]=useState(false);const[anularId,setAnularId]=useState(null);
   const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
   const[otsAbiertas,setOtsAbiertas]=useState([]);
+  const[linkOTMov,setLinkOTMov]=useState(null);const[otsSalida,setOtsSalida]=useState([]);
   const blank={fecha:TODAY,bodega_id:'',faena_id:'',eq_id:'',mot_id:'',re:'',rr:'',obs:'',ot_id:'',lineas:[{prod_id:'',qty:'1'}]};
   const[form,setForm]=useState(blank);
   function load(){
@@ -381,6 +382,13 @@ function SalidaView(p){
     setSaving(true);
     api('/movimientos','POST',{tipo_movimiento:'SALIDA',fecha:form.fecha,bodega_id:parseInt(form.bodega_id),faena_id:parseInt(form.faena_id),equipo_id:parseInt(form.eq_id),motivo_id:parseInt(form.mot_id),observaciones:form.obs||null,responsable_entrega:form.re||null,responsable_recepcion:form.rr||null,lineas:form.lineas.map(function(l){return{producto_id:parseInt(l.prod_id),cantidad:parseFloat(l.qty),costo_unitario:getCpp(l.prod_id,form.bodega_id),ot_id:form.ot_id?parseInt(form.ot_id):null};})},p.tok).then(function(){setModal(false);setForm(blank);load();p.onMov&&p.onMov();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
   }
+  function openLinkOTSalida(mov){
+    setLinkOTMov(mov);
+    api('/mant/ot','GET',null,p.tok).then(function(r){setOtsSalida(Array.isArray(r)?r.filter(function(o){return o.estado==='abierta'||o.estado==='en_ejecucion'||o.estado==='programada';}):[]); }).catch(function(){});
+  }
+  function doLinkOTSalida(ot_id){
+    api('/mant/salida-link-ot','PATCH',{movimiento_id:linkOTMov.movimiento_id,ot_id:parseInt(ot_id)},p.tok).then(function(){setLinkOTMov(null);load();}).catch(function(e){alert(e.message);});
+  }
   return h('div',null,
     h('div',{className:'tb'},
       h(Btn,{onClick:function(){setErr('');setForm(blank);setModal(true);}},'+ Nueva Salida'),
@@ -391,9 +399,36 @@ function SalidaView(p){
       {lbl:'Faena',k:'faena_nombre'},{lbl:'Equipo',k:'equipo_nombre'},{lbl:'Motivo',k:'motivo_nombre'},
       {lbl:'Total CPP',r:true,render:r=>CLP(r.total||0)},
       {lbl:'Estado',render:r=>h(Bg,{c:r.estado==='ACTIVO'?'g':'r'},r.estado)},
-      {lbl:'',c:true,render:r=>r.estado==='ACTIVO'?h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular'):''}
+      {lbl:'',c:true,render:r=>h('div',{style:{display:'flex',gap:4}},
+        r.estado==='ACTIVO'&&h('button',{className:'btn btn-teal btn-xs',onClick:function(){openLinkOTSalida(r);},title:'Enlazar a Orden de Trabajo'},'🔗 OT'),
+        r.estado==='ACTIVO'&&h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular')
+      )}
     ],rows:movs,empty:'Sin salidas'})),
     anularId&&h(AnularMovModal,{tok:p.tok,movId:anularId,onClose:function(){setAnularId(null);},onDone:function(){load();p.onMov&&p.onMov();}}),
+    linkOTMov&&h(Modal,{title:'Enlazar Salida #'+linkOTMov.movimiento_id+' a Orden de Trabajo',onClose:function(){setLinkOTMov(null);}},
+      h('div',{style:{padding:12}},
+        h('div',{style:{marginBottom:8,fontSize:12,color:'#64748B'}},'Equipo: ',h('strong',null,linkOTMov.equipo_nombre||'—'),' — Fecha: ',fmtD(linkOTMov.fecha),' — Total: ',CLP(linkOTMov.total||0)),
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Seleccione la OT:'),
+        otsSalida.filter(function(o){return !linkOTMov.equipo_id||String(o.equipo_id)===String(linkOTMov.equipo_id);}).length>0?
+          h(TBL,{cols:[
+            {lbl:'N° OT',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.numero_ot);}},
+            {lbl:'Equipo',k:'equipo_nombre'},
+            {lbl:'Tipo',render:function(r){return r.tipo_mantencion;}},
+            {lbl:'Estado',render:function(r){return h(Bg,{c:r.estado==='abierta'?'b':'teal'},r.estado);}},
+            {lbl:'',render:function(r){return h(Btn,{sm:true,onClick:function(){doLinkOTSalida(r.ot_id);}},'Enlazar');}}
+          ],rows:otsSalida.filter(function(o){return !linkOTMov.equipo_id||String(o.equipo_id)===String(linkOTMov.equipo_id);}),empty:''}):
+          h('div',{style:{color:'#94A3B8',fontSize:12,padding:8}},'No hay OTs abiertas para este equipo'),
+        otsSalida.filter(function(o){return linkOTMov.equipo_id&&String(o.equipo_id)!==String(linkOTMov.equipo_id);}).length>0&&h('div',{style:{marginTop:12}},
+          h('div',{style:{fontSize:11,color:'#64748B',marginBottom:4}},'Otras OTs (otro equipo):'),
+          h(TBL,{cols:[
+            {lbl:'N° OT',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.numero_ot);}},
+            {lbl:'Equipo',k:'equipo_nombre'},
+            {lbl:'Tipo',render:function(r){return r.tipo_mantencion;}},
+            {lbl:'',render:function(r){return h(Btn,{sm:true,v:'g',onClick:function(){doLinkOTSalida(r.ot_id);}},'Enlazar');}}
+          ],rows:otsSalida.filter(function(o){return String(o.equipo_id)!==String(linkOTMov.equipo_id);}),empty:''})
+        )
+      )
+    ),
     modal&&h(Modal,{title:'Registrar Salida',onClose:function(){setModal(false);},lg:true},
       h(EB,null,
         h('div',{className:'mb'},
@@ -3209,28 +3244,6 @@ function MantOTDetalle(p){
         h(Btn,{sm:true,onClick:addTarea},'Agregar')
       )
     ),
-    // Materiales
-    h('div',{className:'card'},
-      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Materiales utilizados'),
-      materiales.length>0&&h(TBL,{cols:[
-        {lbl:'Tipo',render:function(r){return h(Bg,{c:'b'},r.tipo);}},
-        {lbl:'Descripción',k:'descripcion'},
-        {lbl:'Cant.',r:true,render:function(r){return r.cantidad;}},
-        {lbl:'P. Unit.',r:true,render:function(r){return CLP(Math.round(r.precio_unitario||0));}},
-        {lbl:'Total',r:true,render:function(r){return CLP(Math.round(r.costo_total||0));}},
-        {lbl:'',render:function(r){return h('button',{onClick:function(){delMaterial(r.material_id);},style:{color:'#EF4444',background:'none',border:'none',cursor:'pointer',fontSize:12}},'✕');}}
-      ],rows:materiales,empty:'Sin materiales'}),
-      h('div',{style:{display:'grid',gridTemplateColumns:'auto 1fr 80px 100px auto auto',gap:6,marginTop:8,alignItems:'end'}},
-        h('select',{value:newMat.tipo,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{tipo:e.target.value});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
-          ['repuesto','lubricante','filtro','grasa','refrigerante','consumible','otro'].map(function(t){return h('option',{key:t,value:t},t);})),
-        h('input',{type:'text',placeholder:'Descripción',value:newMat.descripcion,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{descripcion:e.target.value});});},style:inpS}),
-        h('input',{type:'number',placeholder:'Cant.',value:newMat.cantidad,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{cantidad:e.target.value});});},style:inpS}),
-        h('input',{type:'number',placeholder:'P. unit. $',value:newMat.precio_unitario,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{precio_unitario:e.target.value});});},style:inpS}),
-        h('select',{value:newMat.origen,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{origen:e.target.value});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
-          ['inventario','compra_directa','externo'].map(function(t){return h('option',{key:t,value:t},t);})),
-        h(Btn,{sm:true,onClick:addMaterial},'+ Agregar')
-      )
-    ),
     // Salidas de inventario enlazadas
     h('div',{className:'card',style:{marginBottom:12}},
       h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
@@ -3253,8 +3266,7 @@ function MantOTDetalle(p){
           );
         });})()
       ),
-      salidasInv.length===0&&h('div',{style:{color:'#94A3B8',fontSize:12,padding:'8px 0'}},'Sin salidas enlazadas. Use el botón "Enlazar salida" o seleccione la OT al registrar una salida de bodega.'),
-      // Modal enlazar salida
+      salidasInv.length===0&&h('div',{style:{color:'#94A3B8',fontSize:12,padding:'8px 0'}},'Sin salidas enlazadas. Enlace desde el módulo Salidas de Bodega o use "Enlazar salida".'),
       showLinkSalida&&h('div',{style:{marginTop:8,padding:10,border:'1px solid #10B981',borderRadius:6,background:'#ECFDF5'}},
         h('div',{style:{fontWeight:600,fontSize:12,marginBottom:6,color:'#065F46'}},'Seleccionar salida de inventario para enlazar'),
         h('div',{style:{fontSize:11,color:'#64748B',marginBottom:6}},'Mostrando salidas del equipo '+ot.equipo_nombre+' sin OT asignada'),
@@ -3269,6 +3281,28 @@ function MantOTDetalle(p){
           {lbl:'',render:function(r){return h(Btn,{sm:true,onClick:function(){doLinkSalida(r.movimiento_id);}},'Enlazar');}}
         ],rows:salidasDisp,empty:''}),
         h('div',{style:{textAlign:'right',marginTop:6}},h(Btn,{sm:true,v:'g',onClick:function(){setShowLinkSalida(false);}},'Cerrar'))
+      )
+    ),
+    // Materiales utilizados (gastos menores / manuales)
+    h('div',{className:'card'},
+      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Materiales utilizados'),
+      materiales.length>0&&h(TBL,{cols:[
+        {lbl:'Tipo',render:function(r){return h(Bg,{c:'b'},r.tipo);}},
+        {lbl:'Descripción',k:'descripcion'},
+        {lbl:'Cant.',r:true,render:function(r){return r.cantidad;}},
+        {lbl:'P. Unit.',r:true,render:function(r){return CLP(Math.round(r.precio_unitario||0));}},
+        {lbl:'Total',r:true,render:function(r){return CLP(Math.round(r.costo_total||0));}},
+        {lbl:'',render:function(r){return h('button',{onClick:function(){delMaterial(r.material_id);},style:{color:'#EF4444',background:'none',border:'none',cursor:'pointer',fontSize:12}},'✕');}}
+      ],rows:materiales,empty:'Sin materiales'}),
+      h('div',{style:{display:'grid',gridTemplateColumns:'auto 1fr 80px 100px auto auto',gap:6,marginTop:8,alignItems:'end'}},
+        h('select',{value:newMat.tipo,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{tipo:e.target.value});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
+          ['repuesto','lubricante','filtro','grasa','refrigerante','consumible','otro'].map(function(t){return h('option',{key:t,value:t},t);})),
+        h('input',{type:'text',placeholder:'Descripción',value:newMat.descripcion,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{descripcion:e.target.value});});},style:inpS}),
+        h('input',{type:'number',placeholder:'Cant.',value:newMat.cantidad,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{cantidad:e.target.value});});},style:inpS}),
+        h('input',{type:'number',placeholder:'P. unit. $',value:newMat.precio_unitario,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{precio_unitario:e.target.value});});},style:inpS}),
+        h('select',{value:newMat.origen,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{origen:e.target.value});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
+          ['inventario','compra_directa','externo'].map(function(t){return h('option',{key:t,value:t},t);})),
+        h(Btn,{sm:true,onClick:addMaterial},'+ Agregar')
       )
     )
   );
