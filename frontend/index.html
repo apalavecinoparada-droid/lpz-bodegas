@@ -813,8 +813,8 @@ function ImportZipDTE(p){
             {lbl:'Fecha',render:function(r){return fmtD(r.fecha_emision);}},
             {lbl:'Proveedor',render:function(r){return h('div',null,h('div',{style:{fontSize:12,fontWeight:500}},r.proveedor_nombre||'—'),h('div',{style:{fontSize:10,color:r.proveedor_match?'#10B981':'#F59E0B'}},r.proveedor_match?'✓ '+r.proveedor_match:'⚠ No registrado — se creará'));}},
             {lbl:'Líneas',r:true,render:function(r){return r.lineas.length;}},
-            {lbl:'Neto',r:true,render:function(r){return CLP(r.neto);}},
-            {lbl:'Total',r:true,render:function(r){return h('strong',null,CLP(r.total));}}
+            {lbl:'Neto',r:true,render:function(r){var isNC=r.tipo_dte==='61';return h('span',{style:{color:isNC?'#DC2626':'inherit'}},CLP(isNC?-r.neto:r.neto));}},
+            {lbl:'Total',r:true,render:function(r){var isNC=r.tipo_dte==='61';return h('strong',{style:{color:isNC?'#DC2626':'inherit'}},CLP(isNC?-r.total:r.total));}}
           ],rows:filtered,empty:'Sin DTE'})
         )
       ),
@@ -956,8 +956,10 @@ function OCView(p){
     load?h('div',{className:'spin'},'Cargando...'):
     h('div',{className:'card'},h(TBL,{cols:[
       {lbl:h(SortHdr,{field:'numero_oc',label:'N° OC'}),k:'numero_oc',mono:true},{lbl:h(SortHdr,{field:'empresa_nombre',label:'Empresa'}),render:function(r){return r.empresa_nombre||r.empresa||'—';}},{lbl:h(SortHdr,{field:'proveedor_nombre',label:'Proveedor'}),render:function(r){return r.proveedor_nombre||r.proveedor||'—';}},
+      {lbl:'DT',render:function(r){var isNC=(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0||(r.tipo_doc_nombre||'').toLowerCase().indexOf('nota')>=0&&(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0;return r.tipo_doc_nombre?h('div',{style:{fontSize:10}},h('span',{style:{fontWeight:600,color:isNC?'#DC2626':'#475569'}},r.tipo_doc_nombre),r.numero_documento?h('div',{style:{fontFamily:'monospace',color:'#64748B'}},'#'+r.numero_documento):null):'—';}},
       {lbl:h(SortHdr,{field:'fecha_emision',label:'Fecha'}),render:function(r){return fmtD(r.fecha_emision);}},{lbl:h(SortHdr,{field:'estado',label:'Estado'}),render:function(r){return h(Bg,{c:estadoColor[r.estado]||'gray'},r.estado);}},
-      {lbl:'Neto',r:true,mono:true,render:function(r){return CLP(r.neto);}},{lbl:h(SortHdr,{field:'total',label:'Total'}),r:true,mono:true,render:function(r){return h('strong',null,CLP(r.total));}},
+      {lbl:'Neto',r:true,mono:true,render:function(r){var isNC=(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0;return h('span',{style:{color:isNC?'#DC2626':'inherit'}},CLP(r.neto));}},
+      {lbl:h(SortHdr,{field:'total',label:'Total'}),r:true,mono:true,render:function(r){var isNC=(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0;return h('strong',{style:{color:isNC?'#DC2626':'inherit'}},CLP(r.total));}},
       {lbl:'Acciones',render:function(r){
         return h('div',{style:{display:'flex',gap:3,flexWrap:'wrap'}},
           r.estado==='PENDIENTE'&&h('button',{className:'btn btn-g btn-xs',onClick:function(){
@@ -1190,11 +1192,13 @@ function OCRFactura(p){
       var r2=(result.cliente_rut||'').replace(/[\.\-]/g,'').toLowerCase();
       return r1&&r2&&r1===r2;
     }):null;
-    // Match tdoc
-    var tdoc=result.tipo_doc?tdocs.find(function(t){
+    // Match tdoc — by DTE code first, then by name
+    var tdoc=null;
+    if(result.tipo_dte){tdoc=tdocs.find(function(t){return t.codigo===result.tipo_dte||t.codigo===String(result.tipo_dte);});}
+    if(!tdoc&&result.tipo_doc){tdoc=tdocs.find(function(t){
       return result.tipo_doc.toUpperCase().includes(t.nombre?t.nombre.toUpperCase():'')
         ||(t.codigo&&result.tipo_doc.toUpperCase().includes(t.codigo.toUpperCase()));
-    }):null;
+    });}
     // Build lineas for OC
     var lineas=(result.lineas||[]).map(function(l,i){
       return {descripcion:l.descripcion||'',prod_id:'',subcategoria_id:'',faena_id:'',equipo_id:'',
