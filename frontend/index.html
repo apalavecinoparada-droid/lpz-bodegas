@@ -395,8 +395,10 @@ function SalidaView(p){
       h(Btn,{v:'g',onClick:function(){exportXLSX(movs,[{header:'N°',value:r=>r.movimiento_id},{header:'Fecha',value:r=>r.fecha},{header:'Bodega',value:r=>r.bodega_nombre},{header:'Faena',value:r=>r.faena_nombre},{header:'Equipo',value:r=>r.equipo_nombre},{header:'Motivo',value:r=>r.motivo_nombre},{header:'Total CPP',value:r=>r.total},{header:'Estado',value:r=>r.estado}],'salidas');}},null,'Exportar Excel')
     ),
     h('div',{className:'card'},h(TBL,{cols:[
-      {lbl:'N°',k:'movimiento_id',w:60},{lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},{lbl:'Bodega',k:'bodega_nombre'},
-      {lbl:'Faena',k:'faena_nombre'},{lbl:'Equipo',k:'equipo_nombre'},{lbl:'Motivo',k:'motivo_nombre'},
+      {lbl:'N°',k:'movimiento_id',w:50},{lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},{lbl:'Bodega',k:'bodega_nombre'},
+      {lbl:'Equipo',k:'equipo_nombre'},
+      {lbl:'Subcategoría',render:function(r){return h('span',{style:{fontSize:11}},r.subcategorias||'—');}},
+      {lbl:'Detalle',render:function(r){return h('span',{style:{fontSize:11,color:'#475569',maxWidth:250,display:'inline-block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},title:r.detalle_productos||''},r.detalle_productos||'—');}},
       {lbl:'Total CPP',r:true,render:r=>CLP(r.total||0)},
       {lbl:'Estado',render:r=>h(Bg,{c:r.estado==='ACTIVO'?'g':'r'},r.estado)},
       {lbl:'',c:true,render:r=>h('div',{style:{display:'flex',gap:4}},
@@ -1322,6 +1324,20 @@ function OCFormModal(p){
   const blank={empresa_id:'',proveedor_id:'',fecha_emision:TODAY,solicitante:'',retira:'',condicion_id:'',impuesto_adicional:'0',observaciones:'',lineas:[{descripcion:'',prod_id:'',subcat_id:'',faena_id:'',eq_id:'',cantidad:'1',precio_unitario:'0',ingresa_bodega:false,bodega_destino_id:''}]};
   const[form,setForm]=useState(isNew?blank:{empresa_id:str(p.oc.empresa_id||''),proveedor_id:str(p.oc.proveedor_id||''),fecha_emision:p.oc.fecha_emision||TODAY,solicitante:p.oc.solicitante||'',retira:p.oc.retira||'',condicion_id:str(p.oc.condicion_id||''),impuesto_adicional:str(p.oc.impuesto_adicional||0),observaciones:p.oc.observaciones||'',lineas:(p.oc.lineas||[]).map(l=>({descripcion:l.descripcion||'',prod_id:str(l.producto_id||''),subcat_id:str(l.subcategoria_id||''),faena_id:str(l.faena_id||''),eq_id:str(l.equipo_id||''),cantidad:str(l.cantidad||1),precio_unitario:str(l.precio_unitario||0),ingresa_bodega:!!l.ingresa_bodega,bodega_destino_id:str(l.bodega_destino_id||'')}))});
   const[err,setErr]=useState('');const[saving,setSaving]=useState(false);const[showCalcOC,setShowCalcOC]=useState(false);const[showOCR,setShowOCR]=useState(false);const[showFacto,setShowFacto]=useState(false);const[ocrLoading,setOcrLoading]=useState(false);const[ocrMsg,setOcrMsg]=useState('');
+  const[importProvData,setImportProvData]=useState(null);
+  const[extraProvs,setExtraProvs]=useState([]);
+  var allProvs=provs.concat(extraProvs);
+  function crearProvDesdeImport(){
+    if(!importProvData)return;
+    var d=importProvData;
+    api('/proveedores','POST',{rut:d.proveedor_rut||'',nombre:d.proveedor_nombre||'Proveedor importado',giro:d.proveedor_giro||null,direccion:d.proveedor_direccion||null,activo:true},p.tok)
+      .then(function(r){
+        sf('proveedor_id',String(r.proveedor_id));
+        setExtraProvs(function(prev){return prev.concat([r]);});
+        setImportProvData(null);
+        setOcrMsg('✓ Proveedor "'+r.nombre+'" creado y seleccionado.');
+      }).catch(function(e){setErr('Error creando proveedor: '+e.message);});
+  }
   // Safety: if form.lineas is empty but p.oc has lineas, reload them
   useEffect(function(){
     if(!isNew && p.oc.lineas && p.oc.lineas.length > 0 && form.lineas.length === 0){
@@ -1353,7 +1369,17 @@ function OCFormModal(p){
         err&&h('div',{className:'al al-e'},err),
         h('div',{className:'g3'},
           h(FR,{label:'Empresa'},h(Sel,{value:form.empresa_id,onChange:v=>sf('empresa_id',v)},h('option',{value:''},'Sin empresa...'),empresas.filter(e=>e.activo).map(e=>h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social)))),
-          h(FR,{label:'Proveedor',req:true},h(Sel,{value:form.proveedor_id,onChange:v=>sf('proveedor_id',v)},h('option',{value:''},'Seleccione...'),provs.filter(q=>q.activo).map(q=>h('option',{key:q.proveedor_id,value:q.proveedor_id},q.nombre)))),
+          h(FR,{label:'Proveedor',req:true},h(Sel,{value:form.proveedor_id,onChange:v=>sf('proveedor_id',v)},h('option',{value:''},'Seleccione...'),allProvs.filter(q=>q.activo).map(q=>h('option',{key:q.proveedor_id,value:q.proveedor_id},q.nombre)))),
+          importProvData&&!form.proveedor_id&&h('div',{style:{gridColumn:'1/-1',padding:'10px 12px',background:'#FEF3C7',border:'1px solid #F59E0B',borderRadius:6,marginBottom:4}},
+            h('div',{style:{fontWeight:700,fontSize:12,color:'#92400E',marginBottom:4}},'⚠ Proveedor no registrado en el sistema'),
+            h('div',{style:{fontSize:11,color:'#78350F',marginBottom:6}},
+              h('span',{style:{fontWeight:600}},'RUT: '),importProvData.proveedor_rut||'—',' — ',
+              h('span',{style:{fontWeight:600}},'Nombre: '),importProvData.proveedor_nombre||'—',
+              importProvData.proveedor_giro?h('span',null,' — ',h('span',{style:{fontWeight:600}},'Giro: '),importProvData.proveedor_giro):'',
+              importProvData.proveedor_direccion?h('span',null,' — ',h('span',{style:{fontWeight:600}},'Dir: '),importProvData.proveedor_direccion):''
+            ),
+            h(Btn,{sm:true,onClick:crearProvDesdeImport},'✓ Crear proveedor con estos datos')
+          ),
           h(FR,{label:'Fecha emision',req:true},h(Inp,{value:form.fecha_emision,onChange:v=>sf('fecha_emision',v),type:'date'})),
           h(FR,{label:'Solicitante'},h(Inp,{value:form.solicitante,onChange:v=>sf('solicitante',v),ph:'Quien solicita'})),
           h(FR,{label:'Quien retira'},h(Inp,{value:form.retira,onChange:v=>sf('retira',v),ph:'Quien retira el pedido'})),
@@ -1415,7 +1441,14 @@ function OCFormModal(p){
             if(data.lineas&&data.lineas.length)update.lineas=data.lineas;
             return Object.assign({},f,update);
           });
-          setShowOCR(false);setOcrMsg('✓ Datos importados. Revise y confirme antes de guardar.');
+          if(!data.proveedor_id&&data._raw&&data._raw.proveedor_rut){
+            setImportProvData(data._raw);
+            setOcrMsg('⚠ Proveedor no encontrado: '+data._raw.proveedor_nombre+' ('+data._raw.proveedor_rut+'). Puede crearlo abajo.');
+          }else{
+            setImportProvData(null);
+            setOcrMsg('✓ Datos importados. Revise y confirme antes de guardar.');
+          }
+          setShowOCR(false);
         },onMsg:function(m){setOcrMsg(m);}}),
       showFacto&&h(ImportarDesdeFacto,{tok:p.tok,onImport:function(data){
           setForm(function(f){
@@ -1428,7 +1461,14 @@ function OCFormModal(p){
             if(data.lineas&&data.lineas.length)update.lineas=data.lineas;
             return Object.assign({},f,update);
           });
-          setShowFacto(false);setOcrMsg('✓ Datos importados desde Facto.');
+          if(!data.proveedor_id&&data._raw&&data._raw.proveedor_rut){
+            setImportProvData(data._raw);
+            setOcrMsg('⚠ Proveedor no encontrado: '+(data._raw.proveedor_nombre||'')+ ' ('+data._raw.proveedor_rut+'). Puede crearlo abajo.');
+          }else{
+            setImportProvData(null);
+            setOcrMsg('✓ Datos importados desde Facto.');
+          }
+          setShowFacto(false);
         }}),
       showCalcOC&&h('div',{style:{background:'#FFFBEB',border:'2px solid #FDE68A',borderRadius:8,padding:'16px',marginBottom:12}},
         h(CalcCombustibleInline,{})
