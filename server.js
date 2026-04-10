@@ -541,7 +541,20 @@ async function autoSetup() {
 }
 
 async function insertarDatosIniciales(client) {
-  await client.query(`INSERT INTO tipos_documento(codigo,nombre) VALUES('FAC','Factura Electronica'),('GD','Guia de Despacho'),('NC','Nota de Credito'),('CL','Compra Local'),('AJ','Ajuste Inicial') ON CONFLICT DO NOTHING`);
+  await client.query(`INSERT INTO tipos_documento(codigo,nombre) VALUES
+    ('33','Factura Electronica'),
+    ('34','Factura No Afecta o Exenta Electronica'),
+    ('39','Boleta Electronica'),
+    ('41','Boleta Exenta Electronica'),
+    ('43','Liquidacion Factura Electronica'),
+    ('46','Factura de Compra Electronica'),
+    ('52','Guia de Despacho Electronica'),
+    ('56','Nota de Debito Electronica'),
+    ('61','Nota de Credito Electronica'),
+    ('110','Factura de Exportacion Electronica'),
+    ('111','Nota de Debito de Exportacion Electronica'),
+    ('112','Nota de Credito de Exportacion Electronica')
+    ON CONFLICT(codigo) DO UPDATE SET nombre=EXCLUDED.nombre`);
   await client.query(`INSERT INTO motivos_movimiento(nombre,tipo) VALUES('Mantencion Correctiva','SALIDA'),('Mantencion Preventiva','SALIDA'),('Consumo Operacional','SALIDA'),('Consumo Taller','SALIDA'),('Perdida / Merma','AJUSTE'),('Diferencia Inventario Fisico','AJUSTE'),('Ajuste de Apertura','AJUSTE') ON CONFLICT DO NOTHING`);
   await client.query(`INSERT INTO bodegas(codigo,nombre,ubicacion,responsable) VALUES('BC','Bodega Central','Planta Principal','Juan Perez'),('BT','Bodega Taller','Taller Central','Pedro Gonzalez'),('BF3','Bodega Faena Mec 3','Faena Mecanica 3','Luis Torres'),('BL','Bodega Lubricantes','Planta Principal','Carlos Munoz') ON CONFLICT DO NOTHING`);
   await client.query(`INSERT INTO categorias(nombre) VALUES('Repuestos'),('Insumos'),('Lubricantes'),('Herramientas'),('Consumibles') ON CONFLICT DO NOTHING`);
@@ -550,8 +563,8 @@ async function insertarDatosIniciales(client) {
   await client.query(`INSERT INTO faenas(codigo,nombre,descripcion) VALUES('FAE-MEC3','Faena Mec 3','Cosecha mecanizada sector 3'),('FAE-MEC4','Faena Mec 4','Cosecha mecanizada sector 4'),('FAE-MEC5','Faena Mec 5','Cosecha mecanizada sector 5'),('TALL','Taller Central','Taller central de mantencion') ON CONFLICT DO NOTHING`);
   await client.query(`INSERT INTO equipos(codigo,nombre,tipo,faena_id) SELECT cod,nom,tip,f.faena_id FROM(VALUES('HARV-01','Harvester 01','Cosechador','FAE-MEC3'),('HARV-02','Harvester 02','Cosechador','FAE-MEC4'),('SKID-11','Skidder 11','Arrastrador','FAE-MEC3'),('PROC-11','Procesadora 11','Procesador','FAE-MEC3'),('EXC-PC210','Excavadora PC210','Excavadora','TALL'),('CAM-LUB','Camion Lubricador','Camion','TALL'),('TALL-GEN','Taller Central','Taller','TALL'))AS t(cod,nom,tip,fcod) JOIN faenas f ON f.codigo=t.fcod ON CONFLICT DO NOTHING`);
   await client.query(`INSERT INTO productos(codigo,nombre,subcategoria_id,unidad_medida,stock_minimo,costo_referencia) SELECT cod,nom,sc.subcategoria_id,um,smin::numeric,cref::numeric FROM(VALUES('FLTR-HID-001','Filtro Hidraulico 90L','Filtros','UN',3,38500),('FLTR-MOT-002','Filtro Aceite Motor D6E','Filtros','UN',4,24900),('FLTR-AIR-003','Filtro Aire Primario','Filtros','UN',2,45000),('SELL-ORB-001','Kit Sellos Orbitrol','Sellos y Retenes','KIT',2,67800),('ROD-SKF-6205','Rodamiento SKF 6205','Rodamientos','UN',5,18500),('MANG-HID-3/4','Manguera Hidraulica 3/4','Mangueras','MT',10,8900),('ACE-HID-68-20','Aceite Hidraulico ISO 68 (20L)','Aceite Hidraulico','BID',5,42000),('ACE-MOT-15W40','Aceite Motor 15W-40 (20L)','Aceite de Motor','BID',8,38000),('GRAS-EP2-18KG','Grasa Litio EP-2 (18kg)','Grasas','BAL',3,28500),('REFR-DEX-5L','Refrigerante DexCool (5L)','Refrigerantes','GL',6,12500),('DISC-COR-4.5','Disco de Corte 4.5','Discos de Corte','UN',20,2200),('SOLD-E6011-KG','Electrodos E6011 1/8 (kg)','Soldaduras','KG',10,4800))AS t(cod,nom,scnom,um,smin,cref) JOIN subcategorias sc ON sc.nombre=t.scnom ON CONFLICT DO NOTHING`);
-  await client.query(`WITH m1 AS(INSERT INTO movimiento_encabezado(tipo_movimiento,fecha,bodega_id,proveedor_id,tipo_doc_id,numero_documento,fecha_documento,responsable_recepcion,usuario) SELECT 'INGRESO','2025-01-10',b.bodega_id,p.proveedor_id,td.tipo_doc_id,'00045312','2025-01-10','Juan Perez','sistema' FROM bodegas b,proveedores p,tipos_documento td WHERE b.codigo='BC' AND p.rut='76.543.210-5' AND td.codigo='FAC' RETURNING movimiento_id) INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) SELECT m.movimiento_id,p.producto_id,qty,cu FROM m1 m CROSS JOIN(VALUES('FLTR-HID-001',6,38500),('FLTR-MOT-002',8,24900),('SELL-ORB-001',3,67800),('ROD-SKF-6205',10,18500))AS d(cod,qty,cu) JOIN productos p ON p.codigo=d.cod`).catch(()=>{});
-  await client.query(`WITH m2 AS(INSERT INTO movimiento_encabezado(tipo_movimiento,fecha,bodega_id,proveedor_id,tipo_doc_id,numero_documento,fecha_documento,responsable_recepcion,usuario) SELECT 'INGRESO','2025-01-12',b.bodega_id,p.proveedor_id,td.tipo_doc_id,'00012450','2025-01-12','Juan Perez','sistema' FROM bodegas b,proveedores p,tipos_documento td WHERE b.codigo='BC' AND p.rut='76.111.222-3' AND td.codigo='FAC' RETURNING movimiento_id) INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) SELECT m.movimiento_id,p.producto_id,qty,cu FROM m2 m CROSS JOIN(VALUES('ACE-HID-68-20',10,42000),('ACE-MOT-15W40',12,38000),('GRAS-EP2-18KG',4,28500),('REFR-DEX-5L',8,12500))AS d(cod,qty,cu) JOIN productos p ON p.codigo=d.cod`).catch(()=>{});
+  await client.query(`WITH m1 AS(INSERT INTO movimiento_encabezado(tipo_movimiento,fecha,bodega_id,proveedor_id,tipo_doc_id,numero_documento,fecha_documento,responsable_recepcion,usuario) SELECT 'INGRESO','2025-01-10',b.bodega_id,p.proveedor_id,td.tipo_doc_id,'00045312','2025-01-10','Juan Perez','sistema' FROM bodegas b,proveedores p,tipos_documento td WHERE b.codigo='BC' AND p.rut='76.543.210-5' AND td.codigo='33' RETURNING movimiento_id) INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) SELECT m.movimiento_id,p.producto_id,qty,cu FROM m1 m CROSS JOIN(VALUES('FLTR-HID-001',6,38500),('FLTR-MOT-002',8,24900),('SELL-ORB-001',3,67800),('ROD-SKF-6205',10,18500))AS d(cod,qty,cu) JOIN productos p ON p.codigo=d.cod`).catch(()=>{});
+  await client.query(`WITH m2 AS(INSERT INTO movimiento_encabezado(tipo_movimiento,fecha,bodega_id,proveedor_id,tipo_doc_id,numero_documento,fecha_documento,responsable_recepcion,usuario) SELECT 'INGRESO','2025-01-12',b.bodega_id,p.proveedor_id,td.tipo_doc_id,'00012450','2025-01-12','Juan Perez','sistema' FROM bodegas b,proveedores p,tipos_documento td WHERE b.codigo='BC' AND p.rut='76.111.222-3' AND td.codigo='33' RETURNING movimiento_id) INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) SELECT m.movimiento_id,p.producto_id,qty,cu FROM m2 m CROSS JOIN(VALUES('ACE-HID-68-20',10,42000),('ACE-MOT-15W40',12,38000),('GRAS-EP2-18KG',4,28500),('REFR-DEX-5L',8,12500))AS d(cod,qty,cu) JOIN productos p ON p.codigo=d.cod`).catch(()=>{});
   await client.query(`INSERT INTO stock_actual(producto_id,bodega_id,cantidad_disponible,costo_promedio_actual) SELECT md.producto_id,me.bodega_id,SUM(md.cantidad),SUM(md.cantidad*md.costo_unitario)/SUM(md.cantidad) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE me.tipo_movimiento='INGRESO' AND me.estado='ACTIVO' GROUP BY md.producto_id,me.bodega_id ON CONFLICT(producto_id,bodega_id) DO UPDATE SET cantidad_disponible=EXCLUDED.cantidad_disponible,costo_promedio_actual=EXCLUDED.costo_promedio_actual`).catch(()=>{});
   await client.query(`WITH s1 AS(INSERT INTO movimiento_encabezado(tipo_movimiento,fecha,bodega_id,faena_id,equipo_id,motivo_id,observaciones,responsable_entrega,responsable_recepcion,usuario) SELECT 'SALIDA','2025-01-16',b.bodega_id,f.faena_id,e.equipo_id,m.motivo_id,'Cambio filtros','Juan Perez','Carlos Munoz','sistema' FROM bodegas b,faenas f,equipos e,motivos_movimiento m WHERE b.codigo='BC' AND f.codigo='FAE-MEC3' AND e.codigo='HARV-01' AND m.nombre='Mantencion Correctiva' RETURNING movimiento_id,bodega_id) INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) SELECT s.movimiento_id,p.producto_id,qty,COALESCE(sa.costo_promedio_actual,p.costo_referencia) FROM s1 s CROSS JOIN(VALUES('FLTR-HID-001',2),('FLTR-MOT-002',2))AS d(cod,qty) JOIN productos p ON p.codigo=d.cod LEFT JOIN stock_actual sa ON sa.producto_id=p.producto_id AND sa.bodega_id=s.bodega_id`).catch(()=>{});
   await client.query(`UPDATE stock_actual sa SET cantidad_disponible=GREATEST(0,sa.cantidad_disponible-COALESCE((SELECT SUM(md.cantidad) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO' AND md.producto_id=sa.producto_id AND me.bodega_id=sa.bodega_id),0)),ultima_actualizacion=NOW()`).catch(()=>{});
@@ -1222,18 +1235,24 @@ app.post('/api/import/bulk-oc', auth, async(req,res)=>{
         const dup=await client.query("SELECT oc_id,numero_oc FROM ordenes_compra WHERE numero_documento=$1 AND proveedor_id=$2 LIMIT 1",[String(item.folio),prov_id]);
         if(dup.rows.length){results.push({folio:item.folio,error:'Ya existe como '+dup.rows[0].numero_oc,oc_id:dup.rows[0].oc_id});continue;}
       }
-      // Match tipo doc
+      // Match tipo doc — first by DTE code, then by name
       let tdoc_id=null;
-      if(item.tipo_doc){
-        const td=await client.query("SELECT tipo_doc_id FROM tipos_documento WHERE UPPER(nombre) LIKE $1 OR UPPER(codigo) LIKE $1 LIMIT 1",['%'+item.tipo_doc.toUpperCase()+'%']);
+      if(item.tipo_dte){
+        const td=await client.query("SELECT tipo_doc_id FROM tipos_documento WHERE codigo=$1 LIMIT 1",[item.tipo_dte]);
         if(td.rows.length) tdoc_id=td.rows[0].tipo_doc_id;
       }
+      if(!tdoc_id&&item.tipo_doc){
+        const td2=await client.query("SELECT tipo_doc_id FROM tipos_documento WHERE UPPER(nombre) LIKE $1 LIMIT 1",['%'+item.tipo_doc.toUpperCase()+'%']);
+        if(td2.rows.length) tdoc_id=td2.rows[0].tipo_doc_id;
+      }
       // Create OC
+      const isNC=item.tipo_dte==='61'; // Nota de Crédito → montos negativos
+      const sign=isNC?-1:1;
       const year=new Date().getFullYear();
       const seq=await client.query("SELECT nextval('seq_oc_num')");
       const numero_oc='OC-'+year+'-'+String(seq.rows[0].nextval).padStart(4,'0');
       const lineas=item.lineas||[];
-      const neto=lineas.reduce(function(s,l){return s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0);},0);
+      const neto=sign*lineas.reduce(function(s,l){return s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0);},0);
       const iva=Math.round(neto*0.19);
       const total=neto+iva;
       const ocRes=await client.query(
@@ -1244,7 +1263,7 @@ app.post('/api/import/bulk-oc', auth, async(req,res)=>{
       for(let i=0;i<lineas.length;i++){
         const l=lineas[i];
         await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,cantidad,precio_unitario) VALUES($1,$2,$3,$4,$5)',
-          [ocId,i+1,l.descripcion||'Item '+(i+1),parseFloat(l.cantidad)||1,parseFloat(l.precio_unitario)||0]);
+          [ocId,i+1,l.descripcion||'Item '+(i+1),parseFloat(l.cantidad)||1,sign*(parseFloat(l.precio_unitario)||0)]);
       }
       results.push({folio:item.folio,ok:true,oc_id:ocId,numero_oc,proveedor:item.proveedor_nombre,total});
     }
@@ -2075,7 +2094,7 @@ function parsearDteXml(xmlStr){
 
   // Tipo DTE: 33=Factura, 52=Guía, 39=Boleta
   const tipoDte=tag('TipoDTE');
-  const tipoDoc=tipoDte==='33'||tipoDte==='34'?'FACTURA':tipoDte==='52'?'GUIA':tipoDte==='39'?'BOLETA':'FACTURA';
+  const tipoDoc=tipoDte==='33'||tipoDte==='34'?'FACTURA':tipoDte==='61'?'NOTA CREDITO':tipoDte==='56'?'NOTA DEBITO':tipoDte==='52'?'GUIA':tipoDte==='39'?'BOLETA':'FACTURA';
 
   // Encabezado
   const ndoc=tag('Folio');
@@ -2111,7 +2130,7 @@ function parsearDteXml(xmlStr){
     if(desc&&monto)lineas.push({descripcion:desc,cantidad:qty,precio_unitario:prc||monto,total_linea:monto});
   }
 
-  return{numero_documento:ndoc,fecha_emision:fecha,tipo_doc:tipoDoc,
+  return{numero_documento:ndoc,fecha_emision:fecha,tipo_doc:tipoDoc,tipo_dte:tipoDte,
     proveedor_rut:provRut,proveedor_nombre:provNombre,
     proveedor_giro:provGiro,proveedor_direccion:provDir?(provDir+(provComuna?' '+provComuna:'')):null,
     cliente_rut:clienteRut,cliente_nombre:clienteNombre,
