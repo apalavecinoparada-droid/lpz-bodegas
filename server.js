@@ -833,7 +833,7 @@ mvR.get('/', auth, async(req,res)=>{
     if(equipo_id){vals.push(equipo_id);where.push(`me.equipo_id=$${vals.length}`);}
     if(desde){vals.push(desde);where.push(`me.fecha>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`me.fecha<=$${vals.length}`);}
-    const r=await pool.query(`SELECT me.*,b.nombre AS bodega_nombre,f.nombre AS faena_nombre,e.nombre AS equipo_nombre,pr.nombre AS proveedor_nombre,td.nombre AS tipo_doc_nombre,mot.nombre AS motivo_nombre,(SELECT SUM(md.costo_total) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS total,(SELECT SUM(md.costo_total) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS total_ingreso,(SELECT COUNT(*) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS num_lineas FROM movimiento_encabezado me LEFT JOIN bodegas b ON me.bodega_id=b.bodega_id LEFT JOIN faenas f ON me.faena_id=f.faena_id LEFT JOIN equipos e ON me.equipo_id=e.equipo_id LEFT JOIN proveedores pr ON me.proveedor_id=pr.proveedor_id LEFT JOIN tipos_documento td ON me.tipo_doc_id=td.tipo_doc_id LEFT JOIN motivos_movimiento mot ON me.motivo_id=mot.motivo_id WHERE ${where.join(' AND ')} ORDER BY me.movimiento_id DESC`,vals);
+    const r=await pool.query(`SELECT me.*,b.nombre AS bodega_nombre,f.nombre AS faena_nombre,e.nombre AS equipo_nombre,pr.nombre AS proveedor_nombre,td.nombre AS tipo_doc_nombre,mot.nombre AS motivo_nombre,(SELECT SUM(md.costo_total) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS total,(SELECT SUM(md.costo_total) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS total_ingreso,(SELECT COUNT(*) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS num_lineas,(SELECT string_agg(DISTINCT sc.nombre, ', ') FROM movimiento_detalle md JOIN productos p ON md.producto_id=p.producto_id LEFT JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id WHERE md.movimiento_id=me.movimiento_id) AS subcategorias,(SELECT string_agg(p.nombre||' ('||md.cantidad||')', ', ' ORDER BY md.detalle_id) FROM movimiento_detalle md JOIN productos p ON md.producto_id=p.producto_id WHERE md.movimiento_id=me.movimiento_id) AS detalle_productos FROM movimiento_encabezado me LEFT JOIN bodegas b ON me.bodega_id=b.bodega_id LEFT JOIN faenas f ON me.faena_id=f.faena_id LEFT JOIN equipos e ON me.equipo_id=e.equipo_id LEFT JOIN proveedores pr ON me.proveedor_id=pr.proveedor_id LEFT JOIN tipos_documento td ON me.tipo_doc_id=td.tipo_doc_id LEFT JOIN motivos_movimiento mot ON me.motivo_id=mot.motivo_id WHERE ${where.join(' AND ')} ORDER BY me.movimiento_id DESC`,vals);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -2324,6 +2324,8 @@ app.patch('/api/mant/salida-link-ot', auth, async(req,res)=>{
   try{
     const{movimiento_id,ot_id}=req.body;
     if(!movimiento_id||!ot_id) return res.status(400).json({error:'movimiento_id y ot_id requeridos'});
+    const chk=await pool.query(`SELECT md.ot_id,o.numero_ot FROM movimiento_detalle md LEFT JOIN mant_ot o ON md.ot_id=o.ot_id WHERE md.movimiento_id=$1 AND md.ot_id IS NOT NULL LIMIT 1`,[movimiento_id]);
+    if(chk.rows.length>0) return res.status(400).json({error:'Esta salida ya está enlazada a '+(chk.rows[0].numero_ot||'OT #'+chk.rows[0].ot_id)+'. Debe desenlazarla primero.'});
     const r=await pool.query('UPDATE movimiento_detalle SET ot_id=$1 WHERE movimiento_id=$2 AND ot_id IS NULL RETURNING *',[ot_id,movimiento_id]);
     await recalcOTCosts(ot_id);
     res.json({ok:true,lineas_enlazadas:r.rowCount});
