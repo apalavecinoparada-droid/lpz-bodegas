@@ -2253,18 +2253,21 @@ async function recalcOTCosts(ot_id){
   try{
     const miscQ=await pool.query('SELECT COALESCE(SUM(costo_total),0) AS misc FROM mant_ot_materiales WHERE ot_id=$1',[ot_id]);
     const moGlobalQ=await pool.query('SELECT COALESCE(SUM(costo_total),0) AS total FROM mant_ot_personal WHERE ot_id=$1',[ot_id]);
-    const moTareaQ=await pool.query('SELECT COALESCE(SUM(tp.costo_total),0) AS total FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=$1 AND tp.tiene_costo=true',[ot_id]);
+    const moTareaIntQ=await pool.query("SELECT COALESCE(SUM(tp.costo_total),0) AS total FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=$1 AND tp.tiene_costo=true AND tp.tipo_personal='interno'",[ot_id]);
+    const moTareaExtQ=await pool.query("SELECT COALESCE(SUM(tp.costo_total),0) AS total FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=$1 AND tp.tiene_costo=true AND tp.tipo_personal='externo'",[ot_id]);
     const salidasQ=await pool.query(`SELECT COALESCE(SUM(md.cantidad*md.costo_unitario),0) AS total FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=$1 AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'`,[ot_id]);
     const costoMisc=parseFloat(miscQ.rows[0].misc)||0;
-    const moInt=Math.max(parseFloat(moGlobalQ.rows[0].total)||0, parseFloat(moTareaQ.rows[0].total)||0);
+    const moInt=Math.max(parseFloat(moGlobalQ.rows[0].total)||0, parseFloat(moTareaIntQ.rows[0].total)||0);
+    const moExtTareas=parseFloat(moTareaExtQ.rows[0].total)||0;
     const costoSalidas=parseFloat(salidasQ.rows[0].total)||0;
     const otRow=await pool.query('SELECT costo_mano_obra_externa,costo_traslado,costo_combustible_traslado,costo_otros FROM mant_ot WHERE ot_id=$1',[ot_id]);
     const ot=otRow.rows[0]||{};
-    const moExt=parseFloat(ot.costo_mano_obra_externa)||0;
+    const moExtManual=parseFloat(ot.costo_mano_obra_externa)||0;
+    const moExt=moExtTareas+moExtManual;
     const tras=parseFloat(ot.costo_traslado)||parseFloat(ot.costo_combustible_traslado)||0;
     const otros=parseFloat(ot.costo_otros)||0;
     const total=moInt+moExt+tras+otros+costoSalidas+costoMisc;
-    await pool.query('UPDATE mant_ot SET costo_mano_obra_interna=$1,costo_total=$2,actualizado_en=NOW() WHERE ot_id=$3',[moInt,total,ot_id]);
+    await pool.query('UPDATE mant_ot SET costo_mano_obra_interna=$1,costo_mano_obra_externa=$2,costo_total=$3,actualizado_en=NOW() WHERE ot_id=$4',[moInt,moExt,total,ot_id]);
   }catch(e){console.error('[recalcOTCosts]',e.message);}
 }
 
@@ -2359,7 +2362,7 @@ app.get('/api/mant/ot', auth, async(req,res)=>{
     if(estado){vals.push(estado);where.push(`o.estado=$${vals.length}`);}
     if(desde){vals.push(desde);where.push(`o.fecha_apertura>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`o.fecha_apertura<=$${vals.length}`);}
-    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true),0) AS costo_mo_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY o.creado_en DESC`,vals);
+    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY o.creado_en DESC`,vals);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -2430,7 +2433,7 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
       }
     }
     // Re-fetch con joins para devolver datos completos
-    const full=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true),0) AS costo_mo_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
+    const full=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
     res.json(full.rows[0]||ot);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -2438,7 +2441,7 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
 // GET single OT with joins
 app.get('/api/mant/ot/:id/full', auth, async(req,res)=>{
   try{
-    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true),0) AS costo_mo_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
+    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
     res.json(r.rows[0]||null);
   }catch(e){res.status(500).json({error:e.message});}
 });
