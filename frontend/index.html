@@ -3057,7 +3057,8 @@ function MantOTDetalle(p){
   const[form,setForm]=useState(Object.assign({},p.ot));
   const[newTarea,setNewTarea]=useState('');const[msg,setMsg]=useState('');
   const[editTareaId,setEditTareaId]=useState(null);const[editTareaDesc,setEditTareaDesc]=useState('');
-  const[newMat,setNewMat]=useState({tipo:'repuesto',descripcion:'',cantidad:1,precio_unitario:0,origen:'inventario'});
+  const[newMat,setNewMat]=useState({tipo:'miscelaneo',descripcion:'',cantidad:1,precio_unitario:0,origen:'compra_directa',subcategoria_id:''});
+  const subcatsOT=(p.m.subcats||[]).filter(function(s){return s.activo;}).sort(function(a,b){return (a.nombre||'').localeCompare(b.nombre||'');});
   const[showLinkOC,setShowLinkOC]=useState(false);const[ocsDisp,setOcsDisp]=useState([]);
   const[showLinkSalida,setShowLinkSalida]=useState(false);const[salidasDisp,setSalidasDisp]=useState([]);
   const[catSistemas,setCatSistemas]=useState([]);const[catTareas,setCatTareas]=useState([]);
@@ -3109,7 +3110,7 @@ function MantOTDetalle(p){
   function deleteOT(){if(!confirm('ELIMINAR esta OT completa? Esta accion no se puede deshacer.'))return;api('/mant/ot/'+ot.ot_id,'DELETE',null,p.tok).then(function(){p.onBack();}).catch(function(e){setMsg('Error: '+e.message);});}
   function addMaterial(){
     if(!newMat.descripcion){return;}
-    api('/mant/ot/'+ot.ot_id+'/materiales','POST',newMat,p.tok).then(function(r){setMateriales(function(a){return [...a,r];});setNewMat({tipo:'repuesto',descripcion:'',cantidad:1,precio_unitario:0,origen:'inventario'});refreshOT();}).catch(function(){});
+    api('/mant/ot/'+ot.ot_id+'/materiales','POST',newMat,p.tok).then(function(r){setMateriales(function(a){return [...a,r];});setNewMat({tipo:'miscelaneo',descripcion:'',cantidad:1,precio_unitario:0,origen:'compra_directa',subcategoria_id:''});refreshOT();}).catch(function(){});
   }
   function delMaterial(id){
     if(!confirm('¿Eliminar?'))return;
@@ -3138,8 +3139,7 @@ function MantOTDetalle(p){
   var costosOC={};comprasOT.forEach(function(r){var cat=r.subcategoria_nombre||r.categoria_nombre||'Sin categoria';costosOC[cat]=(costosOC[cat]||0)+parseFloat(r.total_linea||0);});
   var totalOC=Object.values(costosOC).reduce(function(s,v){return s+v;},0);
   var calcMOInterna=personalOT.reduce(function(s,p){return s+parseFloat(p.costo_total||0);},0);
-  var calcRepuestos=materiales.filter(function(m){return ['repuesto','filtro'].indexOf(m.tipo)>=0;}).reduce(function(s,m){return s+parseFloat(m.costo_total||0);},0);
-  var calcLubricantes=materiales.filter(function(m){return ['lubricante','grasa','refrigerante'].indexOf(m.tipo)>=0;}).reduce(function(s,m){return s+parseFloat(m.costo_total||0);},0);
+  var calcMiscelaneos=materiales.reduce(function(s,m){return s+parseFloat(m.costo_total||0);},0);
   var calcSalidasInv=salidasInv.reduce(function(s,r){return s+parseFloat(r.costo_total||0);},0);
   // MO from tarea personal — server-side source of truth
   var calcMOTareas=parseFloat(ot.costo_mo_tareas)||0;
@@ -3180,16 +3180,16 @@ function MantOTDetalle(p){
       h('div',{className:'card'},
         h('div',{style:{fontWeight:600,fontSize:12,marginBottom:8,color:'#475569'}},'COSTOS'),
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'4px 12px',fontSize:12}},
-          h('div',null,h('span',{style:{color:'#94A3B8'}},'Repuestos: '),CLP(Math.round(calcRepuestos))),
-          h('div',null,h('span',{style:{color:'#94A3B8'}},'Lubricantes: '),CLP(Math.round(calcLubricantes))),
+          totalOC>0&&h('div',{style:{gridColumn:'1/-1'}},h('span',{style:{fontWeight:600,fontSize:11,color:'#3B82F6'}},'Compras OC: '),CLP(Math.round(totalOC))),
+          totalOC>0&&Object.entries(costosOC).map(function(e){return h('div',{key:e[0],style:{paddingLeft:8}},h('span',{style:{color:'#64748B',fontSize:11}},e[0]+': '),h('span',{style:{fontSize:11}},CLP(Math.round(e[1]))));}),
+          calcSalidasInv>0&&h('div',{style:{gridColumn:'1/-1',borderTop:totalOC>0?'1px dashed #CBD5E1':'none',paddingTop:totalOC>0?4:0,marginTop:totalOC>0?2:0}},h('span',{style:{fontWeight:600,fontSize:11,color:'#10B981'}},'Salidas Inventario: '),CLP(Math.round(calcSalidasInv))),
+          h('div',{style:{gridColumn:'1/-1',borderTop:'1px dashed #CBD5E1',paddingTop:4,marginTop:2}}),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'MO interna: '),CLP(Math.round(calcMOInternaTotal))),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'MO externa: '),CLP(Math.round(parseFloat(ot.costo_mano_obra_externa)||0))),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Servicios: '),CLP(Math.round(parseFloat(ot.costo_servicios)||0))),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Traslado: '),CLP(Math.round(parseFloat(ot.costo_traslado)||0))),
-          totalOC>0&&h('div',{style:{gridColumn:'1/-1',borderTop:'1px dashed #CBD5E1',paddingTop:4,marginTop:2}},h('span',{style:{fontWeight:600,fontSize:11,color:'#3B82F6'}},'Compras OC: '),CLP(Math.round(totalOC))),
-          totalOC>0&&Object.entries(costosOC).map(function(e){return h('div',{key:e[0],style:{paddingLeft:8}},h('span',{style:{color:'#64748B',fontSize:11}},e[0]+': '),h('span',{style:{fontSize:11}},CLP(Math.round(e[1]))));}),
-          calcSalidasInv>0&&h('div',{style:{gridColumn:'1/-1',borderTop:'1px dashed #CBD5E1',paddingTop:4,marginTop:2}},h('span',{style:{fontWeight:600,fontSize:11,color:'#10B981'}},'Salidas Inventario: '),CLP(Math.round(calcSalidasInv))),
-          h('div',{style:{gridColumn:'1/-1',borderTop:'1px solid #F1F5F9',paddingTop:4}},h('span',{style:{color:'#94A3B8'}},'TOTAL: '),h('strong',{style:{fontSize:14,color:'#1E293B'}},CLP(Math.round(calcRepuestos+calcLubricantes+calcMOInternaTotal+(parseFloat(ot.costo_mano_obra_externa)||0)+(parseFloat(ot.costo_servicios)||0)+(parseFloat(ot.costo_traslado)||0)+(parseFloat(ot.costo_otros)||0)+totalOC+calcSalidasInv)))),
+          calcMiscelaneos>0&&h('div',{style:{gridColumn:'1/-1',borderTop:'1px dashed #CBD5E1',paddingTop:4,marginTop:2}},h('span',{style:{fontWeight:600,fontSize:11,color:'#8B5CF6'}},'Misceláneos: '),CLP(Math.round(calcMiscelaneos))),
+          h('div',{style:{gridColumn:'1/-1',borderTop:'1px solid #F1F5F9',paddingTop:4}},h('span',{style:{color:'#94A3B8'}},'TOTAL: '),h('strong',{style:{fontSize:14,color:'#1E293B'}},CLP(Math.round(calcMOInternaTotal+(parseFloat(ot.costo_mano_obra_externa)||0)+(parseFloat(ot.costo_servicios)||0)+(parseFloat(ot.costo_traslado)||0)+(parseFloat(ot.costo_otros)||0)+totalOC+calcSalidasInv+calcMiscelaneos)))),
           h('div',null,h('span',{style:{color:'#94A3B8'}},'Horas detenido: '),h('strong',null,(ot.tiempo_detenido_hrs||0)+' h'))
         )
       )
@@ -3305,25 +3305,23 @@ function MantOTDetalle(p){
       ),
       salidasInv.length===0&&h('div',{style:{color:'#94A3B8',fontSize:12,padding:'8px 0'}},'Sin salidas enlazadas. Enlace desde el módulo Salidas de Bodega.')
     ),
-    // Materiales utilizados (gastos menores / manuales)
+    // Misceláneos (compras y servicios menores)
     h('div',{className:'card'},
-      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Materiales utilizados'),
+      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8,color:'#8B5CF6'}},'Misceláneos — compras y servicios menores'),
       materiales.length>0&&h(TBL,{cols:[
-        {lbl:'Tipo',render:function(r){return h(Bg,{c:'b'},r.tipo);}},
+        {lbl:'Subcategoría',render:function(r){var sc=subcatsOT.find(function(s){return String(s.subcategoria_id)===String(r.tipo);});return h('span',{style:{fontSize:11}},sc?sc.nombre:r.tipo);}},
         {lbl:'Descripción',k:'descripcion'},
         {lbl:'Cant.',r:true,render:function(r){return r.cantidad;}},
         {lbl:'P. Unit.',r:true,render:function(r){return CLP(Math.round(r.precio_unitario||0));}},
         {lbl:'Total',r:true,render:function(r){return CLP(Math.round(r.costo_total||0));}},
         {lbl:'',render:function(r){return h('button',{onClick:function(){delMaterial(r.material_id);},style:{color:'#EF4444',background:'none',border:'none',cursor:'pointer',fontSize:12}},'✕');}}
-      ],rows:materiales,empty:'Sin materiales'}),
-      h('div',{style:{display:'grid',gridTemplateColumns:'auto 1fr 80px 100px auto auto',gap:6,marginTop:8,alignItems:'end'}},
-        h('select',{value:newMat.tipo,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{tipo:e.target.value});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
-          ['repuesto','lubricante','filtro','grasa','refrigerante','consumible','otro'].map(function(t){return h('option',{key:t,value:t},t);})),
-        h('input',{type:'text',placeholder:'Descripción',value:newMat.descripcion,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{descripcion:e.target.value});});},style:inpS}),
+      ],rows:materiales,empty:'Sin misceláneos'}),
+      h('div',{style:{display:'grid',gridTemplateColumns:'180px 1fr 80px 100px auto',gap:6,marginTop:8,alignItems:'end'}},
+        h('select',{value:newMat.subcategoria_id||'',onChange:function(e){setNewMat(function(f){return Object.assign({},f,{subcategoria_id:e.target.value,tipo:e.target.value||'miscelaneo'});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
+          h('option',{value:''},'Subcategoría...'),subcatsOT.map(function(s){return h('option',{key:s.subcategoria_id,value:s.subcategoria_id},s.nombre);})),
+        h('input',{type:'text',placeholder:'Descripción del gasto',value:newMat.descripcion,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{descripcion:e.target.value});});},style:inpS}),
         h('input',{type:'number',placeholder:'Cant.',value:newMat.cantidad,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{cantidad:e.target.value});});},style:inpS}),
         h('input',{type:'number',placeholder:'P. unit. $',value:newMat.precio_unitario,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{precio_unitario:e.target.value});});},style:inpS}),
-        h('select',{value:newMat.origen,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{origen:e.target.value});});},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
-          ['inventario','compra_directa','externo'].map(function(t){return h('option',{key:t,value:t},t);})),
         h(Btn,{sm:true,onClick:addMaterial},'+ Agregar')
       )
     )
