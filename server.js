@@ -292,6 +292,11 @@ async function setupMantenciones(q){
   // ── ALTER movimiento_detalle: enlace a OT ──
   try{await q('ALTER TABLE movimiento_detalle ADD COLUMN IF NOT EXISTS ot_id INT');}catch(e){}
 
+  // ── ALTER mant_ot: traslado details ──
+  try{await q('ALTER TABLE mant_ot ADD COLUMN IF NOT EXISTS vehiculo_traslado VARCHAR(100)');}catch(e){}
+  try{await q('ALTER TABLE mant_ot ADD COLUMN IF NOT EXISTS distancia_km NUMERIC(8,1) DEFAULT 0');}catch(e){}
+  try{await q('ALTER TABLE mant_ot ADD COLUMN IF NOT EXISTS costo_combustible_traslado NUMERIC(14,2) DEFAULT 0');}catch(e){}
+
     // Indices
   const idxs=[
     'CREATE INDEX IF NOT EXISTS idx_mant_ot_equipo ON mant_ot(equipo_id)',
@@ -2246,22 +2251,20 @@ app.put('/api/mant/tareas-std/:id', auth, async(req,res)=>{
 // ══ RECALC OT COSTS (helper) ══
 async function recalcOTCosts(ot_id){
   try{
-    const matQ=await pool.query(`SELECT COALESCE(SUM(CASE WHEN tipo IN ('repuesto','filtro') THEN costo_total ELSE 0 END),0) AS rep, COALESCE(SUM(CASE WHEN tipo IN ('lubricante','grasa','refrigerante') THEN costo_total ELSE 0 END),0) AS lub FROM mant_ot_materiales WHERE ot_id=$1`,[ot_id]);
+    const miscQ=await pool.query('SELECT COALESCE(SUM(costo_total),0) AS misc FROM mant_ot_materiales WHERE ot_id=$1',[ot_id]);
     const moGlobalQ=await pool.query('SELECT COALESCE(SUM(costo_total),0) AS total FROM mant_ot_personal WHERE ot_id=$1',[ot_id]);
     const moTareaQ=await pool.query('SELECT COALESCE(SUM(tp.costo_total),0) AS total FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=$1 AND tp.tiene_costo=true',[ot_id]);
     const salidasQ=await pool.query(`SELECT COALESCE(SUM(md.cantidad*md.costo_unitario),0) AS total FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=$1 AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'`,[ot_id]);
-    const costoRep=parseFloat(matQ.rows[0].rep)||0;
-    const costoLub=parseFloat(matQ.rows[0].lub)||0;
+    const costoMisc=parseFloat(miscQ.rows[0].misc)||0;
     const moInt=Math.max(parseFloat(moGlobalQ.rows[0].total)||0, parseFloat(moTareaQ.rows[0].total)||0);
     const costoSalidas=parseFloat(salidasQ.rows[0].total)||0;
-    const otRow=await pool.query('SELECT costo_mano_obra_externa,costo_servicios,costo_traslado,costo_otros FROM mant_ot WHERE ot_id=$1',[ot_id]);
+    const otRow=await pool.query('SELECT costo_mano_obra_externa,costo_traslado,costo_combustible_traslado,costo_otros FROM mant_ot WHERE ot_id=$1',[ot_id]);
     const ot=otRow.rows[0]||{};
     const moExt=parseFloat(ot.costo_mano_obra_externa)||0;
-    const srv=parseFloat(ot.costo_servicios)||0;
-    const tras=parseFloat(ot.costo_traslado)||0;
+    const tras=parseFloat(ot.costo_traslado)||parseFloat(ot.costo_combustible_traslado)||0;
     const otros=parseFloat(ot.costo_otros)||0;
-    const total=costoRep+costoLub+moInt+moExt+srv+tras+otros+costoSalidas;
-    await pool.query('UPDATE mant_ot SET costo_repuestos=$1,costo_lubricantes=$2,costo_mano_obra_interna=$3,costo_total=$4,actualizado_en=NOW() WHERE ot_id=$5',[costoRep,costoLub,moInt,total,ot_id]);
+    const total=moInt+moExt+tras+otros+costoSalidas+costoMisc;
+    await pool.query('UPDATE mant_ot SET costo_mano_obra_interna=$1,costo_total=$2,actualizado_en=NOW() WHERE ot_id=$3',[moInt,total,ot_id]);
   }catch(e){console.error('[recalcOTCosts]',e.message);}
 }
 
@@ -2388,25 +2391,23 @@ app.post('/api/mant/ot', auth, async(req,res)=>{
 });
 app.put('/api/mant/ot/:id', auth, async(req,res)=>{
   try{
-    const{estado,fecha_inicio,fecha_termino,horometro_servicio,kilometraje_servicio,diagnostico,causa,trabajo_realizado,observaciones,responsable,mecanico_asignado,taller_tipo,taller_nombre,tiempo_detenido_hrs,costo_mano_obra_interna,costo_mano_obra_externa,costo_servicios,costo_traslado,costo_otros,prioridad,sistema}=req.body;
+    const{estado,fecha_inicio,fecha_termino,horometro_servicio,kilometraje_servicio,diagnostico,causa,trabajo_realizado,observaciones,responsable,mecanico_asignado,taller_tipo,taller_nombre,tiempo_detenido_hrs,costo_mano_obra_interna,costo_mano_obra_externa,costo_servicios,costo_traslado,costo_otros,prioridad,sistema,vehiculo_traslado,distancia_km,costo_combustible_traslado}=req.body;
     // Recalculate total costs
-    const matQ=await pool.query(`SELECT COALESCE(SUM(CASE WHEN tipo IN ('repuesto','filtro') THEN costo_total ELSE 0 END),0) AS rep, COALESCE(SUM(CASE WHEN tipo IN ('lubricante','grasa','refrigerante') THEN costo_total ELSE 0 END),0) AS lub FROM mant_ot_materiales WHERE ot_id=$1`,[req.params.id]);
+    const matQ=await pool.query('SELECT COALESCE(SUM(costo_total),0) AS misc FROM mant_ot_materiales WHERE ot_id=$1',[req.params.id]);
     const moQ=await pool.query('SELECT COALESCE(SUM(costo_total),0) AS total FROM mant_ot_personal WHERE ot_id=$1',[req.params.id]);
     const moTareaQ=await pool.query('SELECT COALESCE(SUM(tp.costo_total),0) AS total FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=$1 AND tp.tiene_costo=true',[req.params.id]);
     const salidasQ=await pool.query('SELECT COALESCE(SUM(md.cantidad*md.costo_unitario),0) AS total FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=$1 AND me.tipo_movimiento=\'SALIDA\' AND me.estado=\'ACTIVO\'',[req.params.id]);
-    const costoRep=parseFloat(matQ.rows[0].rep)||0;
-    const costoLub=parseFloat(matQ.rows[0].lub)||0;
+    const costoMisc=parseFloat(matQ.rows[0].misc)||0;
     const moGlobal=parseFloat(moQ.rows[0].total)||0;
     const moTareas=parseFloat(moTareaQ.rows[0].total)||0;
     const moInt=Math.max(moGlobal,moTareas)||parseFloat(costo_mano_obra_interna)||0;
     const costoSalidas=parseFloat(salidasQ.rows[0].total)||0;
     const moExt=parseFloat(costo_mano_obra_externa)||0;
-    const srv2=parseFloat(costo_servicios)||0;
-    const tras=parseFloat(costo_traslado)||0;
+    const tras=parseFloat(costo_traslado)||parseFloat(costo_combustible_traslado)||0;
     const otros=parseFloat(costo_otros)||0;
-    const total=costoRep+costoLub+moInt+moExt+srv2+tras+otros+costoSalidas;
-    const r=await pool.query(`UPDATE mant_ot SET estado=$1,fecha_inicio=$2,fecha_termino=$3,horometro_servicio=$4,kilometraje_servicio=$5,diagnostico=$6,causa=$7,trabajo_realizado=$8,observaciones=$9,responsable=$10,mecanico_asignado=$11,taller_tipo=$12,taller_nombre=$13,tiempo_detenido_hrs=$14,costo_repuestos=$15,costo_lubricantes=$16,costo_mano_obra_interna=$17,costo_mano_obra_externa=$18,costo_servicios=$19,costo_traslado=$20,costo_otros=$21,costo_total=$22,prioridad=$23,sistema=$24,actualizado_en=NOW() WHERE ot_id=$25 RETURNING *`,
-      [estado,fecha_inicio||null,fecha_termino||null,horometro_servicio||null,kilometraje_servicio||null,diagnostico||null,causa||null,trabajo_realizado||null,observaciones||null,responsable||null,mecanico_asignado||null,taller_tipo||'interno',taller_nombre||null,tiempo_detenido_hrs||0,costoRep,costoLub,moInt,moExt,srv2,tras,otros,total,prioridad||'normal',sistema||null,req.params.id]);
+    const total=moInt+moExt+tras+otros+costoSalidas+costoMisc;
+    const r=await pool.query(`UPDATE mant_ot SET estado=$1,fecha_inicio=$2,fecha_termino=$3,horometro_servicio=$4,kilometraje_servicio=$5,diagnostico=$6,causa=$7,trabajo_realizado=$8,observaciones=$9,responsable=$10,mecanico_asignado=$11,taller_tipo=$12,taller_nombre=$13,tiempo_detenido_hrs=$14,costo_repuestos=0,costo_lubricantes=0,costo_mano_obra_interna=$15,costo_mano_obra_externa=$16,costo_servicios=0,costo_traslado=$17,costo_otros=$18,costo_total=$19,prioridad=$20,sistema=$21,vehiculo_traslado=$22,distancia_km=$23,costo_combustible_traslado=$24,actualizado_en=NOW() WHERE ot_id=$25 RETURNING *`,
+      [estado,fecha_inicio||null,fecha_termino||null,horometro_servicio||null,kilometraje_servicio||null,diagnostico||null,causa||null,trabajo_realizado||null,observaciones||null,responsable||null,mecanico_asignado||null,taller_tipo||'interno',taller_nombre||null,tiempo_detenido_hrs||0,moInt,moExt,tras,otros,total,prioridad||'normal',sistema||null,vehiculo_traslado||null,parseFloat(distancia_km)||0,parseFloat(costo_combustible_traslado)||0,req.params.id]);
     const ot=r.rows[0];
     // Si se cierra: actualizar horómetro/km del equipo + recalcular programación
     if(estado==='cerrada'){
