@@ -3049,34 +3049,152 @@ function MantPanel(p){
     ]).then(function(r){setPanel(r[0]);setProg(r[1]||[]);}).catch(function(){});
   }
   useEffect(load,[p.tok,filtEmp]);
-  var otEstados=panel?panel.ot_por_estado||[]:[];
-  var alertas=panel?panel.alertas||{}:{};
+  if(!panel) return h('div',{className:'spin'},'Cargando dashboard...');
+  var otEstados=panel.ot_por_estado||[];
+  var alertas=panel.alertas||{};
+  var equipos=panel.equipos||[];
+  var topEq=panel.top_equipos||[];
+  var otRec=panel.ot_recientes||[];
+  var tipoM=panel.tipo_mantencion||[];
   var getEst=function(e){var r=otEstados.find(function(x){return x.estado===e;});return r?parseInt(r.n):0;};
+  var totalOT=otEstados.reduce(function(s,x){return s+parseInt(x.n);},0);
+  var totalEquipos=equipos.length;
+  var eqOperativos=equipos.filter(function(e){return e.estado_operativo==='operativo'&&parseInt(e.ot_activas||0)===0;}).length;
+  var eqEnMant=equipos.filter(function(e){return parseInt(e.ot_activas||0)>0;}).length;
+  var eqDetenidos=equipos.filter(function(e){return e.estado_operativo==='detenido';}).length;
+  var eqAlerta=equipos.filter(function(e){return parseInt(e.mant_vencidas||0)>0;}).length;
+  // Gauge component
+  function Gauge(props){
+    var pct=Math.max(0,Math.min(100,props.value||0));
+    var color=pct>=75?'#10B981':pct>=50?'#F59E0B':pct>=25?'#F97316':'#EF4444';
+    var rad=40,cx=50,cy=50,sw=8;
+    var startAngle=-210,endAngle=30,range=endAngle-startAngle;
+    var valAngle=startAngle+range*(pct/100);
+    function toXY(angle,r){var a=angle*Math.PI/180;return{x:cx+r*Math.cos(a),y:cy+r*Math.sin(a)};}
+    var bgStart=toXY(startAngle,rad),bgEnd=toXY(endAngle,rad);
+    var valEnd=toXY(valAngle,rad);
+    var largeArc=pct/100*range>180?1:0;
+    var bgArc='M '+bgStart.x+' '+bgStart.y+' A '+rad+' '+rad+' 0 1 1 '+bgEnd.x+' '+bgEnd.y;
+    var valArc='M '+bgStart.x+' '+bgStart.y+' A '+rad+' '+rad+' 0 '+largeArc+' 1 '+valEnd.x+' '+valEnd.y;
+    return h('svg',{viewBox:'0 0 100 70',width:props.size||90,style:{display:'block',margin:'0 auto'}},
+      h('path',{d:bgArc,fill:'none',stroke:'#E2E8F0',strokeWidth:sw,strokeLinecap:'round'}),
+      pct>0&&h('path',{d:valArc,fill:'none',stroke:color,strokeWidth:sw,strokeLinecap:'round'}),
+      h('text',{x:cx,y:cy+4,textAnchor:'middle',fontSize:16,fontWeight:700,fill:color},pct+'%'),
+      props.label&&h('text',{x:cx,y:cy+14,textAnchor:'middle',fontSize:6,fill:'#64748B'},props.label)
+    );
+  }
+  // Status badge
+  var stColors={'operativo':'#10B981','detenido':'#EF4444','en_mantencion':'#3B82F6'};
+  var otColors={'abierta':'#3B82F6','en_ejecucion':'#8B5CF6','cerrada':'#10B981','cancelada':'#94A3B8'};
   return h('div',null,
     h('div',{style:{display:'flex',gap:8,marginBottom:12,alignItems:'center'}},
       h('select',{value:filtEmp,onChange:function(e){setFiltEmp(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
-        h('option',{value:''},'Todas las empresas'),
-        empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})
+        h('option',{value:''},'Todas las empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})),
+      h('button',{onClick:load,style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:11}},'↻ Actualizar')
+    ),
+    // ── STATUS OVERVIEW ──
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:14}},
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #10B981'}},
+        h('div',{style:{fontSize:28,fontWeight:700,color:'#10B981'}},eqOperativos),
+        h('div',{style:{fontSize:11,color:'#64748B'}},'Operativos')),
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #EF4444',cursor:'pointer'},onClick:function(){p.onNav('mant-avisos');}},
+        h('div',{style:{fontSize:28,fontWeight:700,color:'#EF4444'}},eqDetenidos),
+        h('div',{style:{fontSize:11,color:'#64748B'}},'Detenidos')),
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #3B82F6'}},
+        h('div',{style:{fontSize:28,fontWeight:700,color:'#3B82F6'}},eqEnMant),
+        h('div',{style:{fontSize:11,color:'#64748B'}},'En mantención')),
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #F59E0B',cursor:'pointer'},onClick:function(){p.onNav('mant-programacion');}},
+        h('div',{style:{fontSize:28,fontWeight:700,color:'#F59E0B'}},eqAlerta),
+        h('div',{style:{fontSize:11,color:'#64748B'}},'Mant. vencida'))
+    ),
+    // ── KPI CARDS ──
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10,marginBottom:14}},
+      h('div',{className:'card',style:{textAlign:'center'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#1E293B'}},totalOT),h('div',{style:{fontSize:10,color:'#64748B'}},'OTs totales')),
+      h('div',{className:'card',style:{textAlign:'center',cursor:'pointer'},onClick:function(){p.onNav('mant-ot');}},h('div',{style:{fontSize:20,fontWeight:700,color:'#3B82F6'}},getEst('abierta')+getEst('en_ejecucion')),h('div',{style:{fontSize:10,color:'#64748B'}},'OTs activas')),
+      h('div',{className:'card',style:{textAlign:'center'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#10B981'}},CLP(Math.round(parseFloat(panel.costo_mes)||0))),h('div',{style:{fontSize:10,color:'#64748B'}},'Costo mes')),
+      h('div',{className:'card',style:{textAlign:'center'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#1E293B'}},CLP(Math.round(parseFloat(panel.costo_total)||0))),h('div',{style:{fontSize:10,color:'#64748B'}},'Costo acumulado')),
+      h('div',{className:'card',style:{textAlign:'center'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#DC2626'}},(parseFloat(panel.hrs_detencion_total)||0).toFixed(0)+'h'),h('div',{style:{fontSize:10,color:'#64748B'}},'Hrs detención total'))
+    ),
+    // ── EQUIPMENT CARDS WITH GAUGES ──
+    h('div',{className:'card',style:{marginBottom:14}},
+      h('div',{style:{fontWeight:700,fontSize:14,marginBottom:10}},'Estado de equipos'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(180px,1fr))',gap:10}},
+        equipos.slice(0,20).map(function(eq){
+          var vencidas=parseInt(eq.mant_vencidas||0);
+          var otAct=parseInt(eq.ot_activas||0);
+          var status=eq.estado_operativo==='detenido'?'detenido':otAct>0?'en_mantencion':'operativo';
+          var statusLabel=status==='detenido'?'DETENIDO':status==='en_mantencion'?'EN MANT.':'OPERATIVO';
+          var health=vencidas>2?15:vencidas>0?45:otAct>0?65:90;
+          return h('div',{key:eq.equipo_id,style:{border:'1px solid '+(status==='detenido'?'#FCA5A5':status==='en_mantencion'?'#93C5FD':'#D1FAE5'),borderRadius:8,padding:10,background:status==='detenido'?'#FEF2F2':status==='en_mantencion'?'#EFF6FF':'#F0FDF4'}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
+              h('span',{style:{fontWeight:700,fontSize:12,color:'#1E293B'}},eq.codigo),
+              h('span',{style:{fontSize:8,padding:'2px 6px',borderRadius:8,fontWeight:600,color:'#fff',background:stColors[status]||'#94A3B8'}},statusLabel)
+            ),
+            h(Gauge,{value:health,size:80}),
+            h('div',{style:{fontSize:10,color:'#475569',marginTop:4,textAlign:'center'}},eq.modelo_marca?eq.modelo_marca+' '+eq.modelo_nombre:eq.nombre),
+            h('div',{style:{display:'flex',justifyContent:'space-between',fontSize:9,color:'#64748B',marginTop:4}},
+              h('span',null,eq.horometro_actual?eq.horometro_actual+'h':''),
+              vencidas>0&&h('span',{style:{color:'#DC2626',fontWeight:600}},vencidas+' vencida'+(vencidas>1?'s':'')),
+              otAct>0&&h('span',{style:{color:'#3B82F6',fontWeight:600}},otAct+' OT')
+            )
+          );
+        })
       )
     ),
-    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10,marginBottom:14}},
-      h('div',{className:'card',style:{textAlign:'center',cursor:'pointer'},onClick:function(){p.onNav('mant-avisos');}},h('div',{style:{fontSize:22,fontWeight:700,color:'#EF4444'}},(alertas.vencidas||0)),h('div',{style:{fontSize:11,color:'#64748B'}},'Mantenciones vencidas')),
-      h('div',{className:'card',style:{textAlign:'center',cursor:'pointer'},onClick:function(){p.onNav('mant-programacion');}},h('div',{style:{fontSize:22,fontWeight:700,color:'#F59E0B'}},(alertas.proximas||0)),h('div',{style:{fontSize:11,color:'#64748B'}},'Próximas a vencer')),
-      h('div',{className:'card',style:{textAlign:'center'}},h('div',{style:{fontSize:22,fontWeight:700,color:'#3B82F6'}},getEst('abierta')+getEst('programada')),h('div',{style:{fontSize:11,color:'#64748B'}},'OT abiertas')),
-      h('div',{className:'card',style:{textAlign:'center'}},h('div',{style:{fontSize:22,fontWeight:700,color:'#8B5CF6'}},getEst('en_ejecucion')),h('div',{style:{fontSize:11,color:'#64748B'}},'OT en ejecución')),
-      h('div',{className:'card',style:{textAlign:'center'}},h('div',{style:{fontSize:22,fontWeight:700,color:'#10B981'}},CLP(Math.round(panel?panel.costo_mes:0))),h('div',{style:{fontSize:11,color:'#64748B'}},'Costo mes actual'))
+    // ── TWO COLUMNS: Top equipos + Tipo mantención ──
+    h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:14}},
+      h('div',{className:'card'},
+        h('div',{style:{fontWeight:700,fontSize:13,marginBottom:8}},'Top equipos por costo'),
+        topEq.length>0?h('div',null,topEq.map(function(eq,i){
+          var maxCost=parseFloat(topEq[0].costo)||1;var pct=Math.round(parseFloat(eq.costo)/maxCost*100);
+          return h('div',{key:i,style:{marginBottom:6}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',fontSize:11,marginBottom:2}},
+              h('span',null,eq.equipo),h('span',{style:{fontWeight:600}},CLP(Math.round(parseFloat(eq.costo))))),
+            h('div',{style:{height:6,background:'#E2E8F0',borderRadius:3}},
+              h('div',{style:{height:6,borderRadius:3,background:i<2?'#EF4444':i<4?'#F59E0B':'#3B82F6',width:pct+'%'}}))
+          );
+        })):h('div',{style:{color:'#94A3B8',fontSize:12}},'Sin datos')
+      ),
+      h('div',{className:'card'},
+        h('div',{style:{fontWeight:700,fontSize:13,marginBottom:8}},'Distribución por tipo'),
+        tipoM.length>0?h('div',null,tipoM.map(function(t){
+          var totalN=tipoM.reduce(function(s,x){return s+parseInt(x.n);},0)||1;var pct=Math.round(parseInt(t.n)/totalN*100);
+          var colors={'preventivo':'#10B981','correctivo':'#EF4444','predictivo':'#3B82F6','emergencia':'#DC2626'};
+          return h('div',{key:t.tipo_mantencion,style:{display:'flex',alignItems:'center',gap:8,marginBottom:8}},
+            h('div',{style:{width:10,height:10,borderRadius:'50%',background:colors[t.tipo_mantencion]||'#94A3B8',flexShrink:0}}),
+            h('div',{style:{flex:1}},
+              h('div',{style:{display:'flex',justifyContent:'space-between',fontSize:11,marginBottom:2}},
+                h('span',null,t.tipo_mantencion.replace(/_/g,' ')),h('span',{style:{fontWeight:600}},t.n+' OTs ('+CLP(Math.round(parseFloat(t.costo)))+')')),
+              h('div',{style:{height:5,background:'#E2E8F0',borderRadius:3}},
+                h('div',{style:{height:5,borderRadius:3,background:colors[t.tipo_mantencion]||'#94A3B8',width:pct+'%'}}))
+            )
+          );
+        })):h('div',{style:{color:'#94A3B8',fontSize:12}},'Sin datos')
+      )
     ),
-    programacion.length>0&&h('div',{className:'card',style:{marginBottom:12}},
-      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8,color:'#DC2626'}},'⚠ Mantenciones vencidas ('+programacion.length+')'),
+    // ── ALERTAS VENCIDAS ──
+    programacion.length>0&&h('div',{className:'card',style:{marginBottom:14}},
+      h('div',{style:{fontWeight:700,fontSize:13,marginBottom:8,color:'#DC2626'}},'⚠ Mantenciones vencidas ('+programacion.length+')'),
       h(TBL,{cols:[
         {lbl:'Activo',k:'equipo_nombre'},
         {lbl:'Plan',k:'plan_nombre'},
         {lbl:'Sistema',k:'sistema'},
-        {lbl:'Tipo',k:'tipo_mantencion'},
-        {lbl:'Próx. Horas',r:true,render:function(r){return r.proxima_horas?h('span',{style:{color:'#DC2626',fontWeight:600}},r.proxima_horas+' h'):'—';}},
-        {lbl:'Actual',r:true,render:function(r){return r.horometro_actual?r.horometro_actual+' h':(r.kilometraje_actual?r.kilometraje_actual+' km':'—');}},
+        {lbl:'Próx. Hrs',r:true,render:function(r){return r.proxima_horas?h('span',{style:{color:'#DC2626',fontWeight:600}},r.proxima_horas+' h'):'—';}},
+        {lbl:'Actual',r:true,render:function(r){return r.horometro_actual?r.horometro_actual+' h':'—';}},
         {lbl:'',render:function(r){return h(Btn,{v:'r',sm:true,onClick:function(){p.onNav('mant-ot');}},null,'Crear OT');}}
       ],rows:programacion.slice(0,10),empty:''})
+    ),
+    // ── OTs RECIENTES ──
+    otRec.length>0&&h('div',{className:'card'},
+      h('div',{style:{fontWeight:700,fontSize:13,marginBottom:8}},'Últimas OTs'),
+      h(TBL,{cols:[
+        {lbl:'N° OT',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.numero_ot);}},
+        {lbl:'Equipo',render:function(r){return (r.equipo_codigo||'')+' '+(r.equipo_nombre||'');}},
+        {lbl:'Tipo',render:function(r){return r.tipo_mantencion;}},
+        {lbl:'Estado',render:function(r){return h('span',{style:{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:600,color:'#fff',background:otColors[r.estado]||'#94A3B8'}},r.estado);}},
+        {lbl:'Fecha',render:function(r){return fmtD(r.fecha_apertura);}},
+        {lbl:'Costo',r:true,render:function(r){return r.costo_total?CLP(Math.round(parseFloat(r.costo_total))):'—';}}
+      ],rows:otRec,empty:''})
     )
   );
 }
