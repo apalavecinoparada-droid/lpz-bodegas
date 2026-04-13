@@ -716,25 +716,26 @@ async function autoSetup() {
   try{
     const rc=await pool.query('SELECT COUNT(*) FROM rend_entregas');
     if(parseInt(rc.rows[0].count)===0){
-      const empQ=await pool.query("SELECT empresa_id FROM empresas WHERE LOWER(razon_social) LIKE '%leonidas%poo%' LIMIT 1");
+      const empQ=await pool.query("SELECT empresa_id FROM empresas WHERE activo=true ORDER BY empresa_id LIMIT 1");
       const empId=empQ.rows.length?empQ.rows[0].empresa_id:null;
       // Crear personal de ejemplo si no hay suficientes
-      const persQ=await pool.query("SELECT persona_id,nombre_completo FROM personal WHERE activo=true LIMIT 5");
+      const persQ=await pool.query("SELECT persona_id,nombre_completo FROM personal WHERE activo=true ORDER BY persona_id LIMIT 5");
       let personas=persQ.rows;
       if(personas.length<3){
         const nombres=[
-          ['Ricardo Riveros','Jefe de faena','operaciones'],
-          ['Sebastián Poo','Supervisor','administracion'],
-          ['Luis Sáez','Mecánico líder','mantencion'],
-          ['Alejandro Sepúlveda','Operador','operaciones'],
-          ['Juan Paulo Silva','Mecánico','mantencion']
+          ['Ricardo Riveros','12.345.678-9','Jefe de faena','operaciones'],
+          ['Sebastián Poo','13.456.789-0','Supervisor','administracion'],
+          ['Luis Sáez','14.567.890-1','Mecánico líder','mantencion'],
+          ['Alejandro Sepúlveda','15.678.901-2','Operador','operaciones'],
+          ['Juan Paulo Silva','16.789.012-3','Mecánico','mantencion']
         ];
-        for(const[nom,cargo,esp] of nombres){
-          await pool.query("INSERT INTO personal(empresa_id,nombre_completo,cargo,especialidad,participa_mantencion,activo) VALUES($1,$2,$3,$4,true,true) ON CONFLICT DO NOTHING",[empId,nom,cargo,esp]).catch(()=>{});
+        for(const[nom,rut,cargo,esp] of nombres){
+          await pool.query("INSERT INTO personal(empresa_id,rut,nombre_completo,cargo,especialidad,participa_mantencion,activo) VALUES($1,$2,$3,$4,$5,true,true)",[empId,rut,nom,cargo,esp]).catch(()=>{});
         }
-        const p2=await pool.query("SELECT persona_id,nombre_completo FROM personal WHERE activo=true LIMIT 5");
+        const p2=await pool.query("SELECT persona_id,nombre_completo FROM personal WHERE activo=true ORDER BY persona_id LIMIT 5");
         personas=p2.rows;
       }
+      if(personas.length===0){console.log('  [SKIP] Rendiciones: no hay personal');throw new Error('skip');}
       const faenasQ=await pool.query("SELECT faena_id FROM faenas WHERE activo=true LIMIT 3");
       const faenaIds=faenasQ.rows.map(r=>r.faena_id);
 
@@ -3303,6 +3304,23 @@ app.post('/api/rend/gastos', auth, async(req,res)=>{
       [persona_id,empresa_id||null,fecha_gasto||new Date().toISOString().split('T')[0],tipo_gasto||'otros',descripcion,parseFloat(monto),tiene_respaldo||false,tipo_respaldo||null,numero_documento||null,faena_id||null,equipo_id||null,observaciones||null,req.user.email]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
+});
+app.post('/api/rend/gastos/bulk', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const{persona_id,empresa_id,lineas}=req.body;
+    if(!persona_id||!Array.isArray(lineas)||!lineas.length) throw new Error('Persona y al menos un gasto requeridos');
+    const results=[];
+    for(const l of lineas){
+      const r=await client.query('INSERT INTO rend_gastos(persona_id,empresa_id,fecha_gasto,tipo_gasto,descripcion,monto,tiene_respaldo,tipo_respaldo,numero_documento,faena_id,equipo_id,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *',
+        [persona_id,empresa_id||null,l.fecha_gasto||new Date().toISOString().split('T')[0],l.tipo_gasto||'otros',l.descripcion,parseFloat(l.monto),l.tiene_respaldo||false,l.tipo_respaldo||null,l.numero_documento||null,l.faena_id||null,l.equipo_id||null,l.observaciones||null,req.user.email]);
+      results.push(r.rows[0]);
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ok:true,count:results.length});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 app.patch('/api/rend/gastos/:id/aprobar', auth, async(req,res)=>{
   try{const r=await pool.query("UPDATE rend_gastos SET estado='aprobado',aprobado_por=$1 WHERE gasto_id=$2 RETURNING *",[req.user.email,req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
