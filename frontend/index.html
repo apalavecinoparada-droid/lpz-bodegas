@@ -1934,6 +1934,7 @@ const EquipoForm=p=>{
     h(FI,{k:'chasis',l:'N° Chasis/Serie',item:p.item,onChange:p.onChange}),
     h(FI,{k:'placa_patente',l:'Placa/Patente',item:p.item,onChange:p.onChange}),
     h(FI,{k:'contacto_terreno',l:'Contacto terreno',item:p.item,onChange:p.onChange,ph:'Encargado en faena'}),
+    h(FI,{k:'horas_productivas_dia',l:'Hrs productivas/día',type:'number',item:p.item,onChange:p.onChange,ph:'12'}),
     selModelo&&h('div',{style:{gridColumn:'1/-1',background:'#F0F9FF',border:'1px solid #BAE6FD',borderRadius:6,padding:8,fontSize:11,color:'#0C4A6E'}},
       h('strong',null,'Specs: '),selModelo.motor_descripcion||'','  |  ',selModelo.potencia_hp?selModelo.potencia_hp+' HP':'','  |  ',
       'Tanque: '+(selModelo.cap_tanque_combustible||'—')+'L','  |  ','Aceite: '+(selModelo.cap_aceite_motor||'—')+'L','  |  ',
@@ -3445,7 +3446,7 @@ function MantOTDetalle(p){
         h(Btn,{v:'teal',sm:true,onClick:exportarOT},'⬇ Excel'),
         ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&h(Btn,{v:'a',sm:true,onClick:function(){setEditMode(!editMode);}},editMode?'Cancelar':'✏ Editar'),
         ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&h(Btn,{onClick:guardar},'💾 Guardar'),
-        ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&!editMode&&h(Btn,{v:'g',sm:true,onClick:function(){if(!confirm('Cerrar esta OT? Se actualizara el estado a cerrada.'))return;var f2=Object.assign({},form,{estado:'cerrada'});api('/mant/ot/'+ot.ot_id,'PUT',f2,p.tok).then(function(r){setOt(r);setForm(r);setMsg('OT cerrada correctamente');}).catch(function(e){setMsg('Error: '+e.message);});}},'✓ Cerrar OT'),
+        ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&!editMode&&h(Btn,{v:'g',sm:true,onClick:function(){if(!confirm('Cerrar esta OT? Se registrará la fecha de término y se calculará el tiempo de detención.'))return;var f2=Object.assign({},form,{estado:'cerrada'});if(!f2.fecha_inicio)f2.fecha_inicio=ot.fecha_inicio||new Date().toISOString();api('/mant/ot/'+ot.ot_id,'PUT',f2,p.tok).then(function(r){setOt(r);setForm(r);setMsg('OT cerrada correctamente');}).catch(function(e){setMsg('Error: '+e.message);});}},'✓ Cerrar OT'),
         ot.estado!=='cerrada'&&h('button',{onClick:deleteOT,style:{padding:'4px 10px',fontSize:11,color:'#EF4444',border:'1px solid #FCA5A5',borderRadius:5,background:'#FFF1F2',cursor:'pointer'}},'🗑 Eliminar')
       )
     ),
@@ -3479,7 +3480,31 @@ function MantOTDetalle(p){
             parseFloat(ot.distancia_km)>0?h('span',{style:{fontSize:10,color:'#64748B'}},' — ',ot.distancia_km,' km'):''),
           calcMiscelaneos>0&&h('div',{style:{gridColumn:'1/-1',borderTop:'1px dashed #CBD5E1',paddingTop:4,marginTop:2}},h('span',{style:{fontWeight:600,fontSize:11,color:'#8B5CF6'}},'Misceláneos: '),CLP(Math.round(calcMiscelaneos))),
           h('div',{style:{gridColumn:'1/-1',borderTop:'1px solid #F1F5F9',paddingTop:4}},h('span',{style:{color:'#94A3B8'}},'TOTAL: '),h('strong',{style:{fontSize:14,color:'#1E293B'}},CLP(Math.round(calcMOInternaTotal+calcMOExternaTotal+(parseFloat(ot.costo_traslado)||parseFloat(ot.costo_combustible_traslado)||0)+(parseFloat(ot.costo_otros)||0)+totalOC+calcSalidasInv+calcMiscelaneos)))),
-          h('div',null,h('span',{style:{color:'#94A3B8'}},'Horas detenido: '),h('strong',null,(ot.tiempo_detenido_hrs||0)+' h'))
+          h('div',{style:{gridColumn:'1/-1',borderTop:'1px dashed #CBD5E1',paddingTop:6,marginTop:4}},
+            (function(){
+              var hrsD=parseFloat(ot.tiempo_detenido_hrs)||0;
+              var hrsProd=parseFloat(ot.horas_productivas_dia)||12;
+              var fI=ot.fecha_inicio?new Date(ot.fecha_inicio):null;
+              var fT=ot.fecha_termino?new Date(ot.fecha_termino):null;
+              var enCurso=!fT&&fI&&(ot.estado==='en_ejecucion'||ot.estado==='abierta');
+              var diasCal=0;
+              if(fI&&fT){diasCal=Math.round((fT.getTime()-fI.getTime())/86400000*10)/10;hrsD=Math.round(diasCal*hrsProd*10)/10;}
+              if(enCurso){diasCal=Math.round((Date.now()-fI.getTime())/86400000*10)/10;hrsD=Math.round(diasCal*hrsProd*10)/10;}
+              var dias=Math.floor(diasCal);var hrsResto=Math.round((diasCal%1)*24*10)/10;
+              var color=dias>=3?'#DC2626':dias>=1?'#F59E0B':'#10B981';
+              return h('div',{style:{display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}},
+                h('div',null,h('span',{style:{color:'#94A3B8',fontSize:12}},'Detención: '),
+                  h('strong',{style:{fontSize:14,color:color}},dias>0?(dias+'d '+hrsResto+'h'):((diasCal*24).toFixed(1)+' h')),
+                  enCurso&&h('span',{style:{fontSize:10,color:'#DC2626',marginLeft:4,fontWeight:600}},'● EN CURSO')),
+                h('div',{style:{fontSize:11,color:'#475569',background:'#F8FAFC',padding:'3px 8px',borderRadius:4}},
+                  h('strong',{style:{color:'#DC2626'}},hrsD.toFixed(0)),' hrs productivas perdidas',
+                  h('span',{style:{fontSize:9,color:'#94A3B8',marginLeft:4}},'('+hrsProd+'h/día)')),
+                fI&&h('div',{style:{fontSize:10,color:'#64748B'}},'Inicio: ',fI.toLocaleString('es-CL',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})),
+                fT&&h('div',{style:{fontSize:10,color:'#64748B'}},'Término: ',fT.toLocaleString('es-CL',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})),
+                !fI&&h('div',{style:{fontSize:10,color:'#94A3B8'}},'Sin fecha de inicio registrada')
+              );
+            })()
+          )
         )
       )
     ),
@@ -3491,7 +3516,21 @@ function MantOTDetalle(p){
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Km servicio'),h('input',{type:'number',value:form.kilometraje_servicio||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{kilometraje_servicio:e.target.value});});},style:inpS})),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'MO interna $'),h('input',{type:'number',value:form.costo_mano_obra_interna||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{costo_mano_obra_interna:e.target.value});});},style:inpS})),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'MO externa $'),h('input',{type:'number',value:form.costo_mano_obra_externa||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{costo_mano_obra_externa:e.target.value});});},style:inpS})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Hrs detenido'),h('input',{type:'number',value:form.tiempo_detenido_hrs||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{tiempo_detenido_hrs:e.target.value});});},style:inpS})),
+        h('div',{style:{gridColumn:'1/-1',borderTop:'1px dashed #CBD5E1',paddingTop:8,marginTop:4}},h('div',{style:{fontWeight:600,fontSize:12,color:'#DC2626',marginBottom:6}},'⏱ Tiempo de detención')),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha/hora inicio detención'),h('input',{type:'datetime-local',value:(form.fecha_inicio||'').substring(0,16),onChange:function(e){setForm(function(f){return Object.assign({},f,{fecha_inicio:e.target.value});});},style:inpS})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha/hora término detención'),h('input',{type:'datetime-local',value:(form.fecha_termino||'').substring(0,16),onChange:function(e){setForm(function(f){return Object.assign({},f,{fecha_termino:e.target.value});});},style:inpS})),
+        h('div',{style:{display:'flex',alignItems:'end'}},
+          (function(){
+            var hrsProd=parseFloat(form.horas_productivas_dia||ot.horas_productivas_dia)||12;
+            var fI=form.fecha_inicio?new Date(form.fecha_inicio):null;
+            var fT=form.fecha_termino?new Date(form.fecha_termino):null;
+            if(fI&&fT){var diasCal=(fT.getTime()-fI.getTime())/86400000;var hrsP=Math.round(diasCal*hrsProd*10)/10;var d=Math.floor(diasCal);var hr=Math.round((diasCal%1)*24*10)/10;
+              return h('div',{style:{padding:'8px 12px',background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:6,fontSize:12}},h('strong',{style:{color:'#DC2626'}},d>0?(d+'d '+hr+'h'):((diasCal*24).toFixed(1)+'h')),' detención → ',h('strong',null,hrsP),' hrs prod. perdidas ',h('span',{style:{fontSize:9,color:'#94A3B8'}},'('+hrsProd+'h/día)'));}
+            if(fI&&!fT){var diasCal2=(Date.now()-fI.getTime())/86400000;var hrsP2=Math.round(diasCal2*hrsProd*10)/10;var d2=Math.floor(diasCal2);var hr2=Math.round((diasCal2%1)*24*10)/10;
+              return h('div',{style:{padding:'8px 12px',background:'#FEF3C7',border:'1px solid #FDE68A',borderRadius:6,fontSize:12}},h('strong',{style:{color:'#F59E0B'}},d2>0?(d2+'d '+hr2+'h'):((diasCal2*24).toFixed(1)+'h')),' en curso → ',h('strong',null,hrsP2),' hrs prod.');}
+            return h('div',{style:{padding:'8px 12px',fontSize:11,color:'#94A3B8'}},'Se calcula automáticamente (',hrsProd,'h/día)');
+          })()
+        ),
         h('div',{style:{gridColumn:'1/-1',borderTop:'1px dashed #CBD5E1',paddingTop:8,marginTop:4}},h('div',{style:{fontWeight:600,fontSize:12,color:'#0369A1',marginBottom:6}},'🚛 Traslado')),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Vehículo'),h('input',{type:'text',value:form.vehiculo_traslado||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{vehiculo_traslado:e.target.value});});},style:inpS,placeholder:'Ej: Camión pluma, Lowboy...'})),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Distancia (km)'),h('input',{type:'number',value:form.distancia_km||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{distancia_km:e.target.value});});},style:inpS,placeholder:'Km ida y vuelta'})),
@@ -4111,7 +4150,7 @@ function App(){
             h('div',null,h('h3',{style:{marginBottom:8,fontWeight:700}},'Subcategorias'),h(MasterV,{tok,titulo:'Subcategoria',ep:'subcategorias',pk:'subcategoria_id',Form:SubcatForm,blank:{nombre:'',categoria_id:'',activo:true},extra:{cats:m.cats},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Categoria',render:r=>(m.cats.find(c=>c.categoria_id===r.categoria_id)||{}).nombre||'—'}]}))
           ),
           view==='faenas'&&h(MasterV,{tok,titulo:'Faena',ep:'faenas',pk:'faena_id',Form:FaenaForm,blank:{codigo:'',nombre:'',descripcion:'',empresa_id:'',activo:true},extra:{empresas:m.empresas},importKey:'faenas',cols:[{lbl:'Empresa',render:function(r){return (m.empresas.find(function(e){return e.empresa_id===parseInt(r.empresa_id||0);})||{}).razon_social||'—';}},{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
-          view==='equipos'&&h(MasterV,{tok,titulo:'Cargo / Centro de costo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',blank:{empresa_id:'',tipo_cargo:'maquinaria',codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',modelo_id:'',anio:'',placa_patente:'',chasis:'',contacto_terreno:'',patente_serie:'',activo:true},extra:{faenas:m.faenas,empresas:m.empresas,modelos:m.modelos||[]},cols:[{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Tipo',render:function(r){var tc=r.tipo_cargo||'maquinaria';var colors={maquinaria:'b',camioneta:'teal',camion:'p',camion_estanque:'y',camion_cama_baja:'y',faena:'g',taller:'gray'};return h(Bg,{c:colors[tc]||'gray'},tc.replace(/_/g,' '));}},{lbl:'Código',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Modelo',render:function(r){return r.modelo_marca?(r.modelo_marca+' '+r.modelo_nombre):(r.marca?(r.marca+' '+(r.modelo||'')):'—');}},{lbl:'Faena',k:'faena_nombre'}]}),
+          view==='equipos'&&h(MasterV,{tok,titulo:'Cargo / Centro de costo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',blank:{empresa_id:'',tipo_cargo:'maquinaria',codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',modelo_id:'',anio:'',placa_patente:'',chasis:'',contacto_terreno:'',horas_productivas_dia:'12',patente_serie:'',activo:true},extra:{faenas:m.faenas,empresas:m.empresas,modelos:m.modelos||[]},cols:[{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Tipo',render:function(r){var tc=r.tipo_cargo||'maquinaria';var colors={maquinaria:'b',camioneta:'teal',camion:'p',camion_estanque:'y',camion_cama_baja:'y',faena:'g',taller:'gray'};return h(Bg,{c:colors[tc]||'gray'},tc.replace(/_/g,' '));}},{lbl:'Código',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Modelo',render:function(r){return r.modelo_marca?(r.modelo_marca+' '+r.modelo_nombre):(r.marca?(r.marca+' '+(r.modelo||'')):'—');}},{lbl:'Faena',k:'faena_nombre'}]}),
           view==='modelos'&&h(ModelosAdmin,{tok,m}),
           view==='proveedores'&&h(MasterV,{tok,titulo:'Proveedor',ep:'proveedores',pk:'proveedor_id',Form:ProvForm,importKey:'proveedores',blank:{rut:'',nombre:'',giro:'',direccion:'',contacto:'',telefono:'',email:'',activo:true},onExport:function(){api('/proveedores','GET',null,tok).then(function(rows){exportXLSX(rows,[{header:'RUT',value:r=>r.rut},{header:'Nombre',value:r=>r.nombre},{header:'Giro',value:r=>r.giro},{header:'Direccion',value:r=>r.direccion},{header:'Contacto',value:r=>r.contacto},{header:'Telefono',value:r=>r.telefono},{header:'Email',value:r=>r.email},{header:'Activo',value:r=>r.activo?'SI':'NO'}],'proveedores');}).catch(function(ex){alert(ex.message);});},cols:[{lbl:'RUT',k:'rut',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Giro',k:'giro'},{lbl:'Contacto',k:'contacto'},{lbl:'Telefono',k:'telefono'}]}),
           view==='condpago'&&h(MasterV,{tok,titulo:'Condicion de Pago',ep:'condiciones-pago',pk:'condicion_id',Form:CondPagoForm,importKey:'condpago',blank:{nombre:'',descripcion:'',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
