@@ -297,6 +297,34 @@ async function setupMantenciones(q){
   try{await q('ALTER TABLE mant_ot ADD COLUMN IF NOT EXISTS distancia_km NUMERIC(8,1) DEFAULT 0');}catch(e){}
   try{await q('ALTER TABLE mant_ot ADD COLUMN IF NOT EXISTS costo_combustible_traslado NUMERIC(14,2) DEFAULT 0');}catch(e){}
 
+  // ── Maestro de Modelos de Equipo ──
+  await q(`CREATE TABLE IF NOT EXISTS modelos_equipo (
+    modelo_id SERIAL PRIMARY KEY,
+    marca VARCHAR(80) NOT NULL,
+    modelo VARCHAR(100) NOT NULL,
+    tipo_maquina VARCHAR(40),
+    funcion_principal VARCHAR(150),
+    motor_descripcion VARCHAR(150),
+    potencia_hp NUMERIC(6,1),
+    peso_kg NUMERIC(8,0),
+    cap_tanque_combustible NUMERIC(8,1),
+    cap_aceite_motor NUMERIC(8,1),
+    cap_sist_hidraulico NUMERIC(8,1),
+    cap_refrigerante NUMERIC(8,1),
+    tipo_transmision VARCHAR(80),
+    ancho_zapata VARCHAR(60),
+    observaciones TEXT,
+    activo BOOLEAN DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(marca, modelo)
+  )`);
+
+  // ── ALTER equipos: tipo_cargo y modelo_id ──
+  try{await q("ALTER TABLE equipos ADD COLUMN IF NOT EXISTS tipo_cargo VARCHAR(30) DEFAULT 'maquinaria'");}catch(e){}
+  try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS modelo_id INT REFERENCES modelos_equipo(modelo_id)');}catch(e){}
+  try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS contacto_terreno VARCHAR(100)');}catch(e){}
+  try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS chasis VARCHAR(80)');}catch(e){}
+
     // Indices
   const idxs=[
     'CREATE INDEX IF NOT EXISTS idx_mant_ot_equipo ON mant_ot(equipo_id)',
@@ -538,6 +566,91 @@ async function autoSetup() {
       console.log('  [OK] Sistemas ('+17+') y tareas estándar ('+tareas.length+') cargados');
     }
   }catch(e){console.log('[WARN] seed sistemas:',e.message);}
+
+  // ── Seed modelos de equipo desde gestión de flota ──
+  try{
+    const mc=await pool.query('SELECT COUNT(*) FROM modelos_equipo');
+    if(parseInt(mc.rows[0].count)===0){
+      const modelos=[
+        ['KOMATSU','PC210LC-10MO','EXCAVADORA','Excavación/Carguío','SAA6D107E-1 Turbo Intercooled',165,22300,400,22,190,15,'Hidráulica','800 mm triple grouser'],
+        ['KOMATSU','PC200LC','EXCAVADORA','Excavación/Carguío','SAA6D107E-1 Turbo Intercooled',165,21000,400,22,190,15,'Hidráulica','800 mm triple grouser'],
+        ['KOMATSU','PC200LC-8MO','EXCAVADORA','Excavación/Carguío','SAA6D107E-1 Turbo Intercooled',165,21000,400,22,190,15,'Hidráulica','800 mm triple grouser'],
+        ['KOMATSU','PC210LL','PROCESADOR','Procesamiento','Komatsu SAA6D107E-3 Turbo',168,25000,416,22,240,15,'Hidráulica','800 mm triple grouser'],
+        ['JOHN DEERE','859M','FELLER','Volteo','JD 6068 PowerTech PSS 6.8L T3',300,27200,416,19,280,24,'Hidrost. cadenas','600 mm triple grouser'],
+        ['JOHN DEERE','2154G','PROCESADOR','Procesamiento','JD 6068 PowerTech PSS 6.8L FT4',225,25000,416,19,280,24,'Hidrost. cadenas','600 mm triple grouser'],
+        ['JOHN DEERE','948L','SKIDDER','Arrastre','JD 6068 PowerTech PSS 6.8L FT4',230,19500,310,19,95,24,'Hidrost. ruedas','30.5L-32 forestales'],
+        ['JOHN DEERE','640H','SKIDDER','Arrastre','JD 6068 PowerTech 6.8L T2',200,16500,270,19,85,20,'Hidrost. ruedas','30.5L-32 forestales'],
+        ['JOHN DEERE','648L','SKIDDER','Arrastre','JD 6068 PowerTech PSS 6.8L FT4',230,18500,310,19,95,24,'Hidrost. ruedas','30.5L-32 forestales'],
+        ['JOHN DEERE','848H','SKIDDER','Arrastre','JD 6068 PowerTech 6.8L T2',235,22000,310,19,95,20,'Hidrost. ruedas','30.5L-32 forestales'],
+        ['BELL','LOGGER 220C','TRINEUMATICO','Transporte forestal','Mercedes-Benz OM906LA 6 cil',286,22000,300,28,null,22,'Powershift 6F/3R','Neumáticos forestales'],
+        ['URUS','III PHIL','TORRE MADEREO','Madereo aéreo','N/A (montada sobre base)',null,null,null,null,null,null,null,null],
+        ['TIGERCAT','625H 6X6','SKIDDER','Arrastre','FPT N67 T4F 6.7L',235,20500,308,18,110,22,'Hidrost. ruedas','30.5L-32 forestales'],
+        ['TIGERCAT','625H','SKIDDER','Arrastre','FPT N67 T4F 6.7L',235,18000,308,18,110,22,'Hidrost. ruedas','30.5L-32 forestales'],
+        ['TIGERCAT','632','SKIDDER','Arrastre','FPT N67 T4F 6.7L',252,22000,330,18,130,22,'Hidrost. ruedas','35.5L-32 forestales'],
+        ['TIGERCAT','LS855E','SHOVEL LOGGER','Carga/Shovel','FPT N67 Stage V 6.7L',252,37000,450,18,300,25,'Hidrost. cadenas','700 mm triple grouser'],
+        ['TIMBCO','T445D','FELLER','Volteo','Caterpillar C9 ACERT 8.8L',350,32000,500,26,300,30,'Hidrost. cadenas','700 mm triple grouser'],
+        ['CATERPILLAR','525C','SKIDDER','Arrastre','Caterpillar C7 ACERT 7.2L',225,18000,284,17,90,20,'Powershift','30.5L-32 forestales'],
+        ['ECOFORST','T-Winch 10.2','HUINCHE','Asistencia tracción','Accionamiento hidr. 100 kN max',null,2500,null,null,null,null,'Hidráulico',null],
+        ['ECOFORST','T-Winch 30.2','HUINCHE','Asistencia tracción','Accionamiento hidr. 300 kN max',null,4500,null,null,null,null,'Hidráulico',null],
+        ['NEUSON FOREST','243HVT','HARVESTER','Cosecha','Stage V 6 cilindros',250,27000,400,20,250,22,'Hidrost. cadenas','700 mm triple grouser'],
+        ['DOOSAN','DX360LC-7M','TORRE MADEREO','Madereo aéreo','Doosan DL06K 6 cil Turbo',271,36200,600,24,null,28,'Hidráulica','600 mm triple grouser']
+      ];
+      for(const m of modelos){
+        await pool.query('INSERT INTO modelos_equipo(marca,modelo,tipo_maquina,funcion_principal,motor_descripcion,potencia_hp,peso_kg,cap_tanque_combustible,cap_aceite_motor,cap_sist_hidraulico,cap_refrigerante,tipo_transmision,ancho_zapata) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT(marca,modelo) DO NOTHING',m);
+      }
+      console.log('  [OK] '+modelos.length+' modelos de equipo cargados');
+    }
+  }catch(e){console.log('[WARN] seed modelos:',e.message);}
+
+  // ── Seed flota de equipos (28 máquinas Leonidas Poo) ──
+  try{
+    const fc=await pool.query("SELECT COUNT(*) FROM equipos WHERE tipo_cargo='maquinaria' AND modelo_id IS NOT NULL");
+    if(parseInt(fc.rows[0].count)===0){
+      // Find empresa Leonidas Poo
+      const empQ=await pool.query("SELECT empresa_id FROM empresas WHERE LOWER(razon_social) LIKE '%leonidas%poo%' OR LOWER(razon_social) LIKE '%lpz%' LIMIT 1");
+      const empId=empQ.rows.length?empQ.rows[0].empresa_id:null;
+      const flota=[
+        ['EG-05','Excavadora 05','EXCAVADORA','KOMATSU','PC210LC-10MO','KMTPC282TMC600671','RICARDO RIVEROS'],
+        ['Feller-05','Feller 05','FELLER','JOHN DEERE','859M','1T0859MXHKC343920','RICARDO RIVEROS'],
+        ['PRO-10','Procesador 10','PROCESADOR','JOHN DEERE','2154G','1FF2154GTKD212297','SEBASTIAN POO'],
+        ['SK-12','Skidder 12','SKIDDER','JOHN DEERE','948L','1DW948LXCGC677331','RICARDO RIVEROS'],
+        ['PRO-09','Procesador 09','PROCESADOR','JOHN DEERE','2154G','1FF2154GEKD212295','LUIS SAEZ'],
+        ['EG-02','Excavadora 02','EXCAVADORA','KOMATSU','PC200LC','KMTPC244VGC400814','LUIS SAEZ'],
+        ['Bell-8','Trineumático Bell 8','TRINEUMATICO','BELL','LOGGER 220C','BCH10147','LUIS SAEZ'],
+        ['Torre-06','Torre Madereo 06','TORRE MADEREO','URUS','III PHIL','201','LUIS SAEZ'],
+        ['SK-09','Skidder 09','SKIDDER','JOHN DEERE','640H','1DW640HXAA0630471','RICARDO RIVEROS'],
+        ['EG-9','Excavadora 09','EXCAVADORA','KOMATSU','PC200LC-8MO','KMTPC244PEC400366','LUIS SAEZ'],
+        ['EG-04','Ordenadora 04','ORDENADORA','KOMATSU','PC210LC-10MO','401502','SEBASTIAN POO'],
+        ['EG-03','Excavadora 03','EXCAVADORA','KOMATSU','PC210LC-10MO','KMTPC244CJC401502','LUIS SAEZ'],
+        ['Feller-04','Feller 04','FELLER','JOHN DEERE','859M','1T0859MXVKC343864','SEBASTIAN POO'],
+        ['PRO-08','Procesador 08','PROCESADOR','JOHN DEERE','2154G','1FF2154GEKC212271','ALEJANDRO SEPULVEDA'],
+        ['SK-11','Skidder 11','SKIDDER','JOHN DEERE','648L','1DW648LBKKC695616','SEBASTIAN POO'],
+        ['SK-14A','Skidder 14A','SKIDDER','TIGERCAT','625H 6X6','6250938','SEBASTIAN POO'],
+        ['Feller-03','Feller 03','FELLER','TIMBCO','T445D','FT4C-2155-031903','SEBASTIAN POO'],
+        ['SK-10','Skidder 10','SKIDDER','JOHN DEERE','848H','1DW848HXKBC636904','SEBASTIAN POO'],
+        ['SK-08','Skidder 08','SKIDDER','CATERPILLAR','525C','CAT0525CL52501408','SEBASTIAN POO'],
+        ['PRO-11','Procesador 11','PROCESADOR','KOMATSU','PC210LL','KMTPC243ELWA52084','JUAN PAULO SILVA'],
+        ['Shovel-01','Shovel Logger 01','SHOVEL LOGGER','TIGERCAT','LS855E','85504014','LUIS SAEZ'],
+        ['SK-13','Skidder 13','SKIDDER','TIGERCAT','625H','6250922','LUIS SAEZ'],
+        ['Twinch 01','T-Winch 01','HUINCHE','ECOFORST','T-Winch 10.2','T-W02-083','LUIS SAEZ'],
+        ['Twinch 02','T-Winch 02','HUINCHE','ECOFORST','T-Winch 30.2','T-W30.2-090','LUIS SAEZ'],
+        ['Harvester-01','Harvester 01','HARVESTER','NEUSON FOREST','243HVT','183140','LUIS SAEZ'],
+        ['Torre-01','Torre Madereo 01','TORRE MADEREO','DOOSAN','DX360LC-7M','DWGCECFWCP1010831','LUIS SAEZ'],
+        ['SK-14B','Skidder 14B','SKIDDER','TIGERCAT','632','6320163','GUSTAVO REYES'],
+        ['PROC-12','Procesador 12','PROCESADOR','JOHN DEERE','2154G','1FF2154GENC212579','SEBASTIAN POO']
+      ];
+      let loaded=0;
+      for(const[codigo,nombre,tipo,marca,modelo,chasis,contacto] of flota){
+        const modQ=await pool.query('SELECT modelo_id FROM modelos_equipo WHERE marca=$1 AND modelo=$2 LIMIT 1',[marca,modelo]);
+        const modId=modQ.rows.length?modQ.rows[0].modelo_id:null;
+        await pool.query(`INSERT INTO equipos(codigo,nombre,tipo,marca,modelo,empresa_id,tipo_cargo,modelo_id,chasis,contacto_terreno,activo)
+          VALUES($1,$2,$3,$4,$5,$6,'maquinaria',$7,$8,$9,true) ON CONFLICT(codigo) DO UPDATE SET nombre=$2,tipo=$3,marca=$4,modelo=$5,tipo_cargo='maquinaria',modelo_id=$7,chasis=$8,contacto_terreno=$9`,
+          [codigo,nombre,tipo,marca,modelo,empId,modId,chasis,contacto]);
+        loaded++;
+      }
+      console.log('  [OK] '+loaded+' equipos de flota cargados');
+    }
+  }catch(e){console.log('[WARN] seed flota:',e.message);}
 }
 
 async function insertarDatosIniciales(client) {
@@ -671,6 +784,23 @@ faenaRouter.delete('/:id', auth, async(req,res)=>{
 app.use('/api/faenas', faenaRouter);
 app.use('/api/tipos-documento', crud('tipos_documento','tipo_doc_id',['codigo','nombre']));
 app.use('/api/motivos',     crud('motivos_movimiento','motivo_id',['nombre','tipo']));
+
+// ══ MODELOS DE EQUIPO ══
+app.get('/api/modelos-equipo', auth, async(req,res)=>{
+  try{const r=await pool.query('SELECT * FROM modelos_equipo WHERE activo=true ORDER BY marca,modelo');res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/modelos-equipo', auth, async(req,res)=>{
+  try{const{marca,modelo,tipo_maquina,funcion_principal,motor_descripcion,potencia_hp,peso_kg,cap_tanque_combustible,cap_aceite_motor,cap_sist_hidraulico,cap_refrigerante,tipo_transmision,ancho_zapata,observaciones}=req.body;
+  const r=await pool.query('INSERT INTO modelos_equipo(marca,modelo,tipo_maquina,funcion_principal,motor_descripcion,potencia_hp,peso_kg,cap_tanque_combustible,cap_aceite_motor,cap_sist_hidraulico,cap_refrigerante,tipo_transmision,ancho_zapata,observaciones) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) ON CONFLICT(marca,modelo) DO UPDATE SET tipo_maquina=EXCLUDED.tipo_maquina,funcion_principal=EXCLUDED.funcion_principal,motor_descripcion=EXCLUDED.motor_descripcion,potencia_hp=EXCLUDED.potencia_hp,peso_kg=EXCLUDED.peso_kg,cap_tanque_combustible=EXCLUDED.cap_tanque_combustible,cap_aceite_motor=EXCLUDED.cap_aceite_motor,cap_sist_hidraulico=EXCLUDED.cap_sist_hidraulico,cap_refrigerante=EXCLUDED.cap_refrigerante,tipo_transmision=EXCLUDED.tipo_transmision,ancho_zapata=EXCLUDED.ancho_zapata,observaciones=EXCLUDED.observaciones RETURNING *',
+    [marca,modelo,tipo_maquina||null,funcion_principal||null,motor_descripcion||null,potencia_hp||null,peso_kg||null,cap_tanque_combustible||null,cap_aceite_motor||null,cap_sist_hidraulico||null,cap_refrigerante||null,tipo_transmision||null,ancho_zapata||null,observaciones||null]);
+  res.status(201).json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/modelos-equipo/:id', auth, async(req,res)=>{
+  try{const{marca,modelo,tipo_maquina,funcion_principal,motor_descripcion,potencia_hp,peso_kg,cap_tanque_combustible,cap_aceite_motor,cap_sist_hidraulico,cap_refrigerante,tipo_transmision,ancho_zapata,observaciones,activo}=req.body;
+  const r=await pool.query('UPDATE modelos_equipo SET marca=$1,modelo=$2,tipo_maquina=$3,funcion_principal=$4,motor_descripcion=$5,potencia_hp=$6,peso_kg=$7,cap_tanque_combustible=$8,cap_aceite_motor=$9,cap_sist_hidraulico=$10,cap_refrigerante=$11,tipo_transmision=$12,ancho_zapata=$13,observaciones=$14,activo=$15 WHERE modelo_id=$16 RETURNING *',
+    [marca,modelo,tipo_maquina||null,funcion_principal||null,motor_descripcion||null,potencia_hp||null,peso_kg||null,cap_tanque_combustible||null,cap_aceite_motor||null,cap_sist_hidraulico||null,cap_refrigerante||null,tipo_transmision||null,ancho_zapata||null,observaciones||null,activo!==false,req.params.id]);
+  res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
 app.use('/api/condiciones-pago', crud('condiciones_pago','condicion_id',['nombre','descripcion']));
 
 // DELETE con restricciones
@@ -747,23 +877,23 @@ async function resolveEmpresaId(val){
 }
 eqR.get('/', auth, async(req,res)=>{
   try{
-    const r=await pool.query('SELECT e.*,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre FROM equipos e LEFT JOIN faenas f ON e.faena_id=f.faena_id LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id ORDER BY emp.razon_social NULLS LAST,e.nombre');
+    const r=await pool.query('SELECT e.*,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,m.marca AS modelo_marca,m.modelo AS modelo_nombre,m.tipo_maquina AS modelo_tipo,m.motor_descripcion AS modelo_motor,m.potencia_hp AS modelo_hp FROM equipos e LEFT JOIN faenas f ON e.faena_id=f.faena_id LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id LEFT JOIN modelos_equipo m ON e.modelo_id=m.modelo_id ORDER BY emp.razon_social NULLS LAST,e.nombre');
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
 eqR.post('/', auth, async(req,res)=>{
   try{
-    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis}=req.body;
+    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis}=req.body;
     const empresa_id=await resolveEmpresaId(req.body.empresa_id);
-    const r=await pool.query('INSERT INTO equipos(codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,empresa_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,num_chasis||null,empresa_id]);
+    const r=await pool.query('INSERT INTO equipos(codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,empresa_id,tipo_cargo,modelo_id,contacto_terreno) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 eqR.put('/:id', auth, async(req,res)=>{
   try{
-    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis}=req.body;
+    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis}=req.body;
     const empresa_id=await resolveEmpresaId(req.body.empresa_id);
-    const r=await pool.query('UPDATE equipos SET codigo=$1,nombre=$2,tipo=$3,faena_id=$4,patente_serie=$5,marca=$6,modelo=$7,anio=$8,placa_patente=$9,num_chasis=$10,empresa_id=$11 WHERE equipo_id=$12 RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,num_chasis||null,empresa_id,req.params.id]);
+    const r=await pool.query('UPDATE equipos SET codigo=$1,nombre=$2,tipo=$3,faena_id=$4,patente_serie=$5,marca=$6,modelo=$7,anio=$8,placa_patente=$9,num_chasis=$10,empresa_id=$11,tipo_cargo=$12,modelo_id=$13,contacto_terreno=$14 WHERE equipo_id=$15 RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
