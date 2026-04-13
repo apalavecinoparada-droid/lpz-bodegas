@@ -701,6 +701,135 @@ function CalcCombustible(p){
   );
 }
 
+// ══ RENDICIONES DE GASTO ══
+var TIPOS_GASTO=[{v:'colacion',l:'Colación'},{v:'peaje',l:'Peaje'},{v:'combustible',l:'Combustible'},{v:'insumo',l:'Insumo / Repuesto'},{v:'herramienta',l:'Herramienta'},{v:'transporte',l:'Transporte'},{v:'alojamiento',l:'Alojamiento'},{v:'materiales',l:'Materiales'},{v:'otros',l:'Otros'}];
+var TIPOS_RESPALDO=[{v:'boleta',l:'Boleta'},{v:'factura',l:'Factura'},{v:'voucher',l:'Voucher'},{v:'recibo',l:'Recibo simple'},{v:'sin_respaldo',l:'Sin respaldo'}];
+function RendicionesView(p){
+  var personal=(p.m.personal||[]).filter(function(x){return x.activo;});
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var faenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
+  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo;});
+  var[tab,setTab]=useState('saldos');
+  var[saldos,setSaldos]=useState([]);var[entregas,setEntregas]=useState([]);var[gastos,setGastos]=useState([]);
+  var[filtPersona,setFiltPersona]=useState('');var[filtEmp,setFiltEmp]=useState('');
+  var[showEntrega,setShowEntrega]=useState(false);var[showGasto,setShowGasto]=useState(false);
+  var[msg,setMsg]=useState('');
+  var[fEntrega,setFEntrega]=useState({persona_id:'',empresa_id:'',fecha:TODAY,monto:'',medio_pago:'transferencia',numero_operacion:'',banco:'',observaciones:''});
+  var[fGasto,setFGasto]=useState({persona_id:'',empresa_id:'',fecha_gasto:TODAY,tipo_gasto:'otros',descripcion:'',monto:'',tiene_respaldo:false,tipo_respaldo:'sin_respaldo',numero_documento:'',faena_id:'',equipo_id:'',observaciones:''});
+  function loadSaldos(){api('/rend/saldos'+(filtEmp?'?empresa_id='+filtEmp:''),'GET',null,p.tok).then(function(r){setSaldos(Array.isArray(r)?r:[]);}).catch(function(){});}
+  function loadEntregas(){var qs='?';if(filtPersona)qs+='persona_id='+filtPersona+'&';api('/rend/entregas'+qs,'GET',null,p.tok).then(function(r){setEntregas(Array.isArray(r)?r:[]);}).catch(function(){});}
+  function loadGastos(){var qs='?';if(filtPersona)qs+='persona_id='+filtPersona+'&';api('/rend/gastos'+qs,'GET',null,p.tok).then(function(r){setGastos(Array.isArray(r)?r:[]);}).catch(function(){});}
+  useEffect(function(){loadSaldos();loadEntregas();loadGastos();},[p.tok,filtPersona,filtEmp]);
+  function guardarEntrega(){
+    if(!fEntrega.persona_id||!fEntrega.monto){setMsg('Persona y monto requeridos');return;}
+    api('/rend/entregas','POST',fEntrega,p.tok).then(function(){loadSaldos();loadEntregas();setShowEntrega(false);setFEntrega({persona_id:'',empresa_id:'',fecha:TODAY,monto:'',medio_pago:'transferencia',numero_operacion:'',banco:'',observaciones:''});setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function guardarGasto(){
+    if(!fGasto.persona_id||!fGasto.descripcion||!fGasto.monto){setMsg('Persona, descripción y monto requeridos');return;}
+    api('/rend/gastos','POST',fGasto,p.tok).then(function(){loadSaldos();loadGastos();setShowGasto(false);setFGasto({persona_id:'',empresa_id:'',fecha_gasto:TODAY,tipo_gasto:'otros',descripcion:'',monto:'',tiene_respaldo:false,tipo_respaldo:'sin_respaldo',numero_documento:'',faena_id:'',equipo_id:'',observaciones:''});setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function aprobar(id){api('/rend/gastos/'+id+'/aprobar','PATCH',null,p.tok).then(function(){loadGastos();loadSaldos();}).catch(function(e){alert(e.message);});}
+  function rechazar(id){if(!confirm('Rechazar este gasto?'))return;api('/rend/gastos/'+id+'/rechazar','PATCH',null,p.tok).then(function(){loadGastos();loadSaldos();}).catch(function(e){alert(e.message);});}
+  function delEntrega(id){if(!confirm('Eliminar esta entrega?'))return;api('/rend/entregas/'+id,'DELETE',null,p.tok).then(function(){loadSaldos();loadEntregas();}).catch(function(){});}
+  function delGasto(id){if(!confirm('Eliminar este gasto?'))return;api('/rend/gastos/'+id,'DELETE',null,p.tok).then(function(){loadSaldos();loadGastos();}).catch(function(){});}
+  var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var tabs=[{k:'saldos',l:'💰 Saldos'},{k:'entregas',l:'↓ Entregas'},{k:'gastos',l:'↑ Gastos'}];
+  var totalEntregas=saldos.reduce(function(s,r){return s+parseFloat(r.total_entregas||0);},0);
+  var totalGastos=saldos.reduce(function(s,r){return s+parseFloat(r.total_gastos||0);},0);
+  var totalSaldo=totalEntregas-totalGastos;
+  return h('div',null,
+    // KPI cards
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,marginBottom:14}},
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #3B82F6'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#3B82F6'}},CLP(Math.round(totalEntregas))),h('div',{style:{fontSize:11,color:'#64748B'}},'Total entregado')),
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #F59E0B'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#F59E0B'}},CLP(Math.round(totalGastos))),h('div',{style:{fontSize:11,color:'#64748B'}},'Total rendido')),
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid '+(totalSaldo>=0?'#10B981':'#EF4444')}},h('div',{style:{fontSize:20,fontWeight:700,color:totalSaldo>=0?'#10B981':'#EF4444'}},CLP(Math.round(totalSaldo))),h('div',{style:{fontSize:11,color:'#64748B'}},totalSaldo>=0?'Saldo a favor empresa':'Empresa debe'))
+    ),
+    // Tabs + filters
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
+      h('div',{style:{display:'flex',gap:4}},
+        tabs.map(function(t){return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'6px 14px',borderRadius:5,fontSize:12,cursor:'pointer',border:'1px solid #CBD5E1',background:tab===t.k?'#3B82F6':'#F8FAFC',color:tab===t.k?'#fff':'#475569',fontWeight:tab===t.k?600:400}},t.l);})),
+      h('div',{style:{display:'flex',gap:6}},
+        h('select',{value:filtPersona,onChange:function(e){setFiltPersona(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todos los trabajadores'),personal.map(function(px){return h('option',{key:px.persona_id,value:px.persona_id},px.nombre_completo);})),
+        tab==='entregas'&&h(Btn,{onClick:function(){setShowEntrega(!showEntrega);}},showEntrega?'Cancelar':'+ Entrega de fondos'),
+        tab==='gastos'&&h(Btn,{onClick:function(){setShowGasto(!showGasto);}},showGasto?'Cancelar':'+ Registrar gasto')
+      )
+    ),
+    msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
+    // ── TAB SALDOS ──
+    tab==='saldos'&&h('div',{className:'card'},
+      h(TBL,{cols:[
+        {lbl:'Trabajador',render:function(r){return h('div',null,h('strong',{style:{fontSize:12}},r.nombre_completo),h('div',{style:{fontSize:10,color:'#64748B'}},r.cargo||'',r.rut?' — '+r.rut:''));}},
+        {lbl:'Empresa',render:function(r){return h('span',{style:{fontSize:11}},r.empresa_nombre||'—');}},
+        {lbl:'Entregado',r:true,render:function(r){return CLP(Math.round(parseFloat(r.total_entregas)||0));}},
+        {lbl:'Rendido',r:true,render:function(r){return CLP(Math.round(parseFloat(r.total_gastos)||0));}},
+        {lbl:'Saldo',r:true,render:function(r){var s=parseFloat(r.saldo)||0;return h('strong',{style:{color:s>0?'#10B981':s<0?'#EF4444':'#64748B',fontSize:13}},CLP(Math.round(s)));}},
+        {lbl:'Estado',render:function(r){var s=parseFloat(r.saldo)||0;var pend=parseInt(r.gastos_pendientes)||0;return h('div',null,s>0?h(Bg,{c:'y'},'Debe $'+Math.round(s).toLocaleString()):s<0?h(Bg,{c:'r'},'Se le debe'):h(Bg,{c:'g'},'OK'),pend>0&&h('span',{style:{fontSize:9,color:'#F59E0B',marginLeft:4}},pend+' pend.'));}},
+        {lbl:'Últ. entrega',render:function(r){return fmtD(r.ultima_entrega);}},
+        {lbl:'',render:function(r){return h(Btn,{v:'a',sm:true,onClick:function(){setFiltPersona(String(r.persona_id));setTab('gastos');}},'Ver detalle');}}
+      ],rows:saldos,empty:'Sin rendiciones registradas'})
+    ),
+    // ── TAB ENTREGAS ──
+    tab==='entregas'&&h('div',null,
+      showEntrega&&h('div',{className:'card',style:{marginBottom:12}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Registrar entrega de fondos'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Trabajador *'),h('select',{value:fEntrega.persona_id,onChange:function(e){setFEntrega(Object.assign({},fEntrega,{persona_id:e.target.value}));},style:inpS},h('option',{value:''},'Seleccione...'),personal.map(function(px){return h('option',{key:px.persona_id,value:px.persona_id},px.nombre_completo);}))),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa'),h('select',{value:fEntrega.empresa_id,onChange:function(e){setFEntrega(Object.assign({},fEntrega,{empresa_id:e.target.value}));},style:inpS},h('option',{value:''},'—'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha *'),h('input',{type:'date',value:fEntrega.fecha,onChange:function(e){setFEntrega(Object.assign({},fEntrega,{fecha:e.target.value}));},style:inpS})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Monto $ *'),h('input',{type:'number',value:fEntrega.monto,onChange:function(e){setFEntrega(Object.assign({},fEntrega,{monto:e.target.value}));},style:inpS,placeholder:'Monto transferido'})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Medio'),h('select',{value:fEntrega.medio_pago,onChange:function(e){setFEntrega(Object.assign({},fEntrega,{medio_pago:e.target.value}));},style:inpS},['transferencia','efectivo','cheque','tarjeta'].map(function(m){return h('option',{key:m,value:m},m);}))),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'N° operación'),h('input',{value:fEntrega.numero_operacion,onChange:function(e){setFEntrega(Object.assign({},fEntrega,{numero_operacion:e.target.value}));},style:inpS})),
+          h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observaciones'),h('input',{value:fEntrega.observaciones,onChange:function(e){setFEntrega(Object.assign({},fEntrega,{observaciones:e.target.value}));},style:inpS}))
+        ),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},h(Btn,{onClick:guardarEntrega},'Registrar entrega'))
+      ),
+      h('div',{className:'card'},h(TBL,{cols:[
+        {lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},
+        {lbl:'Trabajador',k:'nombre_completo'},
+        {lbl:'Monto',r:true,render:function(r){return h('strong',{style:{color:'#3B82F6'}},CLP(Math.round(parseFloat(r.monto))));}},
+        {lbl:'Medio',k:'medio_pago'},
+        {lbl:'N° Op.',k:'numero_operacion'},
+        {lbl:'Obs.',render:function(r){return h('span',{style:{fontSize:11}},r.observaciones||'—');}},
+        {lbl:'',render:function(r){return h('button',{onClick:function(){delEntrega(r.entrega_id);},style:{color:'#EF4444',background:'none',border:'none',cursor:'pointer',fontSize:12}},'✕');}}
+      ],rows:entregas,empty:'Sin entregas'}))
+    ),
+    // ── TAB GASTOS ──
+    tab==='gastos'&&h('div',null,
+      showGasto&&h('div',{className:'card',style:{marginBottom:12}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Registrar gasto rendido'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Trabajador *'),h('select',{value:fGasto.persona_id,onChange:function(e){setFGasto(Object.assign({},fGasto,{persona_id:e.target.value}));},style:inpS},h('option',{value:''},'Seleccione...'),personal.map(function(px){return h('option',{key:px.persona_id,value:px.persona_id},px.nombre_completo);}))),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha gasto *'),h('input',{type:'date',value:fGasto.fecha_gasto,onChange:function(e){setFGasto(Object.assign({},fGasto,{fecha_gasto:e.target.value}));},style:inpS})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Tipo gasto'),h('select',{value:fGasto.tipo_gasto,onChange:function(e){setFGasto(Object.assign({},fGasto,{tipo_gasto:e.target.value}));},style:inpS},TIPOS_GASTO.map(function(t){return h('option',{key:t.v,value:t.v},t.l);}))),
+          h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Descripción *'),h('input',{value:fGasto.descripcion,onChange:function(e){setFGasto(Object.assign({},fGasto,{descripcion:e.target.value}));},style:inpS,placeholder:'Detalle del gasto'})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Monto $ *'),h('input',{type:'number',value:fGasto.monto,onChange:function(e){setFGasto(Object.assign({},fGasto,{monto:e.target.value}));},style:inpS})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Respaldo'),h('select',{value:fGasto.tipo_respaldo,onChange:function(e){var v=e.target.value;setFGasto(Object.assign({},fGasto,{tipo_respaldo:v,tiene_respaldo:v!=='sin_respaldo'}));},style:inpS},TIPOS_RESPALDO.map(function(t){return h('option',{key:t.v,value:t.v},t.l);}))),
+          fGasto.tiene_respaldo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'N° documento'),h('input',{value:fGasto.numero_documento,onChange:function(e){setFGasto(Object.assign({},fGasto,{numero_documento:e.target.value}));},style:inpS})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena'),h('select',{value:fGasto.faena_id,onChange:function(e){setFGasto(Object.assign({},fGasto,{faena_id:e.target.value}));},style:inpS},h('option',{value:''},'—'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Equipo/Cargo'),h('select',{value:fGasto.equipo_id,onChange:function(e){setFGasto(Object.assign({},fGasto,{equipo_id:e.target.value}));},style:inpS},h('option',{value:''},'—'),equipos.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' - '+eq.nombre);}))),
+          h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observaciones'),h('input',{value:fGasto.observaciones,onChange:function(e){setFGasto(Object.assign({},fGasto,{observaciones:e.target.value}));},style:inpS}))
+        ),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},h(Btn,{onClick:guardarGasto},'Registrar gasto'))
+      ),
+      h('div',{className:'card'},h(TBL,{cols:[
+        {lbl:'Fecha',render:function(r){return fmtD(r.fecha_gasto);}},
+        {lbl:'Trabajador',k:'nombre_completo'},
+        {lbl:'Tipo',render:function(r){var t=TIPOS_GASTO.find(function(x){return x.v===r.tipo_gasto;});return h(Bg,{c:r.tipo_gasto==='colacion'?'b':r.tipo_gasto==='peaje'?'teal':r.tipo_gasto==='insumo'?'p':'gray'},t?t.l:r.tipo_gasto);}},
+        {lbl:'Descripción',render:function(r){return h('span',{style:{fontSize:11}},r.descripcion);}},
+        {lbl:'Monto',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.monto))));}},
+        {lbl:'Respaldo',render:function(r){return r.tiene_respaldo?h('div',null,h(Bg,{c:'g'},r.tipo_respaldo),r.numero_documento?h('span',{style:{fontSize:9,color:'#64748B',marginLeft:4}},'#'+r.numero_documento):''):h(Bg,{c:'r'},'Sin respaldo');}},
+        {lbl:'Destino',render:function(r){return h('span',{style:{fontSize:10}},r.faena_nombre||r.equipo_nombre||'—');}},
+        {lbl:'Estado',render:function(r){return h(Bg,{c:r.estado==='aprobado'?'g':r.estado==='rechazado'?'r':'y'},r.estado);}},
+        {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:3}},
+          r.estado==='pendiente'&&h('button',{onClick:function(){aprobar(r.gasto_id);},style:{fontSize:10,padding:'2px 6px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✓'),
+          r.estado==='pendiente'&&h('button',{onClick:function(){rechazar(r.gasto_id);},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✕'),
+          h('button',{onClick:function(){delGasto(r.gasto_id);},style:{color:'#94A3B8',background:'none',border:'none',cursor:'pointer',fontSize:10}},'🗑')
+        );}}
+      ],rows:gastos,empty:'Sin gastos registrados'}))
+    )
+  );
+}
+
 // ══ IMPORT ZIP DTE (Facto) ══
 function ImportZipDTE(p){
   var[status,setStatus]=useState('idle');var[dtes,setDtes]=useState([]);var[sel,setSel]=useState({});
@@ -4020,7 +4149,7 @@ function Personal(p){
 
 function hSel(props,opts){return h.apply(null,['select',props].concat(opts));}
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar'};
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
@@ -4052,6 +4181,9 @@ function App(){
       h('div',{style:{padding:'4px 0',flex:1}},
         grpHdr('oc','ORDENES DE COMPRA'),
         grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true)),
+        h('div',{className:'sb-sep'}),
+        grpHdr('rend','RENDICIONES'),
+        grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
         h('div',{className:'sb-sep'}),
         grpHdr('comb','CONTROL DE COMBUSTIBLES'),
         grp.comb&&h('div',null,
@@ -4142,6 +4274,7 @@ function App(){
           view==='kardex'&&h(KardexView,{tok,m}),
           view==='reportes'&&h(ReportesView,{tok,m}),
           view==='ordenes'&&h(OCView,{tok,m}),
+          view==='rendiciones'&&h(RendicionesView,{tok,m}),
           view==='empresas'&&h(MasterV,{tok,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,activo:true},cols:[{lbl:'ID',k:'empresa_id',mono:true,w:50},{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
           view==='bodegas'&&h(MasterV,{tok,titulo:'Bodega',ep:'bodegas',pk:'bodega_id',Form:BodegaForm,importKey:'bodegas',blank:{codigo:'',nombre:'',ubicacion:'',responsable:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Ubicacion',k:'ubicacion'},{lbl:'Responsable',k:'responsable'}]}),
           view==='productos'&&h(MasterV,{tok,titulo:'Producto',ep:'productos',pk:'producto_id',Form:ProdForm,importKey:'productos',blank:{codigo:'',nombre:'',descripcion:'',categoria_id:'',subcategoria_id:'',unidad_medida:'UN',stock_minimo:0,stock_maximo:'',costo_referencia:0,unidad_compra:'',factor_conversion:1,activo:true},extra:{cats:m.cats,subcats:m.subcats},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Subcategoria',k:'subcategoria_nombre'},{lbl:'UM',k:'unidad_medida'},{lbl:'Stk min',k:'stock_minimo'},{lbl:'Costo ref.',render:r=>CLP(r.costo_referencia)}]}),
