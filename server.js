@@ -651,6 +651,63 @@ async function autoSetup() {
       console.log('  [OK] '+loaded+' equipos de flota cargados');
     }
   }catch(e){console.log('[WARN] seed flota:',e.message);}
+
+  // ── Seed planes de mantención de ejemplo ──
+  try{
+    const pc=await pool.query('SELECT COUNT(*) FROM mant_planes');
+    if(parseInt(pc.rows[0].count)===0){
+      const empQ=await pool.query("SELECT empresa_id FROM empresas WHERE LOWER(razon_social) LIKE '%leonidas%poo%' LIMIT 1");
+      const empId=empQ.rows.length?empQ.rows[0].empresa_id:null;
+      const planes=[
+        ['Cambio aceite motor','preventivo','motor',500,null,null,'Cambio de aceite motor y filtro según especificación OEM'],
+        ['Cambio filtros combustible','preventivo','motor',500,null,null,'Filtro primario separador agua + filtro secundario'],
+        ['Cambio filtro hidráulico','preventivo','hidraulico',1000,null,null,'Filtro retorno + filtro succión hidráulico'],
+        ['Cambio aceite hidráulico','preventivo','hidraulico',2000,null,null,'Vaciado completo y recarga sistema hidráulico'],
+        ['Engrase general','preventivo','lubricacion',50,null,null,'Engrase de todos los puntos según carta de lubricación'],
+        ['Cambio refrigerante','preventivo','enfriamiento',2000,null,null,'Vaciado y recarga sistema de refrigeración'],
+        ['Revisión frenos','preventivo','frenos',500,null,null,'Inspección pastillas, discos, líquido de frenos'],
+        ['Inspección eléctrica','preventivo','electrico',1000,null,null,'Revisión cableado, alternador, baterías, luces'],
+        ['Cambio filtro aire','preventivo','motor',250,null,null,'Filtro primario y secundario de admisión'],
+        ['Revisión transmisión','preventivo','transmision',2000,null,null,'Nivel aceite, filtros, presiones de trabajo']
+      ];
+      for(const[nombre,tipo,sistema,hrs,km,dias,desc] of planes){
+        await pool.query('INSERT INTO mant_planes(empresa_id,nombre,tipo_mantencion,sistema,intervalo_horas,intervalo_km,intervalo_dias,descripcion,activo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,true)',
+          [empId,nombre,tipo,sistema,hrs||null,km||null,dias||null,desc]);
+      }
+      // Crear programación para los primeros 10 equipos
+      const eqs=await pool.query("SELECT equipo_id,horometro_actual FROM equipos WHERE tipo_cargo='maquinaria' AND activo=true ORDER BY equipo_id LIMIT 10");
+      const pls=await pool.query('SELECT plan_id,intervalo_horas FROM mant_planes WHERE activo=true');
+      for(const eq of eqs.rows){
+        for(const pl of pls.rows.slice(0,4)){
+          const proxHrs=(parseFloat(eq.horometro_actual)||0)+parseFloat(pl.intervalo_horas);
+          const estados=['vigente','proxima','vencida'];
+          const est=estados[Math.floor(Math.random()*3)];
+          await pool.query('INSERT INTO mant_programacion(equipo_id,plan_id,empresa_id,proxima_horas,estado) VALUES($1,$2,$3,$4,$5) ON CONFLICT(equipo_id,plan_id) DO NOTHING',
+            [eq.equipo_id,pl.plan_id,empId,proxHrs,est]);
+        }
+      }
+      // Crear OTs de ejemplo
+      const eqSample=await pool.query("SELECT equipo_id,nombre FROM equipos WHERE tipo_cargo='maquinaria' AND activo=true ORDER BY equipo_id LIMIT 6");
+      const tipos=['preventivo','correctivo','preventivo','correctivo','preventivo','correctivo'];
+      const estados2=['cerrada','cerrada','en_ejecucion','abierta','cerrada','abierta'];
+      const costos=[350000,890000,0,0,420000,0];
+      const hrsD=[4,24,0,0,6,0];
+      const yr=new Date().getFullYear();
+      let otN=1;
+      for(let i=0;i<Math.min(6,eqSample.rows.length);i++){
+        const eq=eqSample.rows[i];
+        const num='OT-'+yr+'-'+String(otN++).padStart(4,'0');
+        const dias=Math.floor(Math.random()*30)+1;
+        const fa=new Date();fa.setDate(fa.getDate()-dias);
+        await pool.query(`INSERT INTO mant_ot(numero_ot,empresa_id,equipo_id,tipo_mantencion,origen,fecha_apertura,estado,prioridad,costo_total,tiempo_detenido_hrs,usuario)
+          VALUES($1,$2,$3,$4,'manual',$5,$6,$7,$8,$9,'sistema') ON CONFLICT(numero_ot) DO NOTHING`,
+          [num,empId,eq.equipo_id,tipos[i],fa.toISOString().split('T')[0],estados2[i],i<2?'alta':'normal',costos[i],hrsD[i]]);
+      }
+      // Update seq to avoid conflicts
+      await pool.query("SELECT setval('seq_oc_num',(SELECT COALESCE(MAX(oc_id),0)+1 FROM ordenes_compra))").catch(()=>{});
+      console.log('  [OK] Planes de mantención, programación y OTs de ejemplo cargados');
+    }
+  }catch(e){console.log('[WARN] seed planes:',e.message);}
 }
 
 async function insertarDatosIniciales(client) {
@@ -2782,14 +2839,30 @@ app.get('/api/mant/programacion', auth, async(req,res)=>{
 app.get('/api/mant/panel', auth, async(req,res)=>{
   try{
     const{empresa_id}=req.query;
-    let emp='';let vals=[];
-    if(empresa_id){vals.push(empresa_id);emp=` AND o.empresa_id=$${vals.length}`;}
-    const [otEstados,alertas,costoMes]=await Promise.all([
+    let emp='',empEq='',vals=[],valsE=[];
+    if(empresa_id){vals.push(empresa_id);emp=` AND o.empresa_id=$${vals.length}`;valsE=[empresa_id];empEq=' AND eq.empresa_id=$1';}
+    const [otEstados,alertas,costoMes,costoTotal,equiposStatus,topEquipos,otRecientes,tipoMant]=await Promise.all([
       pool.query(`SELECT estado,COUNT(*) AS n FROM mant_ot o WHERE 1=1${emp} GROUP BY estado`,vals),
-      pool.query(`SELECT COUNT(*) FILTER(WHERE estado='vencida') AS vencidas,COUNT(*) FILTER(WHERE estado='proxima') AS proximas FROM mant_programacion p ${empresa_id?'JOIN equipos eq ON p.equipo_id=eq.equipo_id WHERE eq.empresa_id=$1':'WHERE 1=1'}`,empresa_id?[empresa_id]:[]),
-      pool.query(`SELECT COALESCE(SUM(costo_total),0) AS total FROM mant_ot o WHERE estado='cerrada' AND fecha_termino>=date_trunc('month',CURRENT_DATE)${emp}`,vals)
+      pool.query(`SELECT COUNT(*) FILTER(WHERE estado='vencida') AS vencidas,COUNT(*) FILTER(WHERE estado='proxima') AS proximas,COUNT(*) FILTER(WHERE estado='vigente') AS vigentes FROM mant_programacion p ${empresa_id?'JOIN equipos eq ON p.equipo_id=eq.equipo_id WHERE eq.empresa_id=$1':'WHERE 1=1'}`,empresa_id?[empresa_id]:[]),
+      pool.query(`SELECT COALESCE(SUM(costo_total),0) AS total FROM mant_ot o WHERE estado='cerrada' AND fecha_termino>=date_trunc('month',CURRENT_DATE)${emp}`,vals),
+      pool.query(`SELECT COALESCE(SUM(costo_total),0) AS total,COALESCE(SUM(tiempo_detenido_hrs),0) AS hrs_detencion FROM mant_ot o WHERE estado='cerrada'${emp}`,vals),
+      pool.query(`SELECT eq.equipo_id,eq.codigo,eq.nombre,eq.tipo,eq.estado_operativo,eq.horometro_actual,eq.kilometraje_actual,eq.tipo_cargo,m.marca AS modelo_marca,m.modelo AS modelo_nombre,
+        (SELECT COUNT(*) FROM mant_ot o2 WHERE o2.equipo_id=eq.equipo_id AND o2.estado IN ('abierta','en_ejecucion')) AS ot_activas,
+        (SELECT COUNT(*) FROM mant_programacion p2 WHERE p2.equipo_id=eq.equipo_id AND p2.estado='vencida') AS mant_vencidas,
+        (SELECT COALESCE(SUM(o3.costo_total),0) FROM mant_ot o3 WHERE o3.equipo_id=eq.equipo_id AND o3.estado='cerrada') AS costo_acum,
+        (SELECT COALESCE(SUM(o4.tiempo_detenido_hrs),0) FROM mant_ot o4 WHERE o4.equipo_id=eq.equipo_id AND o4.estado='cerrada') AS hrs_det_acum
+        FROM equipos eq LEFT JOIN modelos_equipo m ON eq.modelo_id=m.modelo_id WHERE eq.activo=true AND eq.tipo_cargo='maquinaria'${empEq} ORDER BY eq.codigo`,valsE),
+      pool.query(`SELECT eq.nombre AS equipo,COALESCE(SUM(o.costo_total),0) AS costo FROM mant_ot o JOIN equipos eq ON o.equipo_id=eq.equipo_id WHERE o.estado='cerrada'${emp} GROUP BY eq.equipo_id,eq.nombre ORDER BY costo DESC LIMIT 8`,vals),
+      pool.query(`SELECT o.ot_id,o.numero_ot,o.estado,o.tipo_mantencion,o.fecha_apertura,o.costo_total,eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo FROM mant_ot o JOIN equipos eq ON o.equipo_id=eq.equipo_id WHERE 1=1${emp} ORDER BY o.creado_en DESC LIMIT 10`,vals),
+      pool.query(`SELECT tipo_mantencion,COUNT(*) AS n,COALESCE(SUM(costo_total),0) AS costo FROM mant_ot o WHERE estado='cerrada'${emp} GROUP BY tipo_mantencion ORDER BY n DESC`,vals)
     ]);
-    res.json({ot_por_estado:otEstados.rows,alertas:alertas.rows[0],costo_mes:costoMes.rows[0].total});
+    res.json({
+      ot_por_estado:otEstados.rows,alertas:alertas.rows[0],
+      costo_mes:costoMes.rows[0].total,costo_total:costoTotal.rows[0].total,
+      hrs_detencion_total:costoTotal.rows[0].hrs_detencion,
+      equipos:equiposStatus.rows,top_equipos:topEquipos.rows,
+      ot_recientes:otRecientes.rows,tipo_mantencion:tipoMant.rows
+    });
   }catch(e){res.status(500).json({error:e.message});}
 });
 
