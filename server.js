@@ -324,6 +324,7 @@ async function setupMantenciones(q){
   try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS modelo_id INT REFERENCES modelos_equipo(modelo_id)');}catch(e){}
   try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS contacto_terreno VARCHAR(100)');}catch(e){}
   try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS chasis VARCHAR(80)');}catch(e){}
+  try{await q("ALTER TABLE equipos ADD COLUMN IF NOT EXISTS horas_productivas_dia NUMERIC(4,1) DEFAULT 12");}catch(e){}
 
     // Indices
   const idxs=[
@@ -643,9 +644,10 @@ async function autoSetup() {
       for(const[codigo,nombre,tipo,marca,modelo,chasis,contacto] of flota){
         const modQ=await pool.query('SELECT modelo_id FROM modelos_equipo WHERE marca=$1 AND modelo=$2 LIMIT 1',[marca,modelo]);
         const modId=modQ.rows.length?modQ.rows[0].modelo_id:null;
-        await pool.query(`INSERT INTO equipos(codigo,nombre,tipo,marca,modelo,empresa_id,tipo_cargo,modelo_id,chasis,contacto_terreno,activo)
-          VALUES($1,$2,$3,$4,$5,$6,'maquinaria',$7,$8,$9,true) ON CONFLICT(codigo) DO UPDATE SET nombre=$2,tipo=$3,marca=$4,modelo=$5,tipo_cargo='maquinaria',modelo_id=$7,chasis=$8,contacto_terreno=$9`,
-          [codigo,nombre,tipo,marca,modelo,empId,modId,chasis,contacto]);
+        const horometro=Math.round(5000+Math.random()*10000);
+        await pool.query(`INSERT INTO equipos(codigo,nombre,tipo,marca,modelo,empresa_id,tipo_cargo,modelo_id,chasis,contacto_terreno,horometro_actual,horas_productivas_dia,activo)
+          VALUES($1,$2,$3,$4,$5,$6,'maquinaria',$7,$8,$9,$10,12,true) ON CONFLICT(codigo) DO UPDATE SET nombre=$2,tipo=$3,marca=$4,modelo=$5,tipo_cargo='maquinaria',modelo_id=$7,chasis=$8,contacto_terreno=$9,horometro_actual=COALESCE(equipos.horometro_actual,$10),horas_productivas_dia=COALESCE(equipos.horas_productivas_dia,12)`,
+          [codigo,nombre,tipo,marca,modelo,empId,modId,chasis,contacto,horometro]);
         loaded++;
       }
       console.log('  [OK] '+loaded+' equipos de flota cargados');
@@ -934,23 +936,23 @@ async function resolveEmpresaId(val){
 }
 eqR.get('/', auth, async(req,res)=>{
   try{
-    const r=await pool.query('SELECT e.*,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,m.marca AS modelo_marca,m.modelo AS modelo_nombre,m.tipo_maquina AS modelo_tipo,m.motor_descripcion AS modelo_motor,m.potencia_hp AS modelo_hp FROM equipos e LEFT JOIN faenas f ON e.faena_id=f.faena_id LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id LEFT JOIN modelos_equipo m ON e.modelo_id=m.modelo_id ORDER BY emp.razon_social NULLS LAST,e.nombre');
+    const r=await pool.query('SELECT e.*,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,m.marca AS modelo_marca,m.modelo AS modelo_nombre,m.tipo_maquina AS modelo_tipo,m.motor_descripcion AS modelo_motor,m.potencia_hp AS modelo_hp FROM equipos e LEFT JOIN faenas f ON e.faena_id=f.faena_id LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id LEFT JOIN modelos_equipo m ON e.modelo_id=m.modelo_id ORDER BY emp.razon_social NULLS LAST,e.codigo');
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
 eqR.post('/', auth, async(req,res)=>{
   try{
-    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis}=req.body;
+    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia}=req.body;
     const empresa_id=await resolveEmpresaId(req.body.empresa_id);
-    const r=await pool.query('INSERT INTO equipos(codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,empresa_id,tipo_cargo,modelo_id,contacto_terreno) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null]);
+    const r=await pool.query('INSERT INTO equipos(codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,empresa_id,tipo_cargo,modelo_id,contacto_terreno,horas_productivas_dia) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 eqR.put('/:id', auth, async(req,res)=>{
   try{
-    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis}=req.body;
+    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia}=req.body;
     const empresa_id=await resolveEmpresaId(req.body.empresa_id);
-    const r=await pool.query('UPDATE equipos SET codigo=$1,nombre=$2,tipo=$3,faena_id=$4,patente_serie=$5,marca=$6,modelo=$7,anio=$8,placa_patente=$9,num_chasis=$10,empresa_id=$11,tipo_cargo=$12,modelo_id=$13,contacto_terreno=$14 WHERE equipo_id=$15 RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,req.params.id]);
+    const r=await pool.query('UPDATE equipos SET codigo=$1,nombre=$2,tipo=$3,faena_id=$4,patente_serie=$5,marca=$6,modelo=$7,anio=$8,placa_patente=$9,num_chasis=$10,empresa_id=$11,tipo_cargo=$12,modelo_id=$13,contacto_terreno=$14,horas_productivas_dia=$15 WHERE equipo_id=$16 RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -2651,7 +2653,7 @@ app.get('/api/mant/ot', auth, async(req,res)=>{
     if(estado){vals.push(estado);where.push(`o.estado=$${vals.length}`);}
     if(desde){vals.push(desde);where.push(`o.fecha_apertura>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`o.fecha_apertura<=$${vals.length}`);}
-    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY o.creado_en DESC`,vals);
+    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,eq.horas_productivas_dia,eq.horometro_actual,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY o.creado_en DESC`,vals);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -2684,6 +2686,41 @@ app.post('/api/mant/ot', auth, async(req,res)=>{
 app.put('/api/mant/ot/:id', auth, async(req,res)=>{
   try{
     const{estado,fecha_inicio,fecha_termino,horometro_servicio,kilometraje_servicio,diagnostico,causa,trabajo_realizado,observaciones,responsable,mecanico_asignado,taller_tipo,taller_nombre,tiempo_detenido_hrs,costo_mano_obra_interna,costo_mano_obra_externa,costo_servicios,costo_traslado,costo_otros,prioridad,sistema,vehiculo_traslado,distancia_km,costo_combustible_traslado}=req.body;
+
+    // ── Auto-gestión de fechas y tiempo de detención ──
+    const prevOT=await pool.query('SELECT estado,fecha_inicio,fecha_termino FROM mant_ot WHERE ot_id=$1',[req.params.id]);
+    const prev=prevOT.rows[0]||{};
+    // Auto fecha_inicio: si cambia a en_ejecucion y no tiene fecha_inicio
+    let fInicio=fecha_inicio||null;
+    if(estado==='en_ejecucion'&&!prev.fecha_inicio&&!fInicio){
+      fInicio=new Date().toISOString();
+    }else if(!fInicio&&prev.fecha_inicio){
+      fInicio=prev.fecha_inicio;
+    }
+    // Auto fecha_termino: si cambia a cerrada y no tiene fecha_termino
+    let fTermino=fecha_termino||null;
+    if(estado==='cerrada'&&!fTermino){
+      fTermino=new Date().toISOString();
+    }
+    // Auto-calcular tiempo_detenido_hrs desde fecha_inicio hasta fecha_termino
+    // Usa horas_productivas_dia del equipo (default 12h) en vez de 24h
+    let hrsDetenido=parseFloat(tiempo_detenido_hrs)||0;
+    if(fInicio&&fTermino){
+      var diffMs=new Date(fTermino).getTime()-new Date(fInicio).getTime();
+      if(diffMs>0){
+        var diasCalendario=diffMs/86400000;
+        // Buscar horas productivas del equipo
+        var eqHrs=await pool.query('SELECT horas_productivas_dia FROM equipos eq JOIN mant_ot o ON eq.equipo_id=o.equipo_id WHERE o.ot_id=$1',[req.params.id]);
+        var hrsProductivas=parseFloat(eqHrs.rows[0]?.horas_productivas_dia)||12;
+        hrsDetenido=Math.round(diasCalendario*hrsProductivas*100)/100;
+      }
+    }
+    // Si se abre o pone en ejecución → marcar equipo como detenido
+    if(estado==='en_ejecucion'||estado==='abierta'){
+      const eqQ=await pool.query('SELECT equipo_id FROM mant_ot WHERE ot_id=$1',[req.params.id]);
+      if(eqQ.rows.length) await pool.query("UPDATE equipos SET estado_operativo='detenido' WHERE equipo_id=$1",[eqQ.rows[0].equipo_id]);
+    }
+
     // Recalculate total costs
     const matQ=await pool.query('SELECT COALESCE(SUM(costo_total),0) AS misc FROM mant_ot_materiales WHERE ot_id=$1',[req.params.id]);
     const moQ=await pool.query('SELECT COALESCE(SUM(costo_total),0) AS total FROM mant_ot_personal WHERE ot_id=$1',[req.params.id]);
@@ -2699,7 +2736,7 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
     const otros=parseFloat(costo_otros)||0;
     const total=moInt+moExt+tras+otros+costoSalidas+costoMisc;
     const r=await pool.query(`UPDATE mant_ot SET estado=$1,fecha_inicio=$2,fecha_termino=$3,horometro_servicio=$4,kilometraje_servicio=$5,diagnostico=$6,causa=$7,trabajo_realizado=$8,observaciones=$9,responsable=$10,mecanico_asignado=$11,taller_tipo=$12,taller_nombre=$13,tiempo_detenido_hrs=$14,costo_repuestos=0,costo_lubricantes=0,costo_mano_obra_interna=$15,costo_mano_obra_externa=$16,costo_servicios=0,costo_traslado=$17,costo_otros=$18,costo_total=$19,prioridad=$20,sistema=$21,vehiculo_traslado=$22,distancia_km=$23,costo_combustible_traslado=$24,actualizado_en=NOW() WHERE ot_id=$25 RETURNING *`,
-      [estado,fecha_inicio||null,fecha_termino||null,horometro_servicio||null,kilometraje_servicio||null,diagnostico||null,causa||null,trabajo_realizado||null,observaciones||null,responsable||null,mecanico_asignado||null,taller_tipo||'interno',taller_nombre||null,tiempo_detenido_hrs||0,moInt,moExt,tras,otros,total,prioridad||'normal',sistema||null,vehiculo_traslado||null,parseFloat(distancia_km)||0,parseFloat(costo_combustible_traslado)||0,req.params.id]);
+      [estado,fInicio,fTermino,horometro_servicio||null,kilometraje_servicio||null,diagnostico||null,causa||null,trabajo_realizado||null,observaciones||null,responsable||null,mecanico_asignado||null,taller_tipo||'interno',taller_nombre||null,hrsDetenido,moInt,moExt,tras,otros,total,prioridad||'normal',sistema||null,vehiculo_traslado||null,parseFloat(distancia_km)||0,parseFloat(costo_combustible_traslado)||0,req.params.id]);
     const ot=r.rows[0];
     // Si se cierra: actualizar horómetro/km del equipo + recalcular programación
     if(estado==='cerrada'){
@@ -2722,7 +2759,7 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
       }
     }
     // Re-fetch con joins para devolver datos completos
-    const full=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
+    const full=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,eq.horas_productivas_dia,eq.horometro_actual,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
     res.json(full.rows[0]||ot);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -2730,7 +2767,7 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
 // GET single OT with joins
 app.get('/api/mant/ot/:id/full', auth, async(req,res)=>{
   try{
-    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
+    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,eq.horas_productivas_dia,eq.horometro_actual,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
     res.json(r.rows[0]||null);
   }catch(e){res.status(500).json({error:e.message});}
 });
