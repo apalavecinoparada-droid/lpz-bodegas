@@ -715,7 +715,7 @@ function RendicionesView(p){
   var[showEntrega,setShowEntrega]=useState(false);var[showGasto,setShowGasto]=useState(false);
   var[msg,setMsg]=useState('');
   var[fEntrega,setFEntrega]=useState({persona_id:'',empresa_id:'',fecha:TODAY,monto:'',medio_pago:'transferencia',numero_operacion:'',banco:'',observaciones:''});
-  var[fGasto,setFGasto]=useState({persona_id:'',empresa_id:'',fecha_gasto:TODAY,tipo_gasto:'otros',descripcion:'',monto:'',tiene_respaldo:false,tipo_respaldo:'sin_respaldo',numero_documento:'',faena_id:'',equipo_id:'',observaciones:''});
+  var[fGasto,setFGasto]=useState({persona_id:'',empresa_id:'',lineas:[{fecha_gasto:TODAY,tipo_gasto:'otros',descripcion:'',monto:'',tiene_respaldo:false,tipo_respaldo:'sin_respaldo',numero_documento:'',faena_id:'',equipo_id:'',observaciones:''}]});
   function loadSaldos(){api('/rend/saldos'+(filtEmp?'?empresa_id='+filtEmp:''),'GET',null,p.tok).then(function(r){setSaldos(Array.isArray(r)?r:[]);}).catch(function(){});}
   function loadEntregas(){var qs='?';if(filtPersona)qs+='persona_id='+filtPersona+'&';api('/rend/entregas'+qs,'GET',null,p.tok).then(function(r){setEntregas(Array.isArray(r)?r:[]);}).catch(function(){});}
   function loadGastos(){var qs='?';if(filtPersona)qs+='persona_id='+filtPersona+'&';api('/rend/gastos'+qs,'GET',null,p.tok).then(function(r){setGastos(Array.isArray(r)?r:[]);}).catch(function(){});}
@@ -724,9 +724,17 @@ function RendicionesView(p){
     if(!fEntrega.persona_id||!fEntrega.monto){setMsg('Persona y monto requeridos');return;}
     api('/rend/entregas','POST',fEntrega,p.tok).then(function(){loadSaldos();loadEntregas();setShowEntrega(false);setFEntrega({persona_id:'',empresa_id:'',fecha:TODAY,monto:'',medio_pago:'transferencia',numero_operacion:'',banco:'',observaciones:''});setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});
   }
+  function addLinea(){setFGasto(function(f){return Object.assign({},f,{lineas:f.lineas.concat([{fecha_gasto:TODAY,tipo_gasto:'otros',descripcion:'',monto:'',tiene_respaldo:false,tipo_respaldo:'sin_respaldo',numero_documento:'',faena_id:'',equipo_id:'',observaciones:''}])});});}
+  function removeLinea(idx){setFGasto(function(f){var nl=f.lineas.filter(function(_,i){return i!==idx;});return Object.assign({},f,{lineas:nl.length?nl:[{fecha_gasto:TODAY,tipo_gasto:'otros',descripcion:'',monto:'',tiene_respaldo:false,tipo_respaldo:'sin_respaldo',numero_documento:'',faena_id:'',equipo_id:'',observaciones:''}]});});}
+  function updLinea(idx,k,v){setFGasto(function(f){var nl=f.lineas.map(function(l,i){if(i!==idx)return l;var u=Object.assign({},l);u[k]=v;if(k==='tipo_respaldo')u.tiene_respaldo=v!=='sin_respaldo';return u;});return Object.assign({},f,{lineas:nl});});}
   function guardarGasto(){
-    if(!fGasto.persona_id||!fGasto.descripcion||!fGasto.monto){setMsg('Persona, descripción y monto requeridos');return;}
-    api('/rend/gastos','POST',fGasto,p.tok).then(function(){loadSaldos();loadGastos();setShowGasto(false);setFGasto({persona_id:'',empresa_id:'',fecha_gasto:TODAY,tipo_gasto:'otros',descripcion:'',monto:'',tiene_respaldo:false,tipo_respaldo:'sin_respaldo',numero_documento:'',faena_id:'',equipo_id:'',observaciones:''});setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});
+    if(!fGasto.persona_id){setMsg('Seleccione un trabajador');return;}
+    var validas=fGasto.lineas.filter(function(l){return l.descripcion&&l.monto;});
+    if(!validas.length){setMsg('Ingrese al menos un gasto con descripción y monto');return;}
+    api('/rend/gastos/bulk','POST',{persona_id:fGasto.persona_id,empresa_id:fGasto.empresa_id,lineas:validas},p.tok).then(function(r){
+      loadSaldos();loadGastos();setShowGasto(false);setMsg(r.count+' gastos registrados');
+      setFGasto({persona_id:'',empresa_id:'',lineas:[{fecha_gasto:TODAY,tipo_gasto:'otros',descripcion:'',monto:'',tiene_respaldo:false,tipo_respaldo:'sin_respaldo',numero_documento:'',faena_id:'',equipo_id:'',observaciones:''}]});
+    }).catch(function(e){setMsg('Error: '+e.message);});
   }
   function aprobar(id){api('/rend/gastos/'+id+'/aprobar','PATCH',null,p.tok).then(function(){loadGastos();loadSaldos();}).catch(function(e){alert(e.message);});}
   function rechazar(id){if(!confirm('Rechazar este gasto?'))return;api('/rend/gastos/'+id+'/rechazar','PATCH',null,p.tok).then(function(){loadGastos();loadSaldos();}).catch(function(e){alert(e.message);});}
@@ -796,20 +804,43 @@ function RendicionesView(p){
     // ── TAB GASTOS ──
     tab==='gastos'&&h('div',null,
       showGasto&&h('div',{className:'card',style:{marginBottom:12}},
-        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Registrar gasto rendido'),
-        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Registrar rendición de gastos'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:10}},
           h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Trabajador *'),h('select',{value:fGasto.persona_id,onChange:function(e){setFGasto(Object.assign({},fGasto,{persona_id:e.target.value}));},style:inpS},h('option',{value:''},'Seleccione...'),personal.map(function(px){return h('option',{key:px.persona_id,value:px.persona_id},px.nombre_completo);}))),
-          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha gasto *'),h('input',{type:'date',value:fGasto.fecha_gasto,onChange:function(e){setFGasto(Object.assign({},fGasto,{fecha_gasto:e.target.value}));},style:inpS})),
-          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Tipo gasto'),h('select',{value:fGasto.tipo_gasto,onChange:function(e){setFGasto(Object.assign({},fGasto,{tipo_gasto:e.target.value}));},style:inpS},TIPOS_GASTO.map(function(t){return h('option',{key:t.v,value:t.v},t.l);}))),
-          h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Descripción *'),h('input',{value:fGasto.descripcion,onChange:function(e){setFGasto(Object.assign({},fGasto,{descripcion:e.target.value}));},style:inpS,placeholder:'Detalle del gasto'})),
-          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Monto $ *'),h('input',{type:'number',value:fGasto.monto,onChange:function(e){setFGasto(Object.assign({},fGasto,{monto:e.target.value}));},style:inpS})),
-          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Respaldo'),h('select',{value:fGasto.tipo_respaldo,onChange:function(e){var v=e.target.value;setFGasto(Object.assign({},fGasto,{tipo_respaldo:v,tiene_respaldo:v!=='sin_respaldo'}));},style:inpS},TIPOS_RESPALDO.map(function(t){return h('option',{key:t.v,value:t.v},t.l);}))),
-          fGasto.tiene_respaldo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'N° documento'),h('input',{value:fGasto.numero_documento,onChange:function(e){setFGasto(Object.assign({},fGasto,{numero_documento:e.target.value}));},style:inpS})),
-          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena'),h('select',{value:fGasto.faena_id,onChange:function(e){setFGasto(Object.assign({},fGasto,{faena_id:e.target.value}));},style:inpS},h('option',{value:''},'—'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
-          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Equipo/Cargo'),h('select',{value:fGasto.equipo_id,onChange:function(e){setFGasto(Object.assign({},fGasto,{equipo_id:e.target.value}));},style:inpS},h('option',{value:''},'—'),equipos.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' - '+eq.nombre);}))),
-          h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observaciones'),h('input',{value:fGasto.observaciones,onChange:function(e){setFGasto(Object.assign({},fGasto,{observaciones:e.target.value}));},style:inpS}))
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa'),h('select',{value:fGasto.empresa_id,onChange:function(e){setFGasto(Object.assign({},fGasto,{empresa_id:e.target.value}));},style:inpS},h('option',{value:''},'—'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})))
         ),
-        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},h(Btn,{onClick:guardarGasto},'Registrar gasto'))
+        h('div',{style:{fontSize:11,fontWeight:600,color:'#475569',marginBottom:6}},'Detalle de gastos (',fGasto.lineas.length,' línea'+(fGasto.lineas.length>1?'s':''),')'),
+        fGasto.lineas.map(function(l,idx){
+          return h('div',{key:idx,style:{border:'1px solid #E2E8F0',borderRadius:6,padding:8,marginBottom:6,background:idx%2===0?'#F8FAFC':'#fff'}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}},
+              h('span',{style:{fontSize:11,fontWeight:600,color:'#3B82F6'}},'Gasto #'+(idx+1)),
+              fGasto.lineas.length>1&&h('button',{onClick:function(){removeLinea(idx);},style:{color:'#EF4444',background:'none',border:'none',cursor:'pointer',fontSize:14,fontWeight:700}},'×')
+            ),
+            h('div',{style:{display:'grid',gridTemplateColumns:'110px 100px 1fr 100px 120px',gap:6}},
+              h('input',{type:'date',value:l.fecha_gasto,onChange:function(e){updLinea(idx,'fecha_gasto',e.target.value);},style:inpS,title:'Fecha'}),
+              h('select',{value:l.tipo_gasto,onChange:function(e){updLinea(idx,'tipo_gasto',e.target.value);},style:inpS},TIPOS_GASTO.map(function(t){return h('option',{key:t.v,value:t.v},t.l);})),
+              h('input',{value:l.descripcion,onChange:function(e){updLinea(idx,'descripcion',e.target.value);},style:inpS,placeholder:'Descripción del gasto *'}),
+              h('input',{type:'number',value:l.monto,onChange:function(e){updLinea(idx,'monto',e.target.value);},style:Object.assign({},inpS,{textAlign:'right'}),placeholder:'Monto $'}),
+              h('select',{value:l.tipo_respaldo,onChange:function(e){updLinea(idx,'tipo_respaldo',e.target.value);},style:inpS},TIPOS_RESPALDO.map(function(t){return h('option',{key:t.v,value:t.v},t.l);}))
+            ),
+            (l.tiene_respaldo||l.faena_id||l.equipo_id||l.numero_documento)&&h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6,marginTop:4}},
+              l.tiene_respaldo&&h('input',{value:l.numero_documento||'',onChange:function(e){updLinea(idx,'numero_documento',e.target.value);},style:inpS,placeholder:'N° documento'}),
+              h('select',{value:l.faena_id||'',onChange:function(e){updLinea(idx,'faena_id',e.target.value);},style:inpS},h('option',{value:''},'Faena (opcional)'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})),
+              h('select',{value:l.equipo_id||'',onChange:function(e){updLinea(idx,'equipo_id',e.target.value);},style:inpS},h('option',{value:''},'Equipo (opcional)'),equipos.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' '+eq.nombre);}))
+            ),
+            !l.tiene_respaldo&&(l.faena_id||l.equipo_id)?null:!l.tiene_respaldo&&h('div',{style:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:6,marginTop:4}},
+              h('select',{value:l.faena_id||'',onChange:function(e){updLinea(idx,'faena_id',e.target.value);},style:inpS},h('option',{value:''},'Faena (opcional)'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})),
+              h('select',{value:l.equipo_id||'',onChange:function(e){updLinea(idx,'equipo_id',e.target.value);},style:inpS},h('option',{value:''},'Equipo (opcional)'),equipos.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' '+eq.nombre);}))
+            )
+          );
+        }),
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:8}},
+          h('div',{style:{display:'flex',gap:6}},
+            h('button',{onClick:addLinea,style:{padding:'6px 12px',border:'1px dashed #3B82F6',borderRadius:5,background:'#EFF6FF',color:'#3B82F6',cursor:'pointer',fontSize:12,fontWeight:600}},'+ Agregar línea')),
+          h('div',{style:{display:'flex',gap:10,alignItems:'center'}},
+            h('span',{style:{fontSize:13,fontWeight:700}},'Total: ',CLP(fGasto.lineas.reduce(function(s,l){return s+(parseFloat(l.monto)||0);},0))),
+            h(Btn,{onClick:guardarGasto},'Registrar '+fGasto.lineas.filter(function(l){return l.descripcion&&l.monto;}).length+' gasto(s)'))
+        )
       ),
       h('div',{className:'card'},h(TBL,{cols:[
         {lbl:'Fecha',render:function(r){return fmtD(r.fecha_gasto);}},
