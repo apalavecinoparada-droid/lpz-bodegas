@@ -518,6 +518,7 @@ async function autoSetup() {
   } catch(e) {}
   // Mantención module tables
   try{ await setupMantenciones(pool.query.bind(pool)); }catch(e){console.log('[WARN] mant tables:',e.message);}
+  try{ await setupRendiciones(pool.query.bind(pool)); }catch(e){console.log('[WARN] rend tables:',e.message);}
   // Seed sistemas y tareas estándar
   try{
     const sc=await pool.query('SELECT COUNT(*) FROM mant_sistemas');
@@ -710,6 +711,102 @@ async function autoSetup() {
       console.log('  [OK] Planes de mantención, programación y OTs de ejemplo cargados');
     }
   }catch(e){console.log('[WARN] seed planes:',e.message);}
+
+  // ── Seed datos de rendiciones de gasto ──
+  try{
+    const rc=await pool.query('SELECT COUNT(*) FROM rend_entregas');
+    if(parseInt(rc.rows[0].count)===0){
+      const empQ=await pool.query("SELECT empresa_id FROM empresas WHERE LOWER(razon_social) LIKE '%leonidas%poo%' LIMIT 1");
+      const empId=empQ.rows.length?empQ.rows[0].empresa_id:null;
+      // Crear personal de ejemplo si no hay suficientes
+      const persQ=await pool.query("SELECT persona_id,nombre_completo FROM personal WHERE activo=true LIMIT 5");
+      let personas=persQ.rows;
+      if(personas.length<3){
+        const nombres=[
+          ['Ricardo Riveros','Jefe de faena','operaciones'],
+          ['Sebastián Poo','Supervisor','administracion'],
+          ['Luis Sáez','Mecánico líder','mantencion'],
+          ['Alejandro Sepúlveda','Operador','operaciones'],
+          ['Juan Paulo Silva','Mecánico','mantencion']
+        ];
+        for(const[nom,cargo,esp] of nombres){
+          await pool.query("INSERT INTO personal(empresa_id,nombre_completo,cargo,especialidad,participa_mantencion,activo) VALUES($1,$2,$3,$4,true,true) ON CONFLICT DO NOTHING",[empId,nom,cargo,esp]).catch(()=>{});
+        }
+        const p2=await pool.query("SELECT persona_id,nombre_completo FROM personal WHERE activo=true LIMIT 5");
+        personas=p2.rows;
+      }
+      const faenasQ=await pool.query("SELECT faena_id FROM faenas WHERE activo=true LIMIT 3");
+      const faenaIds=faenasQ.rows.map(r=>r.faena_id);
+
+      // Entregas de fondos
+      const entregas=[
+        [personas[0]?.persona_id,'2026-03-01',500000,'transferencia','TRF-001','Banco Estado','Fondos para insumos faena marzo'],
+        [personas[0]?.persona_id,'2026-03-15',300000,'transferencia','TRF-012','Banco Estado','Reposición fondos'],
+        [personas[1]?.persona_id,'2026-03-05',400000,'transferencia','TRF-003','Banco Chile','Fondos operación marzo'],
+        [personas[1]?.persona_id,'2026-04-01',350000,'transferencia','TRF-025','Banco Chile','Fondos abril'],
+        [personas[2]?.persona_id,'2026-03-10',250000,'transferencia','TRF-007','Banco Estado','Compras repuestos urgentes'],
+        [personas[2]?.persona_id,'2026-04-05',200000,'transferencia','TRF-030','Banco Estado','Fondos mantención abril'],
+        [personas[3]?.persona_id,'2026-03-20',150000,'efectivo',null,null,'Viáticos traslado máquina'],
+        [personas[4]?.persona_id,'2026-04-01',180000,'transferencia','TRF-028','Banco Estado','Fondos repuestos menores']
+      ];
+      for(const[pid,fecha,monto,medio,nop,banco,obs] of entregas){
+        if(!pid) continue;
+        await pool.query('INSERT INTO rend_entregas(persona_id,empresa_id,fecha,monto,medio_pago,numero_operacion,banco,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+          [pid,empId,fecha,monto,medio,nop,banco,obs,'sistema']);
+      }
+
+      // Gastos rendidos
+      const gastos=[
+        // Ricardo Riveros - gastos de faena
+        [personas[0]?.persona_id,'2026-03-03','colacion','Almuerzo cuadrilla faena Mec 4 (8 personas)',64000,true,'boleta','B-4521',faenaIds[0]],
+        [personas[0]?.persona_id,'2026-03-05','peaje','Peaje ruta Los Ángeles - Nacimiento ida y vuelta',7200,true,'voucher','V-889',null],
+        [personas[0]?.persona_id,'2026-03-07','insumo','Cadena motosierra Oregon 72DPX',32500,true,'boleta','B-4588',faenaIds[0]],
+        [personas[0]?.persona_id,'2026-03-10','colacion','Almuerzo equipo mantención en faena',48000,true,'boleta','B-4612',faenaIds[0]],
+        [personas[0]?.persona_id,'2026-03-12','combustible','Bencina camioneta traslado insumos 60L',55800,true,'boleta','B-991',null],
+        [personas[0]?.persona_id,'2026-03-15','otros','Estacionamiento terminal Los Ángeles 2 días',12000,false,'sin_respaldo',null,null],
+        [personas[0]?.persona_id,'2026-03-18','insumo','Aceite hidráulico Shell Tellus 68 (20L)',38900,true,'factura','F-12045',faenaIds[0]],
+        [personas[0]?.persona_id,'2026-03-22','colacion','Colación operadores turno noche',32000,true,'boleta','B-4690',faenaIds[1]],
+        [personas[0]?.persona_id,'2026-03-25','peaje','Peajes semana 25-28 marzo',14400,true,'voucher','V-923',null],
+        [personas[0]?.persona_id,'2026-03-28','herramienta','Llave de torque 3/4" Stanley',45000,true,'boleta','B-2210',null],
+        // Sebastián Poo - gastos administrativos y operación
+        [personas[1]?.persona_id,'2026-03-08','colacion','Reunión con cliente en terreno',18500,true,'boleta','B-1122',null],
+        [personas[1]?.persona_id,'2026-03-12','combustible','Bencina camioneta supervisión 45L',41850,true,'boleta','B-993',null],
+        [personas[1]?.persona_id,'2026-03-15','peaje','Peajes ruta Concepción ida/vuelta',9600,true,'voucher','V-901',null],
+        [personas[1]?.persona_id,'2026-03-18','materiales','EPP: guantes, lentes, protector auditivo x5',67500,true,'factura','F-8834',null],
+        [personas[1]?.persona_id,'2026-03-22','alojamiento','Hospedaje Concepción reunión proveedor',45000,true,'boleta','B-7712',null],
+        [personas[1]?.persona_id,'2026-03-25','otros','Propina carguío materiales',5000,false,'sin_respaldo',null,faenaIds[0]],
+        [personas[1]?.persona_id,'2026-04-02','colacion','Almuerzo equipo planificación abril',28000,true,'boleta','B-1205',null],
+        [personas[1]?.persona_id,'2026-04-05','combustible','Diésel generador faena 100L',92000,true,'factura','F-9001',faenaIds[1]],
+        // Luis Sáez - gastos mantención
+        [personas[2]?.persona_id,'2026-03-12','insumo','Filtro hidráulico Komatsu 20Y-60-21470',28500,true,'factura','F-5523',null],
+        [personas[2]?.persona_id,'2026-03-15','insumo','Sellos O-ring kit reparación cilindro',15200,true,'boleta','B-3301',null],
+        [personas[2]?.persona_id,'2026-03-18','colacion','Almuerzo mecánicos faena Mec 3',24000,true,'boleta','B-3320',faenaIds[1]],
+        [personas[2]?.persona_id,'2026-03-22','herramienta','Juego dados impacto 3/4" 8 piezas',35000,true,'boleta','B-2215',null],
+        [personas[2]?.persona_id,'2026-03-28','insumo','Grasa EP2 balde 18kg',28500,true,'boleta','B-3401',null],
+        [personas[2]?.persona_id,'2026-04-05','combustible','Bencina camioneta taller 50L',46500,true,'boleta','B-1001',null],
+        [personas[2]?.persona_id,'2026-04-08','insumo','Manguera hidráulica 1/2" x 3m con terminales',42000,true,'factura','F-5590',null],
+        // Alejandro Sepúlveda
+        [personas[3]?.persona_id,'2026-03-22','colacion','Almuerzo traslado máquina',12000,true,'boleta','B-8810',null],
+        [personas[3]?.persona_id,'2026-03-23','peaje','Peajes traslado máquina ruta 5',4800,true,'voucher','V-950',null],
+        [personas[3]?.persona_id,'2026-03-25','combustible','Bencina camioneta acompañamiento cama baja',37200,true,'boleta','B-995',null],
+        [personas[3]?.persona_id,'2026-03-28','otros','Estacionamiento hospital (trámite licencia)',3000,false,'sin_respaldo',null,null],
+        // Juan Paulo Silva
+        [personas[4]?.persona_id,'2026-04-02','insumo','Teflón, silicona, abrazaderas surtidas',8500,true,'boleta','B-4401',null],
+        [personas[4]?.persona_id,'2026-04-03','colacion','Almuerzo reparación en terreno',8000,true,'boleta','B-4410',faenaIds[0]],
+        [personas[4]?.persona_id,'2026-04-05','insumo','Fusibles y relés surtidos para excavadora',12500,true,'boleta','B-4425',null],
+        [personas[4]?.persona_id,'2026-04-07','combustible','Bencina camioneta repuestos 40L',37200,true,'boleta','B-1005',null]
+      ];
+      let gLoaded=0;
+      for(const[pid,fecha,tipo,desc,monto,resp,tipoResp,ndoc,fid] of gastos){
+        if(!pid) continue;
+        const est=Math.random()>0.3?'aprobado':'pendiente';
+        await pool.query('INSERT INTO rend_gastos(persona_id,empresa_id,fecha_gasto,tipo_gasto,descripcion,monto,tiene_respaldo,tipo_respaldo,numero_documento,faena_id,estado,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+          [pid,empId,fecha,tipo,desc,monto,resp,tipoResp,ndoc,fid||null,est,'sistema']);
+        gLoaded++;
+      }
+      console.log('  [OK] Rendiciones: '+entregas.length+' entregas, '+gLoaded+' gastos cargados');
+    }
+  }catch(e){console.log('[WARN] seed rendiciones:',e.message);}
 }
 
 async function insertarDatosIniciales(client) {
@@ -3116,6 +3213,123 @@ app.patch('/api/oc/unlink-ot', auth, async(req,res)=>{
 app.get('/api/oc/disponibles-ot', auth, async(req,res)=>{
   try{
     const r=await pool.query(`SELECT DISTINCT oc.oc_id,oc.numero_oc,oc.fecha_emision,oc.estado,oc.total,pr.nombre AS proveedor FROM ordenes_compra oc LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id WHERE oc.estado NOT IN ('ANULADA') AND NOT EXISTS (SELECT 1 FROM ordenes_compra_detalle d WHERE d.oc_id=oc.oc_id AND d.ot_id IS NOT NULL) ORDER BY oc.fecha_emision DESC`);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ══════════════════════════════════════════════════════
+// MÓDULO RENDICIONES DE GASTO
+// ══════════════════════════════════════════════════════
+
+// ── Tablas ──
+async function setupRendiciones(q){
+  await q(`CREATE TABLE IF NOT EXISTS rend_entregas (
+    entrega_id SERIAL PRIMARY KEY,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    empresa_id INT REFERENCES empresas(empresa_id),
+    fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+    monto NUMERIC(14,2) NOT NULL,
+    medio_pago VARCHAR(40) DEFAULT 'transferencia',
+    numero_operacion VARCHAR(50),
+    banco VARCHAR(60),
+    observaciones TEXT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  await q(`CREATE TABLE IF NOT EXISTS rend_gastos (
+    gasto_id SERIAL PRIMARY KEY,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    empresa_id INT REFERENCES empresas(empresa_id),
+    fecha_gasto DATE NOT NULL DEFAULT CURRENT_DATE,
+    tipo_gasto VARCHAR(40) NOT NULL DEFAULT 'otros',
+    descripcion VARCHAR(300) NOT NULL,
+    monto NUMERIC(14,2) NOT NULL,
+    tiene_respaldo BOOLEAN DEFAULT false,
+    tipo_respaldo VARCHAR(30),
+    numero_documento VARCHAR(50),
+    faena_id INT REFERENCES faenas(faena_id),
+    equipo_id INT REFERENCES equipos(equipo_id),
+    observaciones TEXT,
+    estado VARCHAR(20) DEFAULT 'pendiente',
+    aprobado_por VARCHAR(100),
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+}
+
+// ── Entregas de fondos ──
+app.get('/api/rend/entregas', auth, async(req,res)=>{
+  try{
+    const{persona_id,desde,hasta}=req.query;
+    let w=['1=1'],v=[];
+    if(persona_id){v.push(persona_id);w.push(`e.persona_id=$${v.length}`);}
+    if(desde){v.push(desde);w.push(`e.fecha>=$${v.length}`);}
+    if(hasta){v.push(hasta);w.push(`e.fecha<=$${v.length}`);}
+    const r=await pool.query(`SELECT e.*,p.nombre_completo,emp.razon_social AS empresa_nombre FROM rend_entregas e JOIN personal p ON e.persona_id=p.persona_id LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id WHERE ${w.join(' AND ')} ORDER BY e.fecha DESC,e.entrega_id DESC`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/rend/entregas', auth, async(req,res)=>{
+  try{
+    const{persona_id,empresa_id,fecha,monto,medio_pago,numero_operacion,banco,observaciones}=req.body;
+    if(!persona_id||!monto) return res.status(400).json({error:'Persona y monto requeridos'});
+    const r=await pool.query('INSERT INTO rend_entregas(persona_id,empresa_id,fecha,monto,medio_pago,numero_operacion,banco,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
+      [persona_id,empresa_id||null,fecha||new Date().toISOString().split('T')[0],parseFloat(monto),medio_pago||'transferencia',numero_operacion||null,banco||null,observaciones||null,req.user.email]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/rend/entregas/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM rend_entregas WHERE entrega_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+});
+
+// ── Gastos rendidos ──
+app.get('/api/rend/gastos', auth, async(req,res)=>{
+  try{
+    const{persona_id,desde,hasta,estado}=req.query;
+    let w=['1=1'],v=[];
+    if(persona_id){v.push(persona_id);w.push(`g.persona_id=$${v.length}`);}
+    if(desde){v.push(desde);w.push(`g.fecha_gasto>=$${v.length}`);}
+    if(hasta){v.push(hasta);w.push(`g.fecha_gasto<=$${v.length}`);}
+    if(estado){v.push(estado);w.push(`g.estado=$${v.length}`);}
+    const r=await pool.query(`SELECT g.*,p.nombre_completo,emp.razon_social AS empresa_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre FROM rend_gastos g JOIN personal p ON g.persona_id=p.persona_id LEFT JOIN empresas emp ON g.empresa_id=emp.empresa_id LEFT JOIN faenas f ON g.faena_id=f.faena_id LEFT JOIN equipos eq ON g.equipo_id=eq.equipo_id WHERE ${w.join(' AND ')} ORDER BY g.fecha_gasto DESC,g.gasto_id DESC`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/rend/gastos', auth, async(req,res)=>{
+  try{
+    const{persona_id,empresa_id,fecha_gasto,tipo_gasto,descripcion,monto,tiene_respaldo,tipo_respaldo,numero_documento,faena_id,equipo_id,observaciones}=req.body;
+    if(!persona_id||!descripcion||!monto) return res.status(400).json({error:'Persona, descripción y monto requeridos'});
+    const r=await pool.query('INSERT INTO rend_gastos(persona_id,empresa_id,fecha_gasto,tipo_gasto,descripcion,monto,tiene_respaldo,tipo_respaldo,numero_documento,faena_id,equipo_id,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *',
+      [persona_id,empresa_id||null,fecha_gasto||new Date().toISOString().split('T')[0],tipo_gasto||'otros',descripcion,parseFloat(monto),tiene_respaldo||false,tipo_respaldo||null,numero_documento||null,faena_id||null,equipo_id||null,observaciones||null,req.user.email]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.patch('/api/rend/gastos/:id/aprobar', auth, async(req,res)=>{
+  try{const r=await pool.query("UPDATE rend_gastos SET estado='aprobado',aprobado_por=$1 WHERE gasto_id=$2 RETURNING *",[req.user.email,req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+app.patch('/api/rend/gastos/:id/rechazar', auth, async(req,res)=>{
+  try{const r=await pool.query("UPDATE rend_gastos SET estado='rechazado',aprobado_por=$1 WHERE gasto_id=$2 RETURNING *",[req.user.email,req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/rend/gastos/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM rend_gastos WHERE gasto_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+});
+
+// ── Saldos por persona ──
+app.get('/api/rend/saldos', auth, async(req,res)=>{
+  try{
+    const{empresa_id}=req.query;
+    let empFilt=empresa_id?' AND p.empresa_id='+parseInt(empresa_id):'';
+    const r=await pool.query(`SELECT p.persona_id,p.nombre_completo,p.rut,p.cargo,emp.razon_social AS empresa_nombre,
+      COALESCE((SELECT SUM(e.monto) FROM rend_entregas e WHERE e.persona_id=p.persona_id),0) AS total_entregas,
+      COALESCE((SELECT SUM(g.monto) FROM rend_gastos g WHERE g.persona_id=p.persona_id AND g.estado!='rechazado'),0) AS total_gastos,
+      COALESCE((SELECT SUM(e.monto) FROM rend_entregas e WHERE e.persona_id=p.persona_id),0)-COALESCE((SELECT SUM(g.monto) FROM rend_gastos g WHERE g.persona_id=p.persona_id AND g.estado!='rechazado'),0) AS saldo,
+      (SELECT COUNT(*) FROM rend_gastos g2 WHERE g2.persona_id=p.persona_id AND g2.estado='pendiente') AS gastos_pendientes,
+      (SELECT MAX(e2.fecha) FROM rend_entregas e2 WHERE e2.persona_id=p.persona_id) AS ultima_entrega,
+      (SELECT MAX(g3.fecha_gasto) FROM rend_gastos g3 WHERE g3.persona_id=p.persona_id) AS ultimo_gasto
+      FROM personal p LEFT JOIN empresas emp ON p.empresa_id=emp.empresa_id
+      WHERE p.activo=true${empFilt}
+      AND (EXISTS(SELECT 1 FROM rend_entregas e WHERE e.persona_id=p.persona_id) OR EXISTS(SELECT 1 FROM rend_gastos g WHERE g.persona_id=p.persona_id))
+      ORDER BY saldo DESC`);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
