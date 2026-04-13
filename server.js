@@ -3256,6 +3256,7 @@ async function setupRendiciones(q){
     usuario VARCHAR(100),
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
+  try{await q('ALTER TABLE rend_gastos ADD COLUMN IF NOT EXISTS proveedor_id INT REFERENCES proveedores(proveedor_id)');}catch(e){}
 }
 
 // ── Entregas de fondos ──
@@ -3282,6 +3283,14 @@ app.post('/api/rend/entregas', auth, async(req,res)=>{
 app.delete('/api/rend/entregas/:id', auth, async(req,res)=>{
   try{await pool.query('DELETE FROM rend_entregas WHERE entrega_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
 });
+app.put('/api/rend/entregas/:id', auth, async(req,res)=>{
+  try{
+    const{persona_id,empresa_id,fecha,monto,medio_pago,numero_operacion,banco,observaciones}=req.body;
+    const r=await pool.query('UPDATE rend_entregas SET persona_id=$1,empresa_id=$2,fecha=$3,monto=$4,medio_pago=$5,numero_operacion=$6,banco=$7,observaciones=$8 WHERE entrega_id=$9 RETURNING *',
+      [persona_id,empresa_id||null,fecha,parseFloat(monto),medio_pago||'transferencia',numero_operacion||null,banco||null,observaciones||null,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
 
 // ── Gastos rendidos ──
 app.get('/api/rend/gastos', auth, async(req,res)=>{
@@ -3292,17 +3301,25 @@ app.get('/api/rend/gastos', auth, async(req,res)=>{
     if(desde){v.push(desde);w.push(`g.fecha_gasto>=$${v.length}`);}
     if(hasta){v.push(hasta);w.push(`g.fecha_gasto<=$${v.length}`);}
     if(estado){v.push(estado);w.push(`g.estado=$${v.length}`);}
-    const r=await pool.query(`SELECT g.*,p.nombre_completo,emp.razon_social AS empresa_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre FROM rend_gastos g JOIN personal p ON g.persona_id=p.persona_id LEFT JOIN empresas emp ON g.empresa_id=emp.empresa_id LEFT JOIN faenas f ON g.faena_id=f.faena_id LEFT JOIN equipos eq ON g.equipo_id=eq.equipo_id WHERE ${w.join(' AND ')} ORDER BY g.fecha_gasto DESC,g.gasto_id DESC`,v);
+    const r=await pool.query(`SELECT g.*,p.nombre_completo,emp.razon_social AS empresa_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre,pv.nombre AS proveedor_nombre FROM rend_gastos g JOIN personal p ON g.persona_id=p.persona_id LEFT JOIN empresas emp ON g.empresa_id=emp.empresa_id LEFT JOIN faenas f ON g.faena_id=f.faena_id LEFT JOIN equipos eq ON g.equipo_id=eq.equipo_id LEFT JOIN proveedores pv ON g.proveedor_id=pv.proveedor_id WHERE ${w.join(' AND ')} ORDER BY g.fecha_gasto DESC,g.gasto_id DESC`,v);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.post('/api/rend/gastos', auth, async(req,res)=>{
   try{
-    const{persona_id,empresa_id,fecha_gasto,tipo_gasto,descripcion,monto,tiene_respaldo,tipo_respaldo,numero_documento,faena_id,equipo_id,observaciones}=req.body;
+    const{persona_id,empresa_id,fecha_gasto,tipo_gasto,descripcion,monto,tiene_respaldo,tipo_respaldo,numero_documento,faena_id,equipo_id,proveedor_id,observaciones}=req.body;
     if(!persona_id||!descripcion||!monto) return res.status(400).json({error:'Persona, descripción y monto requeridos'});
-    const r=await pool.query('INSERT INTO rend_gastos(persona_id,empresa_id,fecha_gasto,tipo_gasto,descripcion,monto,tiene_respaldo,tipo_respaldo,numero_documento,faena_id,equipo_id,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *',
-      [persona_id,empresa_id||null,fecha_gasto||new Date().toISOString().split('T')[0],tipo_gasto||'otros',descripcion,parseFloat(monto),tiene_respaldo||false,tipo_respaldo||null,numero_documento||null,faena_id||null,equipo_id||null,observaciones||null,req.user.email]);
+    const r=await pool.query('INSERT INTO rend_gastos(persona_id,empresa_id,fecha_gasto,tipo_gasto,descripcion,monto,tiene_respaldo,tipo_respaldo,numero_documento,faena_id,equipo_id,proveedor_id,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *',
+      [persona_id,empresa_id||null,fecha_gasto||new Date().toISOString().split('T')[0],tipo_gasto||'otros',descripcion,parseFloat(monto),tiene_respaldo||false,tipo_respaldo||null,numero_documento||null,faena_id||null,equipo_id||null,proveedor_id||null,observaciones||null,req.user.email]);
     res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/rend/gastos/:id', auth, async(req,res)=>{
+  try{
+    const{fecha_gasto,tipo_gasto,descripcion,monto,tiene_respaldo,tipo_respaldo,numero_documento,faena_id,equipo_id,proveedor_id,observaciones,estado}=req.body;
+    const r=await pool.query('UPDATE rend_gastos SET fecha_gasto=$1,tipo_gasto=$2,descripcion=$3,monto=$4,tiene_respaldo=$5,tipo_respaldo=$6,numero_documento=$7,faena_id=$8,equipo_id=$9,proveedor_id=$10,observaciones=$11,estado=COALESCE($12,estado) WHERE gasto_id=$13 RETURNING *',
+      [fecha_gasto,tipo_gasto||'otros',descripcion,parseFloat(monto),tiene_respaldo||false,tipo_respaldo||null,numero_documento||null,faena_id||null,equipo_id||null,proveedor_id||null,observaciones||null,estado||null,req.params.id]);
+    res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.post('/api/rend/gastos/bulk', auth, async(req,res)=>{
@@ -3313,8 +3330,8 @@ app.post('/api/rend/gastos/bulk', auth, async(req,res)=>{
     if(!persona_id||!Array.isArray(lineas)||!lineas.length) throw new Error('Persona y al menos un gasto requeridos');
     const results=[];
     for(const l of lineas){
-      const r=await client.query('INSERT INTO rend_gastos(persona_id,empresa_id,fecha_gasto,tipo_gasto,descripcion,monto,tiene_respaldo,tipo_respaldo,numero_documento,faena_id,equipo_id,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *',
-        [persona_id,empresa_id||null,l.fecha_gasto||new Date().toISOString().split('T')[0],l.tipo_gasto||'otros',l.descripcion,parseFloat(l.monto),l.tiene_respaldo||false,l.tipo_respaldo||null,l.numero_documento||null,l.faena_id||null,l.equipo_id||null,l.observaciones||null,req.user.email]);
+      const r=await client.query('INSERT INTO rend_gastos(persona_id,empresa_id,fecha_gasto,tipo_gasto,descripcion,monto,tiene_respaldo,tipo_respaldo,numero_documento,faena_id,equipo_id,proveedor_id,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *',
+        [persona_id,empresa_id||null,l.fecha_gasto||new Date().toISOString().split('T')[0],l.tipo_gasto||'otros',l.descripcion,parseFloat(l.monto),l.tiene_respaldo||false,l.tipo_respaldo||null,l.numero_documento||null,l.faena_id||null,l.equipo_id||null,l.proveedor_id||null,l.observaciones||null,req.user.email]);
       results.push(r.rows[0]);
     }
     await client.query('COMMIT');
