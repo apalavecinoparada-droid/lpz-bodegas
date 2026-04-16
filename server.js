@@ -3300,6 +3300,28 @@ async function setupRendiciones(q){
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
   try{await q('ALTER TABLE rend_gastos ADD COLUMN IF NOT EXISTS proveedor_id INT REFERENCES proveedores(proveedor_id)');}catch(e){}
+
+  // ── Solicitudes ──
+  await q(`CREATE TABLE IF NOT EXISTS solicitudes (
+    solicitud_id SERIAL PRIMARY KEY,
+    codigo SERIAL,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    solicitante_id INT NOT NULL REFERENCES usuarios(usuario_id),
+    dirigida_a_id INT NOT NULL REFERENCES usuarios(usuario_id),
+    cantidad NUMERIC(10,2) DEFAULT 1,
+    detalle VARCHAR(500) NOT NULL,
+    subcategoria_id INT REFERENCES subcategorias(subcategoria_id),
+    faena_id INT REFERENCES faenas(faena_id),
+    equipo_id INT REFERENCES equipos(equipo_id),
+    prioridad VARCHAR(20) DEFAULT 'normal',
+    observacion TEXT,
+    estado VARCHAR(20) DEFAULT 'pendiente',
+    respuesta TEXT,
+    respondido_en TIMESTAMP,
+    completado_en TIMESTAMP,
+    usuario_creador VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
 }
 
 // ── Entregas de fondos ──
@@ -3410,6 +3432,46 @@ app.get('/api/rend/saldos', auth, async(req,res)=>{
       ORDER BY saldo DESC`);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ══ SOLICITUDES ══
+app.get('/api/solicitudes', auth, async(req,res)=>{
+  try{
+    const{estado,dirigida_a_id,solicitante_id}=req.query;
+    let w=['1=1'],v=[];
+    if(estado){v.push(estado);w.push(`s.estado=$${v.length}`);}
+    if(dirigida_a_id){v.push(dirigida_a_id);w.push(`s.dirigida_a_id=$${v.length}`);}
+    if(solicitante_id){v.push(solicitante_id);w.push(`s.solicitante_id=$${v.length}`);}
+    const r=await pool.query(`SELECT s.*,sol.nombre AS solicitante_nombre,sol.email AS solicitante_email,dest.nombre AS dirigida_nombre,dest.email AS dirigida_email,emp.razon_social AS empresa_nombre,sc.nombre AS subcategoria_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo FROM solicitudes s JOIN usuarios sol ON s.solicitante_id=sol.usuario_id JOIN usuarios dest ON s.dirigida_a_id=dest.usuario_id LEFT JOIN empresas emp ON s.empresa_id=emp.empresa_id LEFT JOIN subcategorias sc ON s.subcategoria_id=sc.subcategoria_id LEFT JOIN faenas f ON s.faena_id=f.faena_id LEFT JOIN equipos eq ON s.equipo_id=eq.equipo_id WHERE ${w.join(' AND ')} ORDER BY s.creado_en DESC`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/solicitudes', auth, async(req,res)=>{
+  try{
+    const{empresa_id,dirigida_a_id,cantidad,detalle,subcategoria_id,faena_id,equipo_id,prioridad,observacion}=req.body;
+    if(!dirigida_a_id||!detalle) return res.status(400).json({error:'Destinatario y detalle son obligatorios'});
+    const r=await pool.query('INSERT INTO solicitudes(empresa_id,solicitante_id,dirigida_a_id,cantidad,detalle,subcategoria_id,faena_id,equipo_id,prioridad,observacion,usuario_creador) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',
+      [empresa_id||null,req.user.id,dirigida_a_id,parseFloat(cantidad)||1,detalle,subcategoria_id||null,faena_id||null,equipo_id||null,prioridad||'normal',observacion||null,req.user.email]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.patch('/api/solicitudes/:id/en-curso', auth, async(req,res)=>{
+  try{const{respuesta}=req.body;
+  const r=await pool.query("UPDATE solicitudes SET estado='en_curso',respuesta=$1,respondido_en=NOW() WHERE solicitud_id=$2 RETURNING *",[respuesta||null,req.params.id]);
+  res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+app.patch('/api/solicitudes/:id/completar', auth, async(req,res)=>{
+  try{const{respuesta}=req.body;
+  const r=await pool.query("UPDATE solicitudes SET estado='completada',respuesta=COALESCE($1,respuesta),completado_en=NOW() WHERE solicitud_id=$2 RETURNING *",[respuesta||null,req.params.id]);
+  res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+app.patch('/api/solicitudes/:id/rechazar', auth, async(req,res)=>{
+  try{const{respuesta}=req.body;
+  const r=await pool.query("UPDATE solicitudes SET estado='rechazada',respuesta=$1,respondido_en=NOW() WHERE solicitud_id=$2 RETURNING *",[respuesta||null,req.params.id]);
+  res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/solicitudes/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM solicitudes WHERE solicitud_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
 });
 
 // SPA fallback — must be AFTER all API routes
