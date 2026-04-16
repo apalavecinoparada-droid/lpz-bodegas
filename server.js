@@ -3374,7 +3374,7 @@ app.get('*', (req,res)=>res.sendFile(path.join(__dirname,'frontend','index.html'
 
 app.listen(PORT,'0.0.0.0', async()=>{
   console.log('\n============================================================');
-  console.log('  LPZ Bodegas v2.0 — Puerto', PORT);
+  console.log('  Empresas Poo — Sistema de Gestión — Puerto', PORT);
   console.log('============================================================');
   let tries=0;
   while(tries<12){try{await pool.query('SELECT 1');console.log('  [OK] BD conectada');break;}catch{tries++;console.log(`  [ESPERA] BD... ${tries}/12`);await new Promise(r=>setTimeout(r,3000));}}
