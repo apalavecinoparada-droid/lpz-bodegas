@@ -3449,8 +3449,21 @@ app.get('/api/solicitudes', auth, async(req,res)=>{
 });
 app.post('/api/solicitudes', auth, async(req,res)=>{
   try{
-    const{empresa_id,dirigida_a_id,cantidad,detalle,subcategoria_id,faena_id,equipo_id,prioridad,observacion}=req.body;
-    if(!dirigida_a_id||!detalle) return res.status(400).json({error:'Destinatario y detalle son obligatorios'});
+    const{empresa_id,dirigida_a_id,cantidad,detalle,subcategoria_id,faena_id,equipo_id,prioridad,observacion,lineas}=req.body;
+    if(!dirigida_a_id) return res.status(400).json({error:'Destinatario es obligatorio'});
+    // Multi-line support
+    if(Array.isArray(lineas)&&lineas.length>0){
+      const results=[];
+      for(const l of lineas){
+        if(!l.detalle)continue;
+        const r=await pool.query('INSERT INTO solicitudes(empresa_id,solicitante_id,dirigida_a_id,cantidad,detalle,subcategoria_id,faena_id,equipo_id,prioridad,observacion,usuario_creador) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',
+          [empresa_id||null,req.user.id,dirigida_a_id,parseFloat(l.cantidad)||1,l.detalle,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,l.prioridad||prioridad||'normal',l.observacion||null,req.user.email]);
+        results.push(r.rows[0]);
+      }
+      return res.status(201).json({ok:true,count:results.length});
+    }
+    // Single line
+    if(!detalle) return res.status(400).json({error:'Detalle es obligatorio'});
     const r=await pool.query('INSERT INTO solicitudes(empresa_id,solicitante_id,dirigida_a_id,cantidad,detalle,subcategoria_id,faena_id,equipo_id,prioridad,observacion,usuario_creador) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',
       [empresa_id||null,req.user.id,dirigida_a_id,parseFloat(cantidad)||1,detalle,subcategoria_id||null,faena_id||null,equipo_id||null,prioridad||'normal',observacion||null,req.user.email]);
     res.status(201).json(r.rows[0]);
