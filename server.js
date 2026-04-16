@@ -382,6 +382,7 @@ async function autoSetup() {
   await q(`CREATE TABLE IF NOT EXISTS tipos_documento (tipo_doc_id SERIAL PRIMARY KEY, codigo VARCHAR(10) NOT NULL UNIQUE, nombre VARCHAR(80) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true)`);
   await q(`CREATE TABLE IF NOT EXISTS motivos_movimiento (motivo_id SERIAL PRIMARY KEY, nombre VARCHAR(100) NOT NULL, tipo VARCHAR(20) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true)`);
   await q(`CREATE TABLE IF NOT EXISTS usuarios (usuario_id SERIAL PRIMARY KEY, email VARCHAR(100) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, password_hash VARCHAR(255) NOT NULL, rol VARCHAR(30) NOT NULL DEFAULT 'BODEGUERO', activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS username VARCHAR(50) UNIQUE');}catch(e){}
   await q(`CREATE TABLE IF NOT EXISTS roles (rol_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, descripcion VARCHAR(200), modulos JSONB DEFAULT '[]', es_admin BOOLEAN DEFAULT false, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
   try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS rol_id INT REFERENCES roles(rol_id)');}catch(e){}
   // ── Tablas nuevas v2 ─────────────────────────────────────
@@ -864,7 +865,7 @@ async function insertarDatosIniciales(client) {
 app.post('/api/auth/login', async(req,res)=>{
   try{
     const{email,password}=req.body;
-    const r=await pool.query('SELECT u.*,ro.nombre AS rol_nombre,ro.modulos,ro.es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.email=$1 AND u.activo=true',[email]);
+    const r=await pool.query('SELECT u.*,ro.nombre AS rol_nombre,ro.modulos,ro.es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE (u.email=$1 OR u.username=$1) AND u.activo=true',[email]);
     if(!r.rows.length) return res.status(401).json({error:'Credenciales invalidas'});
     const ok=await bcrypt.compare(password,r.rows[0].password_hash);
     if(!ok) return res.status(401).json({error:'Credenciales invalidas'});
@@ -1582,18 +1583,18 @@ app.post('/api/import/bulk-oc', auth, async(req,res)=>{
 });
 
 // USUARIOS
-app.get('/api/usuarios', auth, async(req,res)=>{try{res.json((await pool.query('SELECT u.usuario_id,u.email,u.nombre,u.rol,u.rol_id,u.activo,u.creado_en,r.nombre AS rol_nombre,r.es_admin FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id ORDER BY u.nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
+app.get('/api/usuarios', auth, async(req,res)=>{try{res.json((await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.activo,u.creado_en,r.nombre AS rol_nombre,r.es_admin FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id ORDER BY u.nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
 app.post('/api/usuarios', auth, async(req,res)=>{
-  try{const{email,nombre,password,rol_id}=req.body;if(!email||!nombre||!password)return res.status(400).json({error:'Email, nombre y contraseña requeridos'});const hash=await bcrypt.hash(password,10);const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'BODEGUERO';const r=await pool.query('INSERT INTO usuarios(email,nombre,password_hash,rol,rol_id) VALUES($1,$2,$3,$4,$5) RETURNING usuario_id,email,nombre,rol,rol_id,activo',[email,nombre,hash,rolNombre,rid]);res.status(201).json(r.rows[0]);}catch(e){if(e.code==='23505')return res.status(400).json({error:'El email ya está registrado'});res.status(400).json({error:e.message});}
+  try{const{email,username,nombre,password,rol_id}=req.body;if(!email||!nombre||!password)return res.status(400).json({error:'Email, nombre y contraseña requeridos'});const hash=await bcrypt.hash(password,10);const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'BODEGUERO';const r=await pool.query('INSERT INTO usuarios(email,username,nombre,password_hash,rol,rol_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING usuario_id,email,username,nombre,rol,rol_id,activo',[email,username||null,nombre,hash,rolNombre,rid]);res.status(201).json(r.rows[0]);}catch(e){if(e.code==='23505'){var msg=e.detail&&e.detail.indexOf('username')>=0?'El nombre de usuario ya existe':'El email ya está registrado';return res.status(400).json({error:msg});}res.status(400).json({error:e.message});}
 });
 app.put('/api/usuarios/:id', auth, async(req,res)=>{
-  try{const{email,nombre,rol_id,password}=req.body;
+  try{const{email,username,nombre,rol_id,password}=req.body;
   const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;
   const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'ADMINISTRADOR';
-  if(password&&password.length>=4){const hash=await bcrypt.hash(password,10);await pool.query('UPDATE usuarios SET email=$1,nombre=$2,rol=$3,rol_id=$4,password_hash=$5 WHERE usuario_id=$6',[email,nombre,rolNombre,rid,hash,req.params.id]);}
-  else{await pool.query('UPDATE usuarios SET email=$1,nombre=$2,rol=$3,rol_id=$4 WHERE usuario_id=$5',[email,nombre,rolNombre,rid,req.params.id]);}
-  const r=await pool.query('SELECT u.usuario_id,u.email,u.nombre,u.rol,u.rol_id,u.activo,r.nombre AS rol_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id WHERE u.usuario_id=$1',[req.params.id]);
-  res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+  if(password&&password.length>=4){const hash=await bcrypt.hash(password,10);await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5,password_hash=$6 WHERE usuario_id=$7',[email,username||null,nombre,rolNombre,rid,hash,req.params.id]);}
+  else{await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5 WHERE usuario_id=$6',[email,username||null,nombre,rolNombre,rid,req.params.id]);}
+  const r=await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.activo,r.nombre AS rol_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id WHERE u.usuario_id=$1',[req.params.id]);
+  res.json(r.rows[0]);}catch(e){if(e.code==='23505'){var msg=e.detail&&e.detail.indexOf('username')>=0?'El nombre de usuario ya existe':'El email ya está registrado';return res.status(400).json({error:msg});}res.status(400).json({error:e.message});}
 });
 app.patch('/api/usuarios/:id/activo', auth, async(req,res)=>{try{res.json((await pool.query('UPDATE usuarios SET activo=NOT activo WHERE usuario_id=$1 RETURNING *',[req.params.id])).rows[0]);}catch(e){res.status(400).json({error:e.message});}});
 app.delete('/api/usuarios/:id', auth, async(req,res)=>{try{const chk=await pool.query('SELECT usuario_id FROM usuarios WHERE usuario_id=$1',[req.params.id]);if(!chk.rows.length)return res.status(404).json({error:'Usuario no encontrado'});await pool.query('DELETE FROM usuarios WHERE usuario_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}});
