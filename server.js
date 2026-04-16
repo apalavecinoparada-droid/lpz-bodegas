@@ -382,6 +382,8 @@ async function autoSetup() {
   await q(`CREATE TABLE IF NOT EXISTS tipos_documento (tipo_doc_id SERIAL PRIMARY KEY, codigo VARCHAR(10) NOT NULL UNIQUE, nombre VARCHAR(80) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true)`);
   await q(`CREATE TABLE IF NOT EXISTS motivos_movimiento (motivo_id SERIAL PRIMARY KEY, nombre VARCHAR(100) NOT NULL, tipo VARCHAR(20) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true)`);
   await q(`CREATE TABLE IF NOT EXISTS usuarios (usuario_id SERIAL PRIMARY KEY, email VARCHAR(100) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, password_hash VARCHAR(255) NOT NULL, rol VARCHAR(30) NOT NULL DEFAULT 'BODEGUERO', activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await q(`CREATE TABLE IF NOT EXISTS roles (rol_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, descripcion VARCHAR(200), modulos JSONB DEFAULT '[]', es_admin BOOLEAN DEFAULT false, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS rol_id INT REFERENCES roles(rol_id)');}catch(e){}
   // ── Tablas nuevas v2 ─────────────────────────────────────
   await q(`CREATE TABLE IF NOT EXISTS empresas (empresa_id SERIAL PRIMARY KEY, rut VARCHAR(15) NOT NULL UNIQUE, razon_social VARCHAR(150) NOT NULL, direccion VARCHAR(200), ciudad VARCHAR(100), giro VARCHAR(200), telefono VARCHAR(30), email VARCHAR(100), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW(), modificado_en TIMESTAMP DEFAULT NOW())`);
   await q(`CREATE TABLE IF NOT EXISTS condiciones_pago (condicion_id SERIAL PRIMARY KEY, nombre VARCHAR(100) NOT NULL UNIQUE, descripcion TEXT, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
@@ -504,6 +506,23 @@ async function autoSetup() {
       await pool.query("INSERT INTO usuarios(email,nombre,password_hash,rol) VALUES('admin@lpz.cl','Administrador',$1,'ADMINISTRADOR')",[hash]);
     }
   } catch(e) {}
+  // Seed roles
+  try{
+    const rc=await pool.query('SELECT COUNT(*) FROM roles');
+    if(parseInt(rc.rows[0].count)===0){
+      await pool.query(`INSERT INTO roles(nombre,descripcion,modulos,es_admin) VALUES
+        ('Administrador','Acceso completo al sistema','[]',true),
+        ('Supervisor','Acceso a todos los módulos operativos','[]',false),
+        ('Bodeguero','Control de inventario y bodegas','["inventario","reportes"]',false),
+        ('Operador','Rendiciones y consultas básicas','["rendiciones","ordenes"]',false)
+        ON CONFLICT(nombre) DO NOTHING`);
+      // Link admin user to admin role
+      const adminRole=await pool.query("SELECT rol_id FROM roles WHERE es_admin=true LIMIT 1");
+      if(adminRole.rows.length){
+        await pool.query("UPDATE usuarios SET rol_id=$1 WHERE rol IS NOT NULL AND rol_id IS NULL",[adminRole.rows[0].rol_id]);
+      }
+    }
+  }catch(e){console.log('[WARN] seed roles:',e.message);}
   try {
     const emp = await pool.query('SELECT COUNT(*) FROM empresas');
     if (parseInt(emp.rows[0].count) === 0) {
@@ -845,13 +864,15 @@ async function insertarDatosIniciales(client) {
 app.post('/api/auth/login', async(req,res)=>{
   try{
     const{email,password}=req.body;
-    const r=await pool.query('SELECT * FROM usuarios WHERE email=$1 AND activo=true',[email]);
+    const r=await pool.query('SELECT u.*,ro.nombre AS rol_nombre,ro.modulos,ro.es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.email=$1 AND u.activo=true',[email]);
     if(!r.rows.length) return res.status(401).json({error:'Credenciales invalidas'});
     const ok=await bcrypt.compare(password,r.rows[0].password_hash);
     if(!ok) return res.status(401).json({error:'Credenciales invalidas'});
     const u=r.rows[0];
-    const token=jwt.sign({id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol},JWT_SECRET,{expiresIn:'8h'});
-    res.json({token,usuario:{id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol}});
+    const modulos=u.modulos||[];
+    const esAdmin=u.es_admin||u.rol==='ADMINISTRADOR';
+    const token=jwt.sign({id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin},JWT_SECRET,{expiresIn:'8h'});
+    res.json({token,usuario:{id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos}});
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.get('/api/auth/me', auth, (req,res)=>res.json(req.user));
@@ -1561,11 +1582,32 @@ app.post('/api/import/bulk-oc', auth, async(req,res)=>{
 });
 
 // USUARIOS
-app.get('/api/usuarios', auth, async(req,res)=>{try{res.json((await pool.query('SELECT usuario_id,email,nombre,rol,activo,creado_en FROM usuarios ORDER BY nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
+app.get('/api/usuarios', auth, async(req,res)=>{try{res.json((await pool.query('SELECT u.usuario_id,u.email,u.nombre,u.rol,u.rol_id,u.activo,u.creado_en,r.nombre AS rol_nombre,r.es_admin FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id ORDER BY u.nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
 app.post('/api/usuarios', auth, async(req,res)=>{
-  try{const{email,nombre,password,rol}=req.body;const hash=await bcrypt.hash(password,10);const r=await pool.query('INSERT INTO usuarios(email,nombre,password_hash,rol) VALUES($1,$2,$3,$4) RETURNING usuario_id,email,nombre,rol,activo',[email,nombre,hash,rol||'BODEGUERO']);res.status(201).json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+  try{const{email,nombre,password,rol_id}=req.body;if(!email||!nombre||!password)return res.status(400).json({error:'Email, nombre y contraseña requeridos'});const hash=await bcrypt.hash(password,10);const rolNombre=(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rol_id||1])).rows[0]?.nombre||'BODEGUERO';const r=await pool.query('INSERT INTO usuarios(email,nombre,password_hash,rol,rol_id) VALUES($1,$2,$3,$4,$5) RETURNING usuario_id,email,nombre,rol,rol_id,activo',[email,nombre,hash,rolNombre,rol_id||null]);res.status(201).json(r.rows[0]);}catch(e){if(e.code==='23505')return res.status(400).json({error:'El email ya está registrado'});res.status(400).json({error:e.message});}
+});
+app.put('/api/usuarios/:id', auth, async(req,res)=>{
+  try{const{email,nombre,rol_id,password}=req.body;
+  const rolNombre=(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rol_id])).rows[0]?.nombre||'BODEGUERO';
+  if(password&&password.length>=4){const hash=await bcrypt.hash(password,10);await pool.query('UPDATE usuarios SET email=$1,nombre=$2,rol=$3,rol_id=$4,password_hash=$5 WHERE usuario_id=$6',[email,nombre,rolNombre,rol_id||null,hash,req.params.id]);}
+  else{await pool.query('UPDATE usuarios SET email=$1,nombre=$2,rol=$3,rol_id=$4 WHERE usuario_id=$5',[email,nombre,rolNombre,rol_id||null,req.params.id]);}
+  const r=await pool.query('SELECT u.usuario_id,u.email,u.nombre,u.rol,u.rol_id,u.activo,r.nombre AS rol_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id WHERE u.usuario_id=$1',[req.params.id]);
+  res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
 app.patch('/api/usuarios/:id/activo', auth, async(req,res)=>{try{res.json((await pool.query('UPDATE usuarios SET activo=NOT activo WHERE usuario_id=$1 RETURNING *',[req.params.id])).rows[0]);}catch(e){res.status(400).json({error:e.message});}});
+app.delete('/api/usuarios/:id', auth, async(req,res)=>{try{const chk=await pool.query('SELECT usuario_id FROM usuarios WHERE usuario_id=$1',[req.params.id]);if(!chk.rows.length)return res.status(404).json({error:'Usuario no encontrado'});await pool.query('DELETE FROM usuarios WHERE usuario_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}});
+
+// ── ROLES ──
+app.get('/api/roles', auth, async(req,res)=>{try{res.json((await pool.query('SELECT * FROM roles ORDER BY rol_id')).rows);}catch(e){res.status(500).json({error:e.message});}});
+app.post('/api/roles', auth, async(req,res)=>{
+  try{const{nombre,descripcion,modulos,es_admin}=req.body;if(!nombre)return res.status(400).json({error:'Nombre requerido'});
+  const r=await pool.query('INSERT INTO roles(nombre,descripcion,modulos,es_admin) VALUES($1,$2,$3,$4) RETURNING *',[nombre,descripcion||null,JSON.stringify(modulos||[]),es_admin||false]);res.status(201).json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/roles/:id', auth, async(req,res)=>{
+  try{const{nombre,descripcion,modulos,es_admin}=req.body;
+  const r=await pool.query('UPDATE roles SET nombre=$1,descripcion=$2,modulos=$3,es_admin=$4 WHERE rol_id=$5 RETURNING *',[nombre,descripcion||null,JSON.stringify(modulos||[]),es_admin||false,req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/roles/:id', auth, async(req,res)=>{try{await pool.query('DELETE FROM roles WHERE rol_id=$1',[req.params.id]);res.json({ok:true});}catch(e){if(e.code==='23503')return res.status(400).json({error:'Rol en uso, no se puede eliminar'});res.status(400).json({error:e.message});}});
 
 app.get('/api/ping', async(req,res)=>{try{await pool.query('SELECT 1');res.json({ok:true,version:'2.0',time:new Date().toISOString()});}catch(e){res.status(500).json({ok:false,error:e.message});}});
 // catch-all moved to after API routes
