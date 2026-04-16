@@ -39,6 +39,7 @@ tr:hover>td{background:#F8FAFC}
 .card-h{padding:12px 16px;border-bottom:1px solid #F1F4F9;display:flex;align-items:center;justify-content:space-between}
 .card-h h3{font-size:14px;font-weight:600}
 .card-t{overflow-x:auto}
+.card-t table{min-width:600px}
 .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:14px}
 .kpi{border-radius:10px;padding:14px 16px}
 .kpi-b{background:#EFF6FF;border:1px solid #BFDBFE}
@@ -99,6 +100,28 @@ tr:hover>td{background:#F8FAFC}
 .total-final{border-top:2px solid #1D4ED8;margin-top:6px;padding-top:6px;font-weight:700;font-size:15px;color:#1D4ED8}
 .print-only{display:none}
 @media print{.sb,.topbar,.no-print{display:none!important}.print-only{display:block!important}.content{padding:0}}
+/* ── RESPONSIVE MOBILE ── */
+.hamburger{display:none;position:fixed;top:10px;left:10px;z-index:1001;background:#1E3A2D;color:#D4C5A9;border:none;border-radius:6px;width:40px;height:40px;font-size:22px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.3);line-height:1}
+.sb-overlay{display:none;position:fixed;top:0;left:0;width:100vw;height:100vh;background:rgba(0,0,0,.5);z-index:999}
+@media(max-width:768px){
+  .hamburger{display:block}
+  .sb-overlay.open{display:block}
+  .sb{position:fixed;top:0;left:-260px;height:100vh;z-index:1000;width:240px;transition:left .25s ease;box-shadow:4px 0 20px rgba(0,0,0,.3)}
+  .sb.open{left:0}
+  .main{margin-left:0!important;width:100%!important}
+  .topbar{padding-left:52px!important}
+  .content{padding:8px!important}
+  .card{padding:10px!important}
+  .g2{grid-template-columns:1fr!important}
+  table{font-size:11px}
+  .btn{padding:6px 10px!important;font-size:11px!important;min-height:38px}
+  .btn-xs{min-height:28px!important;font-size:10px!important}
+}
+@media(max-width:480px){
+  .topbar h2{font-size:14px!important}
+  table{font-size:10px}
+  .sb-logo h1{font-size:12px}
+}
 </style>
 </head>
 <body>
@@ -161,14 +184,14 @@ const Modal=p=>h('div',{className:'ov'},h('div',{className:'modal'+(p.lg?' modal
 function TBL(p){
   const rows=p.rows||[];
   if(!rows.length)return h('div',{className:'empty'},p.empty||'Sin datos');
-  return h('div',{className:'card-t'},h('table',null,
+  return h('div',{style:{overflowX:'auto',WebkitOverflowScrolling:'touch'}},h('div',{className:'card-t'},h('table',null,
     h('thead',null,h('tr',null,...p.cols.map((c,i)=>h('th',{key:i,style:{textAlign:c.r?'right':c.c?'center':'left',width:c.w}},c.lbl)))),
     h('tbody',null,...rows.map((r,i)=>h('tr',{key:r[p.rowKey]||i},
       ...p.cols.map((c,j)=>h('td',{key:j,style:{textAlign:c.r?'right':c.c?'center':'left',fontFamily:c.mono?'Courier New':undefined,fontSize:c.mono?12:undefined}},
         c.render?c.render(r,i):str(r[c.k]||'—')
       ))
     )))
-  ));
+  )));
 }
 
 // ── EXCEL EXPORT ──
@@ -715,6 +738,108 @@ function CalcCombustible(p){
         ):h('div',{style:{color:'#94A3B8',fontSize:13,textAlign:'center'}},'Complete los campos para ver el resultado')
       ),
       h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Modo UTM: Imp. esp. = UTM × tasa / 1000 × lts. Modo directo: use el valor de la factura. Neto = (Total − Imp. esp.) ÷ 1.19 ÷ lts.')
+    )
+  );
+}
+
+// ══ SOLICITUDES ══
+var PRIORIDADES_SOL=[{v:'baja',l:'Baja'},{v:'normal',l:'Normal'},{v:'alta',l:'Alta'},{v:'urgente',l:'Urgente'}];
+function SolicitudesView(p){
+  var subcats=(p.m.subcats||[]);
+  var faenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
+  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo;});
+  var userId=p.user?p.user.id:null;
+  var[solicitudes,setSolicitudes]=useState([]);var[usuarios,setUsuarios]=useState([]);
+  var[tab,setTab]=useState('recibidas');var[showForm,setShowForm]=useState(false);var[msg,setMsg]=useState('');
+  var[respModal,setRespModal]=useState(null);var[respText,setRespText]=useState('');
+  var[form,setForm]=useState({dirigida_a_id:'',empresa_id:'',cantidad:1,detalle:'',subcategoria_id:'',faena_id:'',equipo_id:'',prioridad:'normal',observacion:''});
+  function load(){api('/solicitudes','GET',null,p.tok).then(function(r){setSolicitudes(Array.isArray(r)?r:[]);}).catch(function(){});}
+  function loadUsers(){api('/usuarios','GET',null,p.tok).then(function(r){setUsuarios((Array.isArray(r)?r:[]).filter(function(u){return u.activo;}));}).catch(function(){});}
+  useEffect(function(){load();loadUsers();},[p.tok]);
+  function guardar(){
+    if(!form.dirigida_a_id||!form.detalle){setMsg('Destinatario y detalle son obligatorios');return;}
+    api('/solicitudes','POST',form,p.tok).then(function(){load();setShowForm(false);setForm({dirigida_a_id:'',empresa_id:'',cantidad:1,detalle:'',subcategoria_id:'',faena_id:'',equipo_id:'',prioridad:'normal',observacion:''});setMsg('Solicitud registrada');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function enCurso(id){api('/solicitudes/'+id+'/en-curso','PATCH',{respuesta:respText},p.tok).then(function(){load();setRespModal(null);setRespText('');}).catch(function(e){alert(e.message);});}
+  function completar(id){api('/solicitudes/'+id+'/completar','PATCH',{respuesta:respText},p.tok).then(function(){load();setRespModal(null);setRespText('');}).catch(function(e){alert(e.message);});}
+  function rechazar(id){api('/solicitudes/'+id+'/rechazar','PATCH',{respuesta:respText},p.tok).then(function(){load();setRespModal(null);setRespText('');}).catch(function(e){alert(e.message);});}
+  function eliminar(id){if(!confirm('Eliminar esta solicitud?'))return;api('/solicitudes/'+id,'DELETE',null,p.tok).then(function(){load();}).catch(function(e){alert(e.message);});}
+  var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var filtered=solicitudes.filter(function(s){
+    if(tab==='recibidas')return String(s.dirigida_a_id)===String(userId);
+    if(tab==='enviadas')return String(s.solicitante_id)===String(userId);
+    return true;
+  });
+  var pendientes=solicitudes.filter(function(s){return String(s.dirigida_a_id)===String(userId)&&s.estado==='pendiente';}).length;
+  var enCursoCount=solicitudes.filter(function(s){return String(s.dirigida_a_id)===String(userId)&&s.estado==='en_curso';}).length;
+  var tabs=[{k:'recibidas',l:'📥 Recibidas'+(pendientes?' ('+pendientes+')':'')},{k:'enviadas',l:'📤 Enviadas'},{k:'todas',l:'📋 Todas'}];
+  var estadoColors={pendiente:'y',en_curso:'b',completada:'g',rechazada:'r'};
+  var prioColors={baja:'gray',normal:'b',alta:'y',urgente:'r'};
+  return h('div',null,
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:14}},
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #F59E0B'}},h('div',{style:{fontSize:22,fontWeight:700,color:'#F59E0B'}},pendientes),h('div',{style:{fontSize:11,color:'#64748B'}},'Pendientes')),
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #3B82F6'}},h('div',{style:{fontSize:22,fontWeight:700,color:'#3B82F6'}},enCursoCount),h('div',{style:{fontSize:11,color:'#64748B'}},'En curso')),
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #10B981'}},h('div',{style:{fontSize:22,fontWeight:700,color:'#10B981'}},solicitudes.filter(function(s){return s.estado==='completada';}).length),h('div',{style:{fontSize:11,color:'#64748B'}},'Completadas')),
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #64748B'}},h('div',{style:{fontSize:22,fontWeight:700,color:'#1E293B'}},solicitudes.length),h('div',{style:{fontSize:11,color:'#64748B'}},'Total'))
+    ),
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
+      h('div',{style:{display:'flex',gap:4}},tabs.map(function(t){return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'6px 14px',borderRadius:5,fontSize:12,cursor:'pointer',border:'1px solid #CBD5E1',background:tab===t.k?'#1E3A2D':'#F8FAFC',color:tab===t.k?'#fff':'#475569',fontWeight:tab===t.k?600:400}},t.l);})),
+      h(Btn,{onClick:function(){setShowForm(!showForm);}},showForm?'Cancelar':'+ Nueva Solicitud')
+    ),
+    msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
+    showForm&&h('div',{className:'card',style:{marginBottom:12}},
+      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Nueva solicitud'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Dirigida a *'),h('select',{value:form.dirigida_a_id,onChange:function(e){setForm(Object.assign({},form,{dirigida_a_id:e.target.value}));},style:inpS},h('option',{value:''},'Seleccione destinatario...'),usuarios.filter(function(u){return String(u.usuario_id)!==String(userId);}).map(function(u){return h('option',{key:u.usuario_id,value:u.usuario_id},u.nombre);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Cantidad'),h('input',{type:'number',value:form.cantidad,onChange:function(e){setForm(Object.assign({},form,{cantidad:e.target.value}));},style:inpS,min:1})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Prioridad'),h('select',{value:form.prioridad,onChange:function(e){setForm(Object.assign({},form,{prioridad:e.target.value}));},style:inpS},PRIORIDADES_SOL.map(function(pr){return h('option',{key:pr.v,value:pr.v},pr.l);}))),
+        h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Detalle *'),h('input',{value:form.detalle,onChange:function(e){setForm(Object.assign({},form,{detalle:e.target.value}));},style:inpS,placeholder:'Describa lo que necesita'})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Clasificación'),h('select',{value:form.subcategoria_id,onChange:function(e){setForm(Object.assign({},form,{subcategoria_id:e.target.value}));},style:inpS},h('option',{value:''},'—'),subcats.map(function(s){return h('option',{key:s.subcategoria_id,value:s.subcategoria_id},s.nombre);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena'),h('select',{value:form.faena_id,onChange:function(e){setForm(Object.assign({},form,{faena_id:e.target.value}));},style:inpS},h('option',{value:''},'—'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Cargo / Equipo'),h('select',{value:form.equipo_id,onChange:function(e){setForm(Object.assign({},form,{equipo_id:e.target.value}));},style:inpS},h('option',{value:''},'—'),equipos.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' '+eq.nombre);}))),
+        h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observación'),h('input',{value:form.observacion,onChange:function(e){setForm(Object.assign({},form,{observacion:e.target.value}));},style:inpS}))
+      ),
+      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},h(Btn,{onClick:guardar},'Registrar solicitud'))
+    ),
+    h('div',{className:'card'},h(TBL,{cols:[
+      {lbl:'#',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.solicitud_id);}},
+      {lbl:'Prioridad',render:function(r){return h(Bg,{c:prioColors[r.prioridad]||'gray'},r.prioridad);}},
+      {lbl:'Cant.',r:true,render:function(r){return r.cantidad;}},
+      {lbl:'Detalle',render:function(r){return h('div',null,h('div',{style:{fontSize:12,fontWeight:500}},r.detalle),r.subcategoria_nombre?h('div',{style:{fontSize:10,color:'#64748B'}},r.subcategoria_nombre):'');}},
+      {lbl:'Faena',render:function(r){return h('span',{style:{fontSize:11}},r.faena_nombre||'—');}},
+      {lbl:'Equipo',render:function(r){return r.equipo_codigo?h('span',{style:{fontSize:11}},r.equipo_codigo):'—';}},
+      {lbl:'Solicita',render:function(r){return h('span',{style:{fontSize:11,fontWeight:String(r.solicitante_id)===String(userId)?600:400,color:String(r.solicitante_id)===String(userId)?'#1E3A2D':'inherit'}},r.solicitante_nombre);}},
+      {lbl:'Dirigida a',render:function(r){return h('span',{style:{fontSize:11,fontWeight:String(r.dirigida_a_id)===String(userId)?600:400,color:String(r.dirigida_a_id)===String(userId)?'#1E3A2D':'inherit'}},r.dirigida_nombre);}},
+      {lbl:'Fecha',render:function(r){return fmtD(r.creado_en);}},
+      {lbl:'Estado',render:function(r){return h(Bg,{c:estadoColors[r.estado]||'gray'},r.estado.replace(/_/g,' '));}},
+      {lbl:'Respuesta',render:function(r){return r.respuesta?h('span',{style:{fontSize:10,fontStyle:'italic',color:'#475569'}},r.respuesta):'—';}},
+      {lbl:'',render:function(r){
+        var esMio=String(r.dirigida_a_id)===String(userId);
+        var esCreador=String(r.solicitante_id)===String(userId);
+        return h('div',{style:{display:'flex',gap:3,flexWrap:'wrap'}},
+          esMio&&r.estado==='pendiente'&&h('button',{onClick:function(){setRespModal({sol:r,action:'en_curso'});setRespText('');},style:{fontSize:10,padding:'2px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'▶ En curso'),
+          esMio&&(r.estado==='pendiente'||r.estado==='en_curso')&&h('button',{onClick:function(){setRespModal({sol:r,action:'completar'});setRespText('');},style:{fontSize:10,padding:'2px 6px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✓ Completar'),
+          esMio&&r.estado==='pendiente'&&h('button',{onClick:function(){setRespModal({sol:r,action:'rechazar'});setRespText('');},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✕'),
+          esCreador&&r.estado==='pendiente'&&h('button',{onClick:function(){eliminar(r.solicitud_id);},style:{color:'#94A3B8',background:'none',border:'none',cursor:'pointer',fontSize:10}},'🗑')
+        );
+      }}
+    ],rows:filtered,empty:'Sin solicitudes'})),
+    respModal&&h(Modal,{title:(respModal.action==='en_curso'?'Poner en curso':respModal.action==='completar'?'Completar':'Rechazar')+' — Solicitud #'+respModal.sol.solicitud_id,onClose:function(){setRespModal(null);}},
+      h('div',{style:{padding:'0 4px'}},
+        h('div',{style:{background:'#F8FAFC',borderRadius:6,padding:10,marginBottom:10,fontSize:12}},
+          h('div',null,h('strong',null,'De: '),respModal.sol.solicitante_nombre),
+          h('div',null,h('strong',null,'Detalle: '),respModal.sol.detalle),
+          h('div',null,h('strong',null,'Cantidad: '),respModal.sol.cantidad),
+          respModal.sol.faena_nombre&&h('div',null,h('strong',null,'Faena: '),respModal.sol.faena_nombre)
+        ),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Respuesta (opcional)'),h('textarea',{value:respText,onChange:function(e){setRespText(e.target.value);},style:Object.assign({},inpS,{minHeight:60}),placeholder:'Escriba una respuesta o nota...'})),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:10}},
+          h('button',{onClick:function(){setRespModal(null);},style:{padding:'6px 14px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12}},'Cancelar'),
+          respModal.action==='en_curso'&&h(Btn,{onClick:function(){enCurso(respModal.sol.solicitud_id);}},'▶ Poner en curso'),
+          respModal.action==='completar'&&h(Btn,{v:'g',onClick:function(){completar(respModal.sol.solicitud_id);}},'✓ Completar'),
+          respModal.action==='rechazar'&&h(Btn,{v:'r',onClick:function(){rechazar(respModal.sol.solicitud_id);}},'✕ Rechazar')
+        )
+      )
     )
   );
 }
@@ -4359,7 +4484,7 @@ function Personal(p){
 
 function hSel(props,opts){return h.apply(null,['select',props].concat(opts));}
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar'};
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
@@ -4393,18 +4518,23 @@ function App(){
     return function(){if(timer)clearTimeout(timer);events.forEach(function(ev){document.removeEventListener(ev,resetTimer,true);});};
   },[tok]);
   if(!tok)return h(LoginPage,{onLogin:handleLogin});
-  function navI(id,icon,label,sub){return h('div',{key:id,className:'nav '+(view===id?'on':''),style:{paddingLeft:sub?22:12},onClick:function(){setView(id);}},h('span',{style:{fontSize:11}},icon),' ',label,(id==='stock'&&alerts>0)?h('span',{className:'cnt'},alerts):null);}
+  var[menuOpen,setMenuOpen]=useState(false);
+  function navI(id,icon,label,sub){return h('div',{key:id,className:'nav '+(view===id?'on':''),style:{paddingLeft:sub?22:12},onClick:function(){setView(id);setMenuOpen(false);}},h('span',{style:{fontSize:11}},icon),' ',label,(id==='stock'&&alerts>0)?h('span',{className:'cnt'},alerts):null);}
   const grpHdr=(k,label)=>h('div',{className:'sb-grp',onClick:function(){toggleGrp(k);}},label,h('span',{className:'sb-grp-arrow '+(grp[k]?'open':'')},'>'));
-  // Permission check
   function canSee(mod){if(!user)return false;if(user.es_admin)return true;if(!user.modulos||user.modulos.length===0)return true;return user.modulos.indexOf(mod)>=0;}
 
   return h('div',{id:'root'},
-    h('div',{className:'sb'},
+    h('button',{className:'hamburger',onClick:function(){setMenuOpen(!menuOpen);}},'☰'),
+    h('div',{className:'sb-overlay'+(menuOpen?' open':''),onClick:function(){setMenuOpen(false);}}),
+    h('div',{className:'sb'+(menuOpen?' open':'')},
       h('div',{className:'sb-logo'},h('h1',null,'Empresas Poo'),h('p',null,'Sistema de Gestión')),
       h('div',{style:{padding:'4px 0',flex:1}},
         canSee('ordenes')&&grpHdr('oc','ORDENES DE COMPRA'),
         canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true)),
         canSee('ordenes')&&h('div',{className:'sb-sep'}),
+        grpHdr('sol','SOLICITUDES'),
+        grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
+        h('div',{className:'sb-sep'}),
         canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
         canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
         canSee('rendiciones')&&h('div',{className:'sb-sep'}),
@@ -4498,6 +4628,7 @@ function App(){
           view==='reportes'&&h(ReportesView,{tok,m}),
           view==='ordenes'&&h(OCView,{tok,m}),
           view==='rendiciones'&&h(RendicionesView,{tok,m}),
+          view==='solicitudes'&&h(SolicitudesView,{tok,m,user}),
           view==='empresas'&&h(MasterV,{tok,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,activo:true},cols:[{lbl:'ID',k:'empresa_id',mono:true,w:50},{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
           view==='bodegas'&&h(MasterV,{tok,titulo:'Bodega',ep:'bodegas',pk:'bodega_id',Form:BodegaForm,importKey:'bodegas',blank:{codigo:'',nombre:'',ubicacion:'',responsable:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Ubicacion',k:'ubicacion'},{lbl:'Responsable',k:'responsable'}]}),
           view==='productos'&&h(MasterV,{tok,titulo:'Producto',ep:'productos',pk:'producto_id',Form:ProdForm,importKey:'productos',blank:{codigo:'',nombre:'',descripcion:'',categoria_id:'',subcategoria_id:'',unidad_medida:'UN',stock_minimo:0,stock_maximo:'',costo_referencia:0,unidad_compra:'',factor_conversion:1,activo:true},extra:{cats:m.cats,subcats:m.subcats},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Subcategoria',k:'subcategoria_nombre'},{lbl:'UM',k:'unidad_medida'},{lbl:'Stk min',k:'stock_minimo'},{lbl:'Costo ref.',render:r=>CLP(r.costo_referencia)}]}),
