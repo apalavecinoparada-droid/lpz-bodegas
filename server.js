@@ -1584,13 +1584,14 @@ app.post('/api/import/bulk-oc', auth, async(req,res)=>{
 // USUARIOS
 app.get('/api/usuarios', auth, async(req,res)=>{try{res.json((await pool.query('SELECT u.usuario_id,u.email,u.nombre,u.rol,u.rol_id,u.activo,u.creado_en,r.nombre AS rol_nombre,r.es_admin FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id ORDER BY u.nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
 app.post('/api/usuarios', auth, async(req,res)=>{
-  try{const{email,nombre,password,rol_id}=req.body;if(!email||!nombre||!password)return res.status(400).json({error:'Email, nombre y contraseña requeridos'});const hash=await bcrypt.hash(password,10);const rolNombre=(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rol_id||1])).rows[0]?.nombre||'BODEGUERO';const r=await pool.query('INSERT INTO usuarios(email,nombre,password_hash,rol,rol_id) VALUES($1,$2,$3,$4,$5) RETURNING usuario_id,email,nombre,rol,rol_id,activo',[email,nombre,hash,rolNombre,rol_id||null]);res.status(201).json(r.rows[0]);}catch(e){if(e.code==='23505')return res.status(400).json({error:'El email ya está registrado'});res.status(400).json({error:e.message});}
+  try{const{email,nombre,password,rol_id}=req.body;if(!email||!nombre||!password)return res.status(400).json({error:'Email, nombre y contraseña requeridos'});const hash=await bcrypt.hash(password,10);const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'BODEGUERO';const r=await pool.query('INSERT INTO usuarios(email,nombre,password_hash,rol,rol_id) VALUES($1,$2,$3,$4,$5) RETURNING usuario_id,email,nombre,rol,rol_id,activo',[email,nombre,hash,rolNombre,rid]);res.status(201).json(r.rows[0]);}catch(e){if(e.code==='23505')return res.status(400).json({error:'El email ya está registrado'});res.status(400).json({error:e.message});}
 });
 app.put('/api/usuarios/:id', auth, async(req,res)=>{
   try{const{email,nombre,rol_id,password}=req.body;
-  const rolNombre=(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rol_id])).rows[0]?.nombre||'BODEGUERO';
-  if(password&&password.length>=4){const hash=await bcrypt.hash(password,10);await pool.query('UPDATE usuarios SET email=$1,nombre=$2,rol=$3,rol_id=$4,password_hash=$5 WHERE usuario_id=$6',[email,nombre,rolNombre,rol_id||null,hash,req.params.id]);}
-  else{await pool.query('UPDATE usuarios SET email=$1,nombre=$2,rol=$3,rol_id=$4 WHERE usuario_id=$5',[email,nombre,rolNombre,rol_id||null,req.params.id]);}
+  const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;
+  const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'ADMINISTRADOR';
+  if(password&&password.length>=4){const hash=await bcrypt.hash(password,10);await pool.query('UPDATE usuarios SET email=$1,nombre=$2,rol=$3,rol_id=$4,password_hash=$5 WHERE usuario_id=$6',[email,nombre,rolNombre,rid,hash,req.params.id]);}
+  else{await pool.query('UPDATE usuarios SET email=$1,nombre=$2,rol=$3,rol_id=$4 WHERE usuario_id=$5',[email,nombre,rolNombre,rid,req.params.id]);}
   const r=await pool.query('SELECT u.usuario_id,u.email,u.nombre,u.rol,u.rol_id,u.activo,r.nombre AS rol_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id WHERE u.usuario_id=$1',[req.params.id]);
   res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
