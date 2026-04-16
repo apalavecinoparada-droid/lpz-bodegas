@@ -775,8 +775,9 @@ function SolicitudesView(p){
     if(tab==='enviadas')return String(s.solicitante_id)===String(userId);
     return true;
   });
-  var pendientes=solicitudes.filter(function(s){return String(s.dirigida_a_id)===String(userId)&&s.estado==='pendiente';}).length;
-  var enCursoCount=solicitudes.filter(function(s){return String(s.dirigida_a_id)===String(userId)&&s.estado==='en_curso';}).length;
+  var esAdmin=p.user&&p.user.es_admin;
+  var pendientes=solicitudes.filter(function(s){return s.estado==='pendiente'&&(esAdmin||String(s.dirigida_a_id)===String(userId));}).length;
+  var enCursoCount=solicitudes.filter(function(s){return s.estado==='en_curso'&&(esAdmin||String(s.dirigida_a_id)===String(userId));}).length;
   var tabs=[{k:'recibidas',l:'📥 Recibidas'+(pendientes?' ('+pendientes+')':'')},{k:'enviadas',l:'📤 Enviadas'},{k:'todas',l:'📋 Todas'}];
   var estadoColors={pendiente:'y',en_curso:'b',completada:'g',rechazada:'r'};
   var prioColors={baja:'gray',normal:'b',alta:'y',urgente:'r'};
@@ -4257,13 +4258,14 @@ function MantTareasStdAdmin(p){
 // ══ GESTIÓN DE USUARIOS Y ROLES ══
 var MODULOS_SISTEMA=[
   {k:'ordenes',l:'Órdenes de Compra'},
-  {k:'rendiciones',l:'Rendiciones de Gasto'},
-  {k:'combustibles',l:'Control de Combustibles'},
-  {k:'inventario',l:'Control de Inventario'},
-  {k:'mantencion',l:'Mantención Equipos'},
+  {k:'rendiciones',l:'Rendiciones'},
+  {k:'combustibles',l:'Combustibles'},
+  {k:'inventario',l:'Inventario'},
+  {k:'mantencion',l:'Mantención'},
+  {k:'solicitudes',l:'Solicitudes'},
   {k:'mantenedores',l:'Mantenedores'},
   {k:'reportes',l:'Reportes'},
-  {k:'usuarios',l:'Gestión de Usuarios'}
+  {k:'usuarios',l:'Usuarios'}
 ];
 function UsuariosView(p){
   var roles=(p.m.roles||[]);
@@ -4338,22 +4340,22 @@ function UsuariosView(p){
           h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Descripción'),h('input',{value:rolForm.descripcion,onChange:function(e){setRolForm(Object.assign({},rolForm,{descripcion:e.target.value}));},style:inpS}))
         ),
         h('div',{style:{marginTop:10}},
-          h('label',{style:{display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,marginBottom:8,cursor:'pointer'}},
+          h('label',{style:{display:'flex',alignItems:'center',gap:8,fontSize:12,fontWeight:600,padding:'8px 12px',background:rolForm.es_admin?'#F0FDF4':'#F8FAFC',border:'1px solid '+(rolForm.es_admin?'#86EFAC':'#E2E8F0'),borderRadius:6,cursor:'pointer',marginBottom:10}},
             h('input',{type:'checkbox',checked:rolForm.es_admin,onChange:function(){setRolForm(Object.assign({},rolForm,{es_admin:!rolForm.es_admin}));}}),
-            'Administrador (acceso total sin restricciones)'
+            '🔑 Administrador — acceso total sin restricciones'
           ),
           !rolForm.es_admin&&h('div',null,
-            h('div',{style:{fontSize:11,fontWeight:600,color:'#475569',marginBottom:6}},'Módulos permitidos',rolForm.modulos.length===0?' (vacío = acceso a todo)':''),
-            h('div',{style:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:4}},
+            h('div',{style:{fontSize:11,fontWeight:600,color:'#475569',marginBottom:8}},'Módulos permitidos:'),
+            h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:6}},
               MODULOS_SISTEMA.map(function(mod){
                 var checked=rolForm.modulos.indexOf(mod.k)>=0;
-                return h('label',{key:mod.k,style:{display:'flex',alignItems:'center',gap:6,fontSize:12,padding:'4px 8px',borderRadius:4,background:checked?'#EFF6FF':'#F8FAFC',border:'1px solid '+(checked?'#BFDBFE':'#E2E8F0'),cursor:'pointer'}},
-                  h('input',{type:'checkbox',checked:checked,onChange:function(){toggleModulo(mod.k);}}),
+                return h('label',{key:mod.k,style:{display:'flex',alignItems:'center',gap:6,fontSize:11,padding:'8px 10px',borderRadius:6,background:checked?'#EFF6FF':'#F8FAFC',border:'1px solid '+(checked?'#93C5FD':'#E2E8F0'),cursor:'pointer',transition:'all .15s'}},
+                  h('input',{type:'checkbox',checked:checked,onChange:function(){toggleModulo(mod.k);},style:{accentColor:'#3B82F6'}}),
                   mod.l
                 );
               })
             ),
-            h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:6}},'Si no seleccionas ninguno, el rol tendrá acceso a todos los módulos')
+            h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:6,fontStyle:'italic'}},'Si no selecciona ninguno, el rol tendrá acceso a todos los módulos')
           )
         ),
         h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},h(Btn,{onClick:guardarRol},editRol?'Guardar cambios':'Crear rol'))
@@ -4555,9 +4557,6 @@ function App(){
         canSee('ordenes')&&grpHdr('oc','ORDENES DE COMPRA'),
         canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true)),
         canSee('ordenes')&&h('div',{className:'sb-sep'}),
-        grpHdr('sol','SOLICITUDES'),
-        grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
-        h('div',{className:'sb-sep'}),
         canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
         canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
         canSee('rendiciones')&&h('div',{className:'sb-sep'}),
@@ -4582,7 +4581,6 @@ function App(){
           navI('reportes','◈','Reportes',true)
         ),
         canSee('inventario')&&h('div',{className:'sb-sep'}),
-        canSee('mantencion')&&h('div',{className:'sb-sep'}),
         canSee('mantencion')&&grpHdr('mant','MANTENCIÓN EQUIPOS'),
         canSee('mantencion')&&grp.mant&&h('div',null,
           navI('mant-panel','🔧','Panel Mantención',true),
@@ -4594,7 +4592,10 @@ function App(){
           navI('mant-sistemas','⚙','Sistemas',true),
           navI('mant-tareas-std','🔩','Tareas Estándar',true)
         ),
-        
+        canSee('mantencion')&&h('div',{className:'sb-sep'}),
+        canSee('solicitudes')&&grpHdr('sol','SOLICITUDES'),
+        canSee('solicitudes')&&grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
+        canSee('solicitudes')&&h('div',{className:'sb-sep'}),
         canSee('mantenedores')&&grpHdr('man','MANTENEDORES'),
         canSee('mantenedores')&&grp.man&&h('div',null,
           navI('empresas','▸','Empresas',true),
@@ -4612,7 +4613,7 @@ function App(){
           navI('tdocs','▸','Tipos Documentos',true),
           navI('motivos','▸','Motivos',true)
         ),
-        canSee('usuarios')&&h('div',{className:'sep'}),
+        canSee('mantenedores')&&h('div',{className:'sb-sep'}),
         canSee('usuarios')&&grpHdr('sys','SISTEMA'),
         canSee('usuarios')&&grp.sys&&h('div',null,navI('usuarios','▸','Usuarios',true))
       ),
