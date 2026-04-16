@@ -4108,6 +4108,122 @@ function MantTareasStdAdmin(p){
 }
 
 
+// ══ GESTIÓN DE USUARIOS Y ROLES ══
+var MODULOS_SISTEMA=[
+  {k:'ordenes',l:'Órdenes de Compra'},
+  {k:'rendiciones',l:'Rendiciones de Gasto'},
+  {k:'combustibles',l:'Control de Combustibles'},
+  {k:'inventario',l:'Control de Inventario'},
+  {k:'mantencion',l:'Mantención Equipos'},
+  {k:'mantenedores',l:'Mantenedores'},
+  {k:'reportes',l:'Reportes'},
+  {k:'usuarios',l:'Gestión de Usuarios'}
+];
+function UsuariosView(p){
+  var roles=(p.m.roles||[]);
+  var[usuarios,setUsuarios]=useState([]);var[tab,setTab]=useState('usuarios');
+  var[rolesLocal,setRolesLocal]=useState([]);
+  var[showForm,setShowForm]=useState(false);var[editUser,setEditUser]=useState(null);
+  var[showRolForm,setShowRolForm]=useState(false);var[editRol,setEditRol]=useState(null);
+  var[msg,setMsg]=useState('');
+  var[form,setForm]=useState({email:'',nombre:'',password:'',rol_id:''});
+  var[rolForm,setRolForm]=useState({nombre:'',descripcion:'',modulos:[],es_admin:false});
+  function loadUsers(){api('/usuarios','GET',null,p.tok).then(function(r){setUsuarios(Array.isArray(r)?r:[]);}).catch(function(){});}
+  function loadRoles(){api('/roles','GET',null,p.tok).then(function(r){setRolesLocal(Array.isArray(r)?r:[]);}).catch(function(){});}
+  useEffect(function(){loadUsers();loadRoles();},[p.tok]);
+  function guardarUser(){
+    if(!form.email||!form.nombre){setMsg('Email y nombre requeridos');return;}
+    if(!editUser&&(!form.password||form.password.length<4)){setMsg('Contraseña mínimo 4 caracteres');return;}
+    var method=editUser?'PUT':'POST';var url='/usuarios'+(editUser?'/'+editUser.usuario_id:'');
+    api(url,method,form,p.tok).then(function(){loadUsers();setShowForm(false);setEditUser(null);setForm({email:'',nombre:'',password:'',rol_id:''});setMsg(editUser?'Usuario actualizado':'Usuario creado');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function toggleActivo(id){api('/usuarios/'+id+'/activo','PATCH',null,p.tok).then(function(){loadUsers();}).catch(function(e){alert(e.message);});}
+  function eliminarUser(id){if(!confirm('Eliminar este usuario permanentemente?'))return;api('/usuarios/'+id,'DELETE',null,p.tok).then(function(){loadUsers();setMsg('Usuario eliminado');}).catch(function(e){alert(e.message);});}
+  function openEditUser(u){setEditUser(u);setForm({email:u.email,nombre:u.nombre,password:'',rol_id:u.rol_id||''});setShowForm(true);}
+  function guardarRol(){
+    if(!rolForm.nombre){setMsg('Nombre del rol requerido');return;}
+    var method=editRol?'PUT':'POST';var url='/roles'+(editRol?'/'+editRol.rol_id:'');
+    api(url,method,rolForm,p.tok).then(function(){loadRoles();setShowRolForm(false);setEditRol(null);setRolForm({nombre:'',descripcion:'',modulos:[],es_admin:false});setMsg(editRol?'Rol actualizado':'Rol creado');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function openEditRol(r){setEditRol(r);setRolForm({nombre:r.nombre,descripcion:r.descripcion||'',modulos:r.modulos||[],es_admin:!!r.es_admin});setShowRolForm(true);}
+  function eliminarRol(id){if(!confirm('Eliminar este rol?'))return;api('/roles/'+id,'DELETE',null,p.tok).then(function(){loadRoles();}).catch(function(e){alert(e.message);});}
+  function toggleModulo(mod){setRolForm(function(f){var mods=f.modulos||[];var idx=mods.indexOf(mod);if(idx>=0)mods=mods.filter(function(m){return m!==mod;});else mods=mods.concat([mod]);return Object.assign({},f,{modulos:mods});});}
+  var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var tabs=[{k:'usuarios',l:'👤 Usuarios'},{k:'roles',l:'🔑 Roles y Permisos'}];
+  return h('div',null,
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
+      h('div',{style:{display:'flex',gap:4}},tabs.map(function(t){return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'6px 14px',borderRadius:5,fontSize:12,cursor:'pointer',border:'1px solid #CBD5E1',background:tab===t.k?'#1E3A2D':'#F8FAFC',color:tab===t.k?'#fff':'#475569',fontWeight:tab===t.k?600:400}},t.l);})),
+      tab==='usuarios'&&h(Btn,{onClick:function(){setEditUser(null);setForm({email:'',nombre:'',password:'',rol_id:''});setShowForm(!showForm);}},showForm?'Cancelar':'+ Nuevo Usuario'),
+      tab==='roles'&&h(Btn,{onClick:function(){setEditRol(null);setRolForm({nombre:'',descripcion:'',modulos:[],es_admin:false});setShowRolForm(!showRolForm);}},showRolForm?'Cancelar':'+ Nuevo Rol')
+    ),
+    msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
+    // ── TAB USUARIOS ──
+    tab==='usuarios'&&h('div',null,
+      showForm&&h('div',{className:'card',style:{marginBottom:12}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},editUser?'Editar usuario':'Nuevo usuario'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:8}},
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Email *'),h('input',{type:'email',value:form.email,onChange:function(e){setForm(Object.assign({},form,{email:e.target.value}));},style:inpS,placeholder:'correo@empresa.cl'})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Nombre *'),h('input',{value:form.nombre,onChange:function(e){setForm(Object.assign({},form,{nombre:e.target.value}));},style:inpS,placeholder:'Nombre completo'})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},editUser?'Nueva contraseña (dejar vacío para mantener)':'Contraseña *'),h('input',{type:'password',value:form.password,onChange:function(e){setForm(Object.assign({},form,{password:e.target.value}));},style:inpS,placeholder:editUser?'Solo si desea cambiarla':'Mínimo 4 caracteres'})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Rol'),h('select',{value:form.rol_id,onChange:function(e){setForm(Object.assign({},form,{rol_id:e.target.value}));},style:inpS},h('option',{value:''},'Seleccione rol...'),rolesLocal.filter(function(r){return r.activo!==false;}).map(function(r){return h('option',{key:r.rol_id,value:r.rol_id},r.nombre+(r.es_admin?' (Admin)':''));})))
+        ),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},h(Btn,{onClick:guardarUser},editUser?'Guardar cambios':'Crear usuario'))
+      ),
+      h('div',{className:'card'},h(TBL,{cols:[
+        {lbl:'Nombre',render:function(r){return h('strong',null,r.nombre);}},
+        {lbl:'Email',k:'email'},
+        {lbl:'Rol',render:function(r){var isAdmin=r.es_admin||r.rol==='ADMINISTRADOR';return h(Bg,{c:isAdmin?'p':'b'},r.rol_nombre||r.rol);}},
+        {lbl:'Estado',render:function(r){return h('span',{onClick:function(){toggleActivo(r.usuario_id);},style:{cursor:'pointer'}},r.activo?h(Bg,{c:'g'},'Activo'):h(Bg,{c:'r'},'Inactivo'));}},
+        {lbl:'Creado',render:function(r){return fmtD(r.creado_en);}},
+        {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:3}},
+          h('button',{onClick:function(){openEditUser(r);},style:{fontSize:10,padding:'2px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✏'),
+          h('button',{onClick:function(){eliminarUser(r.usuario_id);},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'🗑')
+        );}}
+      ],rows:usuarios,empty:'Sin usuarios registrados'}))
+    ),
+    // ── TAB ROLES ──
+    tab==='roles'&&h('div',null,
+      showRolForm&&h('div',{className:'card',style:{marginBottom:12}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},editRol?'Editar rol':'Nuevo rol'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}},
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Nombre del rol *'),h('input',{value:rolForm.nombre,onChange:function(e){setRolForm(Object.assign({},rolForm,{nombre:e.target.value}));},style:inpS,placeholder:'Ej: Supervisor'})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Descripción'),h('input',{value:rolForm.descripcion,onChange:function(e){setRolForm(Object.assign({},rolForm,{descripcion:e.target.value}));},style:inpS}))
+        ),
+        h('div',{style:{marginTop:10}},
+          h('label',{style:{display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,marginBottom:8,cursor:'pointer'}},
+            h('input',{type:'checkbox',checked:rolForm.es_admin,onChange:function(){setRolForm(Object.assign({},rolForm,{es_admin:!rolForm.es_admin}));}}),
+            'Administrador (acceso total sin restricciones)'
+          ),
+          !rolForm.es_admin&&h('div',null,
+            h('div',{style:{fontSize:11,fontWeight:600,color:'#475569',marginBottom:6}},'Módulos permitidos',rolForm.modulos.length===0?' (vacío = acceso a todo)':''),
+            h('div',{style:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:4}},
+              MODULOS_SISTEMA.map(function(mod){
+                var checked=rolForm.modulos.indexOf(mod.k)>=0;
+                return h('label',{key:mod.k,style:{display:'flex',alignItems:'center',gap:6,fontSize:12,padding:'4px 8px',borderRadius:4,background:checked?'#EFF6FF':'#F8FAFC',border:'1px solid '+(checked?'#BFDBFE':'#E2E8F0'),cursor:'pointer'}},
+                  h('input',{type:'checkbox',checked:checked,onChange:function(){toggleModulo(mod.k);}}),
+                  mod.l
+                );
+              })
+            ),
+            h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:6}},'Si no seleccionas ninguno, el rol tendrá acceso a todos los módulos')
+          )
+        ),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},h(Btn,{onClick:guardarRol},editRol?'Guardar cambios':'Crear rol'))
+      ),
+      h('div',{className:'card'},h(TBL,{cols:[
+        {lbl:'Rol',render:function(r){return h('strong',null,r.nombre);}},
+        {lbl:'Descripción',render:function(r){return h('span',{style:{fontSize:11}},r.descripcion||'—');}},
+        {lbl:'Tipo',render:function(r){return r.es_admin?h(Bg,{c:'p'},'Admin'):h(Bg,{c:'b'},'Normal');}},
+        {lbl:'Módulos',render:function(r){var mods=r.modulos||[];return r.es_admin?h('span',{style:{fontSize:11,color:'#10B981'}},'Todos'):mods.length===0?h('span',{style:{fontSize:11,color:'#10B981'}},'Todos (sin restricción)'):h('div',{style:{display:'flex',gap:3,flexWrap:'wrap'}},mods.map(function(m){var label=MODULOS_SISTEMA.find(function(x){return x.k===m;});return h('span',{key:m,style:{fontSize:9,padding:'1px 5px',borderRadius:3,background:'#EFF6FF',color:'#1D4ED8',border:'1px solid #BFDBFE'}},label?label.l:m);}));}},
+        {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:3}},
+          h('button',{onClick:function(){openEditRol(r);},style:{fontSize:10,padding:'2px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✏'),
+          !r.es_admin&&h('button',{onClick:function(){eliminarRol(r.rol_id);},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'🗑')
+        );}}
+      ],rows:rolesLocal,empty:'Sin roles'}))
+    )
+  );
+}
+
 // ══ MODELOS DE EQUIPO ══
 function ModelosAdmin(p){
   const[items,setItems]=useState([]);const[form,setForm]=useState(null);const[msg,setMsg]=useState('');
@@ -4256,9 +4372,9 @@ function App(){
   function loadM(t){
     if(!t)return;
     // Promise.allSettled: si un endpoint falla, los demas cargan igual
-    Promise.allSettled([api('/bodegas','GET',null,t),api('/comb/tipos','GET',null,t),api('/comb/estanques','GET',null,t),api('/comb/stock','GET',null,t),api('/categorias','GET',null,t),api('/subcategorias','GET',null,t),api('/productos','GET',null,t),api('/faenas','GET',null,t),api('/equipos','GET',null,t),api('/personal','GET',null,t),api('/proveedores','GET',null,t),api('/tipos-documento','GET',null,t),api('/motivos','GET',null,t),api('/stock/alertas','GET',null,t),api('/empresas','GET',null,t),api('/condiciones-pago','GET',null,t),api('/comb/tipos','GET',null,t),api('/comb/estanques','GET',null,t),api('/modelos-equipo','GET',null,t)]).then(function(res){
+    Promise.allSettled([api('/bodegas','GET',null,t),api('/comb/tipos','GET',null,t),api('/comb/estanques','GET',null,t),api('/comb/stock','GET',null,t),api('/categorias','GET',null,t),api('/subcategorias','GET',null,t),api('/productos','GET',null,t),api('/faenas','GET',null,t),api('/equipos','GET',null,t),api('/personal','GET',null,t),api('/proveedores','GET',null,t),api('/tipos-documento','GET',null,t),api('/motivos','GET',null,t),api('/stock/alertas','GET',null,t),api('/empresas','GET',null,t),api('/condiciones-pago','GET',null,t),api('/comb/tipos','GET',null,t),api('/comb/estanques','GET',null,t),api('/modelos-equipo','GET',null,t),api('/roles','GET',null,t)]).then(function(res){
       function val(r){return r.status==='fulfilled'&&Array.isArray(r.value)?r.value:[];}
-      setM({bodegas:val(res[0]),combTipos:val(res[1]),combEstanques:val(res[2]),combStock:val(res[3]),cats:val(res[4]),subcats:val(res[5]),prods:val(res[6]),faenas:val(res[7]),equipos:val(res[8]),personal:val(res[9]),provs:val(res[10]),tdocs:val(res[11]),motivos:val(res[12]),empresas:val(res[14]),conds:val(res[15]),modelos:val(res[18])});
+      setM({bodegas:val(res[0]),combTipos:val(res[1]),combEstanques:val(res[2]),combStock:val(res[3]),cats:val(res[4]),subcats:val(res[5]),prods:val(res[6]),faenas:val(res[7]),equipos:val(res[8]),personal:val(res[9]),provs:val(res[10]),tdocs:val(res[11]),motivos:val(res[12]),empresas:val(res[14]),conds:val(res[15]),modelos:val(res[18]),roles:val(res[19])});
       setAlerts(res[12].status==='fulfilled'&&Array.isArray(res[12].value)?res[12].value.length:0);
     });
   }
@@ -4269,18 +4385,21 @@ function App(){
   if(!tok)return h(LoginPage,{onLogin:handleLogin});
   function navI(id,icon,label,sub){return h('div',{key:id,className:'nav '+(view===id?'on':''),style:{paddingLeft:sub?22:12},onClick:function(){setView(id);}},h('span',{style:{fontSize:11}},icon),' ',label,(id==='stock'&&alerts>0)?h('span',{className:'cnt'},alerts):null);}
   const grpHdr=(k,label)=>h('div',{className:'sb-grp',onClick:function(){toggleGrp(k);}},label,h('span',{className:'sb-grp-arrow '+(grp[k]?'open':'')},'>'));
+  // Permission check
+  function canSee(mod){if(!user)return false;if(user.es_admin)return true;if(!user.modulos||user.modulos.length===0)return true;return user.modulos.indexOf(mod)>=0;}
+
   return h('div',{id:'root'},
     h('div',{className:'sb'},
       h('div',{className:'sb-logo'},h('h1',null,'Empresas Poo'),h('p',null,'Sistema de Gestión')),
       h('div',{style:{padding:'4px 0',flex:1}},
-        grpHdr('oc','ORDENES DE COMPRA'),
-        grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true)),
-        h('div',{className:'sb-sep'}),
-        grpHdr('rend','RENDICIONES'),
-        grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
-        h('div',{className:'sb-sep'}),
-        grpHdr('comb','CONTROL DE COMBUSTIBLES'),
-        grp.comb&&h('div',null,
+        canSee('ordenes')&&grpHdr('oc','ORDENES DE COMPRA'),
+        canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true)),
+        canSee('ordenes')&&h('div',{className:'sb-sep'}),
+        canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
+        canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
+        canSee('rendiciones')&&h('div',{className:'sb-sep'}),
+        canSee('combustibles')&&grpHdr('comb','CONTROL DE COMBUSTIBLES'),
+        canSee('combustibles')&&grp.comb&&h('div',null,
           navI('comb-panel','⛽','Panel Combustibles',true),
           navI('comb-ingresos','↓','Ingresos a Stock',true),
           navI('comb-traspasos','⇄','Traspasos Estanques',true),
@@ -4289,9 +4408,9 @@ function App(){
           navI('comb-cierre','⚖','Cierre Quincenal',true),
           navI('comb-kardex','≡','Kardex Estanque',true)
         ),
-        h('div',{className:'sb-sep'}),
-        grpHdr('inv','CONTROL DE INVENTARIO'),
-        grp.inv&&h('div',null,
+        canSee('combustibles')&&h('div',{className:'sb-sep'}),
+        canSee('inventario')&&grpHdr('inv','CONTROL DE INVENTARIO'),
+        canSee('inventario')&&grp.inv&&h('div',null,
           navI('dashboard','◉','Panel de control',true),
           navI('ingresos','↓','Ingresos',true),
           navI('salidas','↑','Salidas',true),
@@ -4299,10 +4418,10 @@ function App(){
           navI('kardex','≡','Kardex',true),
           navI('reportes','◈','Reportes',true)
         ),
-        h('div',{className:'sb-sep'}),
-        h('div',{className:'sb-sep'}),
-        grpHdr('mant','MANTENCIÓN EQUIPOS'),
-        grp.mant&&h('div',null,
+        canSee('inventario')&&h('div',{className:'sb-sep'}),
+        canSee('mantencion')&&h('div',{className:'sb-sep'}),
+        canSee('mantencion')&&grpHdr('mant','MANTENCIÓN EQUIPOS'),
+        canSee('mantencion')&&grp.mant&&h('div',null,
           navI('mant-panel','🔧','Panel Mantención',true),
           navI('mant-avisos','⚠','Avisos de Falla',true),
           navI('mant-ot','📋','Órdenes de Trabajo',true),
@@ -4313,8 +4432,8 @@ function App(){
           navI('mant-tareas-std','🔩','Tareas Estándar',true)
         ),
         
-        grpHdr('man','MANTENEDORES'),
-        grp.man&&h('div',null,
+        canSee('mantenedores')&&grpHdr('man','MANTENEDORES'),
+        canSee('mantenedores')&&grp.man&&h('div',null,
           navI('empresas','▸','Empresas',true),
           navI('bodegas','▸','Bodegas',true),
           navI('productos','▸','Productos',true),
@@ -4330,9 +4449,9 @@ function App(){
           navI('tdocs','▸','Tipos Documentos',true),
           navI('motivos','▸','Motivos',true)
         ),
-        h('div',{className:'sep'}),
-        grpHdr('sys','SISTEMA'),
-        grp.sys&&h('div',null,navI('usuarios','▸','Usuarios',true))
+        canSee('usuarios')&&h('div',{className:'sep'}),
+        canSee('usuarios')&&grpHdr('sys','SISTEMA'),
+        canSee('usuarios')&&grp.sys&&h('div',null,navI('usuarios','▸','Usuarios',true))
       ),
       user&&h('div',{style:{padding:'8px 12px',borderTop:'1px solid #1E293B',fontSize:11,color:'#475569'}},h('div',null,user.nombre),h('div',{style:{marginTop:1,opacity:.6}},user.email))
     ),
@@ -4383,7 +4502,7 @@ function App(){
           view==='condpago'&&h(MasterV,{tok,titulo:'Condicion de Pago',ep:'condiciones-pago',pk:'condicion_id',Form:CondPagoForm,importKey:'condpago',blank:{nombre:'',descripcion:'',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
           view==='tdocs'&&h(MasterV,{tok,titulo:'Tipo de Documento',ep:'tipos-documento',pk:'tipo_doc_id',Form:p=>h('div',{className:'g2'},h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange,ph:'FAC,GD...'}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange})),blank:{codigo:'',nombre:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'}]}),
           view==='motivos'&&h(MasterV,{tok,titulo:'Motivo',ep:'motivos',pk:'motivo_id',Form:p=>h('div',{className:'g2'},h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FS,{k:'tipo',l:'Tipo',req:true,item:p.item,onChange:p.onChange,opts:[{v:'SALIDA',l:'SALIDA'},{v:'INGRESO',l:'INGRESO'},{v:'AJUSTE',l:'AJUSTE'}]})),blank:{nombre:'',tipo:'SALIDA',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Tipo',k:'tipo'}]}),
-          view==='usuarios'&&h('div',{className:'al al-i'},'Modulo de usuarios. Use la API POST /api/usuarios para crear nuevos usuarios con email, nombre, password y rol (ADMINISTRADOR/BODEGUERO).'),
+          view==='usuarios'&&h(UsuariosView,{tok,m}),
         )
       )
     )
