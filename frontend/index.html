@@ -2543,6 +2543,104 @@ function OCRecibirModal(p){
 }
 
 // ── MASTER CRUD GENERICO ──
+// ══ IMPORTADOR DE PROVEEDORES DESDE XML/ZIP ══
+function ImportProvXml(p){
+  var[status,setStatus]=useState('idle');var[msg,setMsg]=useState('');
+  var[provs,setProvs]=useState([]);var[sel,setSel]=useState({});var[results,setResults]=useState(null);
+  function parseXml(xmlStr){
+    function tag(name){var m=xmlStr.match(new RegExp('<'+name+'[^>]*>([^<]*)<\/'+name+'>'));return m?m[1].trim():null;}
+    var rut=tag('RUTEmisor');var nombre=tag('RznSoc');var giro=tag('GiroEmis');
+    var dir=tag('DirOrigen');var comuna=tag('CmnaOrigen');
+    if(!rut||!nombre)return null;
+    return{rut:rut,nombre:nombre,giro:giro||'',direccion:dir?(dir+(comuna?', '+comuna:'')):''};
+  }
+  function onFile(e){
+    var file=e.target.files[0];if(!file)return;
+    setStatus('loading');setMsg('Extrayendo proveedores...');setProvs([]);setSel({});setResults(null);
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      JSZip.loadAsync(ev.target.result).then(function(zip){
+        var xmlFiles=[];
+        zip.forEach(function(path,entry){if(path.toLowerCase().endsWith('.xml')&&!entry.dir)xmlFiles.push(entry);});
+        var found={};var done=0;
+        xmlFiles.forEach(function(entry){
+          entry.async('string').then(function(content){
+            var prov=parseXml(content);
+            if(prov&&prov.rut&&!found[prov.rut]){found[prov.rut]=prov;}
+            done++;
+            if(done===xmlFiles.length){
+              var lista=Object.values(found).sort(function(a,b){return a.nombre.localeCompare(b.nombre);});
+              setProvs(lista);setStatus('preview');
+              var s={};lista.forEach(function(pr){s[pr.rut]=true;});setSel(s);
+              setMsg(lista.length+' proveedores únicos encontrados en '+xmlFiles.length+' archivos XML');
+            }
+          });
+        });
+        if(xmlFiles.length===0){setStatus('idle');setMsg('No se encontraron archivos XML en el ZIP');}
+      }).catch(function(err){setStatus('idle');setMsg('Error: '+err.message);});
+    };
+    reader.readAsArrayBuffer(file);
+  }
+  function importar(){
+    var items=provs.filter(function(pr){return sel[pr.rut];});
+    if(!items.length){setMsg('Seleccione al menos un proveedor');return;}
+    setStatus('importing');setMsg('Importando '+items.length+' proveedores...');
+    api('/import/proveedores-xml','POST',{proveedores:items},p.tok).then(function(r){
+      setResults(r.results||[]);setStatus('done');
+      var creados=(r.results||[]).filter(function(x){return x.ok&&x.accion==='creado';}).length;
+      var existentes=(r.results||[]).filter(function(x){return x.ok&&x.accion==='existente';}).length;
+      var errores=(r.results||[]).filter(function(x){return !x.ok;}).length;
+      setMsg('Importación completada: '+creados+' nuevos, '+existentes+' ya existían'+(errores?', '+errores+' con error':''));
+      if(p.onRefresh)p.onRefresh();
+    }).catch(function(e){setStatus('preview');setMsg('Error: '+e.message);});
+  }
+  var selCount=provs.filter(function(pr){return sel[pr.rut];}).length;
+  return h(Modal,{title:'Importar proveedores desde XML/ZIP',onClose:p.onClose},
+    h('div',{style:{padding:'0 4px',maxHeight:'70vh',overflowY:'auto'}},
+      msg&&h('div',{className:'al '+(status==='done'?'al-s':'al-i'),style:{marginBottom:8}},msg),
+      status==='idle'&&h('div',{style:{textAlign:'center',padding:20}},
+        h('div',{style:{fontSize:13,color:'#475569',marginBottom:12}},'Seleccione un archivo ZIP con DTEs (facturas, guías, etc.) para extraer los datos de los proveedores (RUT, razón social, giro, dirección).'),
+        h('input',{type:'file',accept:'.zip',onChange:onFile,style:{fontSize:12}})
+      ),
+      status==='loading'&&h('div',{style:{textAlign:'center',padding:20}},'Procesando...'),
+      (status==='preview'||status==='done')&&provs.length>0&&h('div',null,
+        status==='preview'&&h('div',{style:{display:'flex',gap:6,marginBottom:8}},
+          h('button',{onClick:function(){var s={};provs.forEach(function(pr){s[pr.rut]=true;});setSel(s);},style:{fontSize:11,padding:'4px 10px',border:'1px solid #CBD5E1',borderRadius:4,cursor:'pointer'}},'Seleccionar todos'),
+          h('button',{onClick:function(){setSel({});},style:{fontSize:11,padding:'4px 10px',border:'1px solid #CBD5E1',borderRadius:4,cursor:'pointer'}},'Ninguno')
+        ),
+        h(TBL,{cols:[
+          status!=='done'&&{lbl:h('input',{type:'checkbox',checked:selCount===provs.length,onChange:function(){if(selCount===provs.length)setSel({});else{var s={};provs.forEach(function(pr){s[pr.rut]=true;});setSel(s);}}}),w:'30px',c:true,render:function(r){return h('input',{type:'checkbox',checked:!!sel[r.rut],onChange:function(){setSel(function(s){var n=Object.assign({},s);if(n[r.rut])delete n[r.rut];else n[r.rut]=true;return n;});}});}},
+          {lbl:'RUT',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.rut);}},
+          {lbl:'Razón Social',render:function(r){return h('strong',{style:{fontSize:12}},r.nombre);}},
+          {lbl:'Giro',render:function(r){return h('span',{style:{fontSize:11}},r.giro||'—');}},
+          {lbl:'Dirección',render:function(r){return h('span',{style:{fontSize:11}},r.direccion||'—');}},
+          status==='done'&&{lbl:'Resultado',render:function(r){var res=results&&results.find(function(x){return x.rut===r.rut;});if(!res)return '—';return res.ok?h(Bg,{c:res.accion==='creado'?'g':'b'},res.accion):h(Bg,{c:'r'},res.error);}}
+        ].filter(Boolean),rows:provs,empty:'Sin proveedores'}),
+        status==='preview'&&h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:10}},
+          h('button',{onClick:p.onClose,style:{padding:'6px 14px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12}},'Cancelar'),
+          h(Btn,{onClick:importar},'Importar '+selCount+' proveedor(es)')
+        ),
+        status==='done'&&h('div',{style:{display:'flex',justifyContent:'flex-end',marginTop:10}},
+          h(Btn,{onClick:p.onClose},'Cerrar')
+        )
+      )
+    )
+  );
+}
+
+// ══ PROVEEDORES VIEW WRAPPER ══
+function ProveedoresViewW(p){
+  var[showXmlImport,setShowXmlImport]=useState(false);
+  var[refreshKey,setRefreshKey]=useState(0);
+  return h('div',{key:refreshKey},
+    h(MasterV,{tok:p.tok,titulo:'Proveedor',ep:'proveedores',pk:'proveedor_id',Form:ProvForm,importKey:'proveedores',blank:{rut:'',nombre:'',giro:'',direccion:'',contacto:'',telefono:'',email:'',activo:true},
+      extraBtns:function(){return h(Btn,{v:'a',sm:true,onClick:function(){setShowXmlImport(true);}},'📦 Importar desde XML');},
+      onExport:function(){api('/proveedores','GET',null,p.tok).then(function(rows){exportXLSX(rows,[{header:'RUT',value:function(r){return r.rut;}},{header:'Nombre',value:function(r){return r.nombre;}},{header:'Giro',value:function(r){return r.giro;}},{header:'Direccion',value:function(r){return r.direccion;}},{header:'Contacto',value:function(r){return r.contacto;}},{header:'Telefono',value:function(r){return r.telefono;}},{header:'Email',value:function(r){return r.email;}},{header:'Activo',value:function(r){return r.activo?'SI':'NO';}}],'proveedores');}).catch(function(ex){alert(ex.message);});},
+      cols:[{lbl:'RUT',k:'rut',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Giro',k:'giro'},{lbl:'Contacto',k:'contacto'},{lbl:'Telefono',k:'telefono'}]}),
+    showXmlImport&&h(ImportProvXml,{tok:p.tok,onClose:function(){setShowXmlImport(false);setRefreshKey(function(k){return k+1;});},onRefresh:function(){setRefreshKey(function(k){return k+1;});}})
+  );
+}
+
 function MasterV(p){
   const[items,setItems]=useState([]);const[modal,setModal]=useState(null);const[q,setQ]=useState('');const[err,setErr]=useState('');const[delErr,setDelErr]=useState('');const[showImport,setShowImport]=useState(false);
   function load(){api('/'+p.ep,'GET',null,p.tok).then(function(r){setItems(Array.isArray(r)?r:[]);}).catch(function(){});}
@@ -2564,6 +2662,7 @@ function MasterV(p){
     h('div',{style:{display:'flex',gap:8,marginBottom:10}},
       h('input',{value:q,onChange:e=>setQ(e.target.value),placeholder:'Buscar...',style:{maxWidth:250}}),
       h(Btn,{onClick:function(){setErr('');setModal(Object.assign({},p.blank));}},'+ Agregar'),
+      p.extraBtns&&p.extraBtns(),
       p.importKey&&h(Btn,{v:'g',sm:true,onClick:function(){setShowImport(true);}},null,'⬆ Importar'),
       p.onExport&&h(Btn,{v:'teal',onClick:p.onExport},null,'Excel')
     ),
@@ -4984,7 +5083,7 @@ function App(){
           view==='faenas'&&h(MasterV,{tok,titulo:'Faena',ep:'faenas',pk:'faena_id',Form:FaenaForm,blank:{codigo:'',nombre:'',descripcion:'',empresa_id:'',activo:true},extra:{empresas:m.empresas},importKey:'faenas',cols:[{lbl:'Empresa',render:function(r){return (m.empresas.find(function(e){return e.empresa_id===parseInt(r.empresa_id||0);})||{}).razon_social||'—';}},{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
           view==='equipos'&&h(MasterV,{tok,titulo:'Cargo / Centro de costo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',blank:{empresa_id:'',tipo_cargo:'maquinaria',codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',modelo_id:'',anio:'',placa_patente:'',chasis:'',contacto_terreno:'',horas_productivas_dia:'12',patente_serie:'',activo:true},extra:{faenas:m.faenas,empresas:m.empresas,modelos:m.modelos||[]},cols:[{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Tipo',render:function(r){var tc=r.tipo_cargo||'maquinaria';var colors={maquinaria:'b',camioneta:'teal',camion:'p',camion_estanque:'y',camion_cama_baja:'y',faena:'g',taller:'gray'};return h(Bg,{c:colors[tc]||'gray'},tc.replace(/_/g,' '));}},{lbl:'Código',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Modelo',render:function(r){return r.modelo_marca?(r.modelo_marca+' '+r.modelo_nombre):(r.marca?(r.marca+' '+(r.modelo||'')):'—');}},{lbl:'Faena',k:'faena_nombre'}]}),
           view==='modelos'&&h(ModelosAdmin,{tok,m}),
-          view==='proveedores'&&h(MasterV,{tok,titulo:'Proveedor',ep:'proveedores',pk:'proveedor_id',Form:ProvForm,importKey:'proveedores',blank:{rut:'',nombre:'',giro:'',direccion:'',contacto:'',telefono:'',email:'',activo:true},onExport:function(){api('/proveedores','GET',null,tok).then(function(rows){exportXLSX(rows,[{header:'RUT',value:r=>r.rut},{header:'Nombre',value:r=>r.nombre},{header:'Giro',value:r=>r.giro},{header:'Direccion',value:r=>r.direccion},{header:'Contacto',value:r=>r.contacto},{header:'Telefono',value:r=>r.telefono},{header:'Email',value:r=>r.email},{header:'Activo',value:r=>r.activo?'SI':'NO'}],'proveedores');}).catch(function(ex){alert(ex.message);});},cols:[{lbl:'RUT',k:'rut',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Giro',k:'giro'},{lbl:'Contacto',k:'contacto'},{lbl:'Telefono',k:'telefono'}]}),
+          view==='proveedores'&&h(ProveedoresViewW,{tok}),
           view==='condpago'&&h(MasterV,{tok,titulo:'Condicion de Pago',ep:'condiciones-pago',pk:'condicion_id',Form:CondPagoForm,importKey:'condpago',blank:{nombre:'',descripcion:'',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
           view==='tdocs'&&h(MasterV,{tok,titulo:'Tipo de Documento',ep:'tipos-documento',pk:'tipo_doc_id',Form:p=>h('div',{className:'g2'},h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange,ph:'FAC,GD...'}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange})),blank:{codigo:'',nombre:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'}]}),
           view==='motivos'&&h(MasterV,{tok,titulo:'Motivo',ep:'motivos',pk:'motivo_id',Form:p=>h('div',{className:'g2'},h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FS,{k:'tipo',l:'Tipo',req:true,item:p.item,onChange:p.onChange,opts:[{v:'SALIDA',l:'SALIDA'},{v:'INGRESO',l:'INGRESO'},{v:'AJUSTE',l:'AJUSTE'}]})),blank:{nombre:'',tipo:'SALIDA',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Tipo',k:'tipo'}]}),
