@@ -742,6 +742,120 @@ function CalcCombustible(p){
   );
 }
 
+// ══ FINANZAS — REGISTRO DE CHEQUES ══
+var CONCEPTOS_CHEQUE=[{v:'pago_factura',l:'Pago factura'},{v:'pago_remuneraciones',l:'Pago remuneraciones'},{v:'pago_finiquito',l:'Pago finiquito'},{v:'traspaso',l:'Traspaso entre cuentas'},{v:'pago_otros',l:'Pago otros servicios'},{v:'manual',l:'Otro (manual)'}];
+function FinChequesView(p){
+  var provs=(p.m.provs||[]);
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var[cuentas,setCuentas]=useState([]);var[cheques,setCheques]=useState([]);var[dash,setDash]=useState(null);
+  var[tab,setTab]=useState('dashboard');var[showForm,setShowForm]=useState(false);var[editCh,setEditCh]=useState(null);var[msg,setMsg]=useState('');
+  var[filtEmpresa,setFiltEmpresa]=useState('');var[filtBanco,setFiltBanco]=useState('');var[filtEstado,setFiltEstado]=useState('');
+  var emptyForm={cuenta_id:'',numero_cheque:'',fecha_emision:new Date().toISOString().slice(0,10),fecha_cobro:'',monto:'',tipo_beneficiario:'proveedor',proveedor_id:'',beneficiario_nombre:'',concepto:'pago_factura',concepto_detalle:'',observaciones:''};
+  var[form,setForm]=useState(emptyForm);
+  function loadCuentas(){api('/fin/cuentas','GET',null,p.tok).then(function(r){setCuentas(Array.isArray(r)?r:[]);}).catch(function(){});}
+  function loadCheques(){var q='?';if(filtEmpresa)q+='empresa_id='+filtEmpresa+'&';if(filtEstado)q+='estado='+filtEstado+'&';api('/fin/cheques'+q,'GET',null,p.tok).then(function(r){setCheques(Array.isArray(r)?r:[]);}).catch(function(){});}
+  function loadDash(){api('/fin/dashboard'+(filtEmpresa?'?empresa_id='+filtEmpresa:''),'GET',null,p.tok).then(function(r){setDash(r);}).catch(function(){});}
+  useEffect(function(){loadCuentas();},[p.tok]);
+  useEffect(function(){loadCheques();loadDash();},[p.tok,filtEmpresa,filtEstado]);
+  function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
+  function guardar(){
+    if(!form.cuenta_id||!form.numero_cheque||!form.fecha_cobro||!form.monto){setMsg('Error: Cuenta, N° cheque, fecha cobro y monto son obligatorios');return;}
+    if(form.tipo_beneficiario==='proveedor'&&!form.proveedor_id){setMsg('Error: Seleccione un proveedor');return;}
+    if(form.tipo_beneficiario==='acreedor'&&!form.beneficiario_nombre){setMsg('Error: Ingrese nombre del acreedor');return;}
+    var method=editCh?'PUT':'POST';var url='/fin/cheques'+(editCh?'/'+editCh.cheque_id:'');
+    api(url,method,form,p.tok).then(function(){loadCheques();loadDash();setShowForm(false);setEditCh(null);setForm(emptyForm);setMsg(editCh?'Cheque actualizado':'Cheque registrado');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function cambiarEstado(id,est){api('/fin/cheques/'+id+'/estado','PATCH',{estado:est},p.tok).then(function(){loadCheques();loadDash();}).catch(function(e){alert(e.message);});}
+  function eliminar(id){if(!confirm('Eliminar este cheque?'))return;api('/fin/cheques/'+id,'DELETE',null,p.tok).then(function(){loadCheques();loadDash();}).catch(function(e){alert(e.message);});}
+  function openEdit(ch){setEditCh(ch);setForm({cuenta_id:ch.cuenta_id,numero_cheque:ch.numero_cheque,fecha_emision:(ch.fecha_emision||'').slice(0,10),fecha_cobro:(ch.fecha_cobro||'').slice(0,10),monto:ch.monto,tipo_beneficiario:ch.tipo_beneficiario||'proveedor',proveedor_id:ch.proveedor_id||'',beneficiario_nombre:ch.beneficiario_nombre||'',concepto:ch.concepto||'pago_factura',concepto_detalle:ch.concepto_detalle||'',observaciones:ch.observaciones||''});setShowForm(true);setTab('registro');}
+  var cuentasFilt=filtEmpresa?cuentas.filter(function(c){return String(c.empresa_id)===filtEmpresa;}):cuentas;
+  var bancos=[...new Set(cuentas.map(function(c){return c.banco;}))].sort();
+  var chequesFilt=cheques;
+  if(filtBanco)chequesFilt=chequesFilt.filter(function(c){return c.banco===filtBanco;});
+  var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var tot=dash&&dash.totales?dash.totales:{};
+  var tabs=[{k:'dashboard',l:'📊 Dashboard'},{k:'registro',l:'📝 Registro'}];
+  var estadoC={emitido:'y',pagado:'g',anulado:'r'};
+  var conceptoL={};CONCEPTOS_CHEQUE.forEach(function(c){conceptoL[c.v]=c.l;});
+  return h('div',null,
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
+      h('div',{style:{display:'flex',gap:4}},tabs.map(function(t){return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'6px 14px',borderRadius:5,fontSize:12,cursor:'pointer',border:'1px solid #CBD5E1',background:tab===t.k?'#1E3A2D':'#F8FAFC',color:tab===t.k?'#fff':'#475569',fontWeight:tab===t.k?600:400}},t.l);})),
+      h('div',{style:{display:'flex',gap:6,alignItems:'center'}},
+        h('select',{value:filtEmpresa,onChange:function(e){setFiltEmpresa(e.target.value);},style:Object.assign({},inpS,{width:180})},h('option',{value:''},'Todas las empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})),
+        tab==='registro'&&h(Btn,{onClick:function(){setEditCh(null);setForm(emptyForm);setShowForm(!showForm);}},showForm?'Cancelar':'+ Nuevo Cheque')
+      )
+    ),
+    msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
+    // ── DASHBOARD ──
+    tab==='dashboard'&&h('div',null,
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:14}},
+        h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #F59E0B'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#F59E0B'}},CLP(Math.round(parseFloat(tot.pendiente)||0))),h('div',{style:{fontSize:11,color:'#64748B'}},(tot.cant_pendiente||0)+' cheques por cobrar')),
+        h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #10B981'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#10B981'}},CLP(Math.round(parseFloat(tot.pagado)||0))),h('div',{style:{fontSize:11,color:'#64748B'}},(tot.cant_pagado||0)+' cheques pagados')),
+        h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #EF4444'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#EF4444'}},CLP(Math.round(parseFloat(tot.anulado)||0))),h('div',{style:{fontSize:11,color:'#64748B'}},'Anulados')),
+        h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #1E3A2D'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#1E3A2D'}},tot.total||0),h('div',{style:{fontSize:11,color:'#64748B'}},'Total cheques'))
+      ),
+      dash&&dash.porMes&&dash.porMes.length>0&&h('div',{className:'card',style:{marginBottom:14}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Cheques pendientes por mes'),
+        h(TBL,{cols:[
+          {lbl:'Mes',render:function(r){var p=r.mes.split('-');var meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];return meses[parseInt(p[1])||0]+' '+p[0];}},
+          {lbl:'Empresa',render:function(r){return h('span',{style:{fontSize:11}},r.razon_social);}},
+          {lbl:'Cantidad',r:true,render:function(r){return r.cantidad;}},
+          {lbl:'Monto Total',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.total))));}}
+        ],rows:dash.porMes})
+      ),
+      dash&&dash.porBanco&&dash.porBanco.length>0&&h('div',{className:'card'},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Cheques pendientes por banco'),
+        h(TBL,{cols:[
+          {lbl:'Banco',k:'banco'},
+          {lbl:'Empresa',render:function(r){return h('span',{style:{fontSize:11}},r.razon_social);}},
+          {lbl:'Cantidad',r:true,render:function(r){return r.cantidad;}},
+          {lbl:'Monto Total',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.total))));}}
+        ],rows:dash.porBanco})
+      ),
+      (!dash||(!dash.porMes||!dash.porMes.length)&&(!dash.porBanco||!dash.porBanco.length))&&h('div',{className:'al al-i'},'Sin cheques pendientes registrados')
+    ),
+    // ── REGISTRO ──
+    tab==='registro'&&h('div',null,
+      showForm&&h('div',{className:'card',style:{marginBottom:12}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},editCh?'Editar cheque #'+editCh.numero_cheque:'Nuevo cheque'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Cuenta bancaria *'),h('select',{value:form.cuenta_id,onChange:function(e){upd('cuenta_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione cuenta...'),cuentasFilt.map(function(c){return h('option',{key:c.cuenta_id,value:c.cuenta_id},c.empresa_nombre+' — '+c.banco+' ('+c.numero_cuenta+')')}))),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'N° Cheque *'),h('input',{value:form.numero_cheque,onChange:function(e){upd('numero_cheque',e.target.value);},style:inpS,placeholder:'Ej: 001234'})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Monto ($) *'),h('input',{type:'number',value:form.monto,onChange:function(e){upd('monto',e.target.value);},style:inpS,placeholder:'0',min:0})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha emisión'),h('input',{type:'date',value:form.fecha_emision,onChange:function(e){upd('fecha_emision',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha cobro *'),h('input',{type:'date',value:form.fecha_cobro,onChange:function(e){upd('fecha_cobro',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Concepto'),h('select',{value:form.concepto,onChange:function(e){upd('concepto',e.target.value);},style:inpS},CONCEPTOS_CHEQUE.map(function(c){return h('option',{key:c.v,value:c.v},c.l);}))),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Tipo beneficiario'),h('select',{value:form.tipo_beneficiario,onChange:function(e){upd('tipo_beneficiario',e.target.value);upd('proveedor_id','');upd('beneficiario_nombre','');},style:inpS},h('option',{value:'proveedor'},'Proveedor'),h('option',{value:'acreedor'},'Acreedor / Tercero'))),
+          form.tipo_beneficiario==='proveedor'?h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Proveedor *'),h('select',{value:form.proveedor_id,onChange:function(e){upd('proveedor_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),provs.map(function(pr){return h('option',{key:pr.proveedor_id,value:pr.proveedor_id},pr.nombre);}))):h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Nombre acreedor *'),h('input',{value:form.beneficiario_nombre,onChange:function(e){upd('beneficiario_nombre',e.target.value);},style:inpS,placeholder:'Nombre completo'})),
+          form.concepto==='manual'?h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Detalle concepto'),h('input',{value:form.concepto_detalle,onChange:function(e){upd('concepto_detalle',e.target.value);},style:inpS,placeholder:'Describa el concepto'})):null,
+          h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observaciones'),h('input',{value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},style:inpS}))
+        ),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},h(Btn,{onClick:guardar},editCh?'Guardar cambios':'Registrar cheque'))
+      ),
+      h('div',{style:{display:'flex',gap:6,marginBottom:10}},
+        h('select',{value:filtBanco,onChange:function(e){setFiltBanco(e.target.value);},style:Object.assign({},inpS,{width:160})},h('option',{value:''},'Todos los bancos'),bancos.map(function(b){return h('option',{key:b,value:b},b);})),
+        h('select',{value:filtEstado,onChange:function(e){setFiltEstado(e.target.value);},style:Object.assign({},inpS,{width:140})},h('option',{value:''},'Todos los estados'),h('option',{value:'emitido'},'Emitido'),h('option',{value:'pagado'},'Pagado'),h('option',{value:'anulado'},'Anulado'))
+      ),
+      h('div',{className:'card'},h(TBL,{cols:[
+        {lbl:'N°',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.numero_cheque);}},
+        {lbl:'Empresa',render:function(r){return h('span',{style:{fontSize:11}},r.empresa_nombre);}},
+        {lbl:'Banco',render:function(r){return h('span',{style:{fontSize:11}},r.banco);}},
+        {lbl:'Emisión',render:function(r){return fmtD(r.fecha_emision);}},
+        {lbl:'Cobro',render:function(r){var hoy=new Date().toISOString().slice(0,10);var vencido=r.estado==='emitido'&&r.fecha_cobro&&r.fecha_cobro.slice(0,10)<hoy;return h('span',{style:{color:vencido?'#EF4444':'inherit',fontWeight:vencido?700:400}},fmtD(r.fecha_cobro),vencido?' ⚠':'');}},
+        {lbl:'Monto',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.monto))));}},
+        {lbl:'Beneficiario',render:function(r){return h('div',null,h('div',{style:{fontSize:11}},r.proveedor_nombre||r.beneficiario_nombre||'—'),h('div',{style:{fontSize:9,color:'#94A3B8'}},r.tipo_beneficiario==='proveedor'?'Proveedor':'Acreedor'));}},
+        {lbl:'Concepto',render:function(r){return h('span',{style:{fontSize:11}},conceptoL[r.concepto]||r.concepto_detalle||r.concepto);}},
+        {lbl:'Estado',render:function(r){return h('span',{onClick:function(){if(r.estado==='emitido')cambiarEstado(r.cheque_id,'pagado');else if(r.estado==='pagado')cambiarEstado(r.cheque_id,'emitido');},style:{cursor:'pointer'}},h(Bg,{c:estadoC[r.estado]||'gray'},r.estado));}},
+        {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:3}},
+          h('button',{onClick:function(){openEdit(r);},style:{fontSize:10,padding:'2px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✏'),
+          r.estado==='emitido'&&h('button',{onClick:function(){cambiarEstado(r.cheque_id,'anulado');},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✕'),
+          h('button',{onClick:function(){eliminar(r.cheque_id);},style:{color:'#94A3B8',background:'none',border:'none',cursor:'pointer',fontSize:10}},'🗑')
+        );}}
+      ],rows:chequesFilt,empty:'Sin cheques registrados'}))
+    )
+  );
+}
+
 // ══ SOLICITUDES ══
 var PRIORIDADES_SOL=[{v:'baja',l:'Baja'},{v:'normal',l:'Normal'},{v:'alta',l:'Alta'},{v:'urgente',l:'Urgente'}];
 function SolicitudesView(p){
@@ -4263,6 +4377,7 @@ var MODULOS_SISTEMA=[
   {k:'inventario',l:'Inventario'},
   {k:'mantencion',l:'Mantención'},
   {k:'solicitudes',l:'Solicitudes'},
+  {k:'finanzas',l:'Finanzas'},
   {k:'mantenedores',l:'Mantenedores'},
   {k:'reportes',l:'Reportes'},
   {k:'usuarios',l:'Usuarios'}
@@ -4509,7 +4624,7 @@ function Personal(p){
 
 function hSel(props,opts){return h.apply(null,['select',props].concat(opts));}
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar'};
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
@@ -4517,7 +4632,7 @@ function App(){
   const[view,setView]=useState('ordenes');
   const[m,setM]=useState({bodegas:[],cats:[],subcats:[],prods:[],faenas:[],equipos:[],provs:[],tdocs:[],motivos:[],empresas:[],conds:[]});
   const[alerts,setAlerts]=useState(0);const[refresh,setRefresh]=useState(0);
-  const[grp,setGrp]=useState({oc:true,comb:false,inv:false,mant:true,man:false,sys:false});
+  const[grp,setGrp]=useState({oc:true,comb:false,inv:false,mant:true,man:false,sys:false,sol:false,fin:false});
   function toggleGrp(k){setGrp(function(g){return Object.assign({},g,{[k]:!g[k]});});}
   function loadM(t){
     if(!t)return;
@@ -4596,6 +4711,9 @@ function App(){
         canSee('solicitudes')&&grpHdr('sol','SOLICITUDES'),
         canSee('solicitudes')&&grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
         canSee('solicitudes')&&h('div',{className:'sb-sep'}),
+        canSee('finanzas')&&grpHdr('fin','FINANZAS'),
+        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true)),
+        canSee('finanzas')&&h('div',{className:'sb-sep'}),
         canSee('mantenedores')&&grpHdr('man','MANTENEDORES'),
         canSee('mantenedores')&&grp.man&&h('div',null,
           navI('empresas','▸','Empresas',true),
@@ -4653,6 +4771,7 @@ function App(){
           view==='ordenes'&&h(OCView,{tok,m}),
           view==='rendiciones'&&h(RendicionesView,{tok,m}),
           view==='solicitudes'&&h(SolicitudesView,{tok,m,user}),
+          view==='fin-cheques'&&h(FinChequesView,{tok,m}),
           view==='empresas'&&h(MasterV,{tok,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,activo:true},cols:[{lbl:'ID',k:'empresa_id',mono:true,w:50},{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
           view==='bodegas'&&h(MasterV,{tok,titulo:'Bodega',ep:'bodegas',pk:'bodega_id',Form:BodegaForm,importKey:'bodegas',blank:{codigo:'',nombre:'',ubicacion:'',responsable:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Ubicacion',k:'ubicacion'},{lbl:'Responsable',k:'responsable'}]}),
           view==='productos'&&h(MasterV,{tok,titulo:'Producto',ep:'productos',pk:'producto_id',Form:ProdForm,importKey:'productos',blank:{codigo:'',nombre:'',descripcion:'',categoria_id:'',subcategoria_id:'',unidad_medida:'UN',stock_minimo:0,stock_maximo:'',costo_referencia:0,unidad_compra:'',factor_conversion:1,activo:true},extra:{cats:m.cats,subcats:m.subcats},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Subcategoria',k:'subcategoria_nombre'},{lbl:'UM',k:'unidad_medida'},{lbl:'Stk min',k:'stock_minimo'},{lbl:'Costo ref.',render:r=>CLP(r.costo_referencia)}]}),
