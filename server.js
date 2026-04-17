@@ -3505,6 +3505,11 @@ app.get('/api/rend/saldos', auth, async(req,res)=>{
 app.get('/api/fin/cuentas', auth, async(req,res)=>{
   try{res.json((await pool.query('SELECT c.*,e.razon_social AS empresa_nombre FROM fin_cuentas_bancarias c JOIN empresas e ON c.empresa_id=e.empresa_id ORDER BY e.razon_social,c.banco')).rows);}catch(e){res.status(500).json({error:e.message});}
 });
+app.put('/api/fin/cuentas/:id', auth, async(req,res)=>{
+  try{const{banco,numero_cuenta,tipo_cuenta}=req.body;
+  const r=await pool.query('UPDATE fin_cuentas_bancarias SET banco=$1,numero_cuenta=$2,tipo_cuenta=$3 WHERE cuenta_id=$4 RETURNING *',[banco,numero_cuenta,tipo_cuenta||'corriente',req.params.id]);
+  res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
 app.get('/api/fin/cheques', auth, async(req,res)=>{
   try{
     const{empresa_id,cuenta_id,estado,desde,hasta}=req.query;
