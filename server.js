@@ -828,6 +828,40 @@ async function autoSetup() {
       console.log('  [OK] Rendiciones: '+entregas.length+' entregas, '+gLoaded+' gastos cargados');
     }
   }catch(e){console.log('[WARN] seed rendiciones:',e.message);}
+
+  // ── Seed cuentas bancarias ──
+  try{
+    const bc=await pool.query('SELECT COUNT(*) FROM fin_cuentas_bancarias');
+    if(parseInt(bc.rows[0].count)===0){
+      const empLPZ=await pool.query("SELECT empresa_id FROM empresas WHERE LOWER(razon_social) LIKE '%leonidas%poo%' LIMIT 1");
+      const empEMP=await pool.query("SELECT empresa_id FROM empresas WHERE LOWER(razon_social) LIKE '%emprecon%' LIMIT 1");
+      const lpzId=empLPZ.rows.length?empLPZ.rows[0].empresa_id:null;
+      const empId=empEMP.rows.length?empEMP.rows[0].empresa_id:null;
+      if(lpzId){
+        const cuentasLPZ=[
+          ['Banco BICE','corriente','21-00123-01'],
+          ['Banco Santander','corriente','0-071-00456-7'],
+          ['Banco Itaú','corriente','0220078901'],
+          ['Scotiabank','corriente','97-01234-05'],
+          ['Banco de Chile','corriente','00-123-45678-09']
+        ];
+        for(const[banco,tipo,num] of cuentasLPZ){
+          await pool.query('INSERT INTO fin_cuentas_bancarias(empresa_id,banco,tipo_cuenta,numero_cuenta) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',[lpzId,banco,tipo,num]);
+        }
+      }
+      if(empId){
+        const cuentasEMP=[
+          ['Banco Santander','corriente','0-071-00789-3'],
+          ['Banco Itaú','corriente','0220098765'],
+          ['Scotiabank','corriente','97-05678-02']
+        ];
+        for(const[banco,tipo,num] of cuentasEMP){
+          await pool.query('INSERT INTO fin_cuentas_bancarias(empresa_id,banco,tipo_cuenta,numero_cuenta) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',[empId,banco,tipo,num]);
+        }
+      }
+      console.log('  [OK] Cuentas bancarias cargadas');
+    }
+  }catch(e){console.log('[WARN] seed cuentas bancarias:',e.message);}
 }
 
 async function insertarDatosIniciales(client) {
@@ -3323,6 +3357,38 @@ async function setupRendiciones(q){
     usuario_creador VARCHAR(100),
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
+
+  // ── Finanzas: Cuentas bancarias y cheques ──
+  await q(`CREATE TABLE IF NOT EXISTS fin_cuentas_bancarias (
+    cuenta_id SERIAL PRIMARY KEY,
+    empresa_id INT NOT NULL REFERENCES empresas(empresa_id),
+    banco VARCHAR(60) NOT NULL,
+    tipo_cuenta VARCHAR(30) DEFAULT 'corriente',
+    numero_cuenta VARCHAR(30) NOT NULL,
+    moneda VARCHAR(10) DEFAULT 'CLP',
+    activo BOOLEAN DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(empresa_id,numero_cuenta)
+  )`);
+  await q(`CREATE TABLE IF NOT EXISTS fin_cheques (
+    cheque_id SERIAL PRIMARY KEY,
+    empresa_id INT NOT NULL REFERENCES empresas(empresa_id),
+    cuenta_id INT NOT NULL REFERENCES fin_cuentas_bancarias(cuenta_id),
+    numero_cheque VARCHAR(20) NOT NULL,
+    fecha_emision DATE NOT NULL DEFAULT CURRENT_DATE,
+    fecha_cobro DATE NOT NULL,
+    monto NUMERIC(14,2) NOT NULL,
+    tipo_beneficiario VARCHAR(20) DEFAULT 'proveedor',
+    proveedor_id INT REFERENCES proveedores(proveedor_id),
+    beneficiario_nombre VARCHAR(150),
+    concepto VARCHAR(40) NOT NULL DEFAULT 'pago_factura',
+    concepto_detalle VARCHAR(300),
+    estado VARCHAR(20) DEFAULT 'emitido',
+    fecha_pago DATE,
+    observaciones TEXT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
 }
 
 // ── Entregas de fondos ──
@@ -3432,6 +3498,64 @@ app.get('/api/rend/saldos', auth, async(req,res)=>{
       AND (EXISTS(SELECT 1 FROM rend_entregas e WHERE e.persona_id=p.persona_id) OR EXISTS(SELECT 1 FROM rend_gastos g WHERE g.persona_id=p.persona_id))
       ORDER BY saldo DESC`);
     res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ══ FINANZAS — CUENTAS BANCARIAS Y CHEQUES ══
+app.get('/api/fin/cuentas', auth, async(req,res)=>{
+  try{res.json((await pool.query('SELECT c.*,e.razon_social AS empresa_nombre FROM fin_cuentas_bancarias c JOIN empresas e ON c.empresa_id=e.empresa_id ORDER BY e.razon_social,c.banco')).rows);}catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/fin/cheques', auth, async(req,res)=>{
+  try{
+    const{empresa_id,cuenta_id,estado,desde,hasta}=req.query;
+    let w=['1=1'],v=[];
+    if(empresa_id){v.push(empresa_id);w.push(`ch.empresa_id=$${v.length}`);}
+    if(cuenta_id){v.push(cuenta_id);w.push(`ch.cuenta_id=$${v.length}`);}
+    if(estado){v.push(estado);w.push(`ch.estado=$${v.length}`);}
+    if(desde){v.push(desde);w.push(`ch.fecha_cobro>=$${v.length}`);}
+    if(hasta){v.push(hasta);w.push(`ch.fecha_cobro<=$${v.length}`);}
+    const r=await pool.query(`SELECT ch.*,c.banco,c.numero_cuenta,e.razon_social AS empresa_nombre,p.nombre AS proveedor_nombre FROM fin_cheques ch JOIN fin_cuentas_bancarias c ON ch.cuenta_id=c.cuenta_id JOIN empresas e ON ch.empresa_id=e.empresa_id LEFT JOIN proveedores p ON ch.proveedor_id=p.proveedor_id WHERE ${w.join(' AND ')} ORDER BY ch.fecha_cobro ASC, ch.cheque_id DESC`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/fin/cheques', auth, async(req,res)=>{
+  try{
+    const{empresa_id,cuenta_id,numero_cheque,fecha_emision,fecha_cobro,monto,tipo_beneficiario,proveedor_id,beneficiario_nombre,concepto,concepto_detalle,observaciones}=req.body;
+    if(!cuenta_id||!numero_cheque||!fecha_cobro||!monto)return res.status(400).json({error:'Cuenta, N° cheque, fecha cobro y monto son obligatorios'});
+    const cuenta=await pool.query('SELECT empresa_id FROM fin_cuentas_bancarias WHERE cuenta_id=$1',[cuenta_id]);
+    const empId=empresa_id||cuenta.rows[0]?.empresa_id;
+    const benNombre=tipo_beneficiario==='proveedor'&&proveedor_id?(await pool.query('SELECT nombre FROM proveedores WHERE proveedor_id=$1',[proveedor_id])).rows[0]?.nombre:beneficiario_nombre;
+    const r=await pool.query('INSERT INTO fin_cheques(empresa_id,cuenta_id,numero_cheque,fecha_emision,fecha_cobro,monto,tipo_beneficiario,proveedor_id,beneficiario_nombre,concepto,concepto_detalle,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *',
+      [empId,cuenta_id,numero_cheque,fecha_emision||new Date().toISOString().slice(0,10),fecha_cobro,parseFloat(monto),tipo_beneficiario||'proveedor',tipo_beneficiario==='proveedor'?proveedor_id:null,benNombre||null,concepto||'pago_factura',concepto_detalle||null,observaciones||null,req.user.email]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/fin/cheques/:id', auth, async(req,res)=>{
+  try{
+    const{cuenta_id,numero_cheque,fecha_emision,fecha_cobro,monto,tipo_beneficiario,proveedor_id,beneficiario_nombre,concepto,concepto_detalle,observaciones}=req.body;
+    const benNombre=tipo_beneficiario==='proveedor'&&proveedor_id?(await pool.query('SELECT nombre FROM proveedores WHERE proveedor_id=$1',[proveedor_id])).rows[0]?.nombre:beneficiario_nombre;
+    const r=await pool.query('UPDATE fin_cheques SET cuenta_id=$1,numero_cheque=$2,fecha_emision=$3,fecha_cobro=$4,monto=$5,tipo_beneficiario=$6,proveedor_id=$7,beneficiario_nombre=$8,concepto=$9,concepto_detalle=$10,observaciones=$11 WHERE cheque_id=$12 RETURNING *',
+      [cuenta_id,numero_cheque,fecha_emision,fecha_cobro,parseFloat(monto),tipo_beneficiario,tipo_beneficiario==='proveedor'?proveedor_id:null,benNombre||null,concepto,concepto_detalle||null,observaciones||null,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.patch('/api/fin/cheques/:id/estado', auth, async(req,res)=>{
+  try{const{estado}=req.body;
+  const upd=estado==='pagado'?'estado=$1,fecha_pago=CURRENT_DATE':'estado=$1,fecha_pago=NULL';
+  const r=await pool.query(`UPDATE fin_cheques SET ${upd} WHERE cheque_id=$2 RETURNING *`,[estado,req.params.id]);
+  res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/fin/cheques/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM fin_cheques WHERE cheque_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+});
+app.get('/api/fin/dashboard', auth, async(req,res)=>{
+  try{
+    const{empresa_id}=req.query;
+    let empFilter=empresa_id?` AND ch.empresa_id=${parseInt(empresa_id)}`:'';
+    const porMes=await pool.query(`SELECT TO_CHAR(ch.fecha_cobro,'YYYY-MM') AS mes,ch.empresa_id,e.razon_social,SUM(ch.monto) AS total,COUNT(*) AS cantidad FROM fin_cheques ch JOIN empresas e ON ch.empresa_id=e.empresa_id WHERE ch.estado='emitido'${empFilter} GROUP BY mes,ch.empresa_id,e.razon_social ORDER BY mes`);
+    const porBanco=await pool.query(`SELECT c.banco,ch.empresa_id,e.razon_social,SUM(ch.monto) AS total,COUNT(*) AS cantidad FROM fin_cheques ch JOIN fin_cuentas_bancarias c ON ch.cuenta_id=c.cuenta_id JOIN empresas e ON ch.empresa_id=e.empresa_id WHERE ch.estado='emitido'${empFilter} GROUP BY c.banco,ch.empresa_id,e.razon_social ORDER BY c.banco`);
+    const totales=await pool.query(`SELECT SUM(CASE WHEN estado='emitido' THEN monto ELSE 0 END) AS pendiente,SUM(CASE WHEN estado='pagado' THEN monto ELSE 0 END) AS pagado,SUM(CASE WHEN estado='anulado' THEN monto ELSE 0 END) AS anulado,COUNT(*) FILTER(WHERE estado='emitido') AS cant_pendiente,COUNT(*) FILTER(WHERE estado='pagado') AS cant_pagado,COUNT(*) AS total FROM fin_cheques ch WHERE 1=1${empFilter}`);
+    res.json({porMes:porMes.rows,porBanco:porBanco.rows,totales:totales.rows[0]||{}});
   }catch(e){res.status(500).json({error:e.message});}
 });
 
