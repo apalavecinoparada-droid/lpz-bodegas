@@ -773,10 +773,69 @@ function FinChequesView(p){
   var chequesFilt=cheques;
   if(filtBanco)chequesFilt=chequesFilt.filter(function(c){return c.banco===filtBanco;});
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
-  var tot=dash&&dash.totales?dash.totales:{};
-  var tabs=[{k:'dashboard',l:'📊 Dashboard'},{k:'registro',l:'📝 Registro'}];
   var estadoC={emitido:'y',pagado:'g',anulado:'r'};
   var conceptoL={};CONCEPTOS_CHEQUE.forEach(function(c){conceptoL[c.v]=c.l;});
+  var[editCta,setEditCta]=useState(null);
+  var[ctaForm,setCtaForm]=useState({banco:'',numero_cuenta:'',tipo_cuenta:'corriente'});
+  function openEditCta(c){setEditCta(c);setCtaForm({banco:c.banco,numero_cuenta:c.numero_cuenta,tipo_cuenta:c.tipo_cuenta||'corriente'});}
+  function guardarCta(){
+    if(!ctaForm.banco||!ctaForm.numero_cuenta){setMsg('Error: Banco y número de cuenta requeridos');return;}
+    api('/fin/cuentas/'+editCta.cuenta_id,'PUT',ctaForm,p.tok).then(function(){loadCuentas();setEditCta(null);setMsg('Cuenta actualizada');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  var tabs=[{k:'dashboard',l:'📊 Dashboard'},{k:'registro',l:'📝 Registro'},{k:'cuentas',l:'🏦 Cuentas'}];
+  function imprimirCheque(ch){
+    var cta=cuentas.find(function(c){return c.cuenta_id===ch.cuenta_id;})||{};
+    var conceptoLabel=conceptoL[ch.concepto]||(ch.concepto_detalle||ch.concepto);
+    var estadoClass=ch.estado==='emitido'?'est-emitido':ch.estado==='pagado'?'est-pagado':'est-anulado';
+    var css='body{font-family:Arial,sans-serif;font-size:12px;color:#1E293B;margin:24px}'+
+      '.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #1E3A2D;padding-bottom:14px;margin-bottom:16px}'+
+      '.empresa{font-size:12px;line-height:1.7} .empresa strong{font-size:15px;color:#0F172A}'+
+      '.title-box{text-align:right} .title-box h2{font-size:20px;color:#1E3A2D;margin:0 0 3px}'+
+      '.cheque-num{font-size:18px;font-weight:700;color:#1E3A2D}'+
+      '.estado{display:inline-block;padding:3px 12px;border-radius:12px;font-size:11px;font-weight:700;margin-top:6px}'+
+      '.est-emitido{background:#FEF3C7;color:#92400E}.est-pagado{background:#DCFCE7;color:#166534}.est-anulado{background:#FEE2E2;color:#991B1B}'+
+      '.meta{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:#F8FAFC;padding:12px;border-radius:6px;margin-bottom:16px;font-size:12px}'+
+      '.mi{display:flex;gap:4px} .ml{color:#64748B;min-width:120px} .mv{font-weight:600}'+
+      '.monto-box{text-align:center;padding:20px;background:#F0FDF4;border:2px solid #1E3A2D;border-radius:8px;margin:16px 0}'+
+      '.monto-box .label{font-size:12px;color:#64748B;margin-bottom:4px}.monto-box .valor{font-size:28px;font-weight:700;color:#1E3A2D}'+
+      '.footer{margin-top:30px;padding-top:10px;border-top:1px solid #E2E8F0;font-size:10px;color:#94A3B8;text-align:center}'+
+      '.firmas{display:grid;grid-template-columns:1fr 1fr 1fr;gap:30px;margin-top:40px;text-align:center;font-size:11px}'+
+      '.firma-line{border-top:1px solid #1E293B;padding-top:4px;margin-top:40px;color:#64748B}'+
+      '@media print{button{display:none}}';
+    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'</style></head><body>'+
+      '<div class="header">'+
+      '<div class="empresa"><strong>'+(ch.empresa_nombre||'')+'</strong><br>'+
+      'Cuenta '+cta.tipo_cuenta+': '+cta.numero_cuenta+'<br>'+
+      cta.banco+
+      '</div>'+
+      '<div class="title-box"><h2>COMPROBANTE DE GIRO</h2><div class="cheque-num">Cheque N° '+ch.numero_cheque+'</div>'+
+      '<div><span class="estado '+estadoClass+'">'+ch.estado.toUpperCase()+'</span></div></div>'+
+      '</div>'+
+      '<div class="meta">'+
+      '<div class="mi"><span class="ml">Fecha de emisión:</span><span class="mv">'+fmtD(ch.fecha_emision)+'</span></div>'+
+      '<div class="mi"><span class="ml">Fecha de cobro:</span><span class="mv">'+fmtD(ch.fecha_cobro)+'</span></div>'+
+      '<div class="mi"><span class="ml">Banco:</span><span class="mv">'+ch.banco+'</span></div>'+
+      '<div class="mi"><span class="ml">N° Cuenta:</span><span class="mv">'+ch.numero_cuenta+'</span></div>'+
+      '<div class="mi"><span class="ml">Tipo beneficiario:</span><span class="mv">'+(ch.tipo_beneficiario==='proveedor'?'Proveedor':'Acreedor / Tercero')+'</span></div>'+
+      '<div class="mi"><span class="ml">Beneficiario:</span><span class="mv">'+(ch.proveedor_nombre||ch.beneficiario_nombre||'—')+'</span></div>'+
+      '<div class="mi"><span class="ml">Concepto:</span><span class="mv">'+conceptoLabel+'</span></div>'+
+      (ch.concepto_detalle?'<div class="mi"><span class="ml">Detalle:</span><span class="mv">'+ch.concepto_detalle+'</span></div>':'')+
+      (ch.observaciones?'<div class="mi"><span class="ml">Observaciones:</span><span class="mv">'+ch.observaciones+'</span></div>':'')+
+      (ch.fecha_pago?'<div class="mi"><span class="ml">Fecha pago real:</span><span class="mv">'+fmtD(ch.fecha_pago)+'</span></div>':'')+
+      '</div>'+
+      '<div class="monto-box"><div class="label">MONTO DEL CHEQUE</div><div class="valor">'+CLP(Math.round(parseFloat(ch.monto)))+'</div></div>'+
+      '<div class="firmas">'+
+      '<div><div class="firma-line">Emite</div></div>'+
+      '<div><div class="firma-line">Autoriza</div></div>'+
+      '<div><div class="firma-line">Recibe conforme</div></div>'+
+      '</div>'+
+      '<div class="footer">Documento generado el '+new Date().toLocaleDateString('es-CL')+' | Empresas Poo — Sistema de Gestión</div>'+
+      '</body></html>';
+    var w=window.open('','_blank','width=900,height=700');
+    w.document.write(html);w.document.close();w.focus();
+    setTimeout(function(){w.print();},500);
+  }
+  var tot=dash&&dash.totales?dash.totales:{};
   return h('div',null,
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
       h('div',{style:{display:'flex',gap:4}},tabs.map(function(t){return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'6px 14px',borderRadius:5,fontSize:12,cursor:'pointer',border:'1px solid #CBD5E1',background:tab===t.k?'#1E3A2D':'#F8FAFC',color:tab===t.k?'#fff':'#475569',fontWeight:tab===t.k?600:400}},t.l);})),
@@ -845,13 +904,39 @@ function FinChequesView(p){
         {lbl:'Monto',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.monto))));}},
         {lbl:'Beneficiario',render:function(r){return h('div',null,h('div',{style:{fontSize:11}},r.proveedor_nombre||r.beneficiario_nombre||'—'),h('div',{style:{fontSize:9,color:'#94A3B8'}},r.tipo_beneficiario==='proveedor'?'Proveedor':'Acreedor'));}},
         {lbl:'Concepto',render:function(r){return h('span',{style:{fontSize:11}},conceptoL[r.concepto]||r.concepto_detalle||r.concepto);}},
-        {lbl:'Estado',render:function(r){return h('span',{onClick:function(){if(r.estado==='emitido')cambiarEstado(r.cheque_id,'pagado');else if(r.estado==='pagado')cambiarEstado(r.cheque_id,'emitido');},style:{cursor:'pointer'}},h(Bg,{c:estadoC[r.estado]||'gray'},r.estado));}},
-        {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:3}},
+        {lbl:'Estado',render:function(r){return h(Bg,{c:estadoC[r.estado]||'gray'},r.estado);}},
+        {lbl:'',render:function(r){
+          return h('div',{style:{display:'flex',gap:3,flexWrap:'wrap'}},
+          r.estado==='emitido'&&h('button',{onClick:function(){cambiarEstado(r.cheque_id,'pagado');},style:{fontSize:10,padding:'2px 6px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✓ Pagado'),
+          r.estado==='pagado'&&h('button',{onClick:function(){cambiarEstado(r.cheque_id,'emitido');},style:{fontSize:10,padding:'2px 6px',background:'#F59E0B',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'↩ Revertir'),
+          h('button',{onClick:function(){imprimirCheque(r);},style:{fontSize:10,padding:'2px 6px',background:'#6366F1',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'🖨'),
           h('button',{onClick:function(){openEdit(r);},style:{fontSize:10,padding:'2px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✏'),
           r.estado==='emitido'&&h('button',{onClick:function(){cambiarEstado(r.cheque_id,'anulado');},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✕'),
           h('button',{onClick:function(){eliminar(r.cheque_id);},style:{color:'#94A3B8',background:'none',border:'none',cursor:'pointer',fontSize:10}},'🗑')
         );}}
       ],rows:chequesFilt,empty:'Sin cheques registrados'}))
+    ),
+    // ── CUENTAS BANCARIAS ──
+    tab==='cuentas'&&h('div',null,
+      editCta&&h('div',{className:'card',style:{marginBottom:12}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Editar cuenta — '+editCta.empresa_nombre),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}},
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Banco'),h('input',{value:ctaForm.banco,onChange:function(e){setCtaForm(Object.assign({},ctaForm,{banco:e.target.value}));},style:inpS})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'N° Cuenta'),h('input',{value:ctaForm.numero_cuenta,onChange:function(e){setCtaForm(Object.assign({},ctaForm,{numero_cuenta:e.target.value}));},style:inpS})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Tipo'),h('select',{value:ctaForm.tipo_cuenta,onChange:function(e){setCtaForm(Object.assign({},ctaForm,{tipo_cuenta:e.target.value}));},style:inpS},h('option',{value:'corriente'},'Cuenta Corriente'),h('option',{value:'vista'},'Cuenta Vista'),h('option',{value:'ahorro'},'Cuenta Ahorro')))
+        ),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},
+          h('button',{onClick:function(){setEditCta(null);},style:{padding:'6px 14px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12}},'Cancelar'),
+          h(Btn,{onClick:guardarCta},'Guardar cambios')
+        )
+      ),
+      h('div',{className:'card'},h(TBL,{cols:[
+        {lbl:'Empresa',render:function(r){return h('strong',{style:{fontSize:12}},r.empresa_nombre);}},
+        {lbl:'Banco',k:'banco'},
+        {lbl:'Tipo',render:function(r){return r.tipo_cuenta==='corriente'?'Cta. Corriente':r.tipo_cuenta==='vista'?'Cta. Vista':'Cta. Ahorro';}},
+        {lbl:'N° Cuenta',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:12,fontWeight:600}},r.numero_cuenta);}},
+        {lbl:'',render:function(r){return h('button',{onClick:function(){openEditCta(r);},style:{fontSize:10,padding:'2px 8px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✏ Editar');}}
+      ],rows:cuentas,empty:'Sin cuentas bancarias'}))
     )
   );
 }
