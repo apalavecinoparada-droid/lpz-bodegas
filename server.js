@@ -1542,6 +1542,32 @@ ocR.get('/buscar/filtros', auth, async(req,res)=>{
 
 app.use('/api/ordenes-compra', ocR);
 
+// ══ IMPORTACIÓN MASIVA DE PROVEEDORES DESDE XML ══
+app.post('/api/import/proveedores-xml', auth, async(req,res)=>{
+  try{
+    const{proveedores}=req.body;
+    if(!Array.isArray(proveedores)||!proveedores.length) throw new Error('Sin proveedores para importar');
+    const results=[];
+    for(const p of proveedores){
+      try{
+        if(!p.rut||!p.nombre){results.push({rut:p.rut,nombre:p.nombre,ok:false,error:'RUT y nombre requeridos'});continue;}
+        const exists=await pool.query('SELECT proveedor_id FROM proveedores WHERE rut=$1',[p.rut]);
+        if(exists.rows.length){
+          // Update if has more data
+          if(p.giro||p.direccion){
+            await pool.query('UPDATE proveedores SET giro=COALESCE(NULLIF($1,\'\'),giro),direccion=COALESCE(NULLIF($2,\'\'),direccion) WHERE rut=$3',[p.giro||null,p.direccion||null,p.rut]);
+          }
+          results.push({rut:p.rut,nombre:p.nombre,ok:true,accion:'existente'});
+        }else{
+          await pool.query('INSERT INTO proveedores(rut,nombre,giro,direccion) VALUES($1,$2,$3,$4)',[p.rut,p.nombre,p.giro||null,p.direccion||null]);
+          results.push({rut:p.rut,nombre:p.nombre,ok:true,accion:'creado'});
+        }
+      }catch(e){results.push({rut:p.rut,nombre:p.nombre,ok:false,error:e.message});}
+    }
+    res.json({results});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 // ══ IMPORTACIÓN MASIVA DE OC DESDE XML (ZIP Facto) ══
 app.post('/api/import/bulk-oc', auth, async(req,res)=>{
   const client=await pool.connect();
