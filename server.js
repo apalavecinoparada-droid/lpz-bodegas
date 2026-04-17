@@ -3510,6 +3510,15 @@ app.put('/api/fin/cuentas/:id', auth, async(req,res)=>{
   const r=await pool.query('UPDATE fin_cuentas_bancarias SET banco=$1,numero_cuenta=$2,tipo_cuenta=$3 WHERE cuenta_id=$4 RETURNING *',[banco,numero_cuenta,tipo_cuenta||'corriente',req.params.id]);
   res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
+app.post('/api/fin/cuentas', auth, async(req,res)=>{
+  try{const{empresa_id,banco,numero_cuenta,tipo_cuenta}=req.body;
+  if(!empresa_id||!banco||!numero_cuenta)return res.status(400).json({error:'Empresa, banco y número de cuenta son obligatorios'});
+  const r=await pool.query('INSERT INTO fin_cuentas_bancarias(empresa_id,banco,tipo_cuenta,numero_cuenta) VALUES($1,$2,$3,$4) RETURNING *',[empresa_id,banco,tipo_cuenta||'corriente',numero_cuenta]);
+  res.status(201).json(r.rows[0]);}catch(e){if(e.code==='23505')return res.status(400).json({error:'Esta cuenta ya existe para esa empresa'});res.status(400).json({error:e.message});}
+});
+app.delete('/api/fin/cuentas/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM fin_cuentas_bancarias WHERE cuenta_id=$1',[req.params.id]);res.json({ok:true});}catch(e){if(e.code==='23503')return res.status(400).json({error:'Cuenta en uso, no se puede eliminar'});res.status(400).json({error:e.message});}
+});
 app.get('/api/fin/cheques', auth, async(req,res)=>{
   try{
     const{empresa_id,cuenta_id,estado,desde,hasta}=req.query;
