@@ -749,7 +749,7 @@ function FinChequesView(p){
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   var[cuentas,setCuentas]=useState([]);var[cheques,setCheques]=useState([]);var[dash,setDash]=useState(null);
   var[tab,setTab]=useState('dashboard');var[showForm,setShowForm]=useState(false);var[editCh,setEditCh]=useState(null);var[msg,setMsg]=useState('');
-  var[filtEmpresa,setFiltEmpresa]=useState('');var[filtBanco,setFiltBanco]=useState('');var[filtEstado,setFiltEstado]=useState('');
+  var[filtEmpresa,setFiltEmpresa]=useState('');var[filtBanco,setFiltBanco]=useState('');var[filtEstado,setFiltEstado]=useState('emitido');
   var emptyForm={cuenta_id:'',numero_cheque:'',fecha_emision:new Date().toISOString().slice(0,10),fecha_cobro:'',monto:'',tipo_beneficiario:'proveedor',proveedor_id:'',beneficiario_nombre:'',concepto:'pago_factura',concepto_detalle:'',observaciones:''};
   var[form,setForm]=useState(emptyForm);
   function loadCuentas(){api('/fin/cuentas','GET',null,p.tok).then(function(r){setCuentas(Array.isArray(r)?r:[]);}).catch(function(){});}
@@ -824,7 +824,7 @@ function FinChequesView(p){
         '<td>'+fmtD(c.fecha_emision)+'</td>'+
         '<td>'+fmtD(c.fecha_cobro)+'</td>'+
         '<td>'+(c.proveedor_nombre||c.beneficiario_nombre||'—')+'</td>'+
-        '<td>'+(conceptoL[c.concepto]||c.concepto_detalle||c.concepto)+'</td>'+
+        '<td>'+(conceptoL[c.concepto]||c.concepto)+(c.concepto_detalle?'<br><span style="font-size:9px;color:#64748B">'+c.concepto_detalle+'</span>':'')+(c.observaciones?'<br><span style="font-size:9px;color:#94A3B8;font-style:italic">'+c.observaciones+'</span>':'')+'</td>'+
         '<td style="text-align:right;font-weight:600">'+CLP(Math.round(parseFloat(c.monto)))+'</td>'+
         '</tr>';}).join('')+
       '</tbody></table>'+
@@ -949,7 +949,8 @@ function FinChequesView(p){
           h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Concepto'),h('select',{value:form.concepto,onChange:function(e){upd('concepto',e.target.value);},style:inpS},CONCEPTOS_CHEQUE.map(function(c){return h('option',{key:c.v,value:c.v},c.l);}))),
           h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Tipo beneficiario'),h('select',{value:form.tipo_beneficiario,onChange:function(e){upd('tipo_beneficiario',e.target.value);upd('proveedor_id','');upd('beneficiario_nombre','');},style:inpS},h('option',{value:'proveedor'},'Proveedor'),h('option',{value:'acreedor'},'Acreedor / Tercero'))),
           form.tipo_beneficiario==='proveedor'?h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Proveedor *'),h('select',{value:form.proveedor_id,onChange:function(e){upd('proveedor_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),provs.map(function(pr){return h('option',{key:pr.proveedor_id,value:pr.proveedor_id},pr.nombre);}))):h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Nombre acreedor *'),h('input',{value:form.beneficiario_nombre,onChange:function(e){upd('beneficiario_nombre',e.target.value);},style:inpS,placeholder:'Nombre completo'})),
-          form.concepto==='manual'?h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Detalle concepto'),h('input',{value:form.concepto_detalle,onChange:function(e){upd('concepto_detalle',e.target.value);},style:inpS,placeholder:'Describa el concepto'})):null,
+          form.concepto==='manual'?h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Detalle concepto *'),h('input',{value:form.concepto_detalle,onChange:function(e){upd('concepto_detalle',e.target.value);},style:inpS,placeholder:'Describa el concepto'})):
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Detalle / Glosa'),h('input',{value:form.concepto_detalle,onChange:function(e){upd('concepto_detalle',e.target.value);},style:inpS,placeholder:'Ej: Factura N° 1234, remuneraciones marzo...'})),
           h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observaciones'),h('input',{value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},style:inpS}))
         ),
         h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},h(Btn,{onClick:guardar},editCh?'Guardar cambios':'Registrar cheque'))
@@ -968,7 +969,7 @@ function FinChequesView(p){
         {lbl:'Cobro',render:function(r){var hoy=new Date().toISOString().slice(0,10);var vencido=r.estado==='emitido'&&r.fecha_cobro&&r.fecha_cobro.slice(0,10)<hoy;return h('span',{style:{color:vencido?'#EF4444':'inherit',fontWeight:vencido?700:400}},fmtD(r.fecha_cobro),vencido?' ⚠':'');}},
         {lbl:'Monto',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.monto))));}},
         {lbl:'Beneficiario',render:function(r){return h('div',null,h('div',{style:{fontSize:11}},r.proveedor_nombre||r.beneficiario_nombre||'—'),h('div',{style:{fontSize:9,color:'#94A3B8'}},r.tipo_beneficiario==='proveedor'?'Proveedor':'Acreedor'));}},
-        {lbl:'Concepto',render:function(r){return h('span',{style:{fontSize:11}},conceptoL[r.concepto]||r.concepto_detalle||r.concepto);}},
+        {lbl:'Concepto',render:function(r){return h('div',null,h('span',{style:{fontSize:11}},conceptoL[r.concepto]||r.concepto),r.concepto_detalle?h('div',{style:{fontSize:9,color:'#64748B'}},r.concepto_detalle):null);}},
         {lbl:'Estado',render:function(r){return h(Bg,{c:estadoC[r.estado]||'gray'},r.estado);}},
         {lbl:'',render:function(r){
           return h('div',{style:{display:'flex',gap:3,flexWrap:'wrap'}},
