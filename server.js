@@ -3415,6 +3415,59 @@ async function setupRendiciones(q){
     usuario VARCHAR(100),
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
+
+  // ── Terreno: Registros diarios y tiempos obvios ──
+  await q(`CREATE TABLE IF NOT EXISTS terreno_tob_categorias (
+    tob_cat_id SERIAL PRIMARY KEY,
+    codigo VARCHAR(10),
+    clasificacion VARCHAR(20),
+    causa VARCHAR(200) NOT NULL UNIQUE,
+    orden INT DEFAULT 0,
+    activo BOOLEAN DEFAULT true
+  )`);
+  await q(`CREATE TABLE IF NOT EXISTS terreno_registros (
+    registro_id SERIAL PRIMARY KEY,
+    fecha DATE NOT NULL,
+    faena_id INT NOT NULL REFERENCES faenas(faena_id),
+    equipo_id INT NOT NULL REFERENCES equipos(equipo_id),
+    horometro_inicial NUMERIC(10,2) NOT NULL,
+    horometro_final NUMERIC(10,2) NOT NULL,
+    horas_trabajadas NUMERIC(8,2) GENERATED ALWAYS AS (horometro_final - horometro_inicial) STORED,
+    horas_perdidas NUMERIC(8,2) DEFAULT 0,
+    litros_combustible NUMERIC(10,2) DEFAULT 0,
+    estanque_id INT REFERENCES comb_estanques(estanque_id),
+    observaciones TEXT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(fecha,equipo_id)
+  )`);
+  await q(`CREATE TABLE IF NOT EXISTS terreno_tob_detalle (
+    detalle_id SERIAL PRIMARY KEY,
+    registro_id INT NOT NULL REFERENCES terreno_registros(registro_id) ON DELETE CASCADE,
+    tob_cat_id INT NOT NULL REFERENCES terreno_tob_categorias(tob_cat_id),
+    horas NUMERIC(6,2) NOT NULL,
+    observacion VARCHAR(300)
+  )`);
+
+  // Seed categorías TOB
+  try{
+    const c=await pool.query('SELECT COUNT(*) FROM terreno_tob_categorias');
+    if(parseInt(c.rows[0].count)===0){
+      const cats=[
+        'MONITOREO Y/O PARALIZACIÓN FORMIN','DETENIDO POR PASO DE VEHÍCULOS','DETENIDO POR CARGUÍO DE CAMIONES',
+        'CLIMA Y/O INCENDIO DETIENE OPERACIÓN','ATOCHAMIENTO EN CANCHA','ATRASO INICIO O SALIDA TEMPRANA DE FAENA',
+        'CONTROL A FAENA','FALTA DE PERSONAL','CHARLA, CAPACITACIONES O REUNIONES','PUESTA EN MARCHA',
+        'BAÑO OPERADOR','MANTENCIÓN PROGRAMADA','CARGA COMBUSTIBLE O ACEITE','FALLA EQUIPO',
+        'TRASLADO DE FUNDO','DETENIDO POR FALTA DE VOLTEO','DETENIDO POR FALTA DE ORDENAMIENTO',
+        'TRASLADO DENTRO FAENA','DETENIDO POR FALTA DE MADEREO','CAMBIO DE CADENA O ESPADA',
+        'MEDICIÓN DE LARGO DE TROZOS','OTROS'
+      ];
+      for(let i=0;i<cats.length;i++){
+        await pool.query("INSERT INTO terreno_tob_categorias(clasificacion,causa,orden) VALUES('E - F',$1,$2) ON CONFLICT(causa) DO NOTHING",[cats[i],i+1]);
+      }
+      console.log('  [OK] Categorías TOB cargadas ('+cats.length+')');
+    }
+  }catch(e){console.log('[WARN] seed tob:',e.message);}
 }
 
 // ── Entregas de fondos ──
@@ -3596,6 +3649,89 @@ app.get('/api/fin/dashboard', auth, async(req,res)=>{
     const porBanco=await pool.query(`SELECT c.banco,ch.empresa_id,e.razon_social,SUM(ch.monto) AS total,COUNT(*) AS cantidad FROM fin_cheques ch JOIN fin_cuentas_bancarias c ON ch.cuenta_id=c.cuenta_id JOIN empresas e ON ch.empresa_id=e.empresa_id WHERE ch.estado='emitido'${empFilter} GROUP BY c.banco,ch.empresa_id,e.razon_social ORDER BY c.banco`);
     const totales=await pool.query(`SELECT SUM(CASE WHEN estado='emitido' THEN monto ELSE 0 END) AS pendiente,SUM(CASE WHEN estado='pagado' THEN monto ELSE 0 END) AS pagado,SUM(CASE WHEN estado='anulado' THEN monto ELSE 0 END) AS anulado,COUNT(*) FILTER(WHERE estado='emitido') AS cant_pendiente,COUNT(*) FILTER(WHERE estado='pagado') AS cant_pagado,COUNT(*) AS total FROM fin_cheques ch WHERE 1=1${empFilter}`);
     res.json({porMes:porMes.rows,porBanco:porBanco.rows,totales:totales.rows[0]||{}});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ══ TERRENO — Registros diarios y tiempos obvios ══
+app.get('/api/terreno/tob-categorias', auth, async(req,res)=>{
+  try{res.json((await pool.query('SELECT * FROM terreno_tob_categorias WHERE activo=true ORDER BY orden,causa')).rows);}catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/terreno/registros', auth, async(req,res)=>{
+  try{
+    const{equipo_id,faena_id,desde,hasta,mes}=req.query;
+    let w=['1=1'],v=[];
+    if(equipo_id){v.push(equipo_id);w.push(`r.equipo_id=$${v.length}`);}
+    if(faena_id){v.push(faena_id);w.push(`r.faena_id=$${v.length}`);}
+    if(desde){v.push(desde);w.push(`r.fecha>=$${v.length}`);}
+    if(hasta){v.push(hasta);w.push(`r.fecha<=$${v.length}`);}
+    if(mes){v.push(mes);w.push(`TO_CHAR(r.fecha,'YYYY-MM')=$${v.length}`);}
+    const rs=await pool.query(`SELECT r.*,e.codigo AS equipo_codigo,e.nombre AS equipo_nombre,f.nombre AS faena_nombre,es.codigo AS estanque_codigo,es.nombre AS estanque_nombre FROM terreno_registros r JOIN equipos e ON r.equipo_id=e.equipo_id JOIN faenas f ON r.faena_id=f.faena_id LEFT JOIN comb_estanques es ON r.estanque_id=es.estanque_id WHERE ${w.join(' AND ')} ORDER BY r.fecha DESC, r.registro_id DESC`,v);
+    res.json(rs.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/terreno/registros/:id/tob', auth, async(req,res)=>{
+  try{res.json((await pool.query('SELECT d.*,c.causa,c.clasificacion FROM terreno_tob_detalle d JOIN terreno_tob_categorias c ON d.tob_cat_id=c.tob_cat_id WHERE d.registro_id=$1 ORDER BY d.detalle_id',[req.params.id])).rows);}catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/terreno/registros', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle}=req.body;
+    if(!fecha||!faena_id||!equipo_id||horometro_inicial==null||horometro_final==null)throw new Error('Fecha, faena, equipo y horómetros son obligatorios');
+    if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
+    // Validate TOB sum = horas_perdidas
+    const hp=parseFloat(horas_perdidas||0);
+    const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
+    const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
+    if(hp>0&&Math.abs(hp-sumTob)>0.01)throw new Error(`La suma del desglose de tiempos obvios (${sumTob}) no coincide con las horas perdidas (${hp})`);
+    const r=await client.query('INSERT INTO terreno_registros(fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',
+      [fecha,faena_id,equipo_id,parseFloat(horometro_inicial),parseFloat(horometro_final),hp,parseFloat(litros_combustible||0),estanque_id||null,observaciones||null,req.user.email]);
+    const regId=r.rows[0].registro_id;
+    for(const d of detalle){
+      if(d.tob_cat_id&&parseFloat(d.horas)>0){
+        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,horas,observacion) VALUES($1,$2,$3,$4)',[regId,d.tob_cat_id,parseFloat(d.horas),d.observacion||null]);
+      }
+    }
+    // Actualizar horómetro del equipo si el final es mayor al actual
+    await client.query('UPDATE equipos SET horometro_actual=GREATEST(COALESCE(horometro_actual,0),$1) WHERE equipo_id=$2',[parseFloat(horometro_final),equipo_id]);
+    await client.query('COMMIT');
+    res.status(201).json(r.rows[0]);
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle}=req.body;
+    if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
+    const hp=parseFloat(horas_perdidas||0);
+    const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
+    const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
+    if(hp>0&&Math.abs(hp-sumTob)>0.01)throw new Error(`La suma del desglose (${sumTob}) no coincide con las horas perdidas (${hp})`);
+    await client.query('UPDATE terreno_registros SET fecha=$1,faena_id=$2,equipo_id=$3,horometro_inicial=$4,horometro_final=$5,horas_perdidas=$6,litros_combustible=$7,estanque_id=$8,observaciones=$9 WHERE registro_id=$10',
+      [fecha,faena_id,equipo_id,parseFloat(horometro_inicial),parseFloat(horometro_final),hp,parseFloat(litros_combustible||0),estanque_id||null,observaciones||null,req.params.id]);
+    await client.query('DELETE FROM terreno_tob_detalle WHERE registro_id=$1',[req.params.id]);
+    for(const d of detalle){
+      if(d.tob_cat_id&&parseFloat(d.horas)>0){
+        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,horas,observacion) VALUES($1,$2,$3,$4)',[req.params.id,d.tob_cat_id,parseFloat(d.horas),d.observacion||null]);
+      }
+    }
+    await client.query('COMMIT');
+    res.json({ok:true});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+app.delete('/api/terreno/registros/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM terreno_registros WHERE registro_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+});
+app.get('/api/terreno/rendimiento-mensual', auth, async(req,res)=>{
+  try{
+    const{equipo_id,mes}=req.query;
+    if(!equipo_id||!mes)return res.json({horas:0,litros:0,rendimiento:null});
+    const r=await pool.query(`SELECT COALESCE(SUM(horas_trabajadas),0) AS horas, COALESCE(SUM(litros_combustible),0) AS litros FROM terreno_registros WHERE equipo_id=$1 AND TO_CHAR(fecha,'YYYY-MM')=$2`,[equipo_id,mes]);
+    const h=parseFloat(r.rows[0].horas)||0;const l=parseFloat(r.rows[0].litros)||0;
+    res.json({horas:h,litros:l,rendimiento:h>0?l/h:null});
   }catch(e){res.status(500).json({error:e.message});}
 });
 
