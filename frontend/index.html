@@ -750,6 +750,7 @@ function FinChequesView(p){
   var[cuentas,setCuentas]=useState([]);var[cheques,setCheques]=useState([]);var[dash,setDash]=useState(null);
   var[tab,setTab]=useState('dashboard');var[showForm,setShowForm]=useState(false);var[editCh,setEditCh]=useState(null);var[msg,setMsg]=useState('');
   var[filtEmpresa,setFiltEmpresa]=useState('');var[filtBanco,setFiltBanco]=useState('');var[filtEstado,setFiltEstado]=useState('emitido');
+  var[sortF,setSortF]=useState('numero_cheque');var[sortD,setSortD]=useState('asc');
   var emptyForm={cuenta_id:'',numero_cheque:'',fecha_emision:new Date().toISOString().slice(0,10),fecha_cobro:'',monto:'',tipo_beneficiario:'proveedor',proveedor_id:'',beneficiario_nombre:'',concepto:'pago_factura',concepto_detalle:'',observaciones:''};
   var[form,setForm]=useState(emptyForm);
   function loadCuentas(){api('/fin/cuentas','GET',null,p.tok).then(function(r){setCuentas(Array.isArray(r)?r:[]);}).catch(function(){});}
@@ -772,6 +773,19 @@ function FinChequesView(p){
   var bancos=[...new Set(cuentas.map(function(c){return c.banco;}))].sort();
   var chequesFilt=cheques;
   if(filtBanco)chequesFilt=chequesFilt.filter(function(c){return c.banco===filtBanco;});
+  chequesFilt=chequesFilt.slice().sort(function(a,b){
+    var va,vb;
+    if(sortF==='monto'){va=parseFloat(a.monto)||0;vb=parseFloat(b.monto)||0;}
+    else if(sortF==='beneficiario_nombre'){va=a.proveedor_nombre||a.beneficiario_nombre||'';vb=b.proveedor_nombre||b.beneficiario_nombre||'';}
+    else{va=a[sortF]||'';vb=b[sortF]||'';}
+    var cmp=typeof va==='number'?va-vb:String(va).localeCompare(String(vb));
+    return sortD==='asc'?cmp:-cmp;
+  });
+  function SH(field,label){
+    var active=sortF===field;
+    return h('span',{style:{cursor:'pointer',userSelect:'none',display:'inline-flex',alignItems:'center',gap:2},onClick:function(){if(active){setSortD(function(d){return d==='asc'?'desc':'asc';});}else{setSortF(field);setSortD('asc');}}},
+      label,active?h('span',{style:{fontSize:10,color:'#1E3A2D'}},sortD==='asc'?' ▲':' ▼'):h('span',{style:{fontSize:10,color:'#CBD5E1'}},' ⇅'));
+  }
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
   var estadoC={emitido:'y',pagado:'g',anulado:'r'};
   var conceptoL={};CONCEPTOS_CHEQUE.forEach(function(c){conceptoL[c.v]=c.l;});
@@ -964,16 +978,35 @@ function FinChequesView(p){
         h('select',{value:filtEstado,onChange:function(e){setFiltEstado(e.target.value);},style:Object.assign({},inpS,{width:140})},h('option',{value:''},'Todos los estados'),h('option',{value:'emitido'},'Emitido'),h('option',{value:'pagado'},'Pagado'),h('option',{value:'anulado'},'Anulado')),
         selCount>0&&h('button',{onClick:imprimirAgrupado,style:{padding:'6px 12px',background:'#6366F1',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:600}},'🖨 Comprobante ('+selCount+' cheque'+(selCount>1?'s':'')+')')
       ),
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}},
+        h('span',{style:{fontSize:12,color:'#64748B'}},chequesFilt.length+' cheque(s)'),
+        h('button',{onClick:function(){exportXLSX(chequesFilt,[
+          {header:'N° Cheque',value:function(r){return r.numero_cheque;}},
+          {header:'Empresa',value:function(r){return r.empresa_nombre;}},
+          {header:'Banco',value:function(r){return r.banco;}},
+          {header:'N° Cuenta',value:function(r){return r.numero_cuenta;}},
+          {header:'Fecha Emisión',value:function(r){return r.fecha_emision?r.fecha_emision.slice(0,10):'';}},
+          {header:'Fecha Cobro',value:function(r){return r.fecha_cobro?r.fecha_cobro.slice(0,10):'';}},
+          {header:'Monto',value:function(r){return parseFloat(r.monto)||0;}},
+          {header:'Tipo Beneficiario',value:function(r){return r.tipo_beneficiario==='proveedor'?'Proveedor':'Acreedor';}},
+          {header:'Beneficiario',value:function(r){return r.proveedor_nombre||r.beneficiario_nombre||'';}},
+          {header:'Concepto',value:function(r){return conceptoL[r.concepto]||r.concepto;}},
+          {header:'Detalle',value:function(r){return r.concepto_detalle||'';}},
+          {header:'Estado',value:function(r){return r.estado;}},
+          {header:'Fecha Pago',value:function(r){return r.fecha_pago?r.fecha_pago.slice(0,10):'';}},
+          {header:'Observaciones',value:function(r){return r.observaciones||'';}}
+        ],'cheques_'+new Date().toISOString().slice(0,10));},style:{padding:'6px 12px',background:'#059669',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:600}},'⬇ Excel')
+      ),
       h('div',{className:'card'},h(TBL,{cols:[
         {lbl:h('input',{type:'checkbox',onChange:toggleAll,checked:chequesFilt.length>0&&chequesFilt.every(function(c){return selCheques[c.cheque_id];})}),w:'30px',c:true,render:function(r){return h('input',{type:'checkbox',checked:!!selCheques[r.cheque_id],onChange:function(){toggleSel(r.cheque_id);}});}},
-        {lbl:'N°',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.numero_cheque);}},
-        {lbl:'Empresa',render:function(r){return h('span',{style:{fontSize:11}},r.empresa_nombre);}},
-        {lbl:'Banco',render:function(r){return h('span',{style:{fontSize:11}},r.banco);}},
-        {lbl:'Emisión',render:function(r){return fmtD(r.fecha_emision);}},
-        {lbl:'Cobro',render:function(r){var hoy=new Date().toISOString().slice(0,10);var vencido=r.estado==='emitido'&&r.fecha_cobro&&r.fecha_cobro.slice(0,10)<hoy;return h('span',{style:{color:vencido?'#EF4444':'inherit',fontWeight:vencido?700:400}},fmtD(r.fecha_cobro),vencido?' ⚠':'');}},
-        {lbl:'Monto',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.monto))));}},
-        {lbl:'Beneficiario',render:function(r){return h('div',null,h('div',{style:{fontSize:11}},r.proveedor_nombre||r.beneficiario_nombre||'—'),h('div',{style:{fontSize:9,color:'#94A3B8'}},r.tipo_beneficiario==='proveedor'?'Proveedor':'Acreedor'));}},
-        {lbl:'Concepto',render:function(r){return h('div',null,h('span',{style:{fontSize:11}},conceptoL[r.concepto]||r.concepto),r.concepto_detalle?h('div',{style:{fontSize:9,color:'#64748B'}},r.concepto_detalle):null);}},
+        {lbl:SH('numero_cheque','N°'),render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.numero_cheque);}},
+        {lbl:SH('empresa_nombre','Empresa'),render:function(r){return h('span',{style:{fontSize:11}},r.empresa_nombre);}},
+        {lbl:SH('banco','Banco'),render:function(r){return h('span',{style:{fontSize:11}},r.banco);}},
+        {lbl:SH('fecha_emision','Emisión'),render:function(r){return fmtD(r.fecha_emision);}},
+        {lbl:SH('fecha_cobro','Cobro'),render:function(r){var hoy=new Date().toISOString().slice(0,10);var vencido=r.estado==='emitido'&&r.fecha_cobro&&r.fecha_cobro.slice(0,10)<hoy;return h('span',{style:{color:vencido?'#EF4444':'inherit',fontWeight:vencido?700:400}},fmtD(r.fecha_cobro),vencido?' ⚠':'');}},
+        {lbl:SH('monto','Monto'),r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.monto))));}},
+        {lbl:SH('beneficiario_nombre','Beneficiario'),render:function(r){return h('div',null,h('div',{style:{fontSize:11}},r.proveedor_nombre||r.beneficiario_nombre||'—'),h('div',{style:{fontSize:9,color:'#94A3B8'}},r.tipo_beneficiario==='proveedor'?'Proveedor':'Acreedor'));}},
+        {lbl:SH('concepto','Concepto'),render:function(r){return h('div',null,h('span',{style:{fontSize:11}},conceptoL[r.concepto]||r.concepto),r.concepto_detalle?h('div',{style:{fontSize:9,color:'#64748B'}},r.concepto_detalle):null);}},
         {lbl:'Estado',render:function(r){return h(Bg,{c:estadoC[r.estado]||'gray'},r.estado);}},
         {lbl:'',render:function(r){
           return h('div',{style:{display:'flex',gap:3,flexWrap:'wrap'}},
