@@ -752,6 +752,8 @@ function TerrenoView(p){
   var estanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
   var[registros,setRegistros]=useState([]);var[tobCats,setTobCats]=useState([]);
   var[showForm,setShowForm]=useState(false);var[editReg,setEditReg]=useState(null);var[msg,setMsg]=useState('');
+  var[formStep,setFormStep]=useState(1);
+  var[formPre,setFormPre]=useState({empresa_id:userEmpresaId||'',faena_id:userFaenaId||'',equipo_id:''});
   var[filtEmpresa,setFiltEmpresa]=useState(userEmpresaId||'');
   var[filtFaena,setFiltFaena]=useState(userFaenaId||'');
   var[filtEquipo,setFiltEquipo]=useState('');var[filtMes,setFiltMes]=useState(new Date().toISOString().slice(0,7));
@@ -781,14 +783,14 @@ function TerrenoView(p){
     if(parseFloat(form.horometro_final)<parseFloat(form.horometro_inicial)){setMsg('Error: Horómetro final debe ser mayor o igual al inicial');return;}
     if(hp>0&&tobDesc){setMsg('Error: La suma del desglose TOB ('+sumTob.toFixed(2)+') no coincide con horas perdidas ('+hp.toFixed(2)+')');return;}
     var method=editReg?'PUT':'POST';var url='/terreno/registros'+(editReg?'/'+editReg.registro_id:'');
-    api(url,method,form,p.tok).then(function(){loadReg();loadRend();setShowForm(false);setEditReg(null);setForm(emptyForm);setShowTOB(false);setMsg(editReg?'Registro actualizado':'Registro guardado');}).catch(function(e){setMsg('Error: '+e.message);});
+    api(url,method,form,p.tok).then(function(){loadReg();loadRend();setShowForm(false);setEditReg(null);setForm(emptyForm);setShowTOB(false);setFormStep(1);setMsg(editReg?'Registro actualizado':'Registro guardado');}).catch(function(e){setMsg('Error: '+e.message);});
   }
   function eliminar(id){if(!confirm('Eliminar este registro?'))return;api('/terreno/registros/'+id,'DELETE',null,p.tok).then(function(){loadReg();loadRend();}).catch(function(e){alert(e.message);});}
   function openEdit(r){
     api('/terreno/registros/'+r.registro_id+'/tob','GET',null,p.tok).then(function(tob){
       setEditReg(r);
       setForm({fecha:r.fecha.slice(0,10),faena_id:r.faena_id,equipo_id:r.equipo_id,horometro_inicial:r.horometro_inicial,horometro_final:r.horometro_final,horas_perdidas:r.horas_perdidas||0,litros_combustible:r.litros_combustible||0,estanque_id:r.estanque_id||'',observaciones:r.observaciones||'',tob_detalle:(tob||[]).map(function(t){return{tob_cat_id:t.tob_cat_id,clasificacion:t.clasificacion||'E',horas:t.horas,observacion:t.observacion||''};})});
-      setShowForm(true);setShowTOB((tob||[]).length>0);
+      setShowForm(true);setShowTOB((tob||[]).length>0);setFormStep(2);
     }).catch(function(e){alert(e.message);});
   }
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
@@ -812,15 +814,28 @@ function TerrenoView(p){
         filtEquipo&&rendimiento&&h('div',{style:{fontSize:11,padding:'6px 10px',background:'#F0FDF4',border:'1px solid #86EFAC',borderRadius:5}},
           h('strong',{style:{color:'#166534'}},'Rend: '),rendimiento.rendimiento?rendimiento.rendimiento.toFixed(2)+' L/h':'—',' (',rendimiento.horas.toFixed(1)+'h / ',rendimiento.litros.toFixed(1)+'L)')
       ),
-      h(Btn,{onClick:function(){setEditReg(null);setForm(Object.assign({},emptyForm,{faena_id:filtFaena||userFaenaId||''}));setShowForm(!showForm);setShowTOB(false);}},showForm?'Cancelar':'+ Nuevo Registro')
+      h(Btn,{onClick:function(){setEditReg(null);setFormPre({empresa_id:userEmpresaId||filtEmpresa||'',faena_id:userFaenaId||filtFaena||'',equipo_id:''});setFormStep(1);setShowForm(!showForm);setShowTOB(false);setForm(emptyForm);}},showForm?'Cancelar':'+ Nuevo Registro')
     ),
     msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
-    showForm&&h('div',{className:'card',style:{marginBottom:12}},
-      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},editReg?'Editar registro':'Nuevo registro diario'),
+    showForm&&!editReg&&formStep===1&&h('div',{className:'card',style:{marginBottom:12}},
+      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Nuevo registro — Seleccione equipo'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa'),h('select',{value:formPre.empresa_id,onChange:function(e){setFormPre(Object.assign({},formPre,{empresa_id:e.target.value,faena_id:'',equipo_id:''}));},disabled:!!userEmpresaId,style:inpS},h('option',{value:''},'Seleccione empresa...'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena *'),h('select',{value:formPre.faena_id,onChange:function(e){setFormPre(Object.assign({},formPre,{faena_id:e.target.value,equipo_id:''}));},disabled:!!userFaenaId,style:inpS},h('option',{value:''},'Seleccione faena...'),allFaenas.filter(function(f){return f.activo&&(!formPre.empresa_id||String(f.empresa_id)===String(formPre.empresa_id));}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Equipo *'),h('select',{value:formPre.equipo_id,onChange:function(e){setFormPre(Object.assign({},formPre,{equipo_id:e.target.value}));},style:inpS},h('option',{value:''},'Seleccione equipo...'),allEquipos.filter(function(eq){return eq.activo&&(!formPre.faena_id||String(eq.faena_id)===String(formPre.faena_id))&&(!formPre.empresa_id||String(eq.empresa_id)===String(formPre.empresa_id));}).map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);})))
+      ),
+      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:10}},
+        h('button',{onClick:function(){setShowForm(false);},style:{padding:'6px 14px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12}},'Cancelar'),
+        h(Btn,{onClick:function(){if(!formPre.faena_id||!formPre.equipo_id){setMsg('Error: Faena y equipo son obligatorios');return;}api('/terreno/ultimo-horometro/'+formPre.equipo_id,'GET',null,p.tok).then(function(r){var hi=r.horometro_final!=null?r.horometro_final:'';setForm(Object.assign({},emptyForm,{faena_id:formPre.faena_id,equipo_id:formPre.equipo_id,horometro_inicial:hi}));setFormStep(2);setMsg('');}).catch(function(){setForm(Object.assign({},emptyForm,{faena_id:formPre.faena_id,equipo_id:formPre.equipo_id}));setFormStep(2);});}},'Continuar →')
+      )
+    ),
+    (showForm&&(editReg||formStep===2))&&h('div',{className:'card',style:{marginBottom:12}},
+      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:4}},editReg?'Editar registro':'Nuevo registro diario'),
+      !editReg&&h('div',{style:{fontSize:11,color:'#475569',marginBottom:8}},(allFaenas.find(function(f){return String(f.faena_id)===String(form.faena_id);})||{}).nombre+' → '+(allEquipos.find(function(eq){return String(eq.equipo_id)===String(form.equipo_id);})||{}).codigo+' '+(allEquipos.find(function(eq){return String(eq.equipo_id)===String(form.equipo_id);})||{}).nombre),
       h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha *'),h('input',{type:'date',value:form.fecha,onChange:function(e){upd('fecha',e.target.value);},style:inpS})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena *'),h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);upd('equipo_id','');},style:inpS},h('option',{value:''},'Seleccione...'),faenasFilt.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Equipo *'),h('select',{value:form.equipo_id,onChange:function(e){var eqId=e.target.value;upd('equipo_id',eqId);if(eqId&&!editReg){api('/terreno/ultimo-horometro/'+eqId,'GET',null,p.tok).then(function(r){if(r.horometro_final!=null){setForm(function(f){return Object.assign({},f,{horometro_inicial:r.horometro_final});});}}).catch(function(){});}},style:inpS},h('option',{value:''},'Seleccione...'),allEquipos.filter(function(eq){return !form.faena_id||String(eq.faena_id)===String(form.faena_id);}).map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);}))),
+        editReg&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena'),h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);},style:inpS},faenasFilt.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+        editReg&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Equipo'),h('select',{value:form.equipo_id,onChange:function(e){upd('equipo_id',e.target.value);},style:inpS},allEquipos.filter(function(eq){return !form.faena_id||String(eq.faena_id)===String(form.faena_id);}).map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);}))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Horómetro inicial *'),h('input',{type:'number',step:'0.1',value:form.horometro_inicial,onChange:function(e){upd('horometro_inicial',e.target.value);},style:inpS})),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Horómetro final *'),h('input',{type:'number',step:'0.1',value:form.horometro_final,onChange:function(e){upd('horometro_final',e.target.value);},style:inpS})),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Horas trabajadas'),h('input',{value:hTrab.toFixed(2),style:Object.assign({},inpS,{background:'#F0FDF4',fontWeight:700,color:'#166534'}),readOnly:true})),
@@ -852,7 +867,8 @@ function TerrenoView(p){
         )
       ),
       h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:10}},
-        h('button',{onClick:function(){setShowForm(false);setEditReg(null);setForm(emptyForm);setShowTOB(false);},style:{padding:'6px 14px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12}},'Cancelar'),
+        !editReg&&h('button',{onClick:function(){setFormStep(1);},style:{padding:'6px 14px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12}},'← Volver'),
+        h('button',{onClick:function(){setShowForm(false);setEditReg(null);setForm(emptyForm);setShowTOB(false);setFormStep(1);},style:{padding:'6px 14px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12}},'Cancelar'),
         h(Btn,{onClick:guardar},editReg?'Guardar cambios':'Registrar')
       )
     ),
