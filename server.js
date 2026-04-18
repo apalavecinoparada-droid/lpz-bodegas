@@ -383,6 +383,8 @@ async function autoSetup() {
   await q(`CREATE TABLE IF NOT EXISTS motivos_movimiento (motivo_id SERIAL PRIMARY KEY, nombre VARCHAR(100) NOT NULL, tipo VARCHAR(20) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true)`);
   await q(`CREATE TABLE IF NOT EXISTS usuarios (usuario_id SERIAL PRIMARY KEY, email VARCHAR(100) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, password_hash VARCHAR(255) NOT NULL, rol VARCHAR(30) NOT NULL DEFAULT 'BODEGUERO', activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
   try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS username VARCHAR(50) UNIQUE');}catch(e){}
+  try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)');}catch(e){}
+  try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS faena_id INT REFERENCES faenas(faena_id)');}catch(e){}
   await q(`CREATE TABLE IF NOT EXISTS roles (rol_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, descripcion VARCHAR(200), modulos JSONB DEFAULT '[]', es_admin BOOLEAN DEFAULT false, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
   try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS rol_id INT REFERENCES roles(rol_id)');}catch(e){}
   // ── Tablas nuevas v2 ─────────────────────────────────────
@@ -907,7 +909,7 @@ app.post('/api/auth/login', async(req,res)=>{
     const modulos=u.modulos||[];
     const esAdmin=u.es_admin||u.rol==='ADMINISTRADOR';
     const token=jwt.sign({id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin},JWT_SECRET,{expiresIn:'8h'});
-    res.json({token,usuario:{id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos}});
+    res.json({token,usuario:{id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos,empresa_id:u.empresa_id||null,faena_id:u.faena_id||null}});
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.get('/api/auth/me', auth, (req,res)=>res.json(req.user));
@@ -1643,17 +1645,19 @@ app.post('/api/import/bulk-oc', auth, async(req,res)=>{
 });
 
 // USUARIOS
-app.get('/api/usuarios', auth, async(req,res)=>{try{res.json((await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.activo,u.creado_en,r.nombre AS rol_nombre,r.es_admin FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id ORDER BY u.nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
+app.get('/api/usuarios', auth, async(req,res)=>{try{res.json((await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.empresa_id,u.faena_id,u.activo,u.creado_en,r.nombre AS rol_nombre,r.es_admin,e.razon_social AS empresa_nombre,f.nombre AS faena_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id LEFT JOIN empresas e ON u.empresa_id=e.empresa_id LEFT JOIN faenas f ON u.faena_id=f.faena_id ORDER BY u.nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
 app.post('/api/usuarios', auth, async(req,res)=>{
-  try{const{email,username,nombre,password,rol_id}=req.body;if(!email||!nombre||!password)return res.status(400).json({error:'Email, nombre y contraseña requeridos'});const hash=await bcrypt.hash(password,10);const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'BODEGUERO';const r=await pool.query('INSERT INTO usuarios(email,username,nombre,password_hash,rol,rol_id) VALUES($1,$2,$3,$4,$5,$6) RETURNING usuario_id,email,username,nombre,rol,rol_id,activo',[email,username||null,nombre,hash,rolNombre,rid]);res.status(201).json(r.rows[0]);}catch(e){if(e.code==='23505'){var msg=e.detail&&e.detail.indexOf('username')>=0?'El nombre de usuario ya existe':'El email ya está registrado';return res.status(400).json({error:msg});}res.status(400).json({error:e.message});}
+  try{const{email,username,nombre,password,rol_id,empresa_id,faena_id}=req.body;if(!email||!nombre||!password)return res.status(400).json({error:'Email, nombre y contraseña requeridos'});const hash=await bcrypt.hash(password,10);const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'BODEGUERO';const eid=empresa_id&&empresa_id!==''?parseInt(empresa_id):null;const fid=faena_id&&faena_id!==''?parseInt(faena_id):null;const r=await pool.query('INSERT INTO usuarios(email,username,nombre,password_hash,rol,rol_id,empresa_id,faena_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[email,username||null,nombre,hash,rolNombre,rid,eid,fid]);res.status(201).json(r.rows[0]);}catch(e){if(e.code==='23505'){var msg=e.detail&&e.detail.indexOf('username')>=0?'El nombre de usuario ya existe':'El email ya está registrado';return res.status(400).json({error:msg});}res.status(400).json({error:e.message});}
 });
 app.put('/api/usuarios/:id', auth, async(req,res)=>{
-  try{const{email,username,nombre,rol_id,password}=req.body;
+  try{const{email,username,nombre,rol_id,password,empresa_id,faena_id}=req.body;
   const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;
+  const eid=empresa_id&&empresa_id!==''?parseInt(empresa_id):null;
+  const fid=faena_id&&faena_id!==''?parseInt(faena_id):null;
   const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'ADMINISTRADOR';
-  if(password&&password.length>=4){const hash=await bcrypt.hash(password,10);await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5,password_hash=$6 WHERE usuario_id=$7',[email,username||null,nombre,rolNombre,rid,hash,req.params.id]);}
-  else{await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5 WHERE usuario_id=$6',[email,username||null,nombre,rolNombre,rid,req.params.id]);}
-  const r=await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.activo,r.nombre AS rol_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id WHERE u.usuario_id=$1',[req.params.id]);
+  if(password&&password.length>=4){const hash=await bcrypt.hash(password,10);await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5,password_hash=$6,empresa_id=$7,faena_id=$8 WHERE usuario_id=$9',[email,username||null,nombre,rolNombre,rid,hash,eid,fid,req.params.id]);}
+  else{await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5,empresa_id=$6,faena_id=$7 WHERE usuario_id=$8',[email,username||null,nombre,rolNombre,rid,eid,fid,req.params.id]);}
+  const r=await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.empresa_id,u.faena_id,u.activo,r.nombre AS rol_nombre,e.razon_social AS empresa_nombre,f.nombre AS faena_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id LEFT JOIN empresas e ON u.empresa_id=e.empresa_id LEFT JOIN faenas f ON u.faena_id=f.faena_id WHERE u.usuario_id=$1',[req.params.id]);
   res.json(r.rows[0]);}catch(e){if(e.code==='23505'){var msg=e.detail&&e.detail.indexOf('username')>=0?'El nombre de usuario ya existe':'El email ya está registrado';return res.status(400).json({error:msg});}res.status(400).json({error:e.message});}
 });
 app.patch('/api/usuarios/:id/activo', auth, async(req,res)=>{try{res.json((await pool.query('UPDATE usuarios SET activo=NOT activo WHERE usuario_id=$1 RETURNING *',[req.params.id])).rows[0]);}catch(e){res.status(400).json({error:e.message});}});
@@ -3445,9 +3449,11 @@ async function setupRendiciones(q){
     detalle_id SERIAL PRIMARY KEY,
     registro_id INT NOT NULL REFERENCES terreno_registros(registro_id) ON DELETE CASCADE,
     tob_cat_id INT NOT NULL REFERENCES terreno_tob_categorias(tob_cat_id),
+    clasificacion VARCHAR(5) DEFAULT 'E',
     horas NUMERIC(6,2) NOT NULL,
     observacion VARCHAR(300)
   )`);
+  try{await q("ALTER TABLE terreno_tob_detalle ADD COLUMN IF NOT EXISTS clasificacion VARCHAR(5) DEFAULT 'E'");}catch(e){}
 
   // Seed categorías TOB
   try{
@@ -3689,7 +3695,7 @@ app.post('/api/terreno/registros', auth, async(req,res)=>{
     const regId=r.rows[0].registro_id;
     for(const d of detalle){
       if(d.tob_cat_id&&parseFloat(d.horas)>0){
-        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,horas,observacion) VALUES($1,$2,$3,$4)',[regId,d.tob_cat_id,parseFloat(d.horas),d.observacion||null]);
+        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,clasificacion,horas,observacion) VALUES($1,$2,$3,$4,$5)',[regId,d.tob_cat_id,d.clasificacion||'E',parseFloat(d.horas),d.observacion||null]);
       }
     }
     // Actualizar horómetro del equipo si el final es mayor al actual
@@ -3714,7 +3720,7 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
     await client.query('DELETE FROM terreno_tob_detalle WHERE registro_id=$1',[req.params.id]);
     for(const d of detalle){
       if(d.tob_cat_id&&parseFloat(d.horas)>0){
-        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,horas,observacion) VALUES($1,$2,$3,$4)',[req.params.id,d.tob_cat_id,parseFloat(d.horas),d.observacion||null]);
+        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,clasificacion,horas,observacion) VALUES($1,$2,$3,$4,$5)',[req.params.id,d.tob_cat_id,d.clasificacion||'E',parseFloat(d.horas),d.observacion||null]);
       }
     }
     await client.query('COMMIT');
@@ -3733,6 +3739,11 @@ app.get('/api/terreno/rendimiento-mensual', auth, async(req,res)=>{
     const h=parseFloat(r.rows[0].horas)||0;const l=parseFloat(r.rows[0].litros)||0;
     res.json({horas:h,litros:l,rendimiento:h>0?l/h:null});
   }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.get('/api/terreno/ultimo-horometro/:equipo_id', auth, async(req,res)=>{
+  try{const r=await pool.query('SELECT horometro_final FROM terreno_registros WHERE equipo_id=$1 ORDER BY fecha DESC, registro_id DESC LIMIT 1',[req.params.equipo_id]);
+  res.json({horometro_final:r.rows.length?parseFloat(r.rows[0].horometro_final):null});}catch(e){res.status(500).json({error:e.message});}
 });
 
 // ══ SOLICITUDES ══
