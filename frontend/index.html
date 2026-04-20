@@ -1317,6 +1317,211 @@ function SolicitudesView(p){
   );
 }
 
+// ══ CONTROL DE VACACIONES ══
+function VacacionesView(p){
+  var personal=(p.m.personal||[]).filter(function(x){return x.activo;});
+  var[selPersona,setSelPersona]=useState(null);
+  var[historial,setHistorial]=useState([]);
+  var[editReg,setEditReg]=useState(null);
+  var[msg,setMsg]=useState('');
+  var[busqueda,setBusqueda]=useState('');
+  var emptyForm={periodo_desde:'',periodo_hasta:'',dias_correspondientes:15,dias_progresivos:0,vacaciones_desde:'',vacaciones_hasta:'',dias_habiles:0,dias_no_habiles:0,saldo_pendiente:0,observaciones:''};
+  var[form,setForm]=useState(emptyForm);
+  var[calcLoading,setCalcLoading]=useState(false);
+
+  function loadHistorial(pid){
+    api('/vacaciones?persona_id='+pid,'GET',null,p.tok).then(function(r){setHistorial(Array.isArray(r)?r:[]);}).catch(function(){setHistorial([]);});
+  }
+  function selectPersona(per){
+    setSelPersona(per);setEditReg(null);setForm(emptyForm);setMsg('');
+    loadHistorial(per.persona_id);
+  }
+
+  // Calcular días progresivos
+  function calcProgresivos(per){
+    if(!per||!per.fecha_ingreso)return 0;
+    var ingreso=new Date(per.fecha_ingreso);var hoy=new Date();
+    var aniosEmpleador=Math.floor((hoy-ingreso)/(365.25*24*60*60*1000));
+    var cotizMeses=(per.cotizaciones_anteriores||0);var aniosBase=Math.floor(cotizMeses/12)+aniosEmpleador;
+    if(aniosBase<10||aniosEmpleador<3)return 0;
+    return Math.floor((aniosEmpleador-3)/3)+1;
+  }
+
+  // Auto-calcular al cambiar fechas de vacaciones
+  function calcDias(vDesde,vHasta){
+    if(!vDesde||!vHasta)return;
+    setCalcLoading(true);
+    api('/vacaciones/calcular-dias?desde='+vDesde+'&hasta='+vHasta,'GET',null,p.tok).then(function(r){
+      var totalDisp=(parseInt(form.dias_correspondientes)||15)+(parseInt(form.dias_progresivos)||0);
+      var usadosPeriodo=historial.filter(function(h){
+        return h.periodo_desde===form.periodo_desde&&(!editReg||h.registro_id!==editReg.registro_id);
+      }).reduce(function(s,h){return s+(parseInt(h.dias_habiles)||0);},0);
+      var saldo=totalDisp-usadosPeriodo-(r.dias_habiles||0);
+      setForm(function(f){return Object.assign({},f,{dias_habiles:r.dias_habiles||0,dias_no_habiles:r.dias_no_habiles||0,saldo_pendiente:saldo});});
+      setCalcLoading(false);
+    }).catch(function(){setCalcLoading(false);});
+  }
+
+  // Auto-calcular fecha término cuando cambia fecha inicio
+  function calcFechaTermino(vDesde,diasHab){
+    if(!vDesde||!diasHab||diasHab<=0)return;
+    api('/vacaciones/fecha-termino?desde='+vDesde+'&dias_habiles='+diasHab,'GET',null,p.tok).then(function(r){
+      if(r.fecha_termino){
+        setForm(function(f){return Object.assign({},f,{vacaciones_hasta:r.fecha_termino});});
+        calcDias(vDesde,r.fecha_termino);
+      }
+    }).catch(function(){});
+  }
+
+  function upd(k,v){setForm(function(f){var nf=Object.assign({},f,{[k]:v});return nf;});}
+
+  function guardar(){
+    if(!selPersona){setMsg('Error: Seleccione un trabajador');return;}
+    if(!form.periodo_desde||!form.periodo_hasta){setMsg('Error: Período contractual es obligatorio');return;}
+    if(!form.vacaciones_desde||!form.vacaciones_hasta){setMsg('Error: Fechas de vacaciones son obligatorias');return;}
+    if(form.vacaciones_desde>form.vacaciones_hasta){setMsg('Error: Fecha inicio debe ser anterior a fecha término');return;}
+    if(form.saldo_pendiente<0){setMsg('Error: No hay suficientes días disponibles para este período');return;}
+    var data=Object.assign({},form,{persona_id:selPersona.persona_id});
+    var method=editReg?'PUT':'POST';var url='/vacaciones'+(editReg?'/'+editReg.registro_id:'');
+    api(url,method,data,p.tok).then(function(){loadHistorial(selPersona.persona_id);setEditReg(null);setForm(emptyForm);setMsg(editReg?'Registro actualizado':'Vacaciones registradas');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+
+  function eliminar(id){
+    if(!confirm('¿Eliminar este registro de vacaciones?'))return;
+    api('/vacaciones/'+id,'DELETE',null,p.tok).then(function(){loadHistorial(selPersona.persona_id);setMsg('Registro eliminado');}).catch(function(e){alert(e.message);});
+  }
+
+  function openEdit(r){
+    setEditReg(r);
+    setForm({periodo_desde:(r.periodo_desde||'').slice(0,10),periodo_hasta:(r.periodo_hasta||'').slice(0,10),dias_correspondientes:r.dias_correspondientes,dias_progresivos:r.dias_progresivos,vacaciones_desde:(r.vacaciones_desde||'').slice(0,10),vacaciones_hasta:(r.vacaciones_hasta||'').slice(0,10),dias_habiles:r.dias_habiles,dias_no_habiles:r.dias_no_habiles,saldo_pendiente:r.saldo_pendiente,observaciones:r.observaciones||''});
+  }
+
+  var filtrados=personal.filter(function(x){
+    if(!busqueda)return true;
+    var q=busqueda.toLowerCase();
+    return(x.nombre_completo||'').toLowerCase().indexOf(q)>=0||(x.rut||'').toLowerCase().indexOf(q)>=0;
+  });
+
+  var progresivos=selPersona?calcProgresivos(selPersona):0;
+  var totalDisponible=(parseInt(form.dias_correspondientes)||15)+(parseInt(form.dias_progresivos)||0);
+  var usadosPeriodoActual=historial.filter(function(h){return h.periodo_desde&&form.periodo_desde&&h.periodo_desde.slice(0,10)===form.periodo_desde&&(!editReg||h.registro_id!==editReg.registro_id);}).reduce(function(s,h){return s+(parseInt(h.dias_habiles)||0);},0);
+
+  var inpS={width:'100%',padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var lblS={fontSize:10,fontWeight:600,display:'block',marginBottom:2,color:'#475569'};
+
+  return h('div',{style:{display:'flex',gap:10,height:'calc(100vh - 120px)',overflow:'hidden'}},
+    // ── PANEL IZQUIERDO: Trabajadores ──
+    h('div',{style:{width:260,minWidth:220,flexShrink:0,display:'flex',flexDirection:'column',background:'#fff',borderRadius:8,border:'1px solid #E2E8F0',overflow:'hidden'}},
+      h('div',{style:{padding:'10px 10px 6px',borderBottom:'1px solid #E2E8F0'}},
+        h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D',marginBottom:6}},'Trabajadores ('+filtrados.length+')'),
+        h('input',{value:busqueda,onChange:function(e){setBusqueda(e.target.value);},style:Object.assign({},inpS,{fontSize:11}),placeholder:'Buscar por nombre o RUT...'})
+      ),
+      h('div',{style:{flex:1,overflowY:'auto'}},
+        filtrados.map(function(per){
+          var isSel=selPersona&&selPersona.persona_id===per.persona_id;
+          return h('div',{key:per.persona_id,onClick:function(){selectPersona(per);},style:{padding:'6px 10px',cursor:'pointer',borderBottom:'1px solid #F1F5F9',background:isSel?'#1E3A2D':'transparent',color:isSel?'#fff':'#1E293B',transition:'all .1s'}},
+            h('div',{style:{fontSize:11,fontWeight:600}},per.nombre_completo),
+            h('div',{style:{fontSize:10,opacity:.7,fontFamily:'monospace'}},per.rut||'—')
+          );
+        })
+      )
+    ),
+    // ── PANEL CENTRAL: Formulario ──
+    h('div',{style:{width:320,minWidth:280,flexShrink:0,background:'#fff',borderRadius:8,border:'1px solid #E2E8F0',padding:14,overflowY:'auto'}},
+      !selPersona?h('div',{style:{textAlign:'center',padding:'40px 10px',color:'#94A3B8',fontSize:13}},'← Seleccione un trabajador para registrar vacaciones'):
+      h('div',null,
+        h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D',marginBottom:2}},editReg?'Editar registro':'Nuevo registro de vacaciones'),
+        h('div',{style:{fontSize:11,color:'#475569',marginBottom:10}},selPersona.nombre_completo),
+        selPersona.fecha_ingreso&&h('div',{style:{fontSize:10,color:'#64748B',marginBottom:8,padding:'4px 8px',background:'#F0FDF4',borderRadius:4}},'Ingreso: '+fmtD(selPersona.fecha_ingreso)+(progresivos>0?' | Progresivos: '+progresivos+' día(s)':'')),
+        msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:6,fontSize:11}},msg),
+        // Período contractual
+        h('div',{style:{background:'#F8FAFC',borderRadius:6,padding:8,marginBottom:8}},
+          h('div',{style:{fontSize:11,fontWeight:700,color:'#1E3A2D',marginBottom:6}},'Período Contractual'),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}},
+            h('div',null,h('label',{style:lblS},'Desde'),h('input',{type:'date',value:form.periodo_desde,onChange:function(e){upd('periodo_desde',e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Hasta'),h('input',{type:'date',value:form.periodo_hasta,onChange:function(e){upd('periodo_hasta',e.target.value);},style:inpS}))
+          ),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginTop:6}},
+            h('div',null,h('label',{style:lblS},'Días correspondientes'),h('input',{type:'number',value:form.dias_correspondientes,onChange:function(e){upd('dias_correspondientes',e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Días progresivos'),h('input',{type:'number',value:form.dias_progresivos,onChange:function(e){upd('dias_progresivos',e.target.value);},style:inpS}))
+          )
+        ),
+        // Período de feriado
+        h('div',{style:{background:'#F8FAFC',borderRadius:6,padding:8,marginBottom:8}},
+          h('div',{style:{fontSize:11,fontWeight:700,color:'#1E3A2D',marginBottom:6}},'Período de Feriado (Vacaciones)'),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}},
+            h('div',null,h('label',{style:lblS},'Desde'),h('input',{type:'date',value:form.vacaciones_desde,onChange:function(e){
+              upd('vacaciones_desde',e.target.value);
+              if(form.vacaciones_hasta&&e.target.value)calcDias(e.target.value,form.vacaciones_hasta);
+            },style:inpS})),
+            h('div',null,h('label',{style:lblS},'Hasta'),h('input',{type:'date',value:form.vacaciones_hasta,onChange:function(e){
+              upd('vacaciones_hasta',e.target.value);
+              if(form.vacaciones_desde&&e.target.value)calcDias(form.vacaciones_desde,e.target.value);
+            },style:inpS}))
+          )
+        ),
+        // Detalle cálculo
+        h('div',{style:{background:form.saldo_pendiente<0?'#FEF2F2':'#F0FDF4',borderRadius:6,padding:8,marginBottom:8,border:'1px solid '+(form.saldo_pendiente<0?'#FECACA':'#BBF7D0')}},
+          h('div',{style:{fontSize:11,fontWeight:700,color:'#1E3A2D',marginBottom:6}},'Detalle de Vacaciones'),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4}},
+            h('div',{style:{fontSize:11,color:'#475569'}},'Días hábiles usados:'),h('div',{style:{fontSize:12,fontWeight:700,textAlign:'right'}},form.dias_habiles),
+            h('div',{style:{fontSize:11,color:'#475569'}},'Sáb, Dom y Festivos:'),h('div',{style:{fontSize:12,fontWeight:700,textAlign:'right',color:'#64748B'}},form.dias_no_habiles),
+            h('div',{style:{fontSize:11,color:'#475569'}},'Total corridos:'),h('div',{style:{fontSize:12,fontWeight:600,textAlign:'right'}},form.dias_habiles+form.dias_no_habiles),
+            h('div',{style:{fontSize:11,color:'#475569'}},'Disponibles período:'),h('div',{style:{fontSize:12,fontWeight:600,textAlign:'right',color:'#3B82F6'}},totalDisponible),
+            h('div',{style:{fontSize:11,color:'#475569'}},'Ya usados período:'),h('div',{style:{fontSize:12,fontWeight:600,textAlign:'right',color:'#F59E0B'}},usadosPeriodoActual),
+            h('div',{style:{fontSize:12,fontWeight:700,color:form.saldo_pendiente<0?'#DC2626':'#166534',borderTop:'1px solid #E2E8F0',paddingTop:4}},'Saldo pendiente:'),h('div',{style:{fontSize:14,fontWeight:700,textAlign:'right',color:form.saldo_pendiente<0?'#DC2626':'#166534',borderTop:'1px solid #E2E8F0',paddingTop:4}},form.saldo_pendiente)
+          )
+        ),
+        h('div',null,h('label',{style:lblS},'Observaciones'),h('input',{value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},style:inpS})),
+        h('div',{style:{display:'flex',gap:6,marginTop:10}},
+          h('button',{onClick:guardar,style:{flex:1,padding:'8px 0',background:'#1E3A2D',color:'#D4C5A9',border:'none',borderRadius:5,fontSize:12,fontWeight:600,cursor:'pointer'}},editReg?'Guardar cambios':'Registrar'),
+          editReg&&h('button',{onClick:function(){setEditReg(null);setForm(emptyForm);},style:{padding:'8px 12px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12}},'Cancelar')
+        )
+      )
+    ),
+    // ── PANEL DERECHO: Historial ──
+    h('div',{style:{flex:1,background:'#fff',borderRadius:8,border:'1px solid #E2E8F0',overflow:'hidden',display:'flex',flexDirection:'column'}},
+      h('div',{style:{padding:'10px 12px',borderBottom:'1px solid #E2E8F0',display:'flex',justifyContent:'space-between',alignItems:'center'}},
+        h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D'}},'Historial de Vacaciones'+(selPersona?' — '+selPersona.nombre_completo:'')),
+        selPersona&&h('span',{style:{fontSize:11,color:'#64748B'}},historial.length+' registro(s)')
+      ),
+      h('div',{style:{flex:1,overflowY:'auto',overflowX:'auto'}},
+        !selPersona?h('div',{style:{textAlign:'center',padding:40,color:'#94A3B8',fontSize:13}},'Seleccione un trabajador'):
+        historial.length===0?h('div',{style:{textAlign:'center',padding:40,color:'#94A3B8',fontSize:13}},'Sin registros de vacaciones'):
+        h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11,minWidth:700}},
+          h('thead',null,h('tr',{style:{background:'#1E3A2D',color:'#fff'}},
+            h('th',{style:{padding:'6px 8px',textAlign:'left',fontWeight:600}},'Ini. Per. Contrac.'),
+            h('th',{style:{padding:'6px 8px',textAlign:'left',fontWeight:600}},'Tér. Per. Contrac.'),
+            h('th',{style:{padding:'6px 8px',textAlign:'left',fontWeight:600}},'Ini. Vacaciones'),
+            h('th',{style:{padding:'6px 8px',textAlign:'left',fontWeight:600}},'Tér. Vacaciones'),
+            h('th',{style:{padding:'6px 8px',textAlign:'right',fontWeight:600}},'D. Corresp.'),
+            h('th',{style:{padding:'6px 8px',textAlign:'right',fontWeight:600}},'D. Progres.'),
+            h('th',{style:{padding:'6px 8px',textAlign:'right',fontWeight:600}},'D. Hábiles'),
+            h('th',{style:{padding:'6px 8px',textAlign:'right',fontWeight:600}},'Saldo Pend.'),
+            h('th',{style:{padding:'6px 8px',textAlign:'center',fontWeight:600}},'')
+          )),
+          h('tbody',null,historial.map(function(r,i){
+            var isSel=editReg&&editReg.registro_id===r.registro_id;
+            return h('tr',{key:r.registro_id,style:{background:isSel?'#EFF6FF':i%2===0?'#fff':'#F8FAFC',cursor:'pointer',borderLeft:isSel?'3px solid #3B82F6':'3px solid transparent'},onClick:function(){openEdit(r);}},
+              h('td',{style:{padding:'5px 8px'}},fmtD(r.periodo_desde)),
+              h('td',{style:{padding:'5px 8px'}},fmtD(r.periodo_hasta)),
+              h('td',{style:{padding:'5px 8px',fontWeight:600}},fmtD(r.vacaciones_desde)),
+              h('td',{style:{padding:'5px 8px',fontWeight:600}},fmtD(r.vacaciones_hasta)),
+              h('td',{style:{padding:'5px 8px',textAlign:'right'}},r.dias_correspondientes),
+              h('td',{style:{padding:'5px 8px',textAlign:'right'}},r.dias_progresivos),
+              h('td',{style:{padding:'5px 8px',textAlign:'right',fontWeight:600}},r.dias_habiles),
+              h('td',{style:{padding:'5px 8px',textAlign:'right',fontWeight:700,color:r.saldo_pendiente<=0?'#DC2626':'#166534'}},r.saldo_pendiente),
+              h('td',{style:{padding:'5px 8px',textAlign:'center'}},
+                h('button',{onClick:function(e){e.stopPropagation();eliminar(r.registro_id);},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'🗑')
+              )
+            );
+          }))
+        )
+      )
+    )
+  );
+}
+
 // ══ RENDICIONES DE GASTO ══
 var TIPOS_GASTO=[{v:'colacion',l:'Colación'},{v:'peaje',l:'Peaje'},{v:'combustible',l:'Combustible'},{v:'insumo',l:'Insumo / Repuesto'},{v:'herramienta',l:'Herramienta'},{v:'transporte',l:'Transporte'},{v:'alojamiento',l:'Alojamiento'},{v:'materiales',l:'Materiales'},{v:'otros',l:'Otros'}];
 var TIPOS_RESPALDO=[{v:'boleta',l:'Boleta'},{v:'factura',l:'Factura'},{v:'voucher',l:'Voucher'},{v:'recibo',l:'Recibo simple'},{v:'sin_respaldo',l:'Sin respaldo'}];
@@ -4987,12 +5192,12 @@ function Personal(p){
   const[msg,setMsg]=useState('');
   const[filtMant,setFiltMant]=useState('');
   const empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
-  const emptyForm={empresa_id:'',nombre_completo:'',rut:'',cargo:'',especialidad:'',telefono:'',correo:'',participa_mantencion:false,valor_hora_hombre:'',moneda:'CLP',observaciones:''};
+  const emptyForm={empresa_id:'',nombre_completo:'',rut:'',cargo:'',especialidad:'',telefono:'',correo:'',participa_mantencion:false,valor_hora_hombre:'',moneda:'CLP',fecha_ingreso:'',cotizaciones_anteriores:0,observaciones:''};
   const[form,setForm]=useState(emptyForm);
   function load(){api('/personal','GET',null,p.tok).then(function(r){setPersonas(Array.isArray(r)?r:[]);}).catch(function(){});}
   useEffect(load,[p.tok]);
   function openNew(){setSel(null);setForm(emptyForm);setShowForm(true);setMsg('');}
-  function openEdit(row){setSel(row);setForm({empresa_id:row.empresa_id||'',nombre_completo:row.nombre_completo||'',rut:row.rut||'',cargo:row.cargo||'',especialidad:row.especialidad||'',telefono:row.telefono||'',correo:row.correo||'',participa_mantencion:!!row.participa_mantencion,valor_hora_hombre:row.valor_hora_hombre||'',moneda:row.moneda||'CLP',observaciones:row.observaciones||''});setShowForm(true);setMsg('');}
+  function openEdit(row){setSel(row);setForm({empresa_id:row.empresa_id||'',nombre_completo:row.nombre_completo||'',rut:row.rut||'',cargo:row.cargo||'',especialidad:row.especialidad||'',telefono:row.telefono||'',correo:row.correo||'',participa_mantencion:!!row.participa_mantencion,valor_hora_hombre:row.valor_hora_hombre||'',moneda:row.moneda||'CLP',fecha_ingreso:row.fecha_ingreso?(row.fecha_ingreso+'').slice(0,10):'',cotizaciones_anteriores:row.cotizaciones_anteriores||0,observaciones:row.observaciones||''});setShowForm(true);setMsg('');}
   function guardar(){
     if(!form.nombre_completo){setMsg('Nombre requerido');return;}
     if(form.participa_mantencion&&!form.valor_hora_hombre){setMsg('Valor hora hombre obligatorio para personal de mantención');return;}
@@ -5026,6 +5231,8 @@ function Personal(p){
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Especialidad'),h('input',{type:'text',value:form.especialidad,onChange:function(e){setForm(function(f){return Object.assign({},f,{especialidad:e.target.value});});},style:inp})),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Teléfono'),h('input',{type:'text',value:form.telefono,onChange:function(e){setForm(function(f){return Object.assign({},f,{telefono:e.target.value});});},style:inp})),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Correo'),h('input',{type:'email',value:form.correo,onChange:function(e){setForm(function(f){return Object.assign({},f,{correo:e.target.value});});},style:inp})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha ingreso empresa'),h('input',{type:'date',value:form.fecha_ingreso,onChange:function(e){setForm(function(f){return Object.assign({},f,{fecha_ingreso:e.target.value});});},style:inp})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Cotizaciones anteriores (meses)'),h('input',{type:'number',value:form.cotizaciones_anteriores,onChange:function(e){setForm(function(f){return Object.assign({},f,{cotizaciones_anteriores:e.target.value});});},style:inp,placeholder:'0',title:'Meses cotizados con empleadores anteriores (para feriado progresivo)'})),
         h('div',{style:{display:'flex',alignItems:'center',gap:8,paddingTop:14}},
           h('input',{type:'checkbox',id:'chkpm',checked:!!form.participa_mantencion,onChange:function(e){setForm(function(f){return Object.assign({},f,{participa_mantencion:e.target.checked});});}}),
           h('label',{htmlFor:'chkpm',style:{fontSize:12,fontWeight:600,cursor:'pointer'}},'Participa en mantención')
@@ -5065,7 +5272,7 @@ function Personal(p){
 
 function hSel(props,opts){return h.apply(null,['select',props].concat(opts));}
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','vacaciones':'Control de Vacaciones'};
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
@@ -5075,7 +5282,7 @@ function App(){
   const[view,setView]=useState('ordenes');
   const[m,setM]=useState({bodegas:[],cats:[],subcats:[],prods:[],faenas:[],equipos:[],provs:[],tdocs:[],motivos:[],empresas:[],conds:[]});
   const[alerts,setAlerts]=useState(0);const[refresh,setRefresh]=useState(0);
-  const[grp,setGrp]=useState({oc:true,comb:false,inv:false,mant:true,man:false,sys:false,sol:false,fin:false,terr:false});
+  const[grp,setGrp]=useState({oc:true,comb:false,inv:false,mant:true,man:false,sys:false,sol:false,fin:false,terr:false,rend:false,pers:false});
   function toggleGrp(k){setGrp(function(g){return Object.assign({},g,{[k]:!g[k]});});}
   function loadM(t){
     if(!t)return;
@@ -5160,6 +5367,12 @@ function App(){
         canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
         canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
         canSee('rendiciones')&&h('div',{className:'sb-sep'}),
+        grpHdr('pers','PERSONAL'),
+        grp.pers&&h('div',null,
+          navI('personal','👥','Maestro Personal',true),
+          navI('vacaciones','🏖','Control de Vacaciones',true)
+        ),
+        h('div',{className:'sb-sep'}),
         canSee('mantenedores')&&grpHdr('man','MANTENEDORES'),
         canSee('mantenedores')&&grp.man&&h('div',null,
           navI('empresas','▸','Empresas',true),
@@ -5171,7 +5384,6 @@ function App(){
           navI('faenas','▸','Faenas',true),
           navI('equipos','▸','Cargos',true),
           navI('modelos','▸','Modelos Equipo',true),
-          navI('personal','▸','Personal',true),
           navI('proveedores','▸','Proveedores',true),
           navI('condpago','▸','Condiciones de Pago',true),
           navI('tdocs','▸','Tipos Documentos',true),
@@ -5216,6 +5428,7 @@ function App(){
           view==='reportes'&&h(ReportesView,{tok,m}),
           view==='ordenes'&&h(OCView,{tok,m}),
           view==='rendiciones'&&h(RendicionesView,{tok,m}),
+          view==='vacaciones'&&h(VacacionesView,{tok,m}),
           view==='solicitudes'&&h(SolicitudesView,{tok,m,user}),
           view==='terreno'&&h(TerrenoView,{tok,m,user}),
           view==='fin-cheques'&&h(FinChequesView,{tok,m}),
