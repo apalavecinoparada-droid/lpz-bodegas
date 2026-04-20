@@ -5191,13 +5191,19 @@ function Personal(p){
   const[sel,setSel]=useState(null);
   const[msg,setMsg]=useState('');
   const[filtMant,setFiltMant]=useState('');
+  const[filtCat,setFiltCat]=useState('');
+  const[buscar,setBuscar]=useState('');
+  const[showImport,setShowImport]=useState(false);
+  const[importResult,setImportResult]=useState(null);
   const empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
-  const emptyForm={empresa_id:'',nombre_completo:'',rut:'',cargo:'',especialidad:'',telefono:'',correo:'',participa_mantencion:false,valor_hora_hombre:'',moneda:'CLP',fecha_ingreso:'',cotizaciones_anteriores:0,observaciones:''};
+  const CATEGORIAS=[{v:'operador',l:'Operador'},{v:'mantencion',l:'Mantención'},{v:'jefe_faena',l:'Jefe de Faena'},{v:'supervisor',l:'Supervisor'},{v:'administracion',l:'Administración'},{v:'otros_faena',l:'Otros Faena'}];
+  const TIPOS_CONTRATO=[{v:'Indefinido',l:'Indefinido'},{v:'A Plazo',l:'A Plazo'},{v:'Por Obra',l:'Por Obra'},{v:'Honorarios',l:'Honorarios'}];
+  const emptyForm={empresa_id:'',nombre_completo:'',rut:'',cargo:'',especialidad:'',telefono:'',correo:'',participa_mantencion:false,valor_hora_hombre:'',moneda:'CLP',fecha_ingreso:'',cotizaciones_anteriores:0,observaciones:'',fecha_nacimiento:'',direccion:'',comuna:'',tipo_contrato:'',centro_costo:'',fecha_termino:'',categoria:'otros_faena'};
   const[form,setForm]=useState(emptyForm);
   function load(){api('/personal','GET',null,p.tok).then(function(r){setPersonas(Array.isArray(r)?r:[]);}).catch(function(){});}
   useEffect(load,[p.tok]);
   function openNew(){setSel(null);setForm(emptyForm);setShowForm(true);setMsg('');}
-  function openEdit(row){setSel(row);setForm({empresa_id:row.empresa_id||'',nombre_completo:row.nombre_completo||'',rut:row.rut||'',cargo:row.cargo||'',especialidad:row.especialidad||'',telefono:row.telefono||'',correo:row.correo||'',participa_mantencion:!!row.participa_mantencion,valor_hora_hombre:row.valor_hora_hombre||'',moneda:row.moneda||'CLP',fecha_ingreso:row.fecha_ingreso?(row.fecha_ingreso+'').slice(0,10):'',cotizaciones_anteriores:row.cotizaciones_anteriores||0,observaciones:row.observaciones||''});setShowForm(true);setMsg('');}
+  function openEdit(row){setSel(row);setForm({empresa_id:row.empresa_id||'',nombre_completo:row.nombre_completo||'',rut:row.rut||'',cargo:row.cargo||'',especialidad:row.especialidad||'',telefono:row.telefono||'',correo:row.correo||'',participa_mantencion:!!row.participa_mantencion,valor_hora_hombre:row.valor_hora_hombre||'',moneda:row.moneda||'CLP',fecha_ingreso:row.fecha_ingreso?(row.fecha_ingreso+'').slice(0,10):'',cotizaciones_anteriores:row.cotizaciones_anteriores||0,observaciones:row.observaciones||'',fecha_nacimiento:row.fecha_nacimiento?(row.fecha_nacimiento+'').slice(0,10):'',direccion:row.direccion||'',comuna:row.comuna||'',tipo_contrato:row.tipo_contrato||'',centro_costo:row.centro_costo||'',fecha_termino:row.fecha_termino?(row.fecha_termino+'').slice(0,10):'',categoria:row.categoria||'otros_faena'});setShowForm(true);setMsg('');}
   function guardar(){
     if(!form.nombre_completo){setMsg('Nombre requerido');return;}
     if(form.participa_mantencion&&!form.valor_hora_hombre){setMsg('Valor hora hombre obligatorio para personal de mantención');return;}
@@ -5206,43 +5212,107 @@ function Personal(p){
     api(url,method,form,p.tok).then(function(){load();setShowForm(false);setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});
   }
   function toggleActivo(row){api('/personal/'+row.persona_id+'/activo','PATCH',null,p.tok).then(load).catch(function(){});}
+  function handleImportJSON(e){
+    var file=e.target.files[0];if(!file)return;
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      try{
+        var data=JSON.parse(ev.target.result);
+        if(!Array.isArray(data)){setMsg('El archivo debe contener un array JSON');return;}
+        if(!confirm('Se importarán '+data.length+' trabajadores. Los RUT existentes serán actualizados con la nueva información. ¿Continuar?'))return;
+        setMsg('Importando '+data.length+' trabajadores...');
+        api('/import/personal','POST',{trabajadores:data},p.tok).then(function(r){
+          var res=r.results||[];
+          var ok=res.filter(function(x){return x.ok;}).length;
+          var upd=res.filter(function(x){return x.ok&&x.accion==='actualizado';}).length;
+          var nuevo=res.filter(function(x){return x.ok&&x.accion==='creado';}).length;
+          var err=res.filter(function(x){return !x.ok;}).length;
+          setImportResult({total:res.length,ok:ok,actualizados:upd,nuevos:nuevo,errores:err,detalles:res});
+          setMsg('✓ Importación completada: '+nuevo+' nuevos, '+upd+' actualizados'+(err>0?', '+err+' errores':''));
+          load();
+        }).catch(function(e){setMsg('Error: '+e.message);});
+      }catch(ex){setMsg('Error al parsear JSON: '+ex.message);}
+    };
+    reader.readAsText(file);
+    e.target.value='';
+  }
   var inp={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3};
   var rows=personas.filter(function(x){
-    if(filtMant==='si') return x.participa_mantencion;
-    if(filtMant==='no') return !x.participa_mantencion;
+    if(filtMant==='si'&&!x.participa_mantencion) return false;
+    if(filtMant==='no'&&x.participa_mantencion) return false;
+    if(filtCat&&x.categoria!==filtCat) return false;
+    if(buscar){var q=buscar.toLowerCase();return (x.nombre_completo||'').toLowerCase().indexOf(q)>=0||(x.rut||'').toLowerCase().indexOf(q)>=0||(x.cargo||'').toLowerCase().indexOf(q)>=0||(x.centro_costo||'').toLowerCase().indexOf(q)>=0;}
     return true;
   });
-  var FILT_BTNS=[{v:'',l:'Todos'},{v:'si',l:'Solo mantención'},{v:'no',l:'Sin mantención'}];
+  var catLabel=function(c){var found=CATEGORIAS.find(function(x){return x.v===c;});return found?found.l:(c||'—');};
+  var fmtD=function(d){if(!d)return '—';return (d+'').slice(8,10)+'/'+(d+'').slice(5,7)+'/'+(d+'').slice(0,4);};
   return h('div',null,
-    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
-      h('div',{style:{display:'flex',gap:6}},
-        FILT_BTNS.map(function(fb){return h('button',{key:fb.v,onClick:function(){setFiltMant(fb.v);},style:{padding:'4px 10px',borderRadius:4,fontSize:11,cursor:'pointer',border:'1px solid #CBD5E1',background:filtMant===fb.v?'#3B82F6':'#F8FAFC',color:filtMant===fb.v?'#fff':'#475569'}},fb.l);})
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:6}},
+      h('div',{style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}},
+        h('input',{type:'text',placeholder:'Buscar nombre, RUT, cargo...',value:buscar,onChange:function(e){setBuscar(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:180}}),
+        h('select',{value:filtCat,onChange:function(e){setFiltCat(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
+          h('option',{value:''},'Todas las categorías'),
+          CATEGORIAS.map(function(c){return h('option',{key:c.v,value:c.v},c.l);})
+        ),
+        h('select',{value:filtMant,onChange:function(e){setFiltMant(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
+          h('option',{value:''},'Todos'),h('option',{value:'si'},'Solo mantención'),h('option',{value:'no'},'Sin mantención')
+        ),
+        h('span',{style:{fontSize:11,color:'#64748B'}},rows.length+'/'+personas.length+' registros')
       ),
-      h(Btn,{onClick:openNew},'+ Nuevo')
+      h('div',{style:{display:'flex',gap:6}},
+        h('label',{style:{padding:'5px 10px',borderRadius:4,fontSize:11,cursor:'pointer',border:'1px solid #F59E0B',background:'#FFFBEB',color:'#92400E',display:'inline-flex',alignItems:'center',gap:4}},
+          '📥 Importar JSON',
+          h('input',{type:'file',accept:'.json',onChange:handleImportJSON,style:{display:'none'}})
+        ),
+        h(Btn,{onClick:openNew},'+ Nuevo')
+      )
     ),
-    msg&&h('div',{className:'al al-e',style:{marginBottom:8}},msg),
+    msg&&h('div',{className:msg.startsWith('✓')?'al al-s':'al al-e',style:{marginBottom:8}},msg),
+    importResult&&h('div',{className:'card',style:{marginBottom:10,fontSize:12}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}},
+        h('div',{style:{fontWeight:600,fontSize:13}},'Resultado de importación'),
+        h('button',{onClick:function(){setImportResult(null);},style:{fontSize:11,cursor:'pointer',background:'none',border:'none',color:'#94A3B8'}},'✕ Cerrar')
+      ),
+      h('div',{style:{display:'flex',gap:12}},
+        h('span',null,'Total: ',h('b',null,importResult.total)),
+        h('span',{style:{color:'#10B981'}},'Nuevos: ',h('b',null,importResult.nuevos)),
+        h('span',{style:{color:'#3B82F6'}},'Actualizados: ',h('b',null,importResult.actualizados)),
+        importResult.errores>0&&h('span',{style:{color:'#EF4444'}},'Errores: ',h('b',null,importResult.errores))
+      ),
+      importResult.errores>0&&h('div',{style:{marginTop:6,maxHeight:100,overflow:'auto',fontSize:11,color:'#EF4444'}},
+        importResult.detalles.filter(function(d){return !d.ok;}).map(function(d,i){return h('div',{key:i},d.rut+' — '+d.nombre+': '+d.error);})
+      )
+    ),
     showForm&&h('div',{className:'card',style:{marginBottom:12}},
       h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},sel?'Editar persona':'Nueva persona'),
       h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa'),h('select',{value:form.empresa_id,onChange:function(e){setForm(function(f){return Object.assign({},f,{empresa_id:e.target.value});});},style:inp},h('option',{value:''},'Sin empresa'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Nombre completo *'),h('input',{type:'text',value:form.nombre_completo,onChange:function(e){setForm(function(f){return Object.assign({},f,{nombre_completo:e.target.value});});},style:inp})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'RUT'),h('input',{type:'text',value:form.rut,onChange:function(e){setForm(function(f){return Object.assign({},f,{rut:e.target.value});});},style:inp,placeholder:'12.345.678-9'})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Cargo'),h('input',{type:'text',value:form.cargo,onChange:function(e){setForm(function(f){return Object.assign({},f,{cargo:e.target.value});});},style:inp})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Especialidad'),h('input',{type:'text',value:form.especialidad,onChange:function(e){setForm(function(f){return Object.assign({},f,{especialidad:e.target.value});});},style:inp})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Teléfono'),h('input',{type:'text',value:form.telefono,onChange:function(e){setForm(function(f){return Object.assign({},f,{telefono:e.target.value});});},style:inp})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Correo'),h('input',{type:'email',value:form.correo,onChange:function(e){setForm(function(f){return Object.assign({},f,{correo:e.target.value});});},style:inp})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha ingreso empresa'),h('input',{type:'date',value:form.fecha_ingreso,onChange:function(e){setForm(function(f){return Object.assign({},f,{fecha_ingreso:e.target.value});});},style:inp})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Cotizaciones anteriores (meses)'),h('input',{type:'number',value:form.cotizaciones_anteriores,onChange:function(e){setForm(function(f){return Object.assign({},f,{cotizaciones_anteriores:e.target.value});});},style:inp,placeholder:'0',title:'Meses cotizados con empleadores anteriores (para feriado progresivo)'})),
+        h('div',null,h('label',{style:lblS},'Empresa'),h('select',{value:form.empresa_id,onChange:function(e){setForm(function(f){return Object.assign({},f,{empresa_id:e.target.value});});},style:inp},h('option',{value:''},'Sin empresa'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+        h('div',null,h('label',{style:lblS},'Nombre completo *'),h('input',{type:'text',value:form.nombre_completo,onChange:function(e){setForm(function(f){return Object.assign({},f,{nombre_completo:e.target.value});});},style:inp})),
+        h('div',null,h('label',{style:lblS},'RUT'),h('input',{type:'text',value:form.rut,onChange:function(e){setForm(function(f){return Object.assign({},f,{rut:e.target.value});});},style:inp,placeholder:'12.345.678-9'})),
+        h('div',null,h('label',{style:lblS},'Cargo'),h('input',{type:'text',value:form.cargo,onChange:function(e){setForm(function(f){return Object.assign({},f,{cargo:e.target.value});});},style:inp})),
+        h('div',null,h('label',{style:lblS},'Categoría'),h('select',{value:form.categoria,onChange:function(e){setForm(function(f){return Object.assign({},f,{categoria:e.target.value});});},style:inp},CATEGORIAS.map(function(c){return h('option',{key:c.v,value:c.v},c.l);}))),
+        h('div',null,h('label',{style:lblS},'Centro de costo'),h('input',{type:'text',value:form.centro_costo,onChange:function(e){setForm(function(f){return Object.assign({},f,{centro_costo:e.target.value});});},style:inp,placeholder:'Ej: FAENA MEC 3'})),
+        h('div',null,h('label',{style:lblS},'Tipo contrato'),h('select',{value:form.tipo_contrato,onChange:function(e){setForm(function(f){return Object.assign({},f,{tipo_contrato:e.target.value});});},style:inp},h('option',{value:''},'—'),TIPOS_CONTRATO.map(function(c){return h('option',{key:c.v,value:c.v},c.l);}))),
+        h('div',null,h('label',{style:lblS},'Fecha ingreso'),h('input',{type:'date',value:form.fecha_ingreso,onChange:function(e){setForm(function(f){return Object.assign({},f,{fecha_ingreso:e.target.value});});},style:inp})),
+        h('div',null,h('label',{style:lblS},'Fecha nacimiento'),h('input',{type:'date',value:form.fecha_nacimiento,onChange:function(e){setForm(function(f){return Object.assign({},f,{fecha_nacimiento:e.target.value});});},style:inp})),
+        h('div',null,h('label',{style:lblS},'Fecha término'),h('input',{type:'date',value:form.fecha_termino,onChange:function(e){setForm(function(f){return Object.assign({},f,{fecha_termino:e.target.value});});},style:inp})),
+        h('div',null,h('label',{style:lblS},'Dirección'),h('input',{type:'text',value:form.direccion,onChange:function(e){setForm(function(f){return Object.assign({},f,{direccion:e.target.value});});},style:inp})),
+        h('div',null,h('label',{style:lblS},'Comuna'),h('input',{type:'text',value:form.comuna,onChange:function(e){setForm(function(f){return Object.assign({},f,{comuna:e.target.value});});},style:inp})),
+        h('div',null,h('label',{style:lblS},'Especialidad'),h('input',{type:'text',value:form.especialidad,onChange:function(e){setForm(function(f){return Object.assign({},f,{especialidad:e.target.value});});},style:inp})),
+        h('div',null,h('label',{style:lblS},'Teléfono'),h('input',{type:'text',value:form.telefono,onChange:function(e){setForm(function(f){return Object.assign({},f,{telefono:e.target.value});});},style:inp})),
+        h('div',null,h('label',{style:lblS},'Correo'),h('input',{type:'email',value:form.correo,onChange:function(e){setForm(function(f){return Object.assign({},f,{correo:e.target.value});});},style:inp})),
+        h('div',null,h('label',{style:lblS},'Cotiz. anteriores (meses)'),h('input',{type:'number',value:form.cotizaciones_anteriores,onChange:function(e){setForm(function(f){return Object.assign({},f,{cotizaciones_anteriores:e.target.value});});},style:inp,placeholder:'0',title:'Meses cotizados con empleadores anteriores (para feriado progresivo)'})),
         h('div',{style:{display:'flex',alignItems:'center',gap:8,paddingTop:14}},
           h('input',{type:'checkbox',id:'chkpm',checked:!!form.participa_mantencion,onChange:function(e){setForm(function(f){return Object.assign({},f,{participa_mantencion:e.target.checked});});}}),
           h('label',{htmlFor:'chkpm',style:{fontSize:12,fontWeight:600,cursor:'pointer'}},'Participa en mantención')
         ),
         form.participa_mantencion&&h('div',null,
-          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Valor hora hombre * ($CLP)'),
+          h('label',{style:lblS},'Valor hora hombre * ($CLP)'),
           h('input',{type:'number',value:form.valor_hora_hombre,onChange:function(e){setForm(function(f){return Object.assign({},f,{valor_hora_hombre:e.target.value});});},style:inp,placeholder:'Ej: 15000'})
         ),
         h('div',{style:{gridColumn:'1/-1'}},
-          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observaciones'),
+          h('label',{style:lblS},'Observaciones'),
           h('textarea',{value:form.observaciones,onChange:function(e){setForm(function(f){return Object.assign({},f,{observaciones:e.target.value});});},rows:2,style:Object.assign({},inp,{resize:'vertical'})})
         )
       ),
@@ -5254,12 +5324,14 @@ function Personal(p){
     h('div',{className:'card'},
       h(TBL,{cols:[
         {lbl:'Nombre',k:'nombre_completo'},
-        {lbl:'RUT',k:'rut'},
+        {lbl:'RUT',k:'rut',mono:true},
         {lbl:'Cargo',k:'cargo'},
-        {lbl:'Especialidad',k:'especialidad'},
-        {lbl:'Empresa',k:'empresa_nombre'},
-        {lbl:'Mantención',render:function(r){return r.participa_mantencion?h('span',{style:{color:'#10B981',fontWeight:700}},'✓'):'—';}},
-        {lbl:'Valor HH',r:true,render:function(r){return r.valor_hora_hombre?CLP(Math.round(r.valor_hora_hombre)):'—';}},
+        {lbl:'Categoría',render:function(r){return catLabel(r.categoria);}},
+        {lbl:'Centro costo',k:'centro_costo'},
+        {lbl:'Contrato',k:'tipo_contrato'},
+        {lbl:'Ingreso',render:function(r){return fmtD(r.fecha_ingreso);}},
+        {lbl:'Término',render:function(r){return r.fecha_termino?h('span',{style:{color:'#EF4444',fontWeight:600}},fmtD(r.fecha_termino)):h('span',{style:{color:'#94A3B8'}},'—');}},
+        {lbl:'Mant.',render:function(r){return r.participa_mantencion?h('span',{style:{color:'#10B981',fontWeight:700}},'✓'):'—';}},
         {lbl:'Estado',render:function(r){return h(Bg,{c:r.activo?'g':'r'},r.activo?'Activo':'Inactivo');}},
         {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:4}},
           h(Btn,{v:'a',sm:true,onClick:function(){openEdit(r);}},null,'✏'),
