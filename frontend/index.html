@@ -1476,21 +1476,17 @@ function VacacionesView(p){
   // - Se requiere 10 años de trabajo total (incluye empleadores anteriores vía cotizaciones)
   // - Por cada 3 años NUEVOS con el empleador actual, después de completar 10 años totales, se suma 1 día
   // - Si el trabajador ya tenía 10+ años de cotizaciones anteriores, los años con empleador actual cuentan desde el día 1
+  function parseFechaLocal(f){if(!f)return null;var s=(f+'').slice(0,10).split('-');if(s.length<3)return null;return new Date(parseInt(s[0]),parseInt(s[1])-1,parseInt(s[2]));}
+  function aniosDesde(fecha){if(!fecha)return 0;var d=parseFechaLocal(fecha);if(!d||isNaN(d.getTime()))return 0;var hoy=new Date();var a=Math.floor((hoy-d)/(365.25*24*60*60*1000));return a<0?0:a;}
   function calcProgresivos(per){
     if(!per||!per.fecha_ingreso)return 0;
-    var ingreso=new Date(per.fecha_ingreso+'T00:00:00');
-    var hoy=new Date();
-    var aniosEmpleador=Math.floor((hoy-ingreso)/(365.25*24*60*60*1000));
-    if(aniosEmpleador<0)aniosEmpleador=0;
+    var aniosEmpleador=aniosDesde(per.fecha_ingreso);
     var cotizMeses=parseInt(per.cotizaciones_anteriores)||0;
     var aniosPrevios=Math.floor(cotizMeses/12);
     var aniosTotal=aniosPrevios+aniosEmpleador;
-    // No califica si no llega a 10 años totales
     if(aniosTotal<10)return 0;
-    // Años con empleador actual que cuentan para progresivos:
-    // = años después de haber completado 10 años totales
-    var aniosParaLlegar10=Math.max(0,10-aniosPrevios); // años que necesitó con este empleador para llegar a 10
-    var aniosContables=aniosEmpleador-aniosParaLlegar10; // años que sobran después de los 10
+    var aniosParaLlegar10=Math.max(0,10-aniosPrevios);
+    var aniosContables=aniosEmpleador-aniosParaLlegar10;
     if(aniosContables<3)return 0;
     return Math.floor(aniosContables/3);
   }
@@ -1592,15 +1588,14 @@ function VacacionesView(p){
         selPersona.fecha_ingreso&&h('div',{style:{fontSize:10,color:'#64748B',marginBottom:8,padding:'6px 8px',background:'#F0FDF4',borderRadius:4,lineHeight:1.6}},
           'Ingreso: '+fmtD(selPersona.fecha_ingreso),
           (function(){
-            var ing=new Date(selPersona.fecha_ingreso+'T00:00:00');var hoy=new Date();
-            var aniosEmp=Math.floor((hoy-ing)/(365.25*24*60*60*1000));
+            var aniosEmp=aniosDesde(selPersona.fecha_ingreso);
             var cotizM=parseInt(selPersona.cotizaciones_anteriores)||0;
             var aniosPrev=Math.floor(cotizM/12);
             var total=aniosPrev+aniosEmp;
             var parts=[' | Antigüedad: '+aniosEmp+' año(s) empleador'];
             if(aniosPrev>0)parts.push(aniosPrev+' año(s) anteriores = '+total+' total');
             if(progresivos>0)parts.push(' | ✓ Progresivos: '+progresivos+' día(s)');
-            else if(total>=10)parts.push(' | Progresivos: 0 (requiere '+(3-((aniosEmp-Math.max(0,10-aniosPrev))%3))+' año(s) más)');
+            else if(total>=10){var falta=3-((aniosEmp-Math.max(0,10-aniosPrev))%3);parts.push(' | Progresivos: 0 (requiere '+falta+' año(s) más)');}
             else parts.push(' | Progresivos: 0 (faltan '+(10-total)+' año(s) para 10)');
             return parts.join(', ');
           })()
