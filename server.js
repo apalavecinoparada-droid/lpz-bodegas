@@ -3149,29 +3149,30 @@ app.get('/api/mant/reporte/costos', auth, async(req,res)=>{
 // ══════════════════════════════════════════════════════
 app.get('/api/personal', auth, async(req,res)=>{
   try{
-    const{empresa_id,activo,mantencion}=req.query;
+    const{empresa_id,activo,mantencion,faena_id}=req.query;
     let where=['1=1'],vals=[];
     if(empresa_id){vals.push(empresa_id);where.push(`p.empresa_id=$${vals.length}`);}
     if(activo!==undefined){vals.push(activo==='true');where.push(`p.activo=$${vals.length}`);}
     if(mantencion==='true'){where.push('p.participa_mantencion=true');}
-    const r=await pool.query(`SELECT p.*,e.razon_social AS empresa_nombre FROM personal p LEFT JOIN empresas e ON p.empresa_id=e.empresa_id WHERE ${where.join(' AND ')} ORDER BY p.nombre_completo`,vals);
+    if(faena_id){vals.push(faena_id);where.push(`p.faena_id=$${vals.length}`);}
+    const r=await pool.query(`SELECT p.*,e.razon_social AS empresa_nombre,f.nombre AS faena_nombre,f.codigo AS faena_codigo FROM personal p LEFT JOIN empresas e ON p.empresa_id=e.empresa_id LEFT JOIN faenas f ON p.faena_id=f.faena_id WHERE ${where.join(' AND ')} ORDER BY p.nombre_completo`,vals);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.post('/api/personal', auth, async(req,res)=>{
   try{
-    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria}=req.body;
+    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id}=req.body;
     if(!nombre_completo) return res.status(400).json({error:'Nombre requerido'});
-    const r=await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
-      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena']);
+    const r=await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`,
+      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',faena_id||null]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.put('/api/personal/:id', auth, async(req,res)=>{
   try{
-    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,activo,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria}=req.body;
-    const r=await pool.query(`UPDATE personal SET empresa_id=$1,nombre_completo=$2,rut=$3,cargo=$4,especialidad=$5,telefono=$6,correo=$7,participa_mantencion=$8,valor_hora_hombre=$9,moneda=$10,activo=$11,fecha_ingreso=$12,cotizaciones_anteriores=$13,observaciones=$14,fecha_nacimiento=$15,direccion=$16,comuna=$17,tipo_contrato=$18,centro_costo=$19,fecha_termino=$20,categoria=$21 WHERE persona_id=$22 RETURNING *`,
-      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',activo!==false,fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',req.params.id]);
+    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,activo,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id}=req.body;
+    const r=await pool.query(`UPDATE personal SET empresa_id=$1,nombre_completo=$2,rut=$3,cargo=$4,especialidad=$5,telefono=$6,correo=$7,participa_mantencion=$8,valor_hora_hombre=$9,moneda=$10,activo=$11,fecha_ingreso=$12,cotizaciones_anteriores=$13,observaciones=$14,fecha_nacimiento=$15,direccion=$16,comuna=$17,tipo_contrato=$18,centro_costo=$19,fecha_termino=$20,categoria=$21,faena_id=$22 WHERE persona_id=$23 RETURNING *`,
+      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',activo!==false,fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',faena_id||null,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -3397,6 +3398,7 @@ async function setupRendiciones(q){
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS tipo_contrato VARCHAR(30)');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS centro_costo VARCHAR(60)');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS fecha_termino DATE');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS faena_id INT REFERENCES faenas(faena_id)');}catch(e){}
 
   // ── Vacaciones ──
   await q(`CREATE TABLE IF NOT EXISTS feriados_chile (
@@ -3715,24 +3717,48 @@ app.get('/api/fin/dashboard', auth, async(req,res)=>{
 app.post('/api/import/personal', auth, async(req,res)=>{
   try{
     const{trabajadores}=req.body;if(!Array.isArray(trabajadores))throw new Error('Sin datos');
+    // Mapeo centro_costo (planilla) → código faena (sistema)
+    const CENTRO_COSTO_MAP={
+      'ADMINISTRACIÓN':'ADM-LPOO','ADMINISTRACION':'ADM-LPOO',
+      'FAENA MEC 3':'FAE-MEC3','FAENA MEC3':'FAE-MEC3',
+      'FAENA MEC 4':'FAE-MEC4','FAENA MEC4':'FAE-MEC4',
+      'TALLER':'TALL-LPOO'
+    };
+    // Pre-cargar faenas para lookup
+    const faenasQ=await pool.query('SELECT faena_id,codigo,nombre FROM faenas');
+    const faenasByCodigo={};
+    for(const f of faenasQ.rows){faenasByCodigo[(f.codigo||'').toUpperCase()]=f.faena_id;}
+    // Resolver faena_id desde centro_costo
+    function resolverFaena(cc){
+      if(!cc)return null;
+      var ccUp=cc.toUpperCase().trim();
+      var codigo=CENTRO_COSTO_MAP[ccUp];
+      if(codigo&&faenasByCodigo[codigo.toUpperCase()])return faenasByCodigo[codigo.toUpperCase()];
+      // Fallback: buscar por nombre parcial
+      for(const f of faenasQ.rows){if((f.nombre||'').toUpperCase().indexOf(ccUp)>=0||(f.codigo||'').toUpperCase().indexOf(ccUp)>=0)return f.faena_id;}
+      return null;
+    }
     const results=[];
     for(const t of trabajadores){
       try{
         if(!t.nombre_completo)continue;
+        var fid=resolverFaena(t.centro_costo);
         const exists=t.rut?await pool.query('SELECT persona_id FROM personal WHERE rut=$1',[t.rut]):null;
         if(exists&&exists.rows.length){
           // Overwrite: sobreescribir todos los campos con los nuevos valores
-          await pool.query(`UPDATE personal SET nombre_completo=$1,cargo=$2,fecha_ingreso=$3,fecha_nacimiento=$4,direccion=$5,comuna=$6,tipo_contrato=$7,centro_costo=$8,categoria=$9,fecha_termino=$10,telefono=$11,correo=$12,empresa_id=COALESCE($13,empresa_id) WHERE rut=$14`,
-            [t.nombre_completo,t.cargo||null,t.fecha_ingreso||null,t.fecha_nacimiento||null,t.direccion||null,t.comuna||null,t.tipo_contrato||null,t.centro_costo||null,t.categoria||'otros_faena',t.fecha_termino||null,t.telefono||null,t.correo||null,t.empresa_id||null,t.rut]);
-          results.push({rut:t.rut,nombre:t.nombre_completo,ok:true,accion:'actualizado'});
+          await pool.query(`UPDATE personal SET nombre_completo=$1,cargo=$2,fecha_ingreso=$3,fecha_nacimiento=$4,direccion=$5,comuna=$6,tipo_contrato=$7,centro_costo=$8,categoria=$9,fecha_termino=$10,telefono=$11,correo=$12,empresa_id=COALESCE($13,empresa_id),faena_id=$14 WHERE rut=$15`,
+            [t.nombre_completo,t.cargo||null,t.fecha_ingreso||null,t.fecha_nacimiento||null,t.direccion||null,t.comuna||null,t.tipo_contrato||null,t.centro_costo||null,t.categoria||'otros_faena',t.fecha_termino||null,t.telefono||null,t.correo||null,t.empresa_id||null,fid,t.rut]);
+          results.push({rut:t.rut,nombre:t.nombre_completo,ok:true,accion:'actualizado',faena:fid?'asignada':'sin mapeo'});
         }else{
-          await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,fecha_ingreso,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,categoria,fecha_termino,telefono,correo,activo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true)`,
-            [t.empresa_id||null,t.nombre_completo,t.rut||null,t.cargo||null,t.fecha_ingreso||null,t.fecha_nacimiento||null,t.direccion||null,t.comuna||null,t.tipo_contrato||null,t.centro_costo||null,t.categoria||'otros_faena',t.fecha_termino||null,t.telefono||null,t.correo||null]);
-          results.push({rut:t.rut,nombre:t.nombre_completo,ok:true,accion:'creado'});
+          await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,fecha_ingreso,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,categoria,fecha_termino,telefono,correo,faena_id,activo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,true)`,
+            [t.empresa_id||null,t.nombre_completo,t.rut||null,t.cargo||null,t.fecha_ingreso||null,t.fecha_nacimiento||null,t.direccion||null,t.comuna||null,t.tipo_contrato||null,t.centro_costo||null,t.categoria||'otros_faena',t.fecha_termino||null,t.telefono||null,t.correo||null,fid]);
+          results.push({rut:t.rut,nombre:t.nombre_completo,ok:true,accion:'creado',faena:fid?'asignada':'sin mapeo'});
         }
       }catch(e){results.push({rut:t.rut,nombre:t.nombre_completo,ok:false,error:e.message});}
     }
-    res.json({results});
+    const conFaena=results.filter(function(r){return r.faena==='asignada';}).length;
+    const sinFaena=results.filter(function(r){return r.faena==='sin mapeo';}).length;
+    res.json({results,resumen:{con_faena:conFaena,sin_faena:sinFaena}});
   }catch(e){res.status(400).json({error:e.message});}
 });
 
