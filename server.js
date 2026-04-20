@@ -3179,6 +3179,29 @@ app.put('/api/personal/:id', auth, async(req,res)=>{
 app.patch('/api/personal/:id/activo', auth, async(req,res)=>{
   try{const r=await pool.query('UPDATE personal SET activo=NOT activo WHERE persona_id=$1 RETURNING *',[req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
+app.delete('/api/personal/:id', auth, async(req,res)=>{
+  try{
+    const pid=req.params.id;
+    // Check dependencies
+    const deps=[];
+    const otPers=await pool.query('SELECT COUNT(*) FROM mant_ot_personal WHERE persona_id=$1',[pid]);
+    if(parseInt(otPers.rows[0].count)>0)deps.push('OT mantención ('+otPers.rows[0].count+')');
+    const otTarea=await pool.query('SELECT COUNT(*) FROM mant_ot_tarea_personal WHERE persona_id=$1',[pid]);
+    if(parseInt(otTarea.rows[0].count)>0)deps.push('tareas OT ('+otTarea.rows[0].count+')');
+    const entregas=await pool.query('SELECT COUNT(*) FROM rend_entregas WHERE persona_id=$1',[pid]);
+    if(parseInt(entregas.rows[0].count)>0)deps.push('rendiciones entrega ('+entregas.rows[0].count+')');
+    const gastos=await pool.query('SELECT COUNT(*) FROM rend_gastos WHERE persona_id=$1',[pid]);
+    if(parseInt(gastos.rows[0].count)>0)deps.push('rendiciones gasto ('+gastos.rows[0].count+')');
+    const vac=await pool.query('SELECT COUNT(*) FROM vacaciones_registros WHERE persona_id=$1',[pid]);
+    if(parseInt(vac.rows[0].count)>0)deps.push('vacaciones ('+vac.rows[0].count+')');
+    if(deps.length>0)return res.status(400).json({error:'No se puede eliminar: tiene registros asociados en '+deps.join(', ')+'. Desactive al trabajador en su lugar.'});
+    await pool.query('DELETE FROM personal WHERE persona_id=$1',[pid]);
+    res.json({ok:true});
+  }catch(e){
+    if(e.code==='23503')return res.status(400).json({error:'No se puede eliminar: tiene registros asociados. Desactive al trabajador en su lugar.'});
+    res.status(400).json({error:e.message});
+  }
+});
 
 // ══════════════════════════════════════════════════════
 // OT SISTEMAS (muchos a muchos)
