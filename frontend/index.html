@@ -1451,27 +1451,55 @@ function VacacionesView(p){
     api('/vacaciones?persona_id='+pid,'GET',null,p.tok).then(function(r){
       var hist=Array.isArray(r)?r:[];
       setHistorial(hist);
-      // Auto-cargar último período con saldo pendiente
+      var prog=per?calcProgresivos(per):0;
+      var disp=15+prog;
+
       if(hist.length>0&&per){
-        var ultimo=hist[hist.length-1]; // último por periodo (ya vienen ordenados ASC)
-        // Buscar el período más reciente que tenga saldo > 0
-        var conSaldo=null;
-        for(var i=hist.length-1;i>=0;i--){
-          if(parseInt(hist[i].saldo_pendiente)>0){conSaldo=hist[i];break;}
+        // Agrupar por período y calcular saldo real de cada uno
+        var periodos={};
+        hist.forEach(function(h){
+          var pk=(h.periodo_desde||'').slice(0,10);
+          if(!periodos[pk])periodos[pk]={desde:pk,hasta:(h.periodo_hasta||'').slice(0,10),usado:0};
+          periodos[pk].usado+=parseInt(h.dias_habiles)||0;
+        });
+
+        // Buscar período con saldo pendiente (más reciente primero)
+        var keys=Object.keys(periodos).sort();
+        var periodoConSaldo=null;
+        for(var i=keys.length-1;i>=0;i--){
+          var p2=periodos[keys[i]];
+          if(disp-p2.usado>0){periodoConSaldo=p2;break;}
         }
-        var ref=conSaldo||ultimo;
-        var pDesde=(ref.periodo_desde||'').slice(0,10);
-        var pHasta=(ref.periodo_hasta||'').slice(0,10);
-        // Calcular días ya usados en ese período
-        var usados=hist.filter(function(h){return h.periodo_desde&&(h.periodo_desde+'').slice(0,10)===pDesde;}).reduce(function(s,h){return s+(parseInt(h.dias_habiles)||0);},0);
-        var prog=calcProgresivos(per);
-        var disp=15+prog;
-        var saldo=disp-usados;
-        setForm({periodo_desde:pDesde,periodo_hasta:pHasta,dias_correspondientes:15,dias_progresivos:prog,vacaciones_desde:'',vacaciones_hasta:'',dias_habiles:0,dias_no_habiles:0,saldo_pendiente:saldo,observaciones:''});
-      }else if(per){
-        // Sin historial: pre-llenar con datos del trabajador
-        var prog2=calcProgresivos(per);
-        setForm(Object.assign({},emptyForm,{dias_progresivos:prog2}));
+
+        if(periodoConSaldo){
+          // Hay un período con días pendientes → cargarlo
+          var saldo=disp-periodoConSaldo.usado;
+          setForm({periodo_desde:periodoConSaldo.desde,periodo_hasta:periodoConSaldo.hasta,dias_correspondientes:15,dias_progresivos:prog,vacaciones_desde:'',vacaciones_hasta:'',dias_habiles:0,dias_no_habiles:0,saldo_pendiente:saldo,observaciones:''});
+        }else{
+          // Todos los períodos están completos → calcular el SIGUIENTE período
+          var ultimoKey=keys[keys.length-1];
+          var ultimoPer=periodos[ultimoKey];
+          // Siguiente período = último hasta + 1 día → hasta + 1 año
+          var partsD=ultimoPer.hasta.split('-');
+          var sigDesde=new Date(parseInt(partsD[0]),parseInt(partsD[1])-1,parseInt(partsD[2])+1);
+          var sigHasta=new Date(parseInt(partsD[0])+1,parseInt(partsD[1])-1,parseInt(partsD[2]));
+          var fmtISO=function(d){return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);};
+          setForm({periodo_desde:fmtISO(sigDesde),periodo_hasta:fmtISO(sigHasta),dias_correspondientes:15,dias_progresivos:prog,vacaciones_desde:'',vacaciones_hasta:'',dias_habiles:0,dias_no_habiles:0,saldo_pendiente:disp,observaciones:''});
+        }
+      }else if(per&&per.fecha_ingreso){
+        // Sin historial: calcular primer período desde fecha de ingreso
+        var fi=(per.fecha_ingreso+'').slice(0,10).split('-');
+        var anioActual=new Date().getFullYear();
+        var mesIngreso=parseInt(fi[1]);var diaIngreso=parseInt(fi[2]);var anioIngreso=parseInt(fi[0]);
+        // Buscar el período aniversario vigente
+        var pAnio=anioActual-1;
+        var pDesde=new Date(pAnio,mesIngreso-1,diaIngreso);
+        if(pDesde>new Date())pDesde=new Date(pAnio-1,mesIngreso-1,diaIngreso);
+        var pHasta=new Date(pDesde.getFullYear()+1,pDesde.getMonth(),pDesde.getDate()-1);
+        var fmtISO2=function(d){return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);};
+        setForm({periodo_desde:fmtISO2(pDesde),periodo_hasta:fmtISO2(pHasta),dias_correspondientes:15,dias_progresivos:prog,vacaciones_desde:'',vacaciones_hasta:'',dias_habiles:0,dias_no_habiles:0,saldo_pendiente:disp,observaciones:''});
+      }else{
+        setForm(Object.assign({},emptyForm,{dias_progresivos:prog}));
       }
     }).catch(function(){setHistorial([]);});
   }
