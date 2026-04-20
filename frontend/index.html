@@ -131,6 +131,7 @@ tr:hover>td{background:#F8FAFC}
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script>
 'use strict';
 const {useState,useEffect,useMemo,useCallback,useRef,Component}=React;
@@ -1317,9 +1318,114 @@ function SolicitudesView(p){
   );
 }
 
+// ══ GENERADOR COMPROBANTE DE FERIADO (PDF) ══
+function generarComprobantePDF(reg, persona, empresas){
+  var jsPDF=window.jspdf.jsPDF;
+  var doc=new jsPDF({unit:'mm',format:'letter'});
+  var W=216; var H=279; var ML=25; var MR=25; var MT=25;
+  var pw=W-ML-MR;
+  var y=MT;
+  var fmtFecha=function(d){if(!d)return '';var s=(d+'').slice(0,10);return s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(0,4);};
+
+  // Buscar empresa del trabajador
+  var empresa=null;
+  if(persona.empresa_id&&empresas){empresa=empresas.find(function(e){return e.empresa_id===persona.empresa_id||String(e.empresa_id)===String(persona.empresa_id);});}
+
+  // ── HEADER EMPRESA ──
+  doc.setFont('helvetica','normal');doc.setFontSize(11);
+  if(empresa){
+    doc.text('Razón Social: '+(empresa.razon_social||''),ML,y);y+=5;
+    doc.text('R.U.T.:          '+(empresa.rut||''),ML,y);y+=5;
+    doc.text('Dirección:      '+(empresa.direccion||''),ML,y);y+=5;
+    doc.text('Teléfono:        '+(empresa.telefono||''),ML,y);
+  }else{
+    doc.text('Razón Social: LEONIDAS POO ZENTENO Y CÍA. LTDA.',ML,y);y+=5;
+    doc.text('R.U.T.:          76.033.889-6',ML,y);y+=5;
+    doc.text('Dirección:      Los Ángeles',ML,y);y+=5;
+    doc.text('Teléfono:',ML,y);
+  }
+  // Fecha emisión (derecha)
+  var hoy=new Date();var fechaEmision=('0'+hoy.getDate()).slice(-2)+'/'+('0'+(hoy.getMonth()+1)).slice(-2)+'/'+hoy.getFullYear();
+  doc.text('Fecha:'+fechaEmision,W-MR,MT,{align:'right'});
+  y+=12;
+
+  // ── TÍTULO ──
+  doc.setFont('helvetica','bold');doc.setFontSize(16);
+  doc.text('COMPROBANTE DE FERIADO',W/2,y,{align:'center'});
+  y+=14;
+
+  // ── PERÍODO CONTRACTUAL ──
+  doc.setFont('helvetica','bold');doc.setFontSize(11);
+  doc.text('Correspondiente al Período Contractual:',ML,y);
+  doc.setFont('helvetica','normal');
+  doc.text('Del '+fmtFecha(reg.periodo_desde)+'          Al '+fmtFecha(reg.periodo_hasta),ML+78,y);
+  y+=12;
+
+  // ── TEXTO LEGAL ──
+  doc.setFont('helvetica','normal');doc.setFontSize(11);
+  var textoLegal='En cumplimiento a las disposiciones legales vigentes se deja constancia que a contar de las fechas que se indican, el trabajador';
+  var lines=doc.splitTextToSize(textoLegal,pw);
+  doc.text(lines,ML,y);y+=lines.length*5+4;
+
+  // ── DATOS TRABAJADOR ──
+  doc.text('Don: '+(persona.nombre_completo||'').toUpperCase(),ML,y);y+=6;
+  doc.text('RUT: '+(persona.rut||''),ML,y);y+=10;
+
+  // ── USO TOTAL/PARCIAL ──
+  var diasCorr=parseInt(reg.dias_correspondientes)||15;
+  var diasProg=parseInt(reg.dias_progresivos)||0;
+  var totalDisp=diasCorr+diasProg;
+  var diasHab=parseInt(reg.dias_habiles)||0;
+  var tipoUso=diasHab>=totalDisp?'TOTAL':'PARCIAL';
+  doc.text('Hará uso   ',ML,y);
+  doc.setFont('helvetica','bold');doc.text(tipoUso,ML+22,y);
+  doc.setFont('helvetica','normal');doc.text('de su feriado anual con remuneración íntegra de acuerdo al siguiente detalle:',ML+22+doc.getTextWidth(tipoUso)+3,y);
+  y+=10;
+
+  // ── FECHAS VACACIONES ──
+  doc.text('DESCANSO EFECTIVO ENTRE LAS FECHAS QUE SE INDICAN',ML,y);y+=8;
+  doc.text('DESDE EL '+fmtFecha(reg.vacaciones_desde)+'          AL '+fmtFecha(reg.vacaciones_hasta),ML,y);
+  y+=14;
+
+  // ── DETALLE DEL FERIADO ──
+  var colL=ML;var colR=ML+75;
+  var detY=y;
+  doc.setFont('helvetica','bold');doc.setFontSize(11);
+  doc.text('DETALLE DEL FERIADO',colL,detY);doc.text('DIAS',colR,detY);detY+=8;
+  doc.setFont('helvetica','normal');
+  doc.text('DIAS HABILES',colL,detY);doc.text(String(diasHab),colR+5,detY);detY+=6;
+  doc.text('VAC. PROGRESIVAS',colL,detY);doc.text(String(diasProg),colR+5,detY);detY+=6;
+  doc.text('DOMINGOS E INHABILES',colL,detY);doc.text(String(parseInt(reg.dias_no_habiles)||0),colR+5,detY);detY+=6;
+  doc.text('SALDO PENDIENTE',colL,detY);doc.text(String(parseInt(reg.saldo_pendiente)||0),colR+5,detY);detY+=6;
+
+  // ── FIRMAS (lado derecho, a la misma altura que detalle) ──
+  var firmaX=ML+110;var firmaW=60;
+  doc.line(firmaX,y+8,firmaX+firmaW,y+8);
+  doc.setFontSize(9);doc.setFont('helvetica','bold');
+  doc.text('Firma Empleador o Rep. Legal',firmaX+(firmaW/2),y+13,{align:'center'});
+
+  doc.line(firmaX,y+28,firmaX+firmaW,y+28);
+  doc.text('Firma del trabajador',firmaX+(firmaW/2),y+33,{align:'center'});
+
+  // ── NOTA AL PIE ──
+  y=Math.max(detY,y+38)+14;
+  doc.setDrawColor(150);doc.line(ML,y,W-MR,y);y+=5;
+  doc.setFont('helvetica','normal');doc.setFontSize(8);
+  var nota='NOTA: Para el cálculo del feriado, se consideran los días hábiles de trabajo, con cancelación de los días domingos o festivos que incidan en dicho período de descanso. En las Empresas que han distribuido la jornada de trabajo en menos de 6 días hábiles, uno de ellos será considerado inhábil para los efectos de feriado. Uno de estos ejemplares queda en poder del trabajador y otro en poder del empleador.';
+  var notaLines=doc.splitTextToSize(nota,pw);
+  doc.text(notaLines,ML,y);
+
+  // ── DESCARGAR ──
+  var nombreArchivo='Comprobante_Feriado_'+(persona.rut||'').replace(/\./g,'')+'_'+fmtFecha(reg.vacaciones_desde).replace(/\//g,'-')+'.pdf';
+  doc.save(nombreArchivo);
+}
+
 // ══ CONTROL DE VACACIONES ══
 function VacacionesView(p){
-  var personal=(p.m.personal||[]).filter(function(x){return x.activo;});
+  var allPersonal=(p.m.personal||[]).filter(function(x){return x.activo;});
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var[selEmpresa,setSelEmpresa]=useState('');
+  var personal=selEmpresa?allPersonal.filter(function(x){return String(x.empresa_id)===String(selEmpresa);}):[];
   var[selPersona,setSelPersona]=useState(null);
   var[historial,setHistorial]=useState([]);
   var[editReg,setEditReg]=useState(null);
@@ -1328,6 +1434,8 @@ function VacacionesView(p){
   var emptyForm={periodo_desde:'',periodo_hasta:'',dias_correspondientes:15,dias_progresivos:0,vacaciones_desde:'',vacaciones_hasta:'',dias_habiles:0,dias_no_habiles:0,saldo_pendiente:0,observaciones:''};
   var[form,setForm]=useState(emptyForm);
   var[calcLoading,setCalcLoading]=useState(false);
+
+  function cambiarEmpresa(eid){setSelEmpresa(eid);setSelPersona(null);setHistorial([]);setEditReg(null);setForm(emptyForm);setMsg('');}
 
   function loadHistorial(pid){
     api('/vacaciones?persona_id='+pid,'GET',null,p.tok).then(function(r){setHistorial(Array.isArray(r)?r:[]);}).catch(function(){setHistorial([]);});
@@ -1410,13 +1518,22 @@ function VacacionesView(p){
   var lblS={fontSize:10,fontWeight:600,display:'block',marginBottom:2,color:'#475569'};
 
   return h('div',{style:{display:'flex',gap:10,height:'calc(100vh - 120px)',overflow:'hidden'}},
-    // ── PANEL IZQUIERDO: Trabajadores ──
+    // ── PANEL IZQUIERDO: Empresa + Trabajadores ──
     h('div',{style:{width:260,minWidth:220,flexShrink:0,display:'flex',flexDirection:'column',background:'#fff',borderRadius:8,border:'1px solid #E2E8F0',overflow:'hidden'}},
       h('div',{style:{padding:'10px 10px 6px',borderBottom:'1px solid #E2E8F0'}},
-        h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D',marginBottom:6}},'Trabajadores ('+filtrados.length+')'),
-        h('input',{value:busqueda,onChange:function(e){setBusqueda(e.target.value);},style:Object.assign({},inpS,{fontSize:11}),placeholder:'Buscar por nombre o RUT...'})
+        h('div',{style:{fontSize:10,fontWeight:600,color:'#475569',marginBottom:3}},'Empresa'),
+        h('select',{value:selEmpresa,onChange:function(e){cambiarEmpresa(e.target.value);},style:Object.assign({},inpS,{fontSize:11,fontWeight:600,marginBottom:6})},
+          h('option',{value:''},'— Seleccione empresa —'),
+          empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})
+        ),
+        selEmpresa&&h('div',null,
+          h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D',marginBottom:6}},'Trabajadores ('+filtrados.length+')'),
+          h('input',{value:busqueda,onChange:function(e){setBusqueda(e.target.value);},style:Object.assign({},inpS,{fontSize:11}),placeholder:'Buscar por nombre o RUT...'})
+        )
       ),
       h('div',{style:{flex:1,overflowY:'auto'}},
+        !selEmpresa?h('div',{style:{textAlign:'center',padding:'30px 10px',color:'#94A3B8',fontSize:12}},'Seleccione una empresa para ver sus trabajadores'):
+        filtrados.length===0?h('div',{style:{textAlign:'center',padding:'30px 10px',color:'#94A3B8',fontSize:12}},'Sin trabajadores en esta empresa'):
         filtrados.map(function(per){
           var isSel=selPersona&&selPersona.persona_id===per.persona_id;
           return h('div',{key:per.persona_id,onClick:function(){selectPersona(per);},style:{padding:'6px 10px',cursor:'pointer',borderBottom:'1px solid #F1F5F9',background:isSel?'#1E3A2D':'transparent',color:isSel?'#fff':'#1E293B',transition:'all .1s'}},
@@ -1512,7 +1629,10 @@ function VacacionesView(p){
               h('td',{style:{padding:'5px 8px',textAlign:'right',fontWeight:600}},r.dias_habiles),
               h('td',{style:{padding:'5px 8px',textAlign:'right',fontWeight:700,color:r.saldo_pendiente<=0?'#DC2626':'#166534'}},r.saldo_pendiente),
               h('td',{style:{padding:'5px 8px',textAlign:'center'}},
-                h('button',{onClick:function(e){e.stopPropagation();eliminar(r.registro_id);},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'🗑')
+                h('div',{style:{display:'flex',gap:3,justifyContent:'center'}},
+                  h('button',{onClick:function(e){e.stopPropagation();generarComprobantePDF(r,selPersona,p.m.empresas||[]);},title:'Descargar comprobante PDF',style:{fontSize:10,padding:'2px 6px',background:'#1E3A2D',color:'#D4C5A9',border:'none',borderRadius:3,cursor:'pointer'}},'📄'),
+                  h('button',{onClick:function(e){e.stopPropagation();eliminar(r.registro_id);},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'🗑')
+                )
               )
             );
           }))
@@ -5192,6 +5312,7 @@ function Personal(p){
   const[msg,setMsg]=useState('');
   const[filtMant,setFiltMant]=useState('');
   const[filtCat,setFiltCat]=useState('');
+  const[filtEmpresa,setFiltEmpresa]=useState('');
   const[buscar,setBuscar]=useState('');
   const[showImport,setShowImport]=useState(false);
   const[importResult,setImportResult]=useState(null);
@@ -5212,15 +5333,22 @@ function Personal(p){
     var method=sel?'PUT':'POST';
     api(url,method,form,p.tok).then(function(){load();setShowForm(false);setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});
   }
-  function toggleActivo(row){api('/personal/'+row.persona_id+'/activo','PATCH',null,p.tok).then(load).catch(function(){});}
+  function eliminarPersona(row){
+    if(!confirm('¿Eliminar permanentemente a '+row.nombre_completo+'?\n\nEsta acción no se puede deshacer. Si tiene registros asociados, se le indicará el error.'))return;
+    api('/personal/'+row.persona_id,'DELETE',null,p.tok).then(function(){load();setMsg('✓ Trabajador eliminado');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
   function handleImportJSON(e){
     var file=e.target.files[0];if(!file)return;
+    if(!filtEmpresa){setMsg('Seleccione una empresa antes de importar');e.target.value='';return;}
+    var empNombre=(empresas.find(function(em){return String(em.empresa_id)===String(filtEmpresa);})||{}).razon_social||'';
     var reader=new FileReader();
     reader.onload=function(ev){
       try{
         var data=JSON.parse(ev.target.result);
         if(!Array.isArray(data)){setMsg('El archivo debe contener un array JSON');return;}
-        if(!confirm('Se importarán '+data.length+' trabajadores. Los RUT existentes serán actualizados con la nueva información. ¿Continuar?'))return;
+        // Asignar empresa_id a todos los trabajadores
+        data.forEach(function(t){t.empresa_id=parseInt(filtEmpresa);});
+        if(!confirm('Se importarán '+data.length+' trabajadores a "'+empNombre+'".\nLos RUT existentes serán actualizados. ¿Continuar?'))return;
         setMsg('Importando '+data.length+' trabajadores...');
         api('/import/personal','POST',{trabajadores:data},p.tok).then(function(r){
           var res=r.results||[];
@@ -5245,6 +5373,7 @@ function Personal(p){
     if(filtMant==='si'&&!x.participa_mantencion) return false;
     if(filtMant==='no'&&x.participa_mantencion) return false;
     if(filtCat&&x.categoria!==filtCat) return false;
+    if(filtEmpresa&&String(x.empresa_id)!==String(filtEmpresa)) return false;
     if(buscar){var q=buscar.toLowerCase();return (x.nombre_completo||'').toLowerCase().indexOf(q)>=0||(x.rut||'').toLowerCase().indexOf(q)>=0||(x.cargo||'').toLowerCase().indexOf(q)>=0||(x.centro_costo||'').toLowerCase().indexOf(q)>=0||(x.faena_nombre||'').toLowerCase().indexOf(q)>=0;}
     return true;
   });
@@ -5253,7 +5382,11 @@ function Personal(p){
   return h('div',null,
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:6}},
       h('div',{style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}},
-        h('input',{type:'text',placeholder:'Buscar nombre, RUT, cargo...',value:buscar,onChange:function(e){setBuscar(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:180}}),
+        h('select',{value:filtEmpresa,onChange:function(e){setFiltEmpresa(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,fontWeight:filtEmpresa?600:400}},
+          h('option',{value:''},'Todas las empresas'),
+          empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})
+        ),
+        h('input',{type:'text',placeholder:'Buscar nombre, RUT, cargo...',value:buscar,onChange:function(e){setBuscar(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:170}}),
         h('select',{value:filtCat,onChange:function(e){setFiltCat(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
           h('option',{value:''},'Todas las categorías'),
           CATEGORIAS.map(function(c){return h('option',{key:c.v,value:c.v},c.l);})
@@ -5340,7 +5473,7 @@ function Personal(p){
         {lbl:'Estado',render:function(r){return h(Bg,{c:r.activo?'g':'r'},r.activo?'Activo':'Inactivo');}},
         {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:4}},
           h(Btn,{v:'a',sm:true,onClick:function(){openEdit(r);}},null,'✏'),
-          h(Btn,{v:r.activo?'r':'g',sm:true,onClick:function(){toggleActivo(r);}},null,r.activo?'✗':'✓')
+          h(Btn,{v:'r',sm:true,onClick:function(){eliminarPersona(r);}},null,'🗑')
         );}}
       ],rows:rows,empty:'Sin personal'})
     )
