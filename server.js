@@ -3742,21 +3742,31 @@ app.post('/api/import/personal', auth, async(req,res)=>{
     const{trabajadores}=req.body;if(!Array.isArray(trabajadores))throw new Error('Sin datos');
     // Mapeo centro_costo (planilla) → código faena (sistema)
     const CENTRO_COSTO_MAP={
+      // Leonidas Poo
       'ADMINISTRACIÓN':'ADM-LPOO','ADMINISTRACION':'ADM-LPOO',
       'FAENA MEC 3':'FAE-MEC3','FAENA MEC3':'FAE-MEC3',
       'FAENA MEC 4':'FAE-MEC4','FAENA MEC4':'FAE-MEC4',
-      'TALLER':'TALL-LPOO'
+      'TALLER':'TALL-LPOO',
+      // Emprecon
+      'ADMINISTRACIÓN EMPRECON':'ADM-EMP','ADMINISTRACION EMPRECON':'ADM-EMP',
+      'FAENA CAMINOS':'FAE-CAM','FAENA ALCANTARILLAS':'FAE-ALC',
+      'FAENA FAJAS':'FAE-FAJ','TALLER EMPRECON':'TALL-EMP'
     };
     // Pre-cargar faenas para lookup
     const faenasQ=await pool.query('SELECT faena_id,codigo,nombre FROM faenas');
-    const faenasByCodigo={};
-    for(const f of faenasQ.rows){faenasByCodigo[(f.codigo||'').toUpperCase()]=f.faena_id;}
+    const faenasByCodigo={};const faenasByNombre={};
+    for(const f of faenasQ.rows){
+      faenasByCodigo[(f.codigo||'').toUpperCase()]=f.faena_id;
+      faenasByNombre[(f.nombre||'').toUpperCase()]=f.faena_id;
+    }
     // Resolver faena_id desde centro_costo
     function resolverFaena(cc){
       if(!cc)return null;
       var ccUp=cc.toUpperCase().trim();
       var codigo=CENTRO_COSTO_MAP[ccUp];
       if(codigo&&faenasByCodigo[codigo.toUpperCase()])return faenasByCodigo[codigo.toUpperCase()];
+      // Fallback: buscar por nombre exacto
+      if(faenasByNombre[ccUp])return faenasByNombre[ccUp];
       // Fallback: buscar por nombre parcial
       for(const f of faenasQ.rows){if((f.nombre||'').toUpperCase().indexOf(ccUp)>=0||(f.codigo||'').toUpperCase().indexOf(ccUp)>=0)return f.faena_id;}
       return null;
