@@ -5196,14 +5196,15 @@ function Personal(p){
   const[showImport,setShowImport]=useState(false);
   const[importResult,setImportResult]=useState(null);
   const empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  const faenas=p.m.faenas||[];
   const CATEGORIAS=[{v:'operador',l:'Operador'},{v:'mantencion',l:'Mantención'},{v:'jefe_faena',l:'Jefe de Faena'},{v:'supervisor',l:'Supervisor'},{v:'administracion',l:'Administración'},{v:'otros_faena',l:'Otros Faena'}];
   const TIPOS_CONTRATO=[{v:'Indefinido',l:'Indefinido'},{v:'A Plazo',l:'A Plazo'},{v:'Por Obra',l:'Por Obra'},{v:'Honorarios',l:'Honorarios'}];
-  const emptyForm={empresa_id:'',nombre_completo:'',rut:'',cargo:'',especialidad:'',telefono:'',correo:'',participa_mantencion:false,valor_hora_hombre:'',moneda:'CLP',fecha_ingreso:'',cotizaciones_anteriores:0,observaciones:'',fecha_nacimiento:'',direccion:'',comuna:'',tipo_contrato:'',centro_costo:'',fecha_termino:'',categoria:'otros_faena'};
+  const emptyForm={empresa_id:'',nombre_completo:'',rut:'',cargo:'',especialidad:'',telefono:'',correo:'',participa_mantencion:false,valor_hora_hombre:'',moneda:'CLP',fecha_ingreso:'',cotizaciones_anteriores:0,observaciones:'',fecha_nacimiento:'',direccion:'',comuna:'',tipo_contrato:'',centro_costo:'',fecha_termino:'',categoria:'otros_faena',faena_id:''};
   const[form,setForm]=useState(emptyForm);
   function load(){api('/personal','GET',null,p.tok).then(function(r){setPersonas(Array.isArray(r)?r:[]);}).catch(function(){});}
   useEffect(load,[p.tok]);
   function openNew(){setSel(null);setForm(emptyForm);setShowForm(true);setMsg('');}
-  function openEdit(row){setSel(row);setForm({empresa_id:row.empresa_id||'',nombre_completo:row.nombre_completo||'',rut:row.rut||'',cargo:row.cargo||'',especialidad:row.especialidad||'',telefono:row.telefono||'',correo:row.correo||'',participa_mantencion:!!row.participa_mantencion,valor_hora_hombre:row.valor_hora_hombre||'',moneda:row.moneda||'CLP',fecha_ingreso:row.fecha_ingreso?(row.fecha_ingreso+'').slice(0,10):'',cotizaciones_anteriores:row.cotizaciones_anteriores||0,observaciones:row.observaciones||'',fecha_nacimiento:row.fecha_nacimiento?(row.fecha_nacimiento+'').slice(0,10):'',direccion:row.direccion||'',comuna:row.comuna||'',tipo_contrato:row.tipo_contrato||'',centro_costo:row.centro_costo||'',fecha_termino:row.fecha_termino?(row.fecha_termino+'').slice(0,10):'',categoria:row.categoria||'otros_faena'});setShowForm(true);setMsg('');}
+  function openEdit(row){setSel(row);setForm({empresa_id:row.empresa_id||'',nombre_completo:row.nombre_completo||'',rut:row.rut||'',cargo:row.cargo||'',especialidad:row.especialidad||'',telefono:row.telefono||'',correo:row.correo||'',participa_mantencion:!!row.participa_mantencion,valor_hora_hombre:row.valor_hora_hombre||'',moneda:row.moneda||'CLP',fecha_ingreso:row.fecha_ingreso?(row.fecha_ingreso+'').slice(0,10):'',cotizaciones_anteriores:row.cotizaciones_anteriores||0,observaciones:row.observaciones||'',fecha_nacimiento:row.fecha_nacimiento?(row.fecha_nacimiento+'').slice(0,10):'',direccion:row.direccion||'',comuna:row.comuna||'',tipo_contrato:row.tipo_contrato||'',centro_costo:row.centro_costo||'',fecha_termino:row.fecha_termino?(row.fecha_termino+'').slice(0,10):'',categoria:row.categoria||'otros_faena',faena_id:row.faena_id||''});setShowForm(true);setMsg('');}
   function guardar(){
     if(!form.nombre_completo){setMsg('Nombre requerido');return;}
     if(form.participa_mantencion&&!form.valor_hora_hombre){setMsg('Valor hora hombre obligatorio para personal de mantención');return;}
@@ -5227,8 +5228,10 @@ function Personal(p){
           var upd=res.filter(function(x){return x.ok&&x.accion==='actualizado';}).length;
           var nuevo=res.filter(function(x){return x.ok&&x.accion==='creado';}).length;
           var err=res.filter(function(x){return !x.ok;}).length;
-          setImportResult({total:res.length,ok:ok,actualizados:upd,nuevos:nuevo,errores:err,detalles:res});
-          setMsg('✓ Importación completada: '+nuevo+' nuevos, '+upd+' actualizados'+(err>0?', '+err+' errores':''));
+          var conFaena=(r.resumen&&r.resumen.con_faena)||0;
+          var sinFaena=(r.resumen&&r.resumen.sin_faena)||0;
+          setImportResult({total:res.length,ok:ok,actualizados:upd,nuevos:nuevo,errores:err,conFaena:conFaena,sinFaena:sinFaena,detalles:res});
+          setMsg('✓ Importación completada: '+nuevo+' nuevos, '+upd+' actualizados, '+conFaena+' con faena asignada'+(err>0?', '+err+' errores':''));
           load();
         }).catch(function(e){setMsg('Error: '+e.message);});
       }catch(ex){setMsg('Error al parsear JSON: '+ex.message);}
@@ -5242,7 +5245,7 @@ function Personal(p){
     if(filtMant==='si'&&!x.participa_mantencion) return false;
     if(filtMant==='no'&&x.participa_mantencion) return false;
     if(filtCat&&x.categoria!==filtCat) return false;
-    if(buscar){var q=buscar.toLowerCase();return (x.nombre_completo||'').toLowerCase().indexOf(q)>=0||(x.rut||'').toLowerCase().indexOf(q)>=0||(x.cargo||'').toLowerCase().indexOf(q)>=0||(x.centro_costo||'').toLowerCase().indexOf(q)>=0;}
+    if(buscar){var q=buscar.toLowerCase();return (x.nombre_completo||'').toLowerCase().indexOf(q)>=0||(x.rut||'').toLowerCase().indexOf(q)>=0||(x.cargo||'').toLowerCase().indexOf(q)>=0||(x.centro_costo||'').toLowerCase().indexOf(q)>=0||(x.faena_nombre||'').toLowerCase().indexOf(q)>=0;}
     return true;
   });
   var catLabel=function(c){var found=CATEGORIAS.find(function(x){return x.v===c;});return found?found.l:(c||'—');};
@@ -5274,10 +5277,12 @@ function Personal(p){
         h('div',{style:{fontWeight:600,fontSize:13}},'Resultado de importación'),
         h('button',{onClick:function(){setImportResult(null);},style:{fontSize:11,cursor:'pointer',background:'none',border:'none',color:'#94A3B8'}},'✕ Cerrar')
       ),
-      h('div',{style:{display:'flex',gap:12}},
+      h('div',{style:{display:'flex',gap:12,flexWrap:'wrap'}},
         h('span',null,'Total: ',h('b',null,importResult.total)),
         h('span',{style:{color:'#10B981'}},'Nuevos: ',h('b',null,importResult.nuevos)),
         h('span',{style:{color:'#3B82F6'}},'Actualizados: ',h('b',null,importResult.actualizados)),
+        h('span',{style:{color:'#7C3AED'}},'Con faena: ',h('b',null,importResult.conFaena||0)),
+        importResult.sinFaena>0&&h('span',{style:{color:'#F59E0B'}},'Sin faena: ',h('b',null,importResult.sinFaena)),
         importResult.errores>0&&h('span',{style:{color:'#EF4444'}},'Errores: ',h('b',null,importResult.errores))
       ),
       importResult.errores>0&&h('div',{style:{marginTop:6,maxHeight:100,overflow:'auto',fontSize:11,color:'#EF4444'}},
@@ -5292,7 +5297,7 @@ function Personal(p){
         h('div',null,h('label',{style:lblS},'RUT'),h('input',{type:'text',value:form.rut,onChange:function(e){setForm(function(f){return Object.assign({},f,{rut:e.target.value});});},style:inp,placeholder:'12.345.678-9'})),
         h('div',null,h('label',{style:lblS},'Cargo'),h('input',{type:'text',value:form.cargo,onChange:function(e){setForm(function(f){return Object.assign({},f,{cargo:e.target.value});});},style:inp})),
         h('div',null,h('label',{style:lblS},'Categoría'),h('select',{value:form.categoria,onChange:function(e){setForm(function(f){return Object.assign({},f,{categoria:e.target.value});});},style:inp},CATEGORIAS.map(function(c){return h('option',{key:c.v,value:c.v},c.l);}))),
-        h('div',null,h('label',{style:lblS},'Centro de costo'),h('input',{type:'text',value:form.centro_costo,onChange:function(e){setForm(function(f){return Object.assign({},f,{centro_costo:e.target.value});});},style:inp,placeholder:'Ej: FAENA MEC 3'})),
+        h('div',null,h('label',{style:lblS},'Faena / Centro costo'),h('select',{value:form.faena_id,onChange:function(e){var fid=e.target.value;var fa=faenas.find(function(f){return String(f.faena_id)===fid;});setForm(function(f){return Object.assign({},f,{faena_id:fid,centro_costo:fa?fa.nombre:f.centro_costo});});},style:inp},h('option',{value:''},'Sin asignar'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},(f.codigo||'')+' — '+f.nombre);}))),
         h('div',null,h('label',{style:lblS},'Tipo contrato'),h('select',{value:form.tipo_contrato,onChange:function(e){setForm(function(f){return Object.assign({},f,{tipo_contrato:e.target.value});});},style:inp},h('option',{value:''},'—'),TIPOS_CONTRATO.map(function(c){return h('option',{key:c.v,value:c.v},c.l);}))),
         h('div',null,h('label',{style:lblS},'Fecha ingreso'),h('input',{type:'date',value:form.fecha_ingreso,onChange:function(e){setForm(function(f){return Object.assign({},f,{fecha_ingreso:e.target.value});});},style:inp})),
         h('div',null,h('label',{style:lblS},'Fecha nacimiento'),h('input',{type:'date',value:form.fecha_nacimiento,onChange:function(e){setForm(function(f){return Object.assign({},f,{fecha_nacimiento:e.target.value});});},style:inp})),
@@ -5327,7 +5332,7 @@ function Personal(p){
         {lbl:'RUT',k:'rut',mono:true},
         {lbl:'Cargo',k:'cargo'},
         {lbl:'Categoría',render:function(r){return catLabel(r.categoria);}},
-        {lbl:'Centro costo',k:'centro_costo'},
+        {lbl:'Faena',render:function(r){return r.faena_nombre||r.centro_costo||'—';}},
         {lbl:'Contrato',k:'tipo_contrato'},
         {lbl:'Ingreso',render:function(r){return fmtD(r.fecha_ingreso);}},
         {lbl:'Término',render:function(r){return r.fecha_termino?h('span',{style:{color:'#EF4444',fontWeight:600}},fmtD(r.fecha_termino)):h('span',{style:{color:'#94A3B8'}},'—');}},
