@@ -148,6 +148,7 @@ function api(path,method,body,token){
   if(token)opts.headers['Authorization']='Bearer '+token;
   if(body)opts.body=JSON.stringify(body);
   return fetch('/api'+path,opts).then(function(r){
+    if(r.status===401){localStorage.removeItem('lpz_token');localStorage.removeItem('lpz_user');window.location.reload();throw new Error('Sesión expirada');}
     return r.text().then(function(txt){
       var d;
       try{d=JSON.parse(txt);}catch(_){throw new Error('Servidor respondio: '+r.status+' '+txt.substring(0,120));}
@@ -5068,6 +5069,8 @@ const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
+  // Check token expiration on load
+  if(st){try{var payload=JSON.parse(atob(st.split('.')[1]));if(payload.exp&&payload.exp*1000<Date.now()){st=null;su=null;localStorage.removeItem('lpz_token');localStorage.removeItem('lpz_user');}}catch(e){st=null;su=null;localStorage.removeItem('lpz_token');localStorage.removeItem('lpz_user');}}
   const[tok,setTok]=useState(st);const[user,setUser]=useState(su);
   const[view,setView]=useState('ordenes');
   const[m,setM]=useState({bodegas:[],cats:[],subcats:[],prods:[],faenas:[],equipos:[],provs:[],tdocs:[],motivos:[],empresas:[],conds:[]});
@@ -5112,12 +5115,6 @@ function App(){
         canSee('ordenes')&&grpHdr('oc','ORDENES DE COMPRA'),
         canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true)),
         canSee('ordenes')&&h('div',{className:'sb-sep'}),
-        canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
-        canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
-        canSee('rendiciones')&&h('div',{className:'sb-sep'}),
-        canSee('terreno')&&grpHdr('terr','TERRENO'),
-        canSee('terreno')&&grp.terr&&h('div',null,navI('terreno','🌲','Registros Diarios',true)),
-        canSee('terreno')&&h('div',{className:'sb-sep'}),
         canSee('combustibles')&&grpHdr('comb','CONTROL DE COMBUSTIBLES'),
         canSee('combustibles')&&grp.comb&&h('div',null,
           navI('comb-panel','⛽','Panel Combustibles',true),
@@ -5151,12 +5148,18 @@ function App(){
           navI('mant-tareas-std','🔩','Tareas Estándar',true)
         ),
         canSee('mantencion')&&h('div',{className:'sb-sep'}),
+        canSee('terreno')&&grpHdr('terr','TERRENO'),
+        canSee('terreno')&&grp.terr&&h('div',null,navI('terreno','🌲','Registros Diarios',true)),
+        canSee('terreno')&&h('div',{className:'sb-sep'}),
         canSee('solicitudes')&&grpHdr('sol','SOLICITUDES'),
         canSee('solicitudes')&&grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
         canSee('solicitudes')&&h('div',{className:'sb-sep'}),
         canSee('finanzas')&&grpHdr('fin','FINANZAS'),
         canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true)),
         canSee('finanzas')&&h('div',{className:'sb-sep'}),
+        canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
+        canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
+        canSee('rendiciones')&&h('div',{className:'sb-sep'}),
         canSee('mantenedores')&&grpHdr('man','MANTENEDORES'),
         canSee('mantenedores')&&grp.man&&h('div',null,
           navI('empresas','▸','Empresas',true),
