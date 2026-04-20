@@ -3160,18 +3160,18 @@ app.get('/api/personal', auth, async(req,res)=>{
 });
 app.post('/api/personal', auth, async(req,res)=>{
   try{
-    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones}=req.body;
+    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria}=req.body;
     if(!nombre_completo) return res.status(400).json({error:'Nombre requerido'});
-    const r=await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
-      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null]);
+    const r=await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING *`,
+      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena']);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.put('/api/personal/:id', auth, async(req,res)=>{
   try{
-    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,activo,fecha_ingreso,cotizaciones_anteriores,observaciones}=req.body;
-    const r=await pool.query(`UPDATE personal SET empresa_id=$1,nombre_completo=$2,rut=$3,cargo=$4,especialidad=$5,telefono=$6,correo=$7,participa_mantencion=$8,valor_hora_hombre=$9,moneda=$10,activo=$11,fecha_ingreso=$12,cotizaciones_anteriores=$13,observaciones=$14 WHERE persona_id=$15 RETURNING *`,
-      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',activo!==false,fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,req.params.id]);
+    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,activo,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria}=req.body;
+    const r=await pool.query(`UPDATE personal SET empresa_id=$1,nombre_completo=$2,rut=$3,cargo=$4,especialidad=$5,telefono=$6,correo=$7,participa_mantencion=$8,valor_hora_hombre=$9,moneda=$10,activo=$11,fecha_ingreso=$12,cotizaciones_anteriores=$13,observaciones=$14,fecha_nacimiento=$15,direccion=$16,comuna=$17,tipo_contrato=$18,centro_costo=$19,fecha_termino=$20,categoria=$21 WHERE persona_id=$22 RETURNING *`,
+      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',activo!==false,fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -3721,8 +3721,9 @@ app.post('/api/import/personal', auth, async(req,res)=>{
         if(!t.nombre_completo)continue;
         const exists=t.rut?await pool.query('SELECT persona_id FROM personal WHERE rut=$1',[t.rut]):null;
         if(exists&&exists.rows.length){
-          await pool.query(`UPDATE personal SET nombre_completo=COALESCE($1,nombre_completo),cargo=COALESCE($2,cargo),fecha_ingreso=COALESCE($3,fecha_ingreso),fecha_nacimiento=COALESCE($4,fecha_nacimiento),direccion=COALESCE($5,direccion),comuna=COALESCE($6,comuna),tipo_contrato=COALESCE($7,tipo_contrato),centro_costo=COALESCE($8,centro_costo),categoria=COALESCE($9,categoria),fecha_termino=$10,telefono=COALESCE($11,telefono),correo=COALESCE($12,correo) WHERE rut=$13`,
-            [t.nombre_completo,t.cargo,t.fecha_ingreso||null,t.fecha_nacimiento||null,t.direccion||null,t.comuna||null,t.tipo_contrato||null,t.centro_costo||null,t.categoria||null,t.fecha_termino||null,t.telefono||null,t.correo||null,t.rut]);
+          // Overwrite: sobreescribir todos los campos con los nuevos valores
+          await pool.query(`UPDATE personal SET nombre_completo=$1,cargo=$2,fecha_ingreso=$3,fecha_nacimiento=$4,direccion=$5,comuna=$6,tipo_contrato=$7,centro_costo=$8,categoria=$9,fecha_termino=$10,telefono=$11,correo=$12,empresa_id=COALESCE($13,empresa_id) WHERE rut=$14`,
+            [t.nombre_completo,t.cargo||null,t.fecha_ingreso||null,t.fecha_nacimiento||null,t.direccion||null,t.comuna||null,t.tipo_contrato||null,t.centro_costo||null,t.categoria||'otros_faena',t.fecha_termino||null,t.telefono||null,t.correo||null,t.empresa_id||null,t.rut]);
           results.push({rut:t.rut,nombre:t.nombre_completo,ok:true,accion:'actualizado'});
         }else{
           await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,fecha_ingreso,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,categoria,fecha_termino,telefono,correo,activo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true)`,
