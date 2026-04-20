@@ -1333,20 +1333,21 @@ function generarComprobantePDF(reg, persona, empresas){
 
   // ── HEADER EMPRESA ──
   doc.setFont('helvetica','normal');doc.setFontSize(11);
+  var valX=ML+30; // columna fija para valores
   if(empresa){
-    doc.text('Razón Social: '+(empresa.razon_social||''),ML,y);y+=5;
-    doc.text('R.U.T.:          '+(empresa.rut||''),ML,y);y+=5;
-    doc.text('Dirección:      '+(empresa.direccion||''),ML,y);y+=5;
-    doc.text('Teléfono:        '+(empresa.telefono||''),ML,y);
+    doc.text('Razón Social:',ML,y);doc.text(empresa.razon_social||'',valX,y);y+=6;
+    doc.text('R.U.T.:',ML,y);doc.text(empresa.rut||'',valX,y);y+=6;
+    doc.text('Dirección:',ML,y);doc.text(empresa.direccion||'',valX,y);y+=6;
+    doc.text('Teléfono:',ML,y);doc.text(empresa.telefono||'',valX,y);
   }else{
-    doc.text('Razón Social: LEONIDAS POO ZENTENO Y CÍA. LTDA.',ML,y);y+=5;
-    doc.text('R.U.T.:          76.033.889-6',ML,y);y+=5;
-    doc.text('Dirección:      Los Ángeles',ML,y);y+=5;
-    doc.text('Teléfono:',ML,y);
+    doc.text('Razón Social:',ML,y);doc.text('LEONIDAS POO ZENTENO Y CÍA. LTDA.',valX,y);y+=6;
+    doc.text('R.U.T.:',ML,y);doc.text('76.033.889-6',valX,y);y+=6;
+    doc.text('Dirección:',ML,y);doc.text('Los Ángeles',valX,y);y+=6;
+    doc.text('Teléfono:',ML,y);doc.text('',valX,y);
   }
   // Fecha emisión (derecha)
   var hoy=new Date();var fechaEmision=('0'+hoy.getDate()).slice(-2)+'/'+('0'+(hoy.getMonth()+1)).slice(-2)+'/'+hoy.getFullYear();
-  doc.text('Fecha:'+fechaEmision,W-MR,MT,{align:'right'});
+  doc.text('Fecha: '+fechaEmision,W-MR,MT,{align:'right'});
   y+=12;
 
   // ── TÍTULO ──
@@ -1358,7 +1359,8 @@ function generarComprobantePDF(reg, persona, empresas){
   doc.setFont('helvetica','bold');doc.setFontSize(11);
   doc.text('Correspondiente al Período Contractual:',ML,y);
   doc.setFont('helvetica','normal');
-  doc.text('Del '+fmtFecha(reg.periodo_desde)+'          Al '+fmtFecha(reg.periodo_hasta),ML+78,y);
+  doc.text('Del  '+fmtFecha(reg.periodo_desde),ML+80,y);
+  doc.text('Al  '+fmtFecha(reg.periodo_hasta),ML+118,y);
   y+=12;
 
   // ── TEXTO LEGAL ──
@@ -1368,8 +1370,8 @@ function generarComprobantePDF(reg, persona, empresas){
   doc.text(lines,ML,y);y+=lines.length*5+4;
 
   // ── DATOS TRABAJADOR ──
-  doc.text('Don: '+(persona.nombre_completo||'').toUpperCase(),ML,y);y+=6;
-  doc.text('RUT: '+(persona.rut||''),ML,y);y+=10;
+  doc.text('Don:',ML,y);doc.text((persona.nombre_completo||'').toUpperCase(),ML+10,y);y+=7;
+  doc.text('RUT:',ML,y);doc.text(persona.rut||'',ML+10,y);y+=10;
 
   // ── USO TOTAL/PARCIAL ──
   var diasCorr=parseInt(reg.dias_correspondientes)||15;
@@ -1377,26 +1379,34 @@ function generarComprobantePDF(reg, persona, empresas){
   var totalDisp=diasCorr+diasProg;
   var diasHab=parseInt(reg.dias_habiles)||0;
   var tipoUso=diasHab>=totalDisp?'TOTAL':'PARCIAL';
-  doc.text('Hará uso   ',ML,y);
-  doc.setFont('helvetica','bold');doc.text(tipoUso,ML+22,y);
-  doc.setFont('helvetica','normal');doc.text('de su feriado anual con remuneración íntegra de acuerdo al siguiente detalle:',ML+22+doc.getTextWidth(tipoUso)+3,y);
+  var usoTexto='Hará uso   ';
+  doc.text(usoTexto,ML,y);
+  var usoX=ML+doc.getTextWidth(usoTexto);
+  doc.setFont('helvetica','bold');doc.text(tipoUso,usoX,y);
+  var afterTipo=usoX+doc.getTextWidth(tipoUso)+2;
+  doc.setFont('helvetica','normal');
+  var restTexto='de su feriado anual con remuneración íntegra de acuerdo al siguiente detalle:';
+  var restLines=doc.splitTextToSize(restTexto,pw-(afterTipo-ML));
+  doc.text(restLines[0],afterTipo,y);
+  if(restLines.length>1){y+=5;doc.text(restLines.slice(1).join(' '),ML,y);}
   y+=10;
 
   // ── FECHAS VACACIONES ──
   doc.text('DESCANSO EFECTIVO ENTRE LAS FECHAS QUE SE INDICAN',ML,y);y+=8;
-  doc.text('DESDE EL '+fmtFecha(reg.vacaciones_desde)+'          AL '+fmtFecha(reg.vacaciones_hasta),ML,y);
+  doc.text('DESDE EL  '+fmtFecha(reg.vacaciones_desde),ML,y);
+  doc.text('AL  '+fmtFecha(reg.vacaciones_hasta),ML+60,y);
   y+=14;
 
   // ── DETALLE DEL FERIADO ──
   var colL=ML;var colR=ML+75;
   var detY=y;
   doc.setFont('helvetica','bold');doc.setFontSize(11);
-  doc.text('DETALLE DEL FERIADO',colL,detY);doc.text('DIAS',colR,detY);detY+=8;
+  doc.text('DETALLE DEL FERIADO',colL,detY);doc.text('DIAS',colR,detY,{align:'right'});detY+=8;
   doc.setFont('helvetica','normal');
-  doc.text('DIAS HABILES',colL,detY);doc.text(String(diasHab),colR+5,detY);detY+=6;
-  doc.text('VAC. PROGRESIVAS',colL,detY);doc.text(String(diasProg),colR+5,detY);detY+=6;
-  doc.text('DOMINGOS E INHABILES',colL,detY);doc.text(String(parseInt(reg.dias_no_habiles)||0),colR+5,detY);detY+=6;
-  doc.text('SALDO PENDIENTE',colL,detY);doc.text(String(parseInt(reg.saldo_pendiente)||0),colR+5,detY);detY+=6;
+  doc.text('DIAS HABILES',colL,detY);doc.text(String(diasHab),colR,detY,{align:'right'});detY+=7;
+  doc.text('VAC. PROGRESIVAS',colL,detY);doc.text(String(diasProg),colR,detY,{align:'right'});detY+=7;
+  doc.text('DOMINGOS E INHABILES',colL,detY);doc.text(String(parseInt(reg.dias_no_habiles)||0),colR,detY,{align:'right'});detY+=7;
+  doc.text('SALDO PENDIENTE',colL,detY);doc.text(String(parseInt(reg.saldo_pendiente)||0),colR,detY,{align:'right'});detY+=6;
 
   // ── FIRMAS (lado derecho, a la misma altura que detalle) ──
   var firmaX=ML+110;var firmaW=60;
@@ -1496,12 +1506,14 @@ function VacacionesView(p){
     if(!vDesde||!vHasta)return;
     setCalcLoading(true);
     api('/vacaciones/calcular-dias?desde='+vDesde+'&hasta='+vHasta,'GET',null,p.tok).then(function(r){
-      var totalDisp=(parseInt(form.dias_correspondientes)||15)+(parseInt(form.dias_progresivos)||0);
+      // Base legal: siempre 15 días + progresivos del trabajador
+      var prog=selPersona?calcProgresivos(selPersona):0;
+      var totalDisp=15+prog;
       var usadosPeriodo=historial.filter(function(h){
-        return h.periodo_desde===form.periodo_desde&&(!editReg||h.registro_id!==editReg.registro_id);
+        return h.periodo_desde&&form.periodo_desde&&(h.periodo_desde+'').slice(0,10)===form.periodo_desde&&(!editReg||h.registro_id!==editReg.registro_id);
       }).reduce(function(s,h){return s+(parseInt(h.dias_habiles)||0);},0);
       var saldo=totalDisp-usadosPeriodo-(r.dias_habiles||0);
-      setForm(function(f){return Object.assign({},f,{dias_habiles:r.dias_habiles||0,dias_no_habiles:r.dias_no_habiles||0,saldo_pendiente:saldo});});
+      setForm(function(f){return Object.assign({},f,{dias_habiles:r.dias_habiles||0,dias_no_habiles:r.dias_no_habiles||0,saldo_pendiente:saldo,dias_correspondientes:15,dias_progresivos:prog});});
       setCalcLoading(false);
     }).catch(function(){setCalcLoading(false);});
   }
@@ -1525,7 +1537,7 @@ function VacacionesView(p){
     if(!form.vacaciones_desde||!form.vacaciones_hasta){setMsg('Error: Fechas de vacaciones son obligatorias');return;}
     if(form.vacaciones_desde>form.vacaciones_hasta){setMsg('Error: Fecha inicio debe ser anterior a fecha término');return;}
     if(form.saldo_pendiente<0){setMsg('Error: No hay suficientes días disponibles para este período');return;}
-    var data=Object.assign({},form,{persona_id:selPersona.persona_id});
+    var data=Object.assign({},form,{persona_id:selPersona.persona_id,dias_correspondientes:15,dias_progresivos:progresivos});
     var method=editReg?'PUT':'POST';var url='/vacaciones'+(editReg?'/'+editReg.registro_id:'');
     api(url,method,data,p.tok).then(function(){loadHistorial(selPersona.persona_id,selPersona);setEditReg(null);setMsg(editReg?'Registro actualizado':'Vacaciones registradas');}).catch(function(e){setMsg('Error: '+e.message);});
   }
@@ -1547,8 +1559,8 @@ function VacacionesView(p){
   });
 
   var progresivos=selPersona?calcProgresivos(selPersona):0;
-  var totalDisponible=(parseInt(form.dias_correspondientes)||15)+(parseInt(form.dias_progresivos)||0);
-  var usadosPeriodoActual=historial.filter(function(h){return h.periodo_desde&&form.periodo_desde&&h.periodo_desde.slice(0,10)===form.periodo_desde&&(!editReg||h.registro_id!==editReg.registro_id);}).reduce(function(s,h){return s+(parseInt(h.dias_habiles)||0);},0);
+  var totalDisponible=15+progresivos;
+  var usadosPeriodoActual=historial.filter(function(h){return h.periodo_desde&&form.periodo_desde&&(h.periodo_desde+'').slice(0,10)===form.periodo_desde&&(!editReg||h.registro_id!==editReg.registro_id);}).reduce(function(s,h){return s+(parseInt(h.dias_habiles)||0);},0);
 
   var inpS={width:'100%',padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
   var lblS={fontSize:10,fontWeight:600,display:'block',marginBottom:2,color:'#475569'};
@@ -1609,8 +1621,8 @@ function VacacionesView(p){
             h('div',null,h('label',{style:lblS},'Hasta'),h('input',{type:'date',value:form.periodo_hasta,onChange:function(e){upd('periodo_hasta',e.target.value);},style:inpS}))
           ),
           h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginTop:6}},
-            h('div',null,h('label',{style:lblS},'Días correspondientes'),h('input',{type:'number',value:form.dias_correspondientes,onChange:function(e){upd('dias_correspondientes',e.target.value);},style:inpS})),
-            h('div',null,h('label',{style:lblS},'Días progresivos'),h('input',{type:'number',value:form.dias_progresivos,onChange:function(e){upd('dias_progresivos',e.target.value);},style:inpS}))
+            h('div',null,h('label',{style:lblS},'Días correspondientes'),h('input',{type:'number',value:15,readOnly:true,style:Object.assign({},inpS,{background:'#F1F5F9',color:'#475569',fontWeight:600})})),
+            h('div',null,h('label',{style:lblS},'Días progresivos'),h('input',{type:'number',value:progresivos,readOnly:true,style:Object.assign({},inpS,{background:'#F1F5F9',color:'#475569',fontWeight:600})}))
           )
         ),
         // Período de feriado
