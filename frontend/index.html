@@ -1529,19 +1529,42 @@ function VacacionesView(p){
     return Math.floor(aniosContables/3);
   }
 
+  // Recalcular saldo cuando cambian correspondientes o progresivos
+  function recalcSaldo(corr,prog){
+    setForm(function(f){
+      var totalDisp=(parseInt(corr)||15)+(parseInt(prog)||0);
+      var usados=historial.filter(function(h){return h.periodo_desde&&f.periodo_desde&&(h.periodo_desde+'').slice(0,10)===f.periodo_desde&&(!editReg||h.registro_id!==editReg.registro_id);}).reduce(function(s,h){return s+(parseInt(h.dias_habiles)||0);},0);
+      return Object.assign({},f,{dias_correspondientes:corr,dias_progresivos:prog,saldo_pendiente:totalDisp-usados-(parseInt(f.dias_habiles)||0)});
+    });
+  }
+
+  // Ajustar días no hábiles manualmente (feriados no detectados)
+  function adjustNoHabiles(nuevoNoHab){
+    setForm(function(f){
+      var totalCorridos=(parseInt(f.dias_habiles)||0)+(parseInt(f.dias_no_habiles)||0);
+      if(totalCorridos===0)return Object.assign({},f,{dias_no_habiles:nuevoNoHab});
+      var nuevoHab=totalCorridos-nuevoNoHab;
+      if(nuevoHab<0)nuevoHab=0;
+      var totalDisp=(parseInt(f.dias_correspondientes)||15)+(parseInt(f.dias_progresivos)||0);
+      var usados=historial.filter(function(h){return h.periodo_desde&&f.periodo_desde&&(h.periodo_desde+'').slice(0,10)===f.periodo_desde&&(!editReg||h.registro_id!==editReg.registro_id);}).reduce(function(s,h){return s+(parseInt(h.dias_habiles)||0);},0);
+      return Object.assign({},f,{dias_no_habiles:nuevoNoHab,dias_habiles:nuevoHab,saldo_pendiente:totalDisp-usados-nuevoHab});
+    });
+  }
+
   // Auto-calcular al cambiar fechas de vacaciones
   function calcDias(vDesde,vHasta){
     if(!vDesde||!vHasta)return;
     setCalcLoading(true);
     api('/vacaciones/calcular-dias?desde='+vDesde+'&hasta='+vHasta,'GET',null,p.tok).then(function(r){
-      // Base legal: siempre 15 días + progresivos del trabajador
-      var prog=selPersona?calcProgresivos(selPersona):0;
-      var totalDisp=15+prog;
-      var usadosPeriodo=historial.filter(function(h){
-        return h.periodo_desde&&form.periodo_desde&&(h.periodo_desde+'').slice(0,10)===form.periodo_desde&&(!editReg||h.registro_id!==editReg.registro_id);
-      }).reduce(function(s,h){return s+(parseInt(h.dias_habiles)||0);},0);
-      var saldo=totalDisp-usadosPeriodo-(r.dias_habiles||0);
-      setForm(function(f){return Object.assign({},f,{dias_habiles:r.dias_habiles||0,dias_no_habiles:r.dias_no_habiles||0,saldo_pendiente:saldo,dias_correspondientes:15,dias_progresivos:prog});});
+      setForm(function(f){
+        var totalDisp=(parseInt(f.dias_correspondientes)||15)+(parseInt(f.dias_progresivos)||0);
+        var usadosPeriodo=historial.filter(function(h){
+          return h.periodo_desde&&f.periodo_desde&&(h.periodo_desde+'').slice(0,10)===f.periodo_desde&&(!editReg||h.registro_id!==editReg.registro_id);
+        }).reduce(function(s,h){return s+(parseInt(h.dias_habiles)||0);},0);
+        var hab=r.dias_habiles||0;
+        var saldo=totalDisp-usadosPeriodo-hab;
+        return Object.assign({},f,{dias_habiles:hab,dias_no_habiles:r.dias_no_habiles||0,saldo_pendiente:saldo});
+      });
       setCalcLoading(false);
     }).catch(function(){setCalcLoading(false);});
   }
@@ -1565,7 +1588,7 @@ function VacacionesView(p){
     if(!form.vacaciones_desde||!form.vacaciones_hasta){setMsg('Error: Fechas de vacaciones son obligatorias');return;}
     if(form.vacaciones_desde>form.vacaciones_hasta){setMsg('Error: Fecha inicio debe ser anterior a fecha término');return;}
     if(form.saldo_pendiente<0){setMsg('Error: No hay suficientes días disponibles para este período');return;}
-    var data=Object.assign({},form,{persona_id:selPersona.persona_id,dias_correspondientes:15,dias_progresivos:progresivos});
+    var data=Object.assign({},form,{persona_id:selPersona.persona_id});
     var method=editReg?'PUT':'POST';var url='/vacaciones'+(editReg?'/'+editReg.registro_id:'');
     api(url,method,data,p.tok).then(function(){loadHistorial(selPersona.persona_id,selPersona);setEditReg(null);setMsg(editReg?'Registro actualizado':'Vacaciones registradas');}).catch(function(e){setMsg('Error: '+e.message);});
   }
@@ -1587,7 +1610,7 @@ function VacacionesView(p){
   });
 
   var progresivos=selPersona?calcProgresivos(selPersona):0;
-  var totalDisponible=15+progresivos;
+  var totalDisponible=(parseInt(form.dias_correspondientes)||15)+(parseInt(form.dias_progresivos)||0);
   var usadosPeriodoActual=historial.filter(function(h){return h.periodo_desde&&form.periodo_desde&&(h.periodo_desde+'').slice(0,10)===form.periodo_desde&&(!editReg||h.registro_id!==editReg.registro_id);}).reduce(function(s,h){return s+(parseInt(h.dias_habiles)||0);},0);
 
   var inpS={width:'100%',padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
@@ -1649,8 +1672,8 @@ function VacacionesView(p){
             h('div',null,h('label',{style:lblS},'Hasta'),h('input',{type:'date',value:form.periodo_hasta,onChange:function(e){upd('periodo_hasta',e.target.value);},style:inpS}))
           ),
           h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginTop:6}},
-            h('div',null,h('label',{style:lblS},'Días correspondientes'),h('input',{type:'number',value:15,readOnly:true,style:Object.assign({},inpS,{background:'#F1F5F9',color:'#475569',fontWeight:600})})),
-            h('div',null,h('label',{style:lblS},'Días progresivos'),h('input',{type:'number',value:progresivos,readOnly:true,style:Object.assign({},inpS,{background:'#F1F5F9',color:'#475569',fontWeight:600})}))
+            h('div',null,h('label',{style:lblS},'Días correspondientes'),h('input',{type:'number',value:form.dias_correspondientes,onChange:function(e){var v=parseInt(e.target.value)||15;upd('dias_correspondientes',v);recalcSaldo(v,parseInt(form.dias_progresivos)||0);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Días progresivos'),h('input',{type:'number',value:form.dias_progresivos,onChange:function(e){var v=parseInt(e.target.value)||0;upd('dias_progresivos',v);recalcSaldo(parseInt(form.dias_correspondientes)||15,v);},style:inpS}))
           )
         ),
         // Período de feriado
@@ -1672,8 +1695,11 @@ function VacacionesView(p){
           h('div',{style:{fontSize:11,fontWeight:700,color:'#1E3A2D',marginBottom:6}},'Detalle de Vacaciones'),
           h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:4}},
             h('div',{style:{fontSize:11,color:'#475569'}},'Días hábiles usados:'),h('div',{style:{fontSize:12,fontWeight:700,textAlign:'right'}},form.dias_habiles),
-            h('div',{style:{fontSize:11,color:'#475569'}},'Sáb, Dom y Festivos:'),h('div',{style:{fontSize:12,fontWeight:700,textAlign:'right',color:'#64748B'}},form.dias_no_habiles),
-            h('div',{style:{fontSize:11,color:'#475569'}},'Total corridos:'),h('div',{style:{fontSize:12,fontWeight:600,textAlign:'right'}},form.dias_habiles+form.dias_no_habiles),
+            h('div',{style:{fontSize:11,color:'#475569'}},'Sáb, Dom y Festivos:'),
+            h('div',{style:{textAlign:'right'}},
+              h('input',{type:'number',value:form.dias_no_habiles,onChange:function(e){adjustNoHabiles(parseInt(e.target.value)||0);},style:{width:45,padding:'1px 4px',border:'1px solid #CBD5E1',borderRadius:3,fontSize:12,fontWeight:700,textAlign:'right',color:'#64748B'},title:'Ajuste manual: agregue feriados no detectados'})
+            ),
+            h('div',{style:{fontSize:11,color:'#475569'}},'Total corridos:'),h('div',{style:{fontSize:12,fontWeight:600,textAlign:'right'}},(parseInt(form.dias_habiles)||0)+(parseInt(form.dias_no_habiles)||0)),
             h('div',{style:{fontSize:11,color:'#475569'}},'Disponibles período:'),h('div',{style:{fontSize:12,fontWeight:600,textAlign:'right',color:'#3B82F6'}},totalDisponible),
             h('div',{style:{fontSize:11,color:'#475569'}},'Ya usados período:'),h('div',{style:{fontSize:12,fontWeight:600,textAlign:'right',color:'#F59E0B'}},usadosPeriodoActual),
             h('div',{style:{fontSize:12,fontWeight:700,color:form.saldo_pendiente<0?'#DC2626':'#166534',borderTop:'1px solid #E2E8F0',paddingTop:4}},'Saldo pendiente:'),h('div',{style:{fontSize:14,fontWeight:700,textAlign:'right',color:form.saldo_pendiente<0?'#DC2626':'#166534',borderTop:'1px solid #E2E8F0',paddingTop:4}},form.saldo_pendiente)
