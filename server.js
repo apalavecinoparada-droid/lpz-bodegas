@@ -3160,18 +3160,18 @@ app.get('/api/personal', auth, async(req,res)=>{
 });
 app.post('/api/personal', auth, async(req,res)=>{
   try{
-    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,observaciones}=req.body;
+    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones}=req.body;
     if(!nombre_completo) return res.status(400).json({error:'Nombre requerido'});
-    const r=await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,observaciones) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
-      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',observaciones||null]);
+    const r=await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,
+      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.put('/api/personal/:id', auth, async(req,res)=>{
   try{
-    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,activo,observaciones}=req.body;
-    const r=await pool.query(`UPDATE personal SET empresa_id=$1,nombre_completo=$2,rut=$3,cargo=$4,especialidad=$5,telefono=$6,correo=$7,participa_mantencion=$8,valor_hora_hombre=$9,moneda=$10,activo=$11,observaciones=$12 WHERE persona_id=$13 RETURNING *`,
-      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',activo!==false,observaciones||null,req.params.id]);
+    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,activo,fecha_ingreso,cotizaciones_anteriores,observaciones}=req.body;
+    const r=await pool.query(`UPDATE personal SET empresa_id=$1,nombre_completo=$2,rut=$3,cargo=$4,especialidad=$5,telefono=$6,correo=$7,participa_mantencion=$8,valor_hora_hombre=$9,moneda=$10,activo=$11,fecha_ingreso=$12,cotizaciones_anteriores=$13,observaciones=$14 WHERE persona_id=$15 RETURNING *`,
+      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',activo!==false,fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -3387,6 +3387,59 @@ async function setupRendiciones(q){
     usuario_creador VARCHAR(100),
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
+
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS fecha_ingreso DATE');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS cotizaciones_anteriores INT DEFAULT 0');}catch(e){}
+  try{await q("ALTER TABLE personal ADD COLUMN IF NOT EXISTS categoria VARCHAR(30) DEFAULT 'otros_faena'");}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS fecha_nacimiento DATE');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS direccion VARCHAR(200)');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS comuna VARCHAR(60)');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS tipo_contrato VARCHAR(30)');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS centro_costo VARCHAR(60)');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS fecha_termino DATE');}catch(e){}
+
+  // ── Vacaciones ──
+  await q(`CREATE TABLE IF NOT EXISTS feriados_chile (
+    feriado_id SERIAL PRIMARY KEY,
+    fecha DATE NOT NULL UNIQUE,
+    nombre VARCHAR(100) NOT NULL,
+    tipo VARCHAR(30) DEFAULT 'irrenunciable'
+  )`);
+  await q(`CREATE TABLE IF NOT EXISTS vacaciones_registros (
+    registro_id SERIAL PRIMARY KEY,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    periodo_desde DATE NOT NULL,
+    periodo_hasta DATE NOT NULL,
+    dias_correspondientes INT NOT NULL DEFAULT 15,
+    dias_progresivos INT NOT NULL DEFAULT 0,
+    vacaciones_desde DATE NOT NULL,
+    vacaciones_hasta DATE NOT NULL,
+    dias_habiles INT NOT NULL DEFAULT 0,
+    dias_no_habiles INT NOT NULL DEFAULT 0,
+    saldo_pendiente INT NOT NULL DEFAULT 0,
+    observaciones TEXT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  // Seed feriados Chile 2024-2027
+  try{
+    const fc=await pool.query('SELECT COUNT(*) FROM feriados_chile');
+    if(parseInt(fc.rows[0].count)===0){
+      const feriados=[
+        // 2024
+        ['2024-01-01','Año Nuevo'],['2024-03-29','Viernes Santo'],['2024-03-30','Sábado Santo'],['2024-05-01','Día del Trabajo'],['2024-05-21','Día de las Glorias Navales'],['2024-06-20','Día Nacional de los Pueblos Indígenas'],['2024-06-29','San Pedro y San Pablo'],['2024-07-16','Día de la Virgen del Carmen'],['2024-08-15','Asunción de la Virgen'],['2024-09-18','Fiestas Patrias'],['2024-09-19','Día de las Glorias del Ejército'],['2024-09-20','Feriado adicional Fiestas Patrias'],['2024-10-12','Encuentro de Dos Mundos'],['2024-10-31','Día de las Iglesias Evangélicas'],['2024-11-01','Día de Todos los Santos'],['2024-12-08','Inmaculada Concepción'],['2024-12-25','Navidad'],
+        // 2025
+        ['2025-01-01','Año Nuevo'],['2025-04-18','Viernes Santo'],['2025-04-19','Sábado Santo'],['2025-05-01','Día del Trabajo'],['2025-05-21','Día de las Glorias Navales'],['2025-06-20','Día Nacional de los Pueblos Indígenas'],['2025-06-29','San Pedro y San Pablo'],['2025-07-16','Día de la Virgen del Carmen'],['2025-08-15','Asunción de la Virgen'],['2025-09-18','Fiestas Patrias'],['2025-09-19','Día de las Glorias del Ejército'],['2025-10-12','Encuentro de Dos Mundos'],['2025-10-31','Día de las Iglesias Evangélicas'],['2025-11-01','Día de Todos los Santos'],['2025-12-08','Inmaculada Concepción'],['2025-12-25','Navidad'],
+        // 2026
+        ['2026-01-01','Año Nuevo'],['2026-04-03','Viernes Santo'],['2026-04-04','Sábado Santo'],['2026-05-01','Día del Trabajo'],['2026-05-21','Día de las Glorias Navales'],['2026-06-20','Día Nacional de los Pueblos Indígenas'],['2026-06-29','San Pedro y San Pablo'],['2026-07-16','Día de la Virgen del Carmen'],['2026-08-15','Asunción de la Virgen'],['2026-09-18','Fiestas Patrias'],['2026-09-19','Día de las Glorias del Ejército'],['2026-10-12','Encuentro de Dos Mundos'],['2026-10-31','Día de las Iglesias Evangélicas'],['2026-11-01','Día de Todos los Santos'],['2026-12-08','Inmaculada Concepción'],['2026-12-25','Navidad'],
+        // 2027
+        ['2027-01-01','Año Nuevo'],['2027-03-26','Viernes Santo'],['2027-03-27','Sábado Santo'],['2027-05-01','Día del Trabajo'],['2027-05-21','Día de las Glorias Navales'],['2027-06-20','Día Nacional de los Pueblos Indígenas'],['2027-06-29','San Pedro y San Pablo'],['2027-07-16','Día de la Virgen del Carmen'],['2027-08-15','Asunción de la Virgen'],['2027-09-18','Fiestas Patrias'],['2027-09-19','Día de las Glorias del Ejército'],['2027-10-12','Encuentro de Dos Mundos'],['2027-10-31','Día de las Iglesias Evangélicas'],['2027-11-01','Día de Todos los Santos'],['2027-12-08','Inmaculada Concepción'],['2027-12-25','Navidad']
+      ];
+      for(const[f,n] of feriados){await pool.query('INSERT INTO feriados_chile(fecha,nombre) VALUES($1,$2) ON CONFLICT(fecha) DO NOTHING',[f,n]);}
+      console.log('  [OK] Feriados Chile cargados ('+feriados.length+')');
+    }
+  }catch(e){console.log('[WARN] seed feriados:',e.message);}
 
   // ── Finanzas: Cuentas bancarias y cheques ──
   await q(`CREATE TABLE IF NOT EXISTS fin_cuentas_bancarias (
@@ -3656,6 +3709,91 @@ app.get('/api/fin/dashboard', auth, async(req,res)=>{
     const totales=await pool.query(`SELECT SUM(CASE WHEN estado='emitido' THEN monto ELSE 0 END) AS pendiente,SUM(CASE WHEN estado='pagado' THEN monto ELSE 0 END) AS pagado,SUM(CASE WHEN estado='anulado' THEN monto ELSE 0 END) AS anulado,COUNT(*) FILTER(WHERE estado='emitido') AS cant_pendiente,COUNT(*) FILTER(WHERE estado='pagado') AS cant_pagado,COUNT(*) AS total FROM fin_cheques ch WHERE 1=1${empFilter}`);
     res.json({porMes:porMes.rows,porBanco:porBanco.rows,totales:totales.rows[0]||{}});
   }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ══ IMPORTACIÓN MASIVA DE PERSONAL ══
+app.post('/api/import/personal', auth, async(req,res)=>{
+  try{
+    const{trabajadores}=req.body;if(!Array.isArray(trabajadores))throw new Error('Sin datos');
+    const results=[];
+    for(const t of trabajadores){
+      try{
+        if(!t.nombre_completo)continue;
+        const exists=t.rut?await pool.query('SELECT persona_id FROM personal WHERE rut=$1',[t.rut]):null;
+        if(exists&&exists.rows.length){
+          await pool.query(`UPDATE personal SET nombre_completo=COALESCE($1,nombre_completo),cargo=COALESCE($2,cargo),fecha_ingreso=COALESCE($3,fecha_ingreso),fecha_nacimiento=COALESCE($4,fecha_nacimiento),direccion=COALESCE($5,direccion),comuna=COALESCE($6,comuna),tipo_contrato=COALESCE($7,tipo_contrato),centro_costo=COALESCE($8,centro_costo),categoria=COALESCE($9,categoria),fecha_termino=$10,telefono=COALESCE($11,telefono),correo=COALESCE($12,correo) WHERE rut=$13`,
+            [t.nombre_completo,t.cargo,t.fecha_ingreso||null,t.fecha_nacimiento||null,t.direccion||null,t.comuna||null,t.tipo_contrato||null,t.centro_costo||null,t.categoria||null,t.fecha_termino||null,t.telefono||null,t.correo||null,t.rut]);
+          results.push({rut:t.rut,nombre:t.nombre_completo,ok:true,accion:'actualizado'});
+        }else{
+          await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,fecha_ingreso,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,categoria,fecha_termino,telefono,correo,activo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,true)`,
+            [t.empresa_id||null,t.nombre_completo,t.rut||null,t.cargo||null,t.fecha_ingreso||null,t.fecha_nacimiento||null,t.direccion||null,t.comuna||null,t.tipo_contrato||null,t.centro_costo||null,t.categoria||'otros_faena',t.fecha_termino||null,t.telefono||null,t.correo||null]);
+          results.push({rut:t.rut,nombre:t.nombre_completo,ok:true,accion:'creado'});
+        }
+      }catch(e){results.push({rut:t.rut,nombre:t.nombre_completo,ok:false,error:e.message});}
+    }
+    res.json({results});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ══ VACACIONES ══
+app.get('/api/feriados', auth, async(req,res)=>{
+  try{res.json((await pool.query('SELECT * FROM feriados_chile ORDER BY fecha')).rows);}catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/vacaciones/calcular-dias', auth, async(req,res)=>{
+  try{
+    const{desde,hasta}=req.query;
+    if(!desde||!hasta)return res.json({dias_habiles:0,dias_no_habiles:0,total_corridos:0});
+    const feriados=(await pool.query('SELECT fecha FROM feriados_chile')).rows.map(r=>r.fecha.toISOString().slice(0,10));
+    let d=new Date(desde);const h=new Date(hasta);let habiles=0,noHabiles=0;
+    while(d<=h){
+      const dow=d.getDay();const iso=d.toISOString().slice(0,10);
+      if(dow===0||dow===6||feriados.includes(iso)){noHabiles++;}else{habiles++;}
+      d.setDate(d.getDate()+1);
+    }
+    res.json({dias_habiles:habiles,dias_no_habiles:noHabiles,total_corridos:habiles+noHabiles});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/vacaciones/fecha-termino', auth, async(req,res)=>{
+  try{
+    const{desde,dias_habiles}=req.query;
+    if(!desde||!dias_habiles)return res.json({fecha_termino:null});
+    const feriados=(await pool.query('SELECT fecha FROM feriados_chile')).rows.map(r=>r.fecha.toISOString().slice(0,10));
+    let d=new Date(desde);let count=0;const target=parseInt(dias_habiles);
+    while(count<target){
+      const dow=d.getDay();const iso=d.toISOString().slice(0,10);
+      if(dow!==0&&dow!==6&&!feriados.includes(iso)){count++;}
+      if(count<target)d.setDate(d.getDate()+1);
+    }
+    res.json({fecha_termino:d.toISOString().slice(0,10)});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/vacaciones', auth, async(req,res)=>{
+  try{
+    const{persona_id}=req.query;
+    let w=['1=1'],v=[];
+    if(persona_id){v.push(persona_id);w.push(`v.persona_id=$${v.length}`);}
+    res.json((await pool.query(`SELECT v.*,p.nombre_completo,p.rut FROM vacaciones_registros v JOIN personal p ON v.persona_id=p.persona_id WHERE ${w.join(' AND ')} ORDER BY v.periodo_desde ASC, v.vacaciones_desde ASC`,v)).rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/vacaciones', auth, async(req,res)=>{
+  try{
+    const{persona_id,periodo_desde,periodo_hasta,dias_correspondientes,dias_progresivos,vacaciones_desde,vacaciones_hasta,dias_habiles,dias_no_habiles,saldo_pendiente,observaciones}=req.body;
+    if(!persona_id||!periodo_desde||!periodo_hasta||!vacaciones_desde||!vacaciones_hasta)return res.status(400).json({error:'Todos los campos de período y fechas son obligatorios'});
+    const r=await pool.query('INSERT INTO vacaciones_registros(persona_id,periodo_desde,periodo_hasta,dias_correspondientes,dias_progresivos,vacaciones_desde,vacaciones_hasta,dias_habiles,dias_no_habiles,saldo_pendiente,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',
+      [persona_id,periodo_desde,periodo_hasta,parseInt(dias_correspondientes)||15,parseInt(dias_progresivos)||0,vacaciones_desde,vacaciones_hasta,parseInt(dias_habiles)||0,parseInt(dias_no_habiles)||0,parseInt(saldo_pendiente)||0,observaciones||null,req.user.email]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/vacaciones/:id', auth, async(req,res)=>{
+  try{
+    const{periodo_desde,periodo_hasta,dias_correspondientes,dias_progresivos,vacaciones_desde,vacaciones_hasta,dias_habiles,dias_no_habiles,saldo_pendiente,observaciones}=req.body;
+    const r=await pool.query('UPDATE vacaciones_registros SET periodo_desde=$1,periodo_hasta=$2,dias_correspondientes=$3,dias_progresivos=$4,vacaciones_desde=$5,vacaciones_hasta=$6,dias_habiles=$7,dias_no_habiles=$8,saldo_pendiente=$9,observaciones=$10 WHERE registro_id=$11 RETURNING *',
+      [periodo_desde,periodo_hasta,parseInt(dias_correspondientes)||15,parseInt(dias_progresivos)||0,vacaciones_desde,vacaciones_hasta,parseInt(dias_habiles)||0,parseInt(dias_no_habiles)||0,parseInt(saldo_pendiente)||0,observaciones||null,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/vacaciones/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM vacaciones_registros WHERE registro_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
 });
 
 // ══ TERRENO — Registros diarios y tiempos obvios ══
