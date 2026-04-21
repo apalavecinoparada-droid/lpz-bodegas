@@ -3163,18 +3163,18 @@ app.get('/api/personal', auth, async(req,res)=>{
 });
 app.post('/api/personal', auth, async(req,res)=>{
   try{
-    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id,es_transporte,funcion_contrato,nacionalidad,estado_civil,afp,salud,region}=req.body;
-    if(!nombre_completo) return res.status(400).json({error:'Nombre requerido'});
-    const r=await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id,es_transporte,funcion_contrato,nacionalidad,estado_civil,afp,salud,region) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28) RETURNING *`,
-      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',faena_id||null,es_transporte||false,funcion_contrato||null,nacionalidad||'Chileno(a)',estado_civil||null,afp||null,salud||'FONASA',region||'VIII del Bio Bio']);
+    const b=req.body;
+    if(!b.nombre_completo) return res.status(400).json({error:'Nombre requerido'});
+    const r=await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id,es_transporte,funcion_contrato,nacionalidad,estado_civil,afp,salud,region,sueldo_base,bono_responsabilidad,bono_produccion_fijo,bono_produccion_variable,bono_produccion_tarifa,bono_produccion_detalle,semana_corrida,asig_colacion,asig_movilizacion,asig_viatico,tiene_alimentacion,alimentacion_detalle) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40) RETURNING *`,
+      [b.empresa_id||null,b.nombre_completo,b.rut||null,b.cargo||null,b.especialidad||null,b.telefono||null,b.correo||null,b.participa_mantencion||false,b.valor_hora_hombre||null,b.moneda||'CLP',b.fecha_ingreso||null,parseInt(b.cotizaciones_anteriores)||0,b.observaciones||null,b.fecha_nacimiento||null,b.direccion||null,b.comuna||null,b.tipo_contrato||null,b.centro_costo||null,b.fecha_termino||null,b.categoria||'otros_faena',b.faena_id||null,b.es_transporte||false,b.funcion_contrato||null,b.nacionalidad||'Chileno(a)',b.estado_civil||null,b.afp||null,b.salud||'FONASA',b.region||'VIII del Bio Bio',parseFloat(b.sueldo_base)||0,parseFloat(b.bono_responsabilidad)||0,parseFloat(b.bono_produccion_fijo)||0,b.bono_produccion_variable||false,parseFloat(b.bono_produccion_tarifa)||0,b.bono_produccion_detalle||null,b.semana_corrida||false,parseFloat(b.asig_colacion)||0,parseFloat(b.asig_movilizacion)||0,parseFloat(b.asig_viatico)||0,b.tiene_alimentacion||false,b.alimentacion_detalle||null]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.put('/api/personal/:id', auth, async(req,res)=>{
   try{
-    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,activo,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id,es_transporte,funcion_contrato,nacionalidad,estado_civil,afp,salud,region}=req.body;
-    const r=await pool.query(`UPDATE personal SET empresa_id=$1,nombre_completo=$2,rut=$3,cargo=$4,especialidad=$5,telefono=$6,correo=$7,participa_mantencion=$8,valor_hora_hombre=$9,moneda=$10,activo=$11,fecha_ingreso=$12,cotizaciones_anteriores=$13,observaciones=$14,fecha_nacimiento=$15,direccion=$16,comuna=$17,tipo_contrato=$18,centro_costo=$19,fecha_termino=$20,categoria=$21,faena_id=$22,es_transporte=$23,funcion_contrato=$24,nacionalidad=$25,estado_civil=$26,afp=$27,salud=$28,region=$29 WHERE persona_id=$30 RETURNING *`,
-      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',activo!==false,fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',faena_id||null,es_transporte||false,funcion_contrato||null,nacionalidad||'Chileno(a)',estado_civil||null,afp||null,salud||'FONASA',region||'VIII del Bio Bio',req.params.id]);
+    const b=req.body;
+    const r=await pool.query(`UPDATE personal SET empresa_id=$1,nombre_completo=$2,rut=$3,cargo=$4,especialidad=$5,telefono=$6,correo=$7,participa_mantencion=$8,valor_hora_hombre=$9,moneda=$10,activo=$11,fecha_ingreso=$12,cotizaciones_anteriores=$13,observaciones=$14,fecha_nacimiento=$15,direccion=$16,comuna=$17,tipo_contrato=$18,centro_costo=$19,fecha_termino=$20,categoria=$21,faena_id=$22,es_transporte=$23,funcion_contrato=$24,nacionalidad=$25,estado_civil=$26,afp=$27,salud=$28,region=$29,sueldo_base=$30,bono_responsabilidad=$31,bono_produccion_fijo=$32,bono_produccion_variable=$33,bono_produccion_tarifa=$34,bono_produccion_detalle=$35,semana_corrida=$36,asig_colacion=$37,asig_movilizacion=$38,asig_viatico=$39,tiene_alimentacion=$40,alimentacion_detalle=$41 WHERE persona_id=$42 RETURNING *`,
+      [b.empresa_id||null,b.nombre_completo,b.rut||null,b.cargo||null,b.especialidad||null,b.telefono||null,b.correo||null,b.participa_mantencion||false,b.valor_hora_hombre||null,b.moneda||'CLP',b.activo!==false,b.fecha_ingreso||null,parseInt(b.cotizaciones_anteriores)||0,b.observaciones||null,b.fecha_nacimiento||null,b.direccion||null,b.comuna||null,b.tipo_contrato||null,b.centro_costo||null,b.fecha_termino||null,b.categoria||'otros_faena',b.faena_id||null,b.es_transporte||false,b.funcion_contrato||null,b.nacionalidad||'Chileno(a)',b.estado_civil||null,b.afp||null,b.salud||'FONASA',b.region||'VIII del Bio Bio',parseFloat(b.sueldo_base)||0,parseFloat(b.bono_responsabilidad)||0,parseFloat(b.bono_produccion_fijo)||0,b.bono_produccion_variable||false,parseFloat(b.bono_produccion_tarifa)||0,b.bono_produccion_detalle||null,b.semana_corrida||false,parseFloat(b.asig_colacion)||0,parseFloat(b.asig_movilizacion)||0,parseFloat(b.asig_viatico)||0,b.tiene_alimentacion||false,b.alimentacion_detalle||null,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -3432,6 +3432,19 @@ async function setupRendiciones(q){
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS afp VARCHAR(30)');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS salud VARCHAR(30) DEFAULT \'FONASA\'');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS region VARCHAR(60) DEFAULT \'VIII del Bio Bio\'');}catch(e){}
+  // Haberes del trabajador (estructura de remuneración)
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS sueldo_base NUMERIC(12,2) DEFAULT 0');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS bono_responsabilidad NUMERIC(12,2) DEFAULT 0');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS bono_produccion_fijo NUMERIC(12,2) DEFAULT 0');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS bono_produccion_variable BOOLEAN DEFAULT false');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS bono_produccion_tarifa NUMERIC(12,2) DEFAULT 0');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS bono_produccion_detalle TEXT');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS semana_corrida BOOLEAN DEFAULT false');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS asig_colacion NUMERIC(10,2) DEFAULT 0');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS asig_movilizacion NUMERIC(10,2) DEFAULT 0');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS asig_viatico NUMERIC(10,2) DEFAULT 0');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS tiene_alimentacion BOOLEAN DEFAULT false');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS alimentacion_detalle TEXT');}catch(e){}
 
   // ── Vacaciones ──
   await q(`CREATE TABLE IF NOT EXISTS feriados_chile (
@@ -4385,6 +4398,9 @@ app.post('/api/contratos', auth, async(req,res)=>{
       await pool.query('UPDATE personal SET fecha_ingreso=COALESCE(fecha_ingreso,$1),tipo_contrato=$2,fecha_termino=$3 WHERE persona_id=$4',
         [b.fecha_inicio,({plazo_fijo:'A Plazo',indefinido:'Indefinido',obra_servicio:'Por Obra'})[b.tipo_contrato]||'Indefinido',b.fecha_termino||null,b.persona_id]);
     }
+    // Actualizar haberes del trabajador con los del contrato (siempre refleja el contrato más reciente)
+    await pool.query(`UPDATE personal SET sueldo_base=$1,bono_responsabilidad=$2,bono_produccion_fijo=$3,bono_produccion_variable=$4,bono_produccion_tarifa=$5,bono_produccion_detalle=$6,semana_corrida=$7,asig_colacion=$8,asig_movilizacion=$9,asig_viatico=$10,tiene_alimentacion=$11,alimentacion_detalle=$12,funcion_contrato=COALESCE(funcion_contrato,$13) WHERE persona_id=$14`,
+      [parseFloat(b.sueldo_base)||0,parseFloat(b.bono_responsabilidad)||0,parseFloat(b.bono_produccion_fijo)||0,b.bono_produccion_variable||false,parseFloat(b.bono_produccion_tarifa)||0,b.bono_produccion_detalle||null,b.semana_corrida||false,parseFloat(b.asig_colacion)||0,parseFloat(b.asig_movilizacion)||0,parseFloat(b.asig_viatico)||0,b.tiene_alimentacion||false,b.alimentacion_detalle||null,b.funcion_texto,b.persona_id]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
