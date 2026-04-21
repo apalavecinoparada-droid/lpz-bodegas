@@ -5993,13 +5993,32 @@ function ContratosView(p){
   // Generar documento del contrato (Word o PDF)
   function generarContratoDoc(contratoId,formato){
     api('/contratos/'+contratoId,'GET',null,p.tok).then(function(c){
-      var empresa=empresas.find(function(e){return String(e.empresa_id)===String(c.empresa_id);})||{};
-      var persona=personal.find(function(x){return String(x.persona_id)===String(c.persona_id);})||{};
+      // Construir objetos empresa y persona desde los alias del backend
+      var empresa={
+        razon_social:c.empresa_nombre,
+        rut:c.empresa_rut,
+        direccion:c.empresa_direccion,
+        comuna:c.empresa_comuna,
+        region:c.empresa_region,
+        representante_nombre:c.representante_nombre,
+        representante_rut:c.representante_rut,
+        logo_base64:c.logo_base64
+      };
+      var persona={
+        nombre_completo:c.nombre_completo,
+        rut:c.rut,
+        cargo:c.cargo,
+        fecha_nacimiento:c.fecha_nacimiento,
+        direccion:c.direccion,
+        comuna:c.comuna,
+        nacionalidad:c.nacionalidad,
+        estado_civil:c.estado_civil,
+        region:c.persona_region
+      };
       var html=buildContratoHTML(c,empresa,persona);
-      var nombre=(c.nombre_completo||persona.nombre_completo||'contrato').replace(/\s+/g,'_');
+      var nombre=(c.nombre_completo||'contrato').replace(/\s+/g,'_');
       var fecha=(c.fecha_contrato+'').slice(0,10).replace(/-/g,'');
       if(formato==='pdf'){
-        // Abrir ventana con HTML y lanzar print dialog (usuario guarda como PDF)
         var w=window.open('','_blank');
         if(!w){alert('Permita popups para generar el PDF');return;}
         w.document.write(html);
@@ -6007,7 +6026,6 @@ function ContratosView(p){
         w.document.title='Contrato_'+nombre+'_'+fecha;
         setTimeout(function(){w.focus();w.print();},500);
       }else{
-        // Word (.doc)
         var blob=new Blob(['\ufeff'+html],{type:'application/msword;charset=utf-8'});
         var url=URL.createObjectURL(blob);
         var link=document.createElement('a');
@@ -6290,10 +6308,10 @@ function buildContratoHTML(c,empresa,persona){
 
   // Remuneración — tabla compacta con columnas de ancho fijo
   var remuRows=[];
-  remuRows.push('<tr><td style="width:50%"><strong>Sueldo Base Mensual</strong></td><td style="width:50%;text-align:right">'+money(c.sueldo_base)+'</td></tr>');
-  if(parseFloat(c.bono_responsabilidad)>0)remuRows.push('<tr><td><strong>Bono de Responsabilidad</strong></td><td style="text-align:right">'+money(c.bono_responsabilidad)+'</td></tr>');
-  if(parseFloat(c.bono_produccion_fijo)>0)remuRows.push('<tr><td><strong>Bono de Producción Fijo</strong></td><td style="text-align:right">'+money(c.bono_produccion_fijo)+'</td></tr>');
-  var remuTable='<table style="width:100%;border-collapse:collapse;margin:4px 0;table-layout:fixed"><tbody>'+remuRows.join('')+'</tbody></table>';
+  remuRows.push('<tr><td style="width:55%"><strong>Sueldo Base Mensual</strong></td><td style="width:45%;text-align:right">'+money(c.sueldo_base)+'</td></tr>');
+  if(parseFloat(c.bono_responsabilidad)>0)remuRows.push('<tr><td style="width:55%"><strong>Bono de Responsabilidad</strong></td><td style="width:45%;text-align:right">'+money(c.bono_responsabilidad)+'</td></tr>');
+  if(parseFloat(c.bono_produccion_fijo)>0)remuRows.push('<tr><td style="width:55%"><strong>Bono de Producción Fijo</strong></td><td style="width:45%;text-align:right">'+money(c.bono_produccion_fijo)+'</td></tr>');
+  var remuTable='<table style="width:100%;border-collapse:collapse;margin:4px 0;table-layout:fixed"><colgroup><col style="width:55%"><col style="width:45%"></colgroup><tbody>'+remuRows.join('')+'</tbody></table>';
 
   var bonoVarTxt='';
   if(c.bono_produccion_variable){
@@ -6314,7 +6332,12 @@ function buildContratoHTML(c,empresa,persona){
 
   // Beneficios — compactos
   var benefs=[];
-  if(c.tiene_alimentacion)benefs.push('El Trabajador recibirá alimentación diaria consistente en '+(c.alimentacion_detalle||'tres comidas preparadas según dieta')+', sin costo para el trabajador.');
+  if(c.tiene_alimentacion){
+    // Limpiar detalle de frases de costo previamente guardadas para evitar duplicación
+    var ali=(c.alimentacion_detalle||'tres comidas preparadas según dieta');
+    ali=ali.replace(/[,.]?\s*(esta\s+no\s+tendr[aá]\s+costo[^.,]*|sin\s+costo\s+para\s+el\s+trabajador)[.,]?/gi,'').replace(/[,.\s]+$/,'').trim();
+    benefs.push('El Trabajador recibirá alimentación diaria consistente en '+ali+', sin costo para el trabajador.');
+  }
   if(c.otros_beneficios)benefs.push(c.otros_beneficios);
 
   // Numeración dinámica de cláusulas
