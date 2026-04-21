@@ -3348,9 +3348,13 @@ function EmpresaForm(p){
       h(FI,{k:'razon_social',l:'Razon Social',req:true,item:p.item,onChange:p.onChange}),
       h(FI,{k:'giro',l:'Giro',item:p.item,onChange:p.onChange}),
       h(FI,{k:'direccion',l:'Direccion',item:p.item,onChange:p.onChange}),
+      h(FI,{k:'comuna',l:'Comuna',item:p.item,onChange:p.onChange,ph:'Nacimiento'}),
       h(FI,{k:'ciudad',l:'Ciudad',item:p.item,onChange:p.onChange}),
+      h(FI,{k:'region',l:'Region',item:p.item,onChange:p.onChange,ph:'VIII del Bio Bio'}),
       h(FI,{k:'telefono',l:'Telefono',item:p.item,onChange:p.onChange}),
-      h(FI,{k:'email',l:'Email',type:'email',item:p.item,onChange:p.onChange})
+      h(FI,{k:'email',l:'Email',type:'email',item:p.item,onChange:p.onChange}),
+      h(FI,{k:'representante_nombre',l:'Representante legal',item:p.item,onChange:p.onChange,ph:'LEONIDAS FERNANDO POO ZENTENO'}),
+      h(FI,{k:'representante_rut',l:'RUT representante',item:p.item,onChange:p.onChange,ph:'8.413.067-2'})
     ),
     h('hr',{className:'divider'}),
     h(FR,{label:'Logo institucional (PNG/JPG, max 500KB)'},
@@ -5923,7 +5927,7 @@ function ContratosView(p){
   var[selPersona,setSelPersona]=useState(null);
   var[msg,setMsg]=useState('');
   var[fPersona,setFPersona]=useState('');
-  var emptyForm={persona_id:'',empresa_id:'',tipo_contrato:'indefinido',es_actualizacion:false,fecha_contrato:new Date().toISOString().slice(0,10),fecha_inicio:new Date().toISOString().slice(0,10),fecha_termino:'',lugar_firma:'NACIMIENTO',funcion_texto:'',jornada_horas:44,jornada_texto:'de lunes a jueves de 07:00 a 12:00 hrs. y de 14:00 a 18:00 hrs., viernes de 07:00 a 12:00 hrs. y de 14:00 a 17:00 hrs. destinando 120 minutos para colación',lugar_prestacion:'',sueldo_base:'',bono_responsabilidad:'0',bono_produccion_fijo:'0',bono_produccion_variable:false,bono_produccion_tarifa:'0',bono_produccion_detalle:'',semana_corrida:false,asig_colacion:'0',asig_movilizacion:'0',asig_viatico:'0',tiene_alimentacion:false,alimentacion_detalle:'tres comidas preparadas según dieta. Esta no tendrá costo para el trabajador',otros_beneficios:'',observaciones:''};
+  var emptyForm={persona_id:'',empresa_id:'',tipo_contrato:'indefinido',es_actualizacion:false,fecha_contrato:new Date().toISOString().slice(0,10),fecha_inicio:new Date().toISOString().slice(0,10),fecha_termino:'',lugar_firma:'Nacimiento',funcion_texto:'',jornada_tipo:'normal',jornada_horas:44,jornada_texto:'de lunes a jueves de 07:00 a 12:00 hrs. y de 14:00 a 18:00 hrs., y viernes de 07:00 a 12:00 hrs. y de 14:00 a 17:00 hrs., destinando 60 minutos diarios para colación',lugar_prestacion:'',sueldo_base:'',bono_responsabilidad:'0',bono_produccion_fijo:'0',bono_produccion_variable:false,bono_produccion_tarifa:'0',bono_produccion_detalle:'',semana_corrida:false,asig_colacion:'0',asig_movilizacion:'0',asig_viatico:'0',tiene_alimentacion:false,alimentacion_detalle:'tres comidas preparadas según dieta',otros_beneficios:'',observaciones:''};
   var[form,setForm]=useState(emptyForm);
 
   function loadContratos(){
@@ -5968,7 +5972,7 @@ function ContratosView(p){
     }));
   }
   function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
-  function guardar(){
+  function guardar(formato){
     if(!form.persona_id||!form.empresa_id){setMsg('Seleccione trabajador');return;}
     if(!form.funcion_texto){setMsg('La función del trabajador es obligatoria');return;}
     if(form.tipo_contrato==='plazo_fijo'&&!form.fecha_termino){setMsg('Contrato a plazo fijo requiere fecha de término');return;}
@@ -5976,29 +5980,38 @@ function ContratosView(p){
     api('/contratos','POST',form,p.tok).then(function(r){
       setMsg('Contrato generado y haberes actualizados en la ficha del trabajador');
       loadContratos();
-      // Refrescar maestros (para que se actualicen los haberes en personal)
       if(p.onRefresh)p.onRefresh();
-      // Descargar contrato generado
-      generarContratoDoc(r.contrato_id);
+      generarContratoDoc(r.contrato_id,formato||'word');
     }).catch(function(e){setMsg('Error: '+e.message);});
   }
   function eliminar(id){if(!confirm('¿Eliminar este contrato?'))return;api('/contratos/'+id,'DELETE',null,p.tok).then(loadContratos).catch(function(e){alert(e.message);});}
 
-  // Generar documento Word del contrato
-  function generarContratoDoc(contratoId){
+  // Generar documento del contrato (Word o PDF)
+  function generarContratoDoc(contratoId,formato){
     api('/contratos/'+contratoId,'GET',null,p.tok).then(function(c){
       var empresa=empresas.find(function(e){return String(e.empresa_id)===String(c.empresa_id);})||{};
       var persona=personal.find(function(x){return String(x.persona_id)===String(c.persona_id);})||{};
       var html=buildContratoHTML(c,empresa,persona);
-      var blob=new Blob(['\ufeff'+html],{type:'application/msword;charset=utf-8'});
-      var url=URL.createObjectURL(blob);
-      var link=document.createElement('a');
-      link.href=url;
       var nombre=(c.nombre_completo||persona.nombre_completo||'contrato').replace(/\s+/g,'_');
       var fecha=(c.fecha_contrato+'').slice(0,10).replace(/-/g,'');
-      link.download='Contrato_'+nombre+'_'+fecha+'.doc';
-      document.body.appendChild(link);link.click();document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      if(formato==='pdf'){
+        // Abrir ventana con HTML y lanzar print dialog (usuario guarda como PDF)
+        var w=window.open('','_blank');
+        if(!w){alert('Permita popups para generar el PDF');return;}
+        w.document.write(html);
+        w.document.close();
+        w.document.title='Contrato_'+nombre+'_'+fecha;
+        setTimeout(function(){w.focus();w.print();},500);
+      }else{
+        // Word (.doc)
+        var blob=new Blob(['\ufeff'+html],{type:'application/msword;charset=utf-8'});
+        var url=URL.createObjectURL(blob);
+        var link=document.createElement('a');
+        link.href=url;
+        link.download='Contrato_'+nombre+'_'+fecha+'.doc';
+        document.body.appendChild(link);link.click();document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      }
     }).catch(function(e){alert('Error: '+e.message);});
   }
 
@@ -6038,7 +6051,7 @@ function ContratosView(p){
             h('option',{value:'plazo_fijo'},'A Plazo Fijo'),
             h('option',{value:'obra_servicio'},'Por Obra o Servicio')
           )),
-          h('div',null,h('label',{style:lblS},'Fecha contrato *'),h('input',{type:'date',value:form.fecha_contrato,onChange:function(e){upd('fecha_contrato',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:Object.assign({},lblS,{color:'#1E3A2D',fontWeight:700})},'📅 Fecha escrituración * ',h('span',{style:{fontSize:10,color:'#64748B',fontWeight:400}},'(aparece en encabezado)')),h('input',{type:'date',value:form.fecha_contrato,onChange:function(e){upd('fecha_contrato',e.target.value);},style:Object.assign({},inpS,{border:'2px solid #1E3A2D'})})),
           h('div',null,h('label',{style:lblS},'Fecha inicio *'),h('input',{type:'date',value:form.fecha_inicio,onChange:function(e){upd('fecha_inicio',e.target.value);},style:inpS})),
           form.tipo_contrato==='plazo_fijo'&&h('div',null,h('label',{style:lblS},'Fecha término *'),h('input',{type:'date',value:form.fecha_termino,onChange:function(e){upd('fecha_termino',e.target.value);},style:inpS}))
         ),
@@ -6055,11 +6068,34 @@ function ContratosView(p){
       // Jornada y lugar
       h('div',{style:{background:'#F8FAFC',borderRadius:6,padding:10,marginBottom:12}},
         h('div',{style:{fontSize:12,fontWeight:700,color:'#1E3A2D',marginBottom:8}},'Jornada y lugar de prestación'),
-        h('div',{style:{display:'grid',gridTemplateColumns:'100px 1fr',gap:10,marginBottom:8}},
-          h('div',null,h('label',{style:lblS},'Horas semanales'),h('input',{type:'number',value:form.jornada_horas,onChange:function(e){upd('jornada_horas',e.target.value);},style:inpS})),
-          h('div',null,h('label',{style:lblS},'Distribución horaria'),h('input',{type:'text',value:form.jornada_texto,onChange:function(e){upd('jornada_texto',e.target.value);},style:inpS}))
+        h('div',{style:{marginBottom:8}},
+          h('label',{style:lblS},'Tipo de jornada *'),
+          h('select',{value:form.jornada_tipo,onChange:function(e){
+            var nuevo=e.target.value;
+            var update={jornada_tipo:nuevo};
+            // Auto-llenar texto según tipo
+            if(nuevo==='normal'){update.jornada_horas=44;update.jornada_texto='de lunes a jueves de 07:00 a 12:00 hrs. y de 14:00 a 18:00 hrs., y viernes de 07:00 a 12:00 hrs. y de 14:00 a 17:00 hrs., destinando 60 minutos diarios para colación';}
+            else if(nuevo==='art22'){update.jornada_texto='';}
+            else if(nuevo==='excepcional'){update.jornada_horas=0;update.jornada_texto='';}
+            upd('jornada_tipo',nuevo);Object.keys(update).forEach(function(k){upd(k,update[k]);});
+          },style:inpS},
+            h('option',{value:'normal'},'Jornada normal (44 hrs semanales)'),
+            h('option',{value:'art22'},'Artículo 22 inciso 2° — sin fiscalización'),
+            h('option',{value:'excepcional'},'Jornada excepcional (7x7 u otra)')
+          )
         ),
-        h('div',null,h('label',{style:lblS},'Lugar de prestación de servicios (opcional)'),h('textarea',{value:form.lugar_prestacion,onChange:function(e){upd('lugar_prestacion',e.target.value);},rows:2,style:Object.assign({},inpS,{resize:'vertical'}),placeholder:'Por defecto: domicilio de la empresa + predios/fundos donde ejecute faenas'}))
+        form.jornada_tipo==='normal'&&h('div',{style:{display:'grid',gridTemplateColumns:'100px 1fr',gap:10}},
+          h('div',null,h('label',{style:lblS},'Horas semanales'),h('input',{type:'number',value:form.jornada_horas,onChange:function(e){upd('jornada_horas',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Distribución horaria (editable)'),h('input',{type:'text',value:form.jornada_texto,onChange:function(e){upd('jornada_texto',e.target.value);},style:inpS}))
+        ),
+        form.jornada_tipo==='art22'&&h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:5,padding:8,fontSize:11,color:'#1E40AF'}},
+          '📋 Se aplicará el texto estándar del Art. 22 inciso 2°: el trabajador queda excluido de la limitación de jornada ordinaria por ejercer sus funciones sin fiscalización inmediata.'
+        ),
+        form.jornada_tipo==='excepcional'&&h('div',null,
+          h('label',{style:lblS},'Detalle de la jornada excepcional (editable)'),
+          h('textarea',{value:form.jornada_texto,onChange:function(e){upd('jornada_texto',e.target.value);},rows:3,style:Object.assign({},inpS,{resize:'vertical'}),placeholder:'Ej: turnos rotativos de 7 días de trabajo por 7 días de descanso, en horario de 07:00 a 12:00 hrs. y de 14:00 a 19:00 hrs.'})
+        ),
+        h('div',{style:{marginTop:8}},h('label',{style:lblS},'Lugar de prestación de servicios (opcional)'),h('textarea',{value:form.lugar_prestacion,onChange:function(e){upd('lugar_prestacion',e.target.value);},rows:2,style:Object.assign({},inpS,{resize:'vertical'}),placeholder:'Por defecto: domicilio de la empresa + predios/fundos donde ejecute faenas'}))
       ),
       // Remuneración
       h('div',{style:{background:'#FFF7ED',borderRadius:6,padding:10,marginBottom:12,border:'1px solid #FED7AA'}},
@@ -6116,7 +6152,8 @@ function ContratosView(p){
       ),
       h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:10}},
         h(Btn,{v:'g',onClick:function(){setForm(emptyForm);setSelPersona(null);setMsg('');}},null,'Limpiar'),
-        h(Btn,{onClick:guardar},'💾 Generar y descargar contrato')
+        h(Btn,{onClick:function(){guardar('word');}},'💾 Guardar + Word'),
+        h(Btn,{onClick:function(){guardar('pdf');}},'💾 Guardar + PDF')
       )
     ),
 
@@ -6140,7 +6177,8 @@ function ContratosView(p){
           {lbl:'Sueldo',r:true,render:function(r){return CLP(Math.round(parseFloat(r.sueldo_base)||0));}},
           {lbl:'Actualización',render:function(r){return r.es_actualizacion?'✓':'—';}},
           {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:4}},
-            h(Btn,{v:'a',sm:true,onClick:function(){generarContratoDoc(r.contrato_id);}},null,'📄'),
+            h(Btn,{v:'a',sm:true,onClick:function(){generarContratoDoc(r.contrato_id,'word');},title:'Descargar Word'},null,'📄 Word'),
+            h(Btn,{v:'a',sm:true,onClick:function(){generarContratoDoc(r.contrato_id,'pdf');},title:'Ver/imprimir PDF'},null,'📑 PDF'),
             h(Btn,{v:'r',sm:true,onClick:function(){eliminar(r.contrato_id);}},null,'🗑')
           );}}
         ],rows:contratos,empty:'Sin contratos generados'})
@@ -6193,16 +6231,18 @@ function FuncionesView(p){
 
 // ── Generador de HTML del contrato (convertible a Word) ──
 function buildContratoHTML(c,empresa,persona){
-  function fd(f){if(!f)return '';var d=new Date(f+'T00:00:00');var m=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];return d.getDate()+' de '+m[d.getMonth()]+' del año '+d.getFullYear();}
-  function fc(f){if(!f)return '';return (f+'').slice(0,10).split('-').reverse().join('/');}
+  // Normalizar fecha a YYYY-MM-DD (maneja string, Date y objetos de PG)
+  function norm(f){if(!f)return '';var s=(typeof f==='string')?f:(f.toISOString?f.toISOString():(f+''));return s.slice(0,10);}
+  function fd(f){var s=norm(f);if(!s||s.length<10)return '';var y=parseInt(s.slice(0,4)),mo=parseInt(s.slice(5,7))-1,da=parseInt(s.slice(8,10));var m=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];if(isNaN(y)||isNaN(mo)||isNaN(da))return '';return da+' de '+m[mo]+' del año '+y;}
+  function fc(f){var s=norm(f);if(!s||s.length<10)return '';return s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(0,4);}
   function num2palabras(n){
-    if(!n||n==0)return 'cero';
+    if(!n||n==0)return 'Cero';
     var u=['','Uno','Dos','Tres','Cuatro','Cinco','Seis','Siete','Ocho','Nueve','Diez','Once','Doce','Trece','Catorce','Quince','Dieciséis','Diecisiete','Dieciocho','Diecinueve','Veinte'];
     var d=['','','Veinti','Treinta','Cuarenta','Cincuenta','Sesenta','Setenta','Ochenta','Noventa'];
-    var c=['','Cien','Doscientos','Trescientos','Cuatrocientos','Quinientos','Seiscientos','Setecientos','Ochocientos','Novecientos'];
+    var cc=['','Ciento','Doscientos','Trescientos','Cuatrocientos','Quinientos','Seiscientos','Setecientos','Ochocientos','Novecientos'];
     function leer3(n){
       if(n===0)return '';if(n===100)return 'Cien';
-      var r='';if(n>=100){r+=c[Math.floor(n/100)]+(n%100?' ':'');n%=100;}
+      var r='';if(n>=100){r+=cc[Math.floor(n/100)]+(n%100?' ':'');n%=100;}
       if(n<=20){r+=u[n];}else if(n<30){r+=d[2]+(n%10?(u[n%10].toLowerCase()):'');}else{r+=d[Math.floor(n/10)]+(n%10?' y '+u[n%10]:'');}
       return r.trim();
     }
@@ -6212,63 +6252,113 @@ function buildContratoHTML(c,empresa,persona){
     if(n>0)r+=leer3(n);
     return r.trim()||'Cero';
   }
-  function money(v){v=Math.round(parseFloat(v)||0);return '$ '+v.toLocaleString('es-CL')+'.- ('+num2palabras(v)+' Pesos)';}
+  function money(v){v=Math.round(parseFloat(v)||0);return '$'+v.toLocaleString('es-CL')+'.- ('+num2palabras(v)+' Pesos)';}
 
+  // Empresa: datos por defecto del grupo si faltan
+  var rep=empresa.representante_nombre||'LEONIDAS FERNANDO POO ZENTENO';
+  var repRut=empresa.representante_rut||'8.413.067-2';
+  var empDir=empresa.direccion||'Avda. Julio Hemmelmann N° 127';
+  var empComuna=empresa.comuna||'Nacimiento';
+  var empRegion=empresa.region||'VIII del Bio Bio';
+
+  // Cláusula de duración según tipo
   var tipoTxt='';
-  if(c.tipo_contrato==='indefinido'){tipoTxt='El presente contrato tendrá el carácter de <strong>INDEFINIDO</strong>, a partir del '+fd(c.fecha_inicio)+', y podrá ponérsele término de conformidad a las causales señaladas en la legislación vigente.';}
-  else if(c.tipo_contrato==='plazo_fijo'){tipoTxt='El presente contrato tendrá el carácter de contrato a plazo <strong>FIJO</strong>, desde el '+fd(c.fecha_inicio)+' al '+fd(c.fecha_termino)+' y podrá ponérsele término de conformidad a las causales señaladas en la legislación vigente.';}
-  else{tipoTxt='El presente contrato tendrá el carácter de <strong>POR OBRA O SERVICIO</strong>, a partir del '+fd(c.fecha_inicio)+', finalizando a la conclusión de la obra o servicio para el cual fue contratado. Podrá ponérsele término de conformidad a las causales señaladas en la legislación vigente.';}
+  if(c.tipo_contrato==='indefinido'){
+    tipoTxt='El presente contrato tendrá el carácter de <strong>INDEFINIDO</strong>, a partir del '+fd(c.fecha_inicio)+', pudiendo ponérsele término de conformidad a las causales señaladas en la legislación vigente.';
+  } else if(c.tipo_contrato==='plazo_fijo'){
+    tipoTxt='El presente contrato tendrá el carácter de <strong>PLAZO FIJO</strong>, con fecha de inicio el '+fd(c.fecha_inicio)+' y fecha de término el '+fd(c.fecha_termino)+', pudiendo ponérsele término de conformidad a las causales señaladas en la legislación vigente.';
+  } else {
+    tipoTxt='El presente contrato tendrá el carácter de <strong>POR OBRA O FAENA</strong>, con fecha de inicio el '+fd(c.fecha_inicio)+' y hasta el término de la faena forestal para la cual el Trabajador ha sido contratado según anexo de contrato de trabajo. Podrá ponérsele término de conformidad a las causales señaladas en la legislación vigente.';
+  }
 
-  var lugarPrestacion=c.lugar_prestacion||('las dependencias de la empresa, ubicadas en '+(empresa.direccion||'')+', comuna de '+(empresa.comuna||c.lugar_firma||'')+'. El Trabajador, además, prestará servicios en los distintos predios o fundos donde la empresa ejecute faenas forestales dentro de la Región del Biobío u otras zonas similares. El fundo específico será informado mediante anexo de contrato, pudiendo actualizarse de igual forma según cambios operativos, sin que ello constituya modificación esencial del contrato');
+  // Cláusula de jornada según tipo
+  var jornadaTxt='';
+  var jt=c.jornada_tipo||'normal';
+  if(jt==='art22'){
+    jornadaTxt='En conformidad con lo dispuesto en el artículo 22 inciso segundo del Código del Trabajo, las partes declaran que el Trabajador se encuentra excluido de la limitación de jornada ordinaria de trabajo, por cuanto ejerce sus funciones sin fiscalización inmediata respecto del cumplimiento de su horario, debido a la naturaleza de sus labores, las cuales se desarrollan con autonomía y sin sujeción a un horario fijo.';
+  } else if(jt==='excepcional'){
+    jornadaTxt=c.jornada_texto||'La jornada de trabajo será en turnos rotativos de 7 días de trabajo por 7 días de descanso, en horario de 07:00 a 12:00 hrs. en la mañana y de 14:00 a 19:00 hrs. en la tarde. Esta podrá modificarse de acuerdo a las necesidades de la mandante.';
+  } else {
+    jornadaTxt='La jornada de trabajo será de '+(c.jornada_horas||44)+' horas semanales, distribuidas '+(c.jornada_texto||'de lunes a jueves de 07:00 a 12:00 hrs. y de 14:00 a 18:00 hrs., y viernes de 07:00 a 12:00 hrs. y de 14:00 a 17:00 hrs., destinando 60 minutos diarios para colación')+'. Esta podrá modificarse de acuerdo a las necesidades de la mandante.';
+  }
 
-  // Cláusulas remuneración
-  var remuItems=[];
-  remuItems.push('<p style="margin:4px 0"><strong>Sueldo Base Mensual:</strong> '+money(c.sueldo_base)+'</p>');
-  if(parseFloat(c.bono_responsabilidad)>0)remuItems.push('<p style="margin:4px 0"><strong>Bono de Responsabilidad:</strong> '+money(c.bono_responsabilidad)+'</p>');
-  if(parseFloat(c.bono_produccion_fijo)>0)remuItems.push('<p style="margin:4px 0"><strong>Bono de Producción Fijo:</strong> '+money(c.bono_produccion_fijo)+'</p>');
+  var lugarPrestacion=c.lugar_prestacion||('las dependencias de la empresa, ubicadas en '+empDir+', comuna de '+empComuna+'. El Trabajador, además, prestará servicios en los distintos predios o fundos donde la empresa ejecute faenas forestales dentro de la Región del Biobío u otras zonas similares. El fundo específico será informado mediante anexo de contrato, pudiendo actualizarse de igual forma según los cambios operativos, sin que ello constituya modificación esencial del contrato');
+
+  // Remuneración — tabla compacta
+  var remuRows=[];
+  remuRows.push('<tr><td><strong>Sueldo Base Mensual</strong></td><td style="text-align:right">'+money(c.sueldo_base)+'</td></tr>');
+  if(parseFloat(c.bono_responsabilidad)>0)remuRows.push('<tr><td><strong>Bono de Responsabilidad</strong></td><td style="text-align:right">'+money(c.bono_responsabilidad)+'</td></tr>');
+  if(parseFloat(c.bono_produccion_fijo)>0)remuRows.push('<tr><td><strong>Bono de Producción Fijo</strong></td><td style="text-align:right">'+money(c.bono_produccion_fijo)+'</td></tr>');
+  var remuTable='<table style="width:100%;border-collapse:collapse;margin:4px 0"><tbody>'+remuRows.join('')+'</tbody></table>';
+
+  var bonoVarTxt='';
   if(c.bono_produccion_variable){
     var detalle=c.bono_produccion_detalle||'la producción mensual efectivamente realizada';
     var tarifa=parseFloat(c.bono_produccion_tarifa)||0;
-    remuItems.push('<p style="margin:4px 0"><strong>Bono de Producción Variable:</strong> se pagará según '+detalle+', a razón de '+money(tarifa)+' por unidad producida. Este bono se liquidará mensualmente según la producción efectivamente realizada por el trabajador.</p>');
+    bonoVarTxt='<p><strong>Bono de Producción Variable:</strong> se pagará según '+detalle+', a razón de '+money(tarifa)+' por unidad producida, liquidándose mensualmente según la producción efectiva del trabajador.</p>';
     if(c.semana_corrida){
-      remuItems.push('<p style="margin:4px 0"><strong>Semana Corrida:</strong> dado que el trabajador recibe remuneración variable, se le pagará la semana corrida conforme a lo establecido en el artículo 45 del Código del Trabajo, calculada sobre las remuneraciones variables devengadas en el período de pago.</p>');
+      bonoVarTxt+='<p><strong>Semana Corrida:</strong> dado que el trabajador percibe remuneración variable, se le pagará la semana corrida conforme al artículo 45 del Código del Trabajo, calculada sobre las remuneraciones variables devengadas en el período de pago.</p>';
     }
   }
-  var noImp=[];
-  if(parseFloat(c.asig_colacion)>0)noImp.push('<strong>Asignación de Colación:</strong> '+money(c.asig_colacion));
-  if(parseFloat(c.asig_movilizacion)>0)noImp.push('<strong>Asignación de Movilización:</strong> '+money(c.asig_movilizacion));
-  if(parseFloat(c.asig_viatico)>0)noImp.push('<strong>Viático:</strong> '+money(c.asig_viatico));
-  var noImpTxt=noImp.length>0?'<p style="margin:4px 0"><em>Haberes no imponibles:</em></p>'+noImp.map(function(s){return '<p style="margin:4px 0;padding-left:20px">'+s+'</p>';}).join(''):'';
 
-  // Beneficios
-  var beneficios=[];
-  if(c.tiene_alimentacion)beneficios.push('<p style="margin:4px 0">a) El Trabajador recibirá alimentación diaria consistente en '+(c.alimentacion_detalle||'tres comidas preparadas según dieta. Esta no tendrá costo para el trabajador')+'.</p>');
-  if(c.otros_beneficios)beneficios.push('<p style="margin:4px 0">'+(c.tiene_alimentacion?'b)':'a)')+' '+c.otros_beneficios+'</p>');
+  // No imponibles — inline compacto
+  var noImp=[];
+  if(parseFloat(c.asig_colacion)>0)noImp.push('Colación '+money(c.asig_colacion));
+  if(parseFloat(c.asig_movilizacion)>0)noImp.push('Movilización '+money(c.asig_movilizacion));
+  if(parseFloat(c.asig_viatico)>0)noImp.push('Viático '+money(c.asig_viatico));
+  var noImpTxt=noImp.length>0?'<p><strong>Haberes no imponibles:</strong> '+noImp.join('; ')+'.</p>':'';
+
+  // Beneficios — compactos
+  var benefs=[];
+  if(c.tiene_alimentacion)benefs.push('El Trabajador recibirá alimentación diaria consistente en '+(c.alimentacion_detalle||'tres comidas preparadas según dieta')+', sin costo para el trabajador.');
+  if(c.otros_beneficios)benefs.push(c.otros_beneficios);
+
+  // Numeración dinámica de cláusulas
+  var n=4;var cNum=['CUARTA','QUINTA','SEXTA','SÉPTIMA','OCTAVA'];
+  var numRemu=cNum[0];n++;
+  var numBen=benefs.length>0?cNum[n-4]:null;if(benefs.length>0)n++;
+  var numDur=cNum[n-4];n++;
+  var numRegl=cNum[n-4];n++;
+  var numFirma=cNum[n-4];
 
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Contrato de Trabajo</title>'+
-    '<style>body{font-family:Arial,sans-serif;font-size:11pt;line-height:1.5;margin:2.5cm}h1{text-align:center;font-size:14pt;margin-bottom:20px}p{text-align:justify;margin:8px 0}.sig{margin-top:60px;display:table;width:100%}.sig-box{display:table-cell;width:50%;text-align:center;padding-top:40px;border-top:1px solid #000}</style>'+
-    '</head><body>'+
-    '<h1>CONTRATO DE TRABAJO'+(c.es_actualizacion?' (ACTUALIZACIÓN)':'')+'</h1>'+
-    '<p>En '+(c.lugar_firma||'NACIMIENTO')+', a '+fd(c.fecha_contrato)+', entre la empresa <strong>'+(empresa.razon_social||'')+'</strong>, Rol único tributario N° '+(empresa.rut||'')+', representada por don <strong>'+(empresa.representante_nombre||'_________________')+'</strong>, cédula nacional de identidad N° '+(empresa.representante_rut||'_________________')+', con domicilio en '+(empresa.direccion||'')+', comuna '+(empresa.comuna||'')+', Región de '+(empresa.region||'VIII del Bio Bio')+', en adelante, «el empleador»; y don/doña <strong>'+(persona.nombre_completo||'')+'</strong>, de nacionalidad '+(persona.nacionalidad||'Chileno(a)')+', cédula nacional de identidad número '+(persona.rut||'')+', de estado civil '+(persona.estado_civil||'')+', fecha de nacimiento '+fc(persona.fecha_nacimiento)+', domiciliado en '+(persona.direccion||'')+', comuna de '+(persona.comuna||'')+', Región '+(persona.region||'VIII del Bio Bio')+', y, en consecuencia, capaz de celebrar contrato de trabajo, en adelante «el trabajador»; las partes han convenido celebrar el presente contrato de trabajo al tenor de las siguientes:</p>'+
-    '<p><strong>PRIMERA. FUNCIÓN O LABOR.</strong> El trabajador se compromete a desempeñar el trabajo que se le encomienda de <strong>'+(persona.cargo||'')+'</strong>. '+c.funcion_texto+' Se eleva a la calidad de esencial de este contrato, la circunstancia de considerarse al empleado como una persona íntegra e intachable, de modo tal que cualquiera falta de honestidad o probidad, se considerará falta gravísima y será causal para la terminación inmediata del contrato.</p>'+
+    '<style>'+
+    '@page{size:letter;margin:1.8cm 2cm}'+
+    'body{font-family:Arial,sans-serif;font-size:10.5pt;line-height:1.35;margin:0;color:#000}'+
+    '.hdr{display:table;width:100%;margin-bottom:10px;border-bottom:2px solid #1E3A2D;padding-bottom:8px}'+
+    '.hdr-logo{display:table-cell;width:90px;vertical-align:middle}'+
+    '.hdr-logo img{max-width:80px;max-height:80px}'+
+    '.hdr-title{display:table-cell;vertical-align:middle;text-align:center}'+
+    '.hdr-title h1{font-size:14pt;margin:0;letter-spacing:2px;color:#1E3A2D}'+
+    '.hdr-title .sub{font-size:11pt;font-weight:700;color:#9A3412;margin-top:4px;letter-spacing:1px}'+
+    '.hdr-right{display:table-cell;width:90px}'+
+    'p{text-align:justify;margin:5px 0;text-indent:0}'+
+    'table{margin:3px 0}td{padding:2px 0;font-size:10.5pt}'+
+    '.sig{margin-top:36px;width:100%;border-collapse:collapse}'+
+    '.sig td{width:50%;text-align:center;vertical-align:top;padding:30px 10px 0}'+
+    '.sig .line{border-top:1px solid #000;padding-top:4px;margin-top:30px;font-size:9.5pt}'+
+    '</style></head><body>'+
+    '<div class="hdr">'+
+      '<div class="hdr-logo">'+(empresa.logo_base64?'<img src="'+empresa.logo_base64+'" alt="logo">':'<div style="width:80px;height:80px;background:#1E3A2D;border-radius:10px;color:#D4C5A9;text-align:center;line-height:80px;font-size:32px;font-weight:700">LP</div>')+'</div>'+
+      '<div class="hdr-title"><h1>CONTRATO DE TRABAJO</h1>'+(c.es_actualizacion?'<div class="sub">ACTUALIZACIÓN / ANEXO</div>':'')+'</div>'+
+      '<div class="hdr-right"></div>'+
+    '</div>'+
+    '<p>En '+(c.lugar_firma||'Nacimiento')+', a '+fd(c.fecha_contrato)+', entre la empresa <strong>'+(empresa.razon_social||'')+'</strong>, Rol Único Tributario N° '+(empresa.rut||'')+', representada por don <strong>'+rep+'</strong>, cédula nacional de identidad N° '+repRut+', con domicilio en '+empDir+', comuna de '+empComuna+', Región de '+empRegion+', en adelante «el Empleador»; y don/doña <strong>'+(persona.nombre_completo||'')+'</strong>, de nacionalidad '+(persona.nacionalidad||'Chileno(a)')+', cédula nacional de identidad N° '+(persona.rut||'')+', de estado civil '+(persona.estado_civil||'')+', fecha de nacimiento '+fc(persona.fecha_nacimiento)+', domiciliado en '+(persona.direccion||'')+', comuna de '+(persona.comuna||'')+', Región '+(persona.region||'VIII del Bio Bio')+', en adelante «el Trabajador»; capaces de celebrar contrato de trabajo, han convenido lo siguiente:</p>'+
+    '<p><strong>PRIMERA. FUNCIÓN O LABOR.</strong> El Trabajador se compromete a desempeñar el cargo de <strong>'+(persona.cargo||'')+'</strong>. '+c.funcion_texto+' Se eleva a la calidad de esencial del presente contrato la condición de que el Trabajador sea considerado una persona íntegra e intachable, de modo tal que cualquier falta de honestidad o probidad se considerará falta gravísima y causal de terminación inmediata del contrato.</p>'+
     '<p><strong>SEGUNDA. LUGAR DE PRESTACIÓN DE SERVICIOS.</strong> El Trabajador prestará sus servicios en '+lugarPrestacion+'.</p>'+
-    '<p><strong>TERCERA. JORNADA DE TRABAJO.</strong> La jornada de trabajo será de '+(c.jornada_horas||44)+' hrs. semanales, distribuidas '+(c.jornada_texto||'')+'. Este podrá modificarse de acuerdo a las necesidades de la mandante.</p>'+
-    '<p><strong>CUARTA. REMUNERACIONES.</strong> La remuneración del trabajador será la suma mensual de:</p>'+
-    remuItems.join('')+
-    (noImpTxt?noImpTxt:'')+
-    '<p>Por mes calendario, que será liquidada y pagada por períodos vencidos, a través de transferencia electrónica a la cuenta del trabajador, los días 15 del mes siguiente al que se devengaron.</p>'+
-    '<p>Gratificación bruta anual que será pagada mensualmente al Trabajador en la cantidad equivalente a una doceava parte de 4,75 ingresos mínimos mensuales. Se deja expresa constancia que con esta gratificación el Empleador ha hecho uso de su opción para pagar la gratificación legal de acuerdo a la modalidad establecida en el artículo 50 del Código del Trabajo. En ningún caso procederá el pago de la gratificación conforme al procedimiento establecido en el artículo 47 del mismo Código.</p>'+
-    '<p>Extraordinariamente, el Empleador podrá otorgar premios o bonos ocasionales al Trabajador, adicionales a la remuneración ordinaria, y sin que ello signifique que dichos premios o bonos pasan a formar parte del sueldo o cualquier otro tipo de remuneración. El Trabajador autoriza expresamente al Empleador para que se le descuente de sus remuneraciones el tiempo no trabajado debido a atrasos, inasistencias y permisos.</p>'+
-    '<p>De las cantidades indicadas en los párrafos anteriores, el Empleador descontará los montos correspondientes a cotizaciones de seguridad social e impuestos.</p>'+
-    (beneficios.length>0?
-      '<p><strong>QUINTA. BENEFICIOS.</strong> El empleador se compromete a otorgar o a suministrar, al trabajador, los siguientes beneficios:</p>'+beneficios.join('')+
-      '<p>Cualquier otra prestación o beneficio —ocasional o periódico— que el empleador conceda, al trabajador, distinto que el que le corresponde por este contrato y sus ajustes legales o contractuales se entenderá conferido a título de mera liberalidad; no dará derecho alguno; y el empleador podrá suspenderlo o modificarlo a su arbitrio.</p>':'')+
-    '<p><strong>'+(beneficios.length>0?'SEXTA':'QUINTA')+'. DURACIÓN Y VIGENCIA.</strong></p>'+
-    '<p>'+tipoTxt+'</p>'+
-    '<p>Se deja constancia que el Trabajador ingresó al servicio de la Empleadora con fecha '+fd(c.fecha_inicio)+'.</p>'+
-    '<p><strong>'+(beneficios.length>0?'SÉPTIMA':'SEXTA')+'. REGLAMENTO INTERNO.</strong> Demás estipulaciones están contempladas en el Reglamento Interno de la Empresa, el que se considera forma parte integrante del presente contrato, en la ciudad de '+(c.lugar_firma||'Nacimiento')+'.</p>'+
-    '<p><strong>'+(beneficios.length>0?'OCTAVA':'SÉPTIMA')+'. FIRMA Y EJEMPLARES.</strong> El presente contrato se firma en dos ejemplares, de igual tenor y fecha, quedando uno de ellos en poder del Empleador y uno en poder del Trabajador.</p>'+
-    '<div class="sig"><div class="sig-box"><strong>EL EMPLEADOR</strong><br>'+(empresa.representante_nombre||'')+'<br>'+(empresa.razon_social||'')+'</div><div class="sig-box"><strong>EL TRABAJADOR</strong><br>'+(persona.nombre_completo||'')+'<br>RUT: '+(persona.rut||'')+'</div></div>'+
+    '<p><strong>TERCERA. JORNADA DE TRABAJO.</strong> '+jornadaTxt+'</p>'+
+    '<p><strong>'+numRemu+'. REMUNERACIONES.</strong> La remuneración mensual del Trabajador será la siguiente:</p>'+
+    remuTable+
+    bonoVarTxt+
+    noImpTxt+
+    '<p>Las remuneraciones serán liquidadas y pagadas por períodos vencidos, mediante transferencia electrónica a la cuenta bancaria del Trabajador, los días 15 del mes siguiente al que se devengaron.</p>'+
+    '<p>El Trabajador recibirá una gratificación legal anual, pagada mensualmente en la forma establecida en el artículo 50 del Código del Trabajo, equivalente a una doceava parte de 4,75 ingresos mínimos mensuales. El Empleador hace uso expreso de esta modalidad, no procediendo el pago de gratificación conforme al artículo 47 del mismo Código.</p>'+
+    '<p>El Empleador podrá otorgar extraordinariamente premios o bonos ocasionales, los cuales no formarán parte del sueldo ni de la remuneración ordinaria. El Trabajador autoriza al Empleador a descontar de sus remuneraciones el tiempo no trabajado por atrasos, inasistencias o permisos. De las sumas pagadas se descontarán las cotizaciones de seguridad social e impuestos correspondientes.</p>'+
+    (benefs.length>0?'<p><strong>'+numBen+'. BENEFICIOS.</strong> '+benefs.join(' ')+' Cualquier otra prestación o beneficio, ocasional o periódico, que el Empleador conceda al Trabajador distinto de los señalados en este contrato y sus ajustes legales o contractuales se entenderá conferido a título de mera liberalidad y podrá ser suspendido o modificado a su arbitrio.</p>':'')+
+    '<p><strong>'+numDur+'. DURACIÓN Y VIGENCIA.</strong> '+tipoTxt+' Se deja constancia que el Trabajador ingresó al servicio del Empleador con fecha '+fd(c.fecha_inicio)+'.</p>'+
+    '<p><strong>'+numRegl+'. REGLAMENTO INTERNO.</strong> Las demás estipulaciones se encuentran contempladas en el Reglamento Interno de la Empresa, el que forma parte integrante del presente contrato.</p>'+
+    '<p><strong>'+numFirma+'. FIRMA Y EJEMPLARES.</strong> El presente contrato se firma en dos ejemplares de igual tenor y fecha, quedando uno en poder del Empleador y otro en poder del Trabajador.</p>'+
+    '<table class="sig"><tr><td><div class="line"><strong>EL EMPLEADOR</strong><br>'+rep+'<br>'+(empresa.razon_social||'')+'</div></td><td><div class="line"><strong>EL TRABAJADOR</strong><br>'+(persona.nombre_completo||'')+'<br>RUT: '+(persona.rut||'')+'</div></td></tr></table>'+
     '</body></html>';
 }
 
