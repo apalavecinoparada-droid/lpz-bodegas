@@ -5246,6 +5246,229 @@ function MantTareasStdAdmin(p){
 }
 
 
+// ══ MÓDULO TRANSPORTE — TRASLADOS DE MAQUINARIA ══
+function TransporteView(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var faenas=p.m.faenas||[];
+  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo;});
+  var estanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
+  var[camiones,setCamiones]=useState([]);
+  var[choferes,setChoferes]=useState([]);
+  var[traslados,setTraslados]=useState([]);
+  var[tab,setTab]=useState('historial');
+  var[showForm,setShowForm]=useState(false);
+  var[sel,setSel]=useState(null);
+  var[msg,setMsg]=useState('');
+  var[dash,setDash]=useState(null);
+  // Filtros
+  var[fEmpresa,setFEmpresa]=useState('');
+  var[fCamion,setFCamion]=useState('');
+  var[fDesde,setFDesde]=useState((new Date(Date.now()-30*86400000)).toISOString().slice(0,10));
+  var[fHasta,setFHasta]=useState(new Date().toISOString().slice(0,10));
+  var emptyForm={fecha:new Date().toISOString().slice(0,10),empresa_id:'',camion_id:'',chofer_id:'',faena_id:'',equipo_id:'',origen:'',destino:'',km_cargado:'',km_vacio:'0',odometro_inicio:'',odometro_fin:'',estado:'finalizado',observaciones:'',litros_combustible:'0',estanque_id:''};
+  var[form,setForm]=useState(emptyForm);
+
+  function loadBase(){
+    api('/trans/camiones','GET',null,p.tok).then(function(r){setCamiones(r||[]);}).catch(function(){});
+    api('/trans/choferes','GET',null,p.tok).then(function(r){setChoferes(r||[]);}).catch(function(){});
+  }
+  function loadTraslados(){
+    var q='?';if(fEmpresa)q+='empresa_id='+fEmpresa+'&';if(fCamion)q+='camion_id='+fCamion+'&';if(fDesde)q+='desde='+fDesde+'&';if(fHasta)q+='hasta='+fHasta+'&';
+    api('/trans/traslados'+q,'GET',null,p.tok).then(function(r){setTraslados(Array.isArray(r)?r:[]);}).catch(function(){});
+  }
+  function loadDash(){
+    var q='?';if(fEmpresa)q+='empresa_id='+fEmpresa+'&';if(fDesde)q+='desde='+fDesde+'&';if(fHasta)q+='hasta='+fHasta+'&';
+    api('/trans/dashboard'+q,'GET',null,p.tok).then(function(r){setDash(r);}).catch(function(){});
+  }
+  useEffect(function(){loadBase();},[p.tok]);
+  useEffect(function(){loadTraslados();loadDash();},[p.tok,fEmpresa,fCamion,fDesde,fHasta]);
+
+  function openNew(){setSel(null);setForm(emptyForm);setShowForm(true);setMsg('');}
+  function openEdit(r){
+    setSel(r);setForm({fecha:(r.fecha||'').slice(0,10),empresa_id:r.empresa_id||'',camion_id:r.camion_id||'',chofer_id:r.chofer_id||'',faena_id:r.faena_id||'',equipo_id:r.equipo_id||'',origen:r.origen||'',destino:r.destino||'',km_cargado:r.km_cargado||'',km_vacio:r.km_vacio||'0',odometro_inicio:r.odometro_inicio||'',odometro_fin:r.odometro_fin||'',estado:r.estado||'finalizado',observaciones:r.observaciones||'',litros_combustible:r.litros_combustible||'0',estanque_id:r.estanque_id||''});
+    setShowForm(true);setMsg('');
+  }
+  function guardar(){
+    if(!form.empresa_id||!form.camion_id||!form.chofer_id){setMsg('Empresa, camión y chofer son obligatorios');return;}
+    if(!form.origen||!form.destino){setMsg('Origen y destino son obligatorios');return;}
+    var kc=parseFloat(form.km_cargado)||0;var kv=parseFloat(form.km_vacio)||0;
+    if(kc+kv===0){setMsg('Debe ingresar al menos km cargado o km vacío');return;}
+    var url=sel?'/trans/traslados/'+sel.traslado_id:'/trans/traslados';
+    var method=sel?'PUT':'POST';
+    api(url,method,form,p.tok).then(function(){loadTraslados();loadDash();setShowForm(false);setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function eliminar(id){if(!confirm('¿Eliminar este traslado?'))return;api('/trans/traslados/'+id,'DELETE',null,p.tok).then(function(){loadTraslados();loadDash();}).catch(function(e){alert(e.message);});}
+  function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
+
+  var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3};
+  var ESTADOS=[{v:'pendiente',l:'Pendiente',c:'y'},{v:'en_curso',l:'En curso',c:'b'},{v:'finalizado',l:'Finalizado',c:'g'},{v:'anulado',l:'Anulado',c:'r'}];
+  var eqTransp=equipos.filter(function(e){return !e.es_transporte;});
+
+  // ── PANEL ──
+  function renderPanel(){
+    if(!dash)return h('div',{style:{textAlign:'center',padding:40,color:'#94A3B8'}},'Cargando...');
+    var t=dash.totales||{};
+    return h('div',null,
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10,marginBottom:16}},
+        h('div',{className:'kpi'},h('div',{className:'kpi-lbl'},'Traslados'),h('div',{className:'kpi-val'},t.total||0)),
+        h('div',{className:'kpi'},h('div',{className:'kpi-lbl'},'Km cargados'),h('div',{className:'kpi-val'},Math.round(parseFloat(t.km_cargado)||0).toLocaleString('es-CL'))),
+        h('div',{className:'kpi'},h('div',{className:'kpi-lbl'},'Km vacíos'),h('div',{className:'kpi-val'},Math.round(parseFloat(t.km_vacio)||0).toLocaleString('es-CL'))),
+        h('div',{className:'kpi'},h('div',{className:'kpi-lbl'},'Litros combustible'),h('div',{className:'kpi-val'},Math.round(parseFloat(t.litros_total)||0).toLocaleString('es-CL'))),
+        h('div',{className:'kpi kpi-a'},h('div',{className:'kpi-lbl'},'Costo total'),h('div',{className:'kpi-val'},CLP(Math.round(parseFloat(t.costo_total)||0))))
+      ),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}},
+        h('div',{className:'card'},h('div',{style:{fontWeight:700,fontSize:13,marginBottom:8}},'Por empresa'),
+          (dash.porEmpresa||[]).map(function(r,i){return h('div',{key:i,style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #F1F5F9',fontSize:12}},h('span',null,r.razon_social),h('span',{style:{fontWeight:600}},r.traslados+' — '+CLP(Math.round(parseFloat(r.costo)||0))));})
+        ),
+        h('div',{className:'card'},h('div',{style:{fontWeight:700,fontSize:13,marginBottom:8}},'Por camión'),
+          (dash.porCamion||[]).map(function(r,i){return h('div',{key:i,style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #F1F5F9',fontSize:12}},h('span',null,r.nombre,' ',h('span',{style:{fontFamily:'monospace',fontSize:10,color:'#64748B'}},r.patente_serie)),h('span',{style:{fontWeight:600}},r.traslados+' viajes — '+Math.round(parseFloat(r.km)||0)+' km'));})
+        ),
+        h('div',{className:'card'},h('div',{style:{fontWeight:700,fontSize:13,marginBottom:8}},'Por faena'),
+          (dash.porFaena||[]).map(function(r,i){return h('div',{key:i,style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #F1F5F9',fontSize:12}},h('span',null,r.faena),h('span',{style:{fontWeight:600}},CLP(Math.round(parseFloat(r.costo)||0))));})
+        ),
+        h('div',{className:'card'},h('div',{style:{fontWeight:700,fontSize:13,marginBottom:8}},'Top equipos trasladados'),
+          (dash.topEquipos||[]).map(function(r,i){return h('div',{key:i,style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #F1F5F9',fontSize:12}},h('span',null,h('span',{style:{fontFamily:'monospace',fontSize:10,color:'#64748B'}},r.codigo),' ',r.nombre),h('span',{style:{fontWeight:600}},r.traslados+' viajes'));})
+        ),
+        h('div',{className:'card',style:{gridColumn:'1/-1'}},h('div',{style:{fontWeight:700,fontSize:13,marginBottom:8}},'Top destinos'),
+          (dash.topDestinos||[]).map(function(r,i){return h('div',{key:i,style:{display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:'1px solid #F1F5F9',fontSize:12}},h('span',null,r.destino),h('span',{style:{fontWeight:600}},r.traslados+' viajes — '+Math.round(parseFloat(r.km)||0)+' km'));})
+        )
+      )
+    );
+  }
+
+  // ── HISTORIAL ──
+  function renderHistorial(){
+    return h('div',null,
+      h('div',{className:'card'},
+        h(TBL,{cols:[
+          {lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},
+          {lbl:'Empresa',render:function(r){return (r.empresa_nombre||'').length>15?(r.empresa_nombre||'').slice(0,15)+'...':r.empresa_nombre;}},
+          {lbl:'Camión',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.camion_patente);}},
+          {lbl:'Chofer',render:function(r){return (r.chofer_nombre||'').length>20?(r.chofer_nombre||'').slice(0,20)+'...':r.chofer_nombre;}},
+          {lbl:'Equipo',render:function(r){return r.equipo_codigo?h('span',{title:r.equipo_nombre},r.equipo_codigo):'—';}},
+          {lbl:'Origen',render:function(r){return h('span',{title:r.origen},(r.origen||'').length>18?(r.origen||'').slice(0,18)+'...':r.origen);}},
+          {lbl:'Destino',render:function(r){return h('span',{title:r.destino},(r.destino||'').length>18?(r.destino||'').slice(0,18)+'...':r.destino);}},
+          {lbl:'Km carg.',r:true,render:function(r){return r.km_cargado;}},
+          {lbl:'Km vacío',r:true,render:function(r){return r.km_vacio;}},
+          {lbl:'Litros',r:true,render:function(r){return parseFloat(r.litros_combustible)>0?r.litros_combustible:h('span',{style:{color:'#94A3B8'}},'—');}},
+          {lbl:'Costo',r:true,render:function(r){return r.costo_total?CLP(Math.round(parseFloat(r.costo_total))):h('span',{style:{color:'#94A3B8'}},'—');}},
+          {lbl:'Estado',render:function(r){var e=ESTADOS.find(function(x){return x.v===r.estado;})||{l:r.estado,c:'g'};return h(Bg,{c:e.c},e.l);}},
+          {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:4}},h(Btn,{v:'a',sm:true,onClick:function(){openEdit(r);}},null,'✏'),h(Btn,{v:'r',sm:true,onClick:function(){eliminar(r.traslado_id);}},null,'🗑'));}}
+        ],rows:traslados,empty:'Sin traslados en el período'})
+      )
+    );
+  }
+
+  return h('div',null,
+    // Filtros + acciones
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:6}},
+      h('div',{style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}},
+        h('select',{value:fEmpresa,onChange:function(e){setFEmpresa(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},h('option',{value:''},'Todas las empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})),
+        h('select',{value:fCamion,onChange:function(e){setFCamion(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},h('option',{value:''},'Todos los camiones'),camiones.map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.patente_serie+' — '+c.nombre);})),
+        h('input',{type:'date',value:fDesde,onChange:function(e){setFDesde(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}}),
+        h('input',{type:'date',value:fHasta,onChange:function(e){setFHasta(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}})
+      ),
+      h('div',{style:{display:'flex',gap:6}},
+        ['panel','historial'].map(function(t2){return h('button',{key:t2,onClick:function(){setTab(t2);},style:{padding:'5px 12px',borderRadius:4,fontSize:11,cursor:'pointer',border:'1px solid #CBD5E1',background:tab===t2?'#1E3A2D':'#F8FAFC',color:tab===t2?'#D4C5A9':'#475569',fontWeight:600}},t2==='panel'?'📊 Panel':'📋 Historial');}),
+        h(Btn,{onClick:openNew},'+ Nuevo traslado')
+      )
+    ),
+    msg&&h('div',{className:'al al-e',style:{marginBottom:8}},msg),
+    // Formulario
+    showForm&&h('div',{className:'card',style:{marginBottom:12}},
+      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},sel?'Editar traslado':'Nuevo traslado'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
+        h('div',null,h('label',{style:lblS},'Fecha *'),h('input',{type:'date',value:form.fecha,onChange:function(e){upd('fecha',e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:lblS},'Empresa *'),h('select',{value:form.empresa_id,onChange:function(e){upd('empresa_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+        h('div',null,h('label',{style:lblS},'Camión cama baja *'),h('select',{value:form.camion_id,onChange:function(e){upd('camion_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),camiones.map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.patente_serie+(c.patente_carro?' + '+c.patente_carro:'')+' — '+c.nombre);}))),
+        h('div',null,h('label',{style:lblS},'Chofer *'),h('select',{value:form.chofer_id,onChange:function(e){upd('chofer_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),choferes.map(function(c){return h('option',{key:c.persona_id,value:c.persona_id},c.nombre_completo);}))),
+        h('div',null,h('label',{style:lblS},'Faena asociada'),h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);},style:inpS},h('option',{value:''},'—'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+        h('div',null,h('label',{style:lblS},'Equipo transportado'),h('select',{value:form.equipo_id,onChange:function(e){upd('equipo_id',e.target.value);},style:inpS},h('option',{value:''},'—'),eqTransp.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);}))),
+        h('div',null,h('label',{style:lblS},'Origen *'),h('input',{type:'text',value:form.origen,onChange:function(e){upd('origen',e.target.value);},style:inpS,placeholder:'Lugar de origen'})),
+        h('div',null,h('label',{style:lblS},'Destino *'),h('input',{type:'text',value:form.destino,onChange:function(e){upd('destino',e.target.value);},style:inpS,placeholder:'Lugar de destino / Fundo'})),
+        h('div',null,h('label',{style:lblS},'Estado'),h('select',{value:form.estado,onChange:function(e){upd('estado',e.target.value);},style:inpS},ESTADOS.map(function(e){return h('option',{key:e.v,value:e.v},e.l);}))),
+        h('div',null,h('label',{style:lblS},'Km con carga *'),h('input',{type:'number',value:form.km_cargado,onChange:function(e){upd('km_cargado',e.target.value);},style:inpS,min:0,step:0.1,placeholder:'0'})),
+        h('div',null,h('label',{style:lblS},'Km sin carga'),h('input',{type:'number',value:form.km_vacio,onChange:function(e){upd('km_vacio',e.target.value);},style:inpS,min:0,step:0.1,placeholder:'0'})),
+        h('div',null,h('label',{style:lblS},'Odómetro inicio'),h('input',{type:'number',value:form.odometro_inicio,onChange:function(e){upd('odometro_inicio',e.target.value);},style:inpS,placeholder:'Opcional'})),
+        h('div',null,h('label',{style:lblS},'Odómetro fin'),h('input',{type:'number',value:form.odometro_fin,onChange:function(e){upd('odometro_fin',e.target.value);},style:inpS,placeholder:'Opcional'})),
+        h('div',null,h('label',{style:lblS},'Litros combustible'),h('input',{type:'number',value:form.litros_combustible,onChange:function(e){upd('litros_combustible',e.target.value);},style:inpS,min:0,step:0.1,placeholder:'0'})),
+        h('div',null,h('label',{style:lblS},'Estanque'),h('select',{value:form.estanque_id,onChange:function(e){upd('estanque_id',e.target.value);},style:inpS},h('option',{value:''},'—'),estanques.map(function(es){return h('option',{key:es.estanque_id,value:es.estanque_id},es.codigo+' — '+es.nombre);}))),
+        h('div',{style:{gridColumn:'span 2'}},h('label',{style:lblS},'Observaciones'),h('input',{type:'text',value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},style:inpS}))
+      ),
+      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},
+        h(Btn,{v:'g',onClick:function(){setShowForm(false);setMsg('');}},null,'Cancelar'),
+        h(Btn,{onClick:guardar},'Guardar')
+      )
+    ),
+    // Tab content
+    tab==='panel'?renderPanel():renderHistorial()
+  );
+}
+
+// ── Tarifas transporte mantenedor ──
+function TransporteTarifas(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var[tarifas,setTarifas]=useState([]);
+  var[showForm,setShowForm]=useState(false);
+  var[sel,setSel]=useState(null);
+  var[msg,setMsg]=useState('');
+  var emptyForm={nombre:'',empresa_id:'',valor_km_cargado:'',valor_km_vacio:'',costo_fijo_salida:'0',recargo_distancia_km:'0',pct_recargo:'0',vigente_desde:new Date().toISOString().slice(0,10),vigente_hasta:'',activo:true};
+  var[form,setForm]=useState(emptyForm);
+  function load(){api('/trans/tarifas','GET',null,p.tok).then(function(r){setTarifas(Array.isArray(r)?r:[]);}).catch(function(){});}
+  useEffect(load,[p.tok]);
+  function openNew(){setSel(null);setForm(emptyForm);setShowForm(true);setMsg('');}
+  function openEdit(r){setSel(r);setForm({nombre:r.nombre||'',empresa_id:r.empresa_id||'',valor_km_cargado:r.valor_km_cargado||'',valor_km_vacio:r.valor_km_vacio||'',costo_fijo_salida:r.costo_fijo_salida||'0',recargo_distancia_km:r.recargo_distancia_km||'0',pct_recargo:r.pct_recargo||'0',vigente_desde:r.vigente_desde?(r.vigente_desde+'').slice(0,10):'',vigente_hasta:r.vigente_hasta?(r.vigente_hasta+'').slice(0,10):'',activo:r.activo!==false});setShowForm(true);setMsg('');}
+  function guardar(){
+    if(!form.nombre){setMsg('Nombre requerido');return;}
+    if(!form.valor_km_cargado&&!form.valor_km_vacio){setMsg('Ingrese al menos un valor por km');return;}
+    var url=sel?'/trans/tarifas/'+sel.tarifa_id:'/trans/tarifas';
+    var method=sel?'PUT':'POST';
+    api(url,method,form,p.tok).then(function(){load();setShowForm(false);setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function eliminar(id){if(!confirm('¿Eliminar esta tarifa?'))return;api('/trans/tarifas/'+id,'DELETE',null,p.tok).then(load).catch(function(e){alert(e.message);});}
+  var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3};
+  return h('div',null,
+    h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:10}},
+      h('span',{style:{fontSize:11,color:'#64748B'}},tarifas.length+' tarifa(s) registrada(s)'),
+      h(Btn,{onClick:openNew},'+ Nueva tarifa')
+    ),
+    msg&&h('div',{className:'al al-e',style:{marginBottom:8}},msg),
+    showForm&&h('div',{className:'card',style:{marginBottom:12}},
+      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},sel?'Editar tarifa':'Nueva tarifa de transporte'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
+        h('div',null,h('label',{style:lblS},'Nombre *'),h('input',{type:'text',value:form.nombre,onChange:function(e){setForm(Object.assign({},form,{nombre:e.target.value}));},style:inpS,placeholder:'Ej: Tarifa estándar 2026'})),
+        h('div',null,h('label',{style:lblS},'Empresa (vacío=todas)'),h('select',{value:form.empresa_id,onChange:function(e){setForm(Object.assign({},form,{empresa_id:e.target.value}));},style:inpS},h('option',{value:''},'Todas las empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+        h('div',null,h('label',{style:lblS},'Vigente desde'),h('input',{type:'date',value:form.vigente_desde,onChange:function(e){setForm(Object.assign({},form,{vigente_desde:e.target.value}));},style:inpS})),
+        h('div',null,h('label',{style:lblS},'$/km cargado *'),h('input',{type:'number',value:form.valor_km_cargado,onChange:function(e){setForm(Object.assign({},form,{valor_km_cargado:e.target.value}));},style:inpS,placeholder:'Ej: 1500'})),
+        h('div',null,h('label',{style:lblS},'$/km vacío'),h('input',{type:'number',value:form.valor_km_vacio,onChange:function(e){setForm(Object.assign({},form,{valor_km_vacio:e.target.value}));},style:inpS,placeholder:'Ej: 800'})),
+        h('div',null,h('label',{style:lblS},'Costo fijo por salida'),h('input',{type:'number',value:form.costo_fijo_salida,onChange:function(e){setForm(Object.assign({},form,{costo_fijo_salida:e.target.value}));},style:inpS,placeholder:'0'})),
+        h('div',null,h('label',{style:lblS},'Recargo sobre km'),h('input',{type:'number',value:form.recargo_distancia_km,onChange:function(e){setForm(Object.assign({},form,{recargo_distancia_km:e.target.value}));},style:inpS,placeholder:'Km límite'})),
+        h('div',null,h('label',{style:lblS},'% recargo'),h('input',{type:'number',value:form.pct_recargo,onChange:function(e){setForm(Object.assign({},form,{pct_recargo:e.target.value}));},style:inpS,placeholder:'0',step:0.1})),
+        h('div',null,h('label',{style:lblS},'Vigente hasta'),h('input',{type:'date',value:form.vigente_hasta,onChange:function(e){setForm(Object.assign({},form,{vigente_hasta:e.target.value}));},style:inpS}))
+      ),
+      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},
+        h(Btn,{v:'g',onClick:function(){setShowForm(false);}},null,'Cancelar'),
+        h(Btn,{onClick:guardar},'Guardar')
+      )
+    ),
+    h('div',{className:'card'},
+      h(TBL,{cols:[
+        {lbl:'Nombre',k:'nombre'},
+        {lbl:'Empresa',render:function(r){return r.empresa_nombre||'Todas';}},
+        {lbl:'$/km carg.',r:true,render:function(r){return CLP(Math.round(parseFloat(r.valor_km_cargado)||0));}},
+        {lbl:'$/km vacío',r:true,render:function(r){return CLP(Math.round(parseFloat(r.valor_km_vacio)||0));}},
+        {lbl:'Fijo salida',r:true,render:function(r){return parseFloat(r.costo_fijo_salida)?CLP(Math.round(parseFloat(r.costo_fijo_salida))):'—';}},
+        {lbl:'Vigencia',render:function(r){return fmtD(r.vigente_desde)+(r.vigente_hasta?' → '+fmtD(r.vigente_hasta):' → ∞');}},
+        {lbl:'Estado',render:function(r){return h(Bg,{c:r.activo?'g':'r'},r.activo?'Activa':'Inactiva');}},
+        {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:4}},h(Btn,{v:'a',sm:true,onClick:function(){openEdit(r);}},null,'✏'),h(Btn,{v:'r',sm:true,onClick:function(){eliminar(r.tarifa_id);}},null,'🗑'));}}
+      ],rows:tarifas,empty:'Sin tarifas — cree una para valorizar los traslados'})
+    )
+  );
+}
+
+
 // ══ GESTIÓN DE USUARIOS Y ROLES ══
 var MODULOS_SISTEMA=[
   {k:'ordenes',l:'Órdenes de Compra'},
@@ -5256,6 +5479,7 @@ var MODULOS_SISTEMA=[
   {k:'mantencion',l:'Mantención'},
   {k:'solicitudes',l:'Solicitudes'},
   {k:'finanzas',l:'Finanzas'},
+  {k:'transporte',l:'Transporte'},
   {k:'mantenedores',l:'Mantenedores'},
   {k:'reportes',l:'Reportes'},
   {k:'usuarios',l:'Usuarios'}
@@ -5598,7 +5822,7 @@ function Personal(p){
 
 function hSel(props,opts){return h.apply(null,['select',props].concat(opts));}
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','vacaciones':'Control de Vacaciones'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización'};
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
@@ -5684,6 +5908,12 @@ function App(){
         canSee('terreno')&&grpHdr('terr','TERRENO'),
         canSee('terreno')&&grp.terr&&h('div',null,navI('terreno','🌲','Registros Diarios',true)),
         canSee('terreno')&&h('div',{className:'sb-sep'}),
+        canSee('transporte')&&grpHdr('trans','TRANSPORTE'),
+        canSee('transporte')&&grp.trans&&h('div',null,
+          navI('trans-traslados','🚛','Traslados Maquinaria',true),
+          navI('trans-tarifas','💲','Tarifas Valorización',true)
+        ),
+        canSee('transporte')&&h('div',{className:'sb-sep'}),
         canSee('solicitudes')&&grpHdr('sol','SOLICITUDES'),
         canSee('solicitudes')&&grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
         canSee('solicitudes')&&h('div',{className:'sb-sep'}),
@@ -5758,6 +5988,8 @@ function App(){
           view==='solicitudes'&&h(SolicitudesView,{tok,m,user}),
           view==='terreno'&&h(TerrenoView,{tok,m,user}),
           view==='fin-cheques'&&h(FinChequesView,{tok,m}),
+          view==='trans-traslados'&&h(TransporteView,{tok,m}),
+          view==='trans-tarifas'&&h(TransporteTarifas,{tok,m}),
           view==='empresas'&&h(MasterV,{tok,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,activo:true},cols:[{lbl:'ID',k:'empresa_id',mono:true,w:50},{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
           view==='bodegas'&&h(MasterV,{tok,titulo:'Bodega',ep:'bodegas',pk:'bodega_id',Form:BodegaForm,importKey:'bodegas',blank:{codigo:'',nombre:'',ubicacion:'',responsable:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Ubicacion',k:'ubicacion'},{lbl:'Responsable',k:'responsable'}]}),
           view==='productos'&&h(MasterV,{tok,titulo:'Producto',ep:'productos',pk:'producto_id',Form:ProdForm,importKey:'productos',blank:{codigo:'',nombre:'',descripcion:'',categoria_id:'',subcategoria_id:'',unidad_medida:'UN',stock_minimo:0,stock_maximo:'',costo_referencia:0,unidad_compra:'',factor_conversion:1,activo:true},extra:{cats:m.cats,subcats:m.subcats},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Subcategoria',k:'subcategoria_nombre'},{lbl:'UM',k:'unidad_medida'},{lbl:'Stk min',k:'stock_minimo'},{lbl:'Costo ref.',render:r=>CLP(r.costo_referencia)}]}),
