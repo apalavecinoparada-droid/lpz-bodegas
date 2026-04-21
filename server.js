@@ -4526,40 +4526,50 @@ app.post('/api/admin/wipe-transacciones', auth, async(req,res)=>{
     const{confirmacion}=req.body;
     if(confirmacion!=='BORRAR TODAS LAS TRANSACCIONES')return res.status(400).json({error:'Debe enviar confirmación exacta'});
 
+    const tablas=[
+      'contratos','vacaciones_registros','trans_traslados','solicitudes',
+      'rend_gastos','rend_entregas','fin_cheques',
+      'terreno_tob_detalle','terreno_registros',
+      'mant_ot_tarea_personal','mant_ot_tareas','mant_ot_sistemas','mant_ot_materiales','mant_ot_personal','mant_ot',
+      'mant_avisos','mant_programacion','mant_lecturas',
+      'comb_cierre_guias','comb_cierres','comb_movimientos',
+      'movimiento_detalle','movimiento_encabezado',
+      'ordenes_compra_detalle','ordenes_compra','auditoria'
+    ];
+
+    // Pre-filtrar: solo tablas que realmente existen en la BD
+    const existentes=(await pool.query(`SELECT tablename FROM pg_tables WHERE schemaname='public' AND tablename=ANY($1::text[])`,[tablas])).rows.map(function(r){return r.tablename;});
+
     const client=await pool.connect();
     const borrados={};
     try{
-      await client.query('BEGIN');
-      const tablas=[
-        'contratos','vacaciones_registros','trans_traslados','solicitudes',
-        'rend_gastos','rend_entregas','fin_cheques',
-        'terreno_tob_detalle','terreno_registros',
-        'mant_ot_tarea_personal','mant_ot_tareas','mant_ot_sistemas','mant_ot_materiales','mant_ot_personal','mant_ot',
-        'mant_avisos','mant_programacion','mant_lecturas',
-        'comb_cierre_guias','comb_cierres','comb_movimientos',
-        'movimiento_detalle','movimiento_encabezado',
-        'ordenes_compra_detalle','ordenes_compra','auditoria'
-      ];
       for(const t of tablas){
+        if(existentes.indexOf(t)<0){borrados[t]='no existe';continue;}
         try{
           const c=await client.query(`SELECT COUNT(*) FROM ${t}`);
           const count=parseInt(c.rows[0].count);
           await client.query(`TRUNCATE TABLE ${t} RESTART IDENTITY CASCADE`);
           borrados[t]=count;
-        }catch(e){borrados[t]='error: '+e.message;}
+        }catch(e){
+          borrados[t]='error: '+e.message;
+        }
       }
-      // Reset stocks
-      try{await client.query('UPDATE stock_actual SET stock=0,costo_promedio=0,ultima_actualizacion=NOW()');borrados.stock_actual='reseteado';}catch(e){}
-      try{await client.query('UPDATE comb_stock SET litros_disponibles=0,costo_promedio=0,ultima_actualizacion=NOW()');borrados.comb_stock='reseteado';}catch(e){}
+      // Reset stocks — cada uno en su propio try para no abortar
+      try{
+        const ok=await pool.query(`SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='stock_actual'`);
+        if(ok.rows.length){await pool.query('UPDATE stock_actual SET stock=0,costo_promedio=0,ultima_actualizacion=NOW()');borrados.stock_actual='reseteado';}
+      }catch(e){borrados.stock_actual='error: '+e.message;}
+      try{
+        const ok=await pool.query(`SELECT 1 FROM pg_tables WHERE schemaname='public' AND tablename='comb_stock'`);
+        if(ok.rows.length){await pool.query('UPDATE comb_stock SET litros_disponibles=0,costo_promedio=0,ultima_actualizacion=NOW()');borrados.comb_stock='reseteado';}
+      }catch(e){borrados.comb_stock='error: '+e.message;}
       // Reset horómetros si se pide
       if(req.body.reset_horometros){
-        await client.query('UPDATE equipos SET horometro_actual=0,kilometraje_actual=0');
-        borrados.equipos_contadores='reseteados';
+        try{await pool.query('UPDATE equipos SET horometro_actual=0,kilometraje_actual=0');borrados.equipos_contadores='reseteados';}
+        catch(e){borrados.equipos_contadores='error: '+e.message;}
       }
-      await client.query('COMMIT');
       res.json({ok:true,borrados:borrados,usuario:req.user.email,fecha:new Date().toISOString()});
     }catch(e){
-      await client.query('ROLLBACK');
       res.status(500).json({error:e.message,borrados:borrados});
     }finally{
       client.release();
