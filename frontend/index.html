@@ -5927,7 +5927,7 @@ function ContratosView(p){
   var[selPersona,setSelPersona]=useState(null);
   var[msg,setMsg]=useState('');
   var[fPersona,setFPersona]=useState('');
-  var emptyForm={persona_id:'',empresa_id:'',tipo_contrato:'indefinido',es_actualizacion:false,fecha_contrato:new Date().toISOString().slice(0,10),fecha_inicio:new Date().toISOString().slice(0,10),fecha_termino:'',lugar_firma:'Nacimiento',funcion_texto:'',jornada_tipo:'normal',jornada_horas:44,jornada_texto:'de lunes a jueves de 07:00 a 12:00 hrs. y de 14:00 a 18:00 hrs., y viernes de 07:00 a 12:00 hrs. y de 14:00 a 17:00 hrs., destinando 60 minutos diarios para colación',lugar_prestacion:'',sueldo_base:'',bono_responsabilidad:'0',bono_produccion_fijo:'0',bono_produccion_variable:false,bono_produccion_tarifa:'0',bono_produccion_detalle:'',semana_corrida:false,asig_colacion:'0',asig_movilizacion:'0',asig_viatico:'0',tiene_alimentacion:false,alimentacion_detalle:'tres comidas preparadas según dieta',otros_beneficios:'',observaciones:''};
+  var emptyForm={persona_id:'',empresa_id:'',tipo_contrato:'indefinido',es_actualizacion:false,fecha_contrato:new Date().toISOString().slice(0,10),fecha_inicio:new Date().toISOString().slice(0,10),fecha_termino:'',lugar_firma:'Nacimiento',funcion_texto:'',jornada_tipo:'normal',jornada_horas:44,jornada_texto:'de lunes a jueves de 07:00 a 12:00 hrs. y de 14:00 a 18:00 hrs., y viernes de 07:00 a 12:00 hrs. y de 14:00 a 17:00 hrs., destinando 60 minutos diarios para colación',lugar_prestacion:'',sueldo_base:'',bono_responsabilidad:'0',bono_produccion_fijo:'0',bono_produccion_variable:false,bono_produccion_tarifa:'0',bono_produccion_detalle:'',semana_corrida:false,asig_colacion:'0',asig_movilizacion:'0',asig_viatico:'0',tiene_alimentacion:false,alimentacion_detalle:'tres comidas preparadas según dieta, sin costo para el trabajador',otros_beneficios:'',observaciones:''};
   var[form,setForm]=useState(emptyForm);
 
   function loadContratos(){
@@ -5943,14 +5943,18 @@ function ContratosView(p){
     var pers=personal.find(function(x){return String(x.persona_id)===String(pid);});
     setSelPersona(pers);
     if(!pers){setForm(Object.assign({},form,{persona_id:''}));return;}
-    var tipo=({'Indefinido':'indefinido','A Plazo':'plazo_fijo','Por Obra':'obra_servicio'})[pers.tipo_contrato]||'indefinido';
+    var tipoRaw=(pers.tipo_contrato||'').toUpperCase().trim();
+    var tipo='indefinido';
+    if(tipoRaw.indexOf('PLAZO')>=0)tipo='plazo_fijo';
+    else if(tipoRaw.indexOf('OBRA')>=0||tipoRaw.indexOf('SERVICIO')>=0||tipoRaw.indexOf('FAENA')>=0)tipo='obra_servicio';
+    else if(tipoRaw.indexOf('INDEFINIDO')>=0)tipo='indefinido';
     var funcionTxt=pers.funcion_contrato||'';
     // Si no hay función específica, buscar la estándar del cargo
     if(!funcionTxt&&pers.cargo){
       var fe=funciones.find(function(f){return (f.cargo||'').toUpperCase()===(pers.cargo||'').toUpperCase();});
       if(fe)funcionTxt=fe.descripcion_funcion;
     }
-    setForm(Object.assign({},form,{
+    setForm(function(f){return Object.assign({},f,{
       persona_id:pid,
       empresa_id:pers.empresa_id||'',
       tipo_contrato:tipo,
@@ -5968,8 +5972,8 @@ function ContratosView(p){
       asig_movilizacion:pers.asig_movilizacion||'0',
       asig_viatico:pers.asig_viatico||'0',
       tiene_alimentacion:!!pers.tiene_alimentacion,
-      alimentacion_detalle:pers.alimentacion_detalle||'tres comidas preparadas según dieta. Esta no tendrá costo para el trabajador'
-    }));
+      alimentacion_detalle:pers.alimentacion_detalle||'tres comidas preparadas según dieta, sin costo para el trabajador'
+    });});
   }
   function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
   function guardar(formato){
@@ -6284,12 +6288,12 @@ function buildContratoHTML(c,empresa,persona){
 
   var lugarPrestacion=c.lugar_prestacion||('las dependencias de la empresa, ubicadas en '+empDir+', comuna de '+empComuna+'. El Trabajador, además, prestará servicios en los distintos predios o fundos donde la empresa ejecute faenas forestales dentro de la Región del Biobío u otras zonas similares. El fundo específico será informado mediante anexo de contrato, pudiendo actualizarse de igual forma según los cambios operativos, sin que ello constituya modificación esencial del contrato');
 
-  // Remuneración — tabla compacta
+  // Remuneración — tabla compacta con columnas de ancho fijo
   var remuRows=[];
-  remuRows.push('<tr><td><strong>Sueldo Base Mensual</strong></td><td style="text-align:right">'+money(c.sueldo_base)+'</td></tr>');
+  remuRows.push('<tr><td style="width:50%"><strong>Sueldo Base Mensual</strong></td><td style="width:50%;text-align:right">'+money(c.sueldo_base)+'</td></tr>');
   if(parseFloat(c.bono_responsabilidad)>0)remuRows.push('<tr><td><strong>Bono de Responsabilidad</strong></td><td style="text-align:right">'+money(c.bono_responsabilidad)+'</td></tr>');
   if(parseFloat(c.bono_produccion_fijo)>0)remuRows.push('<tr><td><strong>Bono de Producción Fijo</strong></td><td style="text-align:right">'+money(c.bono_produccion_fijo)+'</td></tr>');
-  var remuTable='<table style="width:100%;border-collapse:collapse;margin:4px 0"><tbody>'+remuRows.join('')+'</tbody></table>';
+  var remuTable='<table style="width:100%;border-collapse:collapse;margin:4px 0;table-layout:fixed"><tbody>'+remuRows.join('')+'</tbody></table>';
 
   var bonoVarTxt='';
   if(c.bono_produccion_variable){
@@ -6340,11 +6344,11 @@ function buildContratoHTML(c,empresa,persona){
     '</style></head><body>'+
     '<div class="hdr">'+
       '<div class="hdr-logo">'+(empresa.logo_base64?'<img src="'+empresa.logo_base64+'" alt="logo">':'<div style="width:80px;height:80px;background:#1E3A2D;border-radius:10px;color:#D4C5A9;text-align:center;line-height:80px;font-size:32px;font-weight:700">LP</div>')+'</div>'+
-      '<div class="hdr-title"><h1>CONTRATO DE TRABAJO</h1>'+(c.es_actualizacion?'<div class="sub">ACTUALIZACIÓN / ANEXO</div>':'')+'</div>'+
+      '<div class="hdr-title"><h1>CONTRATO DE TRABAJO</h1>'+(c.es_actualizacion?'<div class="sub">ACTUALIZACIÓN DE CONTRATO</div>':'')+'</div>'+
       '<div class="hdr-right"></div>'+
     '</div>'+
     '<p>En '+(c.lugar_firma||'Nacimiento')+', a '+fd(c.fecha_contrato)+', entre la empresa <strong>'+(empresa.razon_social||'')+'</strong>, Rol Único Tributario N° '+(empresa.rut||'')+', representada por don <strong>'+rep+'</strong>, cédula nacional de identidad N° '+repRut+', con domicilio en '+empDir+', comuna de '+empComuna+', Región de '+empRegion+', en adelante «el Empleador»; y don/doña <strong>'+(persona.nombre_completo||'')+'</strong>, de nacionalidad '+(persona.nacionalidad||'Chileno(a)')+', cédula nacional de identidad N° '+(persona.rut||'')+', de estado civil '+(persona.estado_civil||'')+', fecha de nacimiento '+fc(persona.fecha_nacimiento)+', domiciliado en '+(persona.direccion||'')+', comuna de '+(persona.comuna||'')+', Región '+(persona.region||'VIII del Bio Bio')+', en adelante «el Trabajador»; capaces de celebrar contrato de trabajo, han convenido lo siguiente:</p>'+
-    '<p><strong>PRIMERA. FUNCIÓN O LABOR.</strong> El Trabajador se compromete a desempeñar el cargo de <strong>'+(persona.cargo||'')+'</strong>. '+c.funcion_texto+' Se eleva a la calidad de esencial del presente contrato la condición de que el Trabajador sea considerado una persona íntegra e intachable, de modo tal que cualquier falta de honestidad o probidad se considerará falta gravísima y causal de terminación inmediata del contrato.</p>'+
+    '<p><strong>PRIMERA. FUNCIÓN O LABOR.</strong> El Trabajador se compromete a desempeñar el cargo de <strong>'+(persona.cargo||'')+'</strong>. El Trabajador deberá ejecutar la labor de '+(c.funcion_texto||'').replace(/\.$/,'')+'. Se eleva a la calidad de esencial del presente contrato la condición de que el Trabajador sea considerado una persona íntegra e intachable, de modo tal que cualquier falta de honestidad o probidad se considerará falta gravísima y causal de terminación inmediata del contrato.</p>'+
     '<p><strong>SEGUNDA. LUGAR DE PRESTACIÓN DE SERVICIOS.</strong> El Trabajador prestará sus servicios en '+lugarPrestacion+'.</p>'+
     '<p><strong>TERCERA. JORNADA DE TRABAJO.</strong> '+jornadaTxt+'</p>'+
     '<p><strong>'+numRemu+'. REMUNERACIONES.</strong> La remuneración mensual del Trabajador será la siguiente:</p>'+
