@@ -4197,6 +4197,35 @@ app.get('/api/trans/dashboard', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
+// ══ PWA — MANIFEST, SERVICE WORKER, ICON ══
+app.get('/manifest.json', (req,res)=>{
+  res.json({
+    name:'Empresas Poo',short_name:'EP Gestión',description:'Sistema de Gestión Forestal',
+    start_url:'/',display:'standalone',orientation:'portrait',
+    background_color:'#1E3A2D',theme_color:'#1E3A2D',
+    icons:[{src:'/icon-192.png',sizes:'192x192',type:'image/png'},{src:'/icon-512.png',sizes:'512x512',type:'image/png'}]
+  });
+});
+app.get('/sw.js', (req,res)=>{
+  res.setHeader('Content-Type','application/javascript');
+  res.send(`
+    const CACHE='ep-v1';
+    self.addEventListener('install',e=>{self.skipWaiting();});
+    self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k)))));});
+    self.addEventListener('fetch',e=>{
+      if(e.request.method!=='GET')return;
+      if(e.request.url.includes('/api/'))return;
+      e.respondWith(fetch(e.request).then(r=>{if(r.ok){const c=r.clone();caches.open(CACHE).then(ca=>ca.put(e.request,c));}return r;}).catch(()=>caches.match(e.request)));
+    });
+  `);
+});
+// Generar íconos PWA dinámicamente como SVG→PNG (fallback SVG)
+app.get('/icon-:size.png', (req,res)=>{
+  const s=parseInt(req.params.size)||192;
+  res.setHeader('Content-Type','image/svg+xml');
+  res.send(`<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 100 100"><rect width="100" height="100" rx="18" fill="#1E3A2D"/><text x="50" y="68" font-size="52" font-weight="700" text-anchor="middle" fill="#D4C5A9" font-family="Arial">LP</text></svg>`);
+});
+
 // SPA fallback — must be AFTER all API routes
 app.get('*', (req,res)=>res.sendFile(path.join(__dirname,'frontend','index.html')));
 
