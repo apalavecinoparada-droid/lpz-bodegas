@@ -6095,8 +6095,12 @@ function MobileTerreno(p){
   var[saved,setSaved]=useState(false);
   var[ultimoHoro,setUltimoHoro]=useState(null);
   var[loadingHoro,setLoadingHoro]=useState(false);
+  var[tobCats,setTobCats]=useState([]);
+  var[tobLineas,setTobLineas]=useState([]);
   var[form,setForm]=useState({fecha:new Date().toISOString().slice(0,10),equipo_id:'',faena_id:'',horometro_inicial:'',horometro_final:'',horas_perdidas:'0',litros_combustible:'',estanque_id:'',observaciones:''});
-  // Al cambiar equipo, cargar último horómetro y su faena
+  useEffect(function(){
+    api('/terreno/tob-categorias','GET',null,p.tok).then(function(r){setTobCats(Array.isArray(r)?r:[]);}).catch(function(){});
+  },[p.tok]);
   useEffect(function(){
     if(!form.equipo_id){setUltimoHoro(null);return;}
     var eq=equipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
@@ -6113,14 +6117,26 @@ function MobileTerreno(p){
   var hi=parseFloat(form.horometro_inicial)||0;
   var hf=parseFloat(form.horometro_final)||0;
   var hTrab=hf>hi?(hf-hi).toFixed(1):'0.0';
+  var hPerd=parseFloat(form.horas_perdidas)||0;
+  var sumTob=tobLineas.reduce(function(s,l){return s+(parseFloat(l.horas)||0);},0);
+  var tobOk=hPerd===0||Math.abs(hPerd-sumTob)<0.01;
+  function addTobLinea(){setTobLineas(function(l){return l.concat([{tob_cat_id:'',horas:'',clasificacion:'E'}]);});}
+  function updTobLinea(i,k,v){setTobLineas(function(l){var n=l.slice();n[i]=Object.assign({},n[i],{[k]:v});return n;});}
+  function delTobLinea(i){setTobLineas(function(l){return l.filter(function(_,idx){return idx!==i;});});}
   function guardar(){
     if(!form.equipo_id){setMsg('Seleccione equipo');return;}
     if(!form.faena_id){setMsg('Seleccione faena');return;}
     if(form.horometro_final===''||form.horometro_final==null){setMsg('Ingrese horómetro final');return;}
     if(hf<hi){setMsg('Horómetro final debe ser mayor o igual al inicial');return;}
-    api('/terreno/registros','POST',form,p.tok).then(function(){setSaved(true);setMsg('');}).catch(function(e){setMsg(e.message);});
+    if(hPerd>0){
+      var linVal=tobLineas.filter(function(l){return l.tob_cat_id&&parseFloat(l.horas)>0;});
+      if(linVal.length===0){setMsg('Debe desglosar las horas perdidas en tiempos obvios');return;}
+      if(Math.abs(hPerd-sumTob)>0.01){setMsg('El desglose ('+sumTob.toFixed(1)+'h) debe ser igual a las horas perdidas ('+hPerd.toFixed(1)+'h)');return;}
+    }
+    var payload=Object.assign({},form,{tob_detalle:tobLineas.filter(function(l){return l.tob_cat_id&&parseFloat(l.horas)>0;})});
+    api('/terreno/registros','POST',payload,p.tok).then(function(){setSaved(true);setMsg('');}).catch(function(e){setMsg(e.message);});
   }
-  function nuevo(){setSaved(false);setForm(Object.assign({},form,{fecha:new Date().toISOString().slice(0,10),horometro_inicial:'',horometro_final:'',horas_perdidas:'0',litros_combustible:'',estanque_id:'',observaciones:''}));setUltimoHoro(null);}
+  function nuevo(){setSaved(false);setTobLineas([]);setForm(Object.assign({},form,{fecha:new Date().toISOString().slice(0,10),horometro_inicial:'',horometro_final:'',horas_perdidas:'0',litros_combustible:'',estanque_id:'',observaciones:''}));setUltimoHoro(null);}
   var F=function(lbl,content){return h('div',{className:'mob-field'},h('label',null,lbl),content);};
   if(saved)return h('div',{className:'mob-wrap'},
     h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Terreno')),
@@ -6132,7 +6148,6 @@ function MobileTerreno(p){
       h('button',{onClick:p.onBack,style:{background:'none',border:'1px solid #CBD5E1',padding:'12px 24px',borderRadius:8,marginTop:8,cursor:'pointer',fontSize:14}},'Volver al inicio')
     )
   );
-  var eqSel=equipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
   return h('div',{className:'mob-wrap'},
     h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Registro Terreno')),
     h('div',{className:'mob-form',style:{paddingBottom:40}},
@@ -6140,7 +6155,6 @@ function MobileTerreno(p){
       F('Equipo *',h('select',{value:form.equipo_id,onChange:function(e){upd('equipo_id',e.target.value);}},h('option',{value:''},'Seleccione su equipo...'),equipos.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);}))),
       F('Fecha',h('input',{type:'date',value:form.fecha,onChange:function(e){upd('fecha',e.target.value);}})),
       F('Faena *',h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);}},h('option',{value:''},'Seleccione...'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
-      // Info del último horómetro
       form.equipo_id&&h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:8,padding:10,marginBottom:12,fontSize:13}},
         loadingHoro?h('div',{style:{color:'#3B82F6'}},'Buscando último registro...'):
         ultimoHoro!=null?h('div',null,
@@ -6148,19 +6162,43 @@ function MobileTerreno(p){
           h('div',{style:{fontSize:20,fontWeight:700,color:'#1E3A2D'}},ultimoHoro.toFixed(1)+' h')
         ):h('div',{style:{color:'#64748B'}},'Primer registro de este equipo')
       ),
-      // Horómetros: inicial en caja normal, final grande/destacado
       F('Horómetro inicial',h('input',{type:'number',value:form.horometro_inicial,onChange:function(e){upd('horometro_inicial',e.target.value);},step:0.1,min:0,inputMode:'decimal',style:{background:'#F8FAFC'}})),
       h('div',{className:'mob-field'},
         h('label',{style:{color:'#1E3A2D',fontWeight:700}},'⚡ Horómetro final *'),
         h('input',{type:'number',value:form.horometro_final,onChange:function(e){upd('horometro_final',e.target.value);},step:0.1,min:0,inputMode:'decimal',placeholder:'Lectura al finalizar la jornada',style:{fontSize:22,fontWeight:700,border:'2px solid #1E3A2D',padding:'16px 12px',textAlign:'center'}})
       ),
-      // Horas trabajadas calculadas
       hf>0&&h('div',{style:{background:hf>=hi?'#F0FDF4':'#FEF2F2',border:'2px solid '+(hf>=hi?'#86EFAC':'#FECACA'),borderRadius:10,padding:14,marginBottom:12,textAlign:'center'}},
         h('div',{style:{fontSize:12,color:hf>=hi?'#166534':'#991B1B',fontWeight:600,marginBottom:4}},hf>=hi?'HORAS TRABAJADAS':'ERROR'),
         h('div',{style:{fontSize:28,fontWeight:700,color:hf>=hi?'#166534':'#991B1B'}},hf>=hi?hTrab+' h':'Final < Inicial')
       ),
       F('Horas perdidas (detenciones)',h('input',{type:'number',value:form.horas_perdidas,onChange:function(e){upd('horas_perdidas',e.target.value);},step:0.1,min:0,inputMode:'decimal',placeholder:'0'})),
-      // Combustible (opcional)
+      // ── Desglose Tiempos Obvios (solo si hay horas perdidas) ──
+      hPerd>0&&h('div',{style:{background:'#FFF7ED',border:'2px solid '+(tobOk?'#86EFAC':'#FED7AA'),borderRadius:10,padding:12,marginBottom:12}},
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+          h('div',{style:{fontSize:13,fontWeight:700,color:'#9A3412'}},'⏱ Desglose horas perdidas'),
+          h('div',{style:{fontSize:12,fontWeight:700,color:tobOk?'#166534':'#DC2626',background:'#fff',padding:'4px 8px',borderRadius:6}},sumTob.toFixed(1)+' / '+hPerd.toFixed(1)+' h')
+        ),
+        tobLineas.length===0&&h('div',{style:{fontSize:12,color:'#78350F',marginBottom:8}},'Indique en qué se perdieron las '+hPerd.toFixed(1)+' horas'),
+        tobLineas.map(function(l,i){
+          return h('div',{key:i,style:{background:'#fff',borderRadius:8,padding:8,marginBottom:8,border:'1px solid #FED7AA'}},
+            h('div',{style:{display:'flex',gap:6,alignItems:'center',marginBottom:6}},
+              h('select',{value:l.tob_cat_id,onChange:function(e){updTobLinea(i,'tob_cat_id',e.target.value);},style:{flex:1,padding:'10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13}},
+                h('option',{value:''},'Seleccione causa...'),
+                tobCats.map(function(c){return h('option',{key:c.tob_cat_id,value:c.tob_cat_id},c.causa);})
+              ),
+              h('button',{onClick:function(){delTobLinea(i);},style:{background:'#FEE2E2',border:'none',borderRadius:6,padding:'10px 12px',cursor:'pointer',fontSize:16,color:'#991B1B'}},'×')
+            ),
+            h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}},
+              h('input',{type:'number',value:l.horas,onChange:function(e){updTobLinea(i,'horas',e.target.value);},step:0.1,min:0,inputMode:'decimal',placeholder:'Horas',style:{padding:'10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13,fontWeight:600}}),
+              h('select',{value:l.clasificacion,onChange:function(e){updTobLinea(i,'clasificacion',e.target.value);},style:{padding:'10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13}},
+                h('option',{value:'E'},'E - Estructural'),
+                h('option',{value:'F'},'F - Funcional')
+              )
+            )
+          );
+        }),
+        h('button',{onClick:addTobLinea,style:{width:'100%',padding:12,background:'#fff',border:'1px dashed #F97316',borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:600,color:'#9A3412'}},'+ Agregar causa')
+      ),
       h('div',{style:{background:'#F8FAFC',borderRadius:8,padding:10,marginBottom:12}},
         h('div',{style:{fontSize:12,fontWeight:700,color:'#475569',marginBottom:8}},'⛽ COMBUSTIBLE (solo si cargó)'),
         F('Litros',h('input',{type:'number',value:form.litros_combustible,onChange:function(e){upd('litros_combustible',e.target.value);},step:0.1,min:0,inputMode:'decimal',placeholder:'0'})),
