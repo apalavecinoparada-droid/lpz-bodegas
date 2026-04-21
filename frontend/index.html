@@ -3271,7 +3271,33 @@ function MasterV(p){
       h('input',{value:q,onChange:e=>setQ(e.target.value),placeholder:'Buscar...',style:{maxWidth:250}}),
       h(Btn,{onClick:function(){setErr('');setModal(Object.assign({},p.blank));}},'+ Agregar'),
       p.extraBtns&&p.extraBtns(),
-      p.importKey&&h(Btn,{v:'g',sm:true,onClick:function(){setShowImport(true);}},null,'⬆ Importar'),
+      p.importKey&&h(Btn,{v:'g',sm:true,onClick:function(){setShowImport(true);}},null,'⬆ Importar CSV'),
+      p.importBulkJSON&&h('label',{style:{display:'inline-block'}},
+        h(Btn,{v:'g',sm:true,onClick:function(){document.getElementById('bulk-json-'+p.ep).click();}},null,'📥 Importar JSON'),
+        h('input',{id:'bulk-json-'+p.ep,type:'file',accept:'.json',style:{display:'none'},onChange:function(e){
+          var f=e.target.files[0];if(!f)return;
+          var reader=new FileReader();
+          reader.onload=function(ev){
+            try{
+              var data=JSON.parse(ev.target.result);
+              if(!Array.isArray(data))throw new Error('El archivo debe contener un array JSON');
+              if(!confirm('¿Importar '+data.length+' registros?\n\nLos existentes (match por nombre) se actualizarán, los nuevos se crearán.'))return;
+              api(p.importBulkJSON.replace('/api',''),'POST',data,p.tok).then(function(r){
+                var rs=r.resumen||{};
+                alert('Importación completada:\n\n'+
+                  '✅ Creados: '+(rs.creados||0)+'\n'+
+                  '🔄 Actualizados: '+(rs.actualizados||0)+'\n'+
+                  '❌ Errores: '+(rs.errores||0)+'\n'+
+                  '⚠ Sin empresa: '+(rs.sin_empresa||0)+'\n'+
+                  '⚠ Sin faena: '+(rs.sin_faena||0));
+                load();
+              }).catch(function(err){alert('Error: '+err.message);});
+            }catch(err){alert('Archivo inválido: '+err.message);}
+            e.target.value='';
+          };
+          reader.readAsText(f);
+        }})
+      ),
       p.onExport&&h(Btn,{v:'teal',onClick:p.onExport},null,'Excel')
     ),
     delErr&&h('div',{className:'al al-e',style:{marginBottom:8}},delErr),
@@ -6958,7 +6984,7 @@ function App(){
             h('div',null,h('h3',{style:{marginBottom:8,fontWeight:700}},'Subcategorias'),h(MasterV,{tok,titulo:'Subcategoria',ep:'subcategorias',pk:'subcategoria_id',Form:SubcatForm,blank:{nombre:'',categoria_id:'',activo:true},extra:{cats:m.cats},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Categoria',render:r=>(m.cats.find(c=>c.categoria_id===r.categoria_id)||{}).nombre||'—'}]}))
           ),
           view==='faenas'&&h(MasterV,{tok,titulo:'Faena',ep:'faenas',pk:'faena_id',Form:FaenaForm,blank:{codigo:'',nombre:'',descripcion:'',empresa_id:'',activo:true},extra:{empresas:m.empresas},importKey:'faenas',cols:[{lbl:'Empresa',render:function(r){return (m.empresas.find(function(e){return e.empresa_id===parseInt(r.empresa_id||0);})||{}).razon_social||'—';}},{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
-          view==='equipos'&&h(MasterV,{tok,titulo:'Cargo / Centro de costo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',blank:{empresa_id:'',tipo_cargo:'maquinaria',codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',modelo_id:'',anio:'',placa_patente:'',chasis:'',contacto_terreno:'',horas_productivas_dia:'12',patente_serie:'',activo:true},extra:{faenas:m.faenas,empresas:m.empresas,modelos:m.modelos||[]},cols:[{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Tipo',render:function(r){var tc=r.tipo_cargo||'maquinaria';var colors={maquinaria:'b',camioneta:'teal',camion:'p',camion_estanque:'y',camion_cama_baja:'y',faena:'g',taller:'gray'};return h(Bg,{c:colors[tc]||'gray'},tc.replace(/_/g,' '));}},{lbl:'Código',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Modelo',render:function(r){return r.modelo_marca?(r.modelo_marca+' '+r.modelo_nombre):(r.marca?(r.marca+' '+(r.modelo||'')):'—');}},{lbl:'Faena',k:'faena_nombre'}]}),
+          view==='equipos'&&h(MasterV,{tok,titulo:'Cargo / Centro de costo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',importBulkJSON:'/api/import/equipos',blank:{empresa_id:'',tipo_cargo:'maquinaria',codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',modelo_id:'',anio:'',placa_patente:'',chasis:'',contacto_terreno:'',horas_productivas_dia:'12',patente_serie:'',activo:true},extra:{faenas:m.faenas,empresas:m.empresas,modelos:m.modelos||[]},cols:[{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Tipo',render:function(r){var tc=r.tipo_cargo||'maquinaria';var colors={maquinaria:'b',camioneta:'teal',camion:'p',camion_estanque:'y',camion_cama_baja:'y',faena:'g',taller:'gray'};return h(Bg,{c:colors[tc]||'gray'},tc.replace(/_/g,' '));}},{lbl:'Código',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Modelo',render:function(r){return r.modelo_marca?(r.modelo_marca+' '+r.modelo_nombre):(r.marca?(r.marca+' '+(r.modelo||'')):'—');}},{lbl:'Faena',k:'faena_nombre'}]}),
           view==='modelos'&&h(ModelosAdmin,{tok,m}),
           view==='proveedores'&&h(ProveedoresViewW,{tok}),
           view==='condpago'&&h(MasterV,{tok,titulo:'Condicion de Pago',ep:'condiciones-pago',pk:'condicion_id',Form:CondPagoForm,importKey:'condpago',blank:{nombre:'',descripcion:'',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
