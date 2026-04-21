@@ -1121,6 +1121,87 @@ eqR.delete('/:id', auth, async(req,res)=>{
 });
 app.use('/api/equipos', eqR);
 
+// Importación masiva de equipos con validación por nombre
+app.post('/api/import/equipos', auth, async(req,res)=>{
+  try{
+    const items=Array.isArray(req.body)?req.body:[];
+    if(!items.length)return res.status(400).json({error:'Array vacío'});
+    // Pre-cargar empresas y faenas
+    const emps=(await pool.query('SELECT empresa_id,razon_social,rut FROM empresas')).rows;
+    const faenas=(await pool.query('SELECT faena_id,codigo,nombre FROM faenas')).rows;
+    const equiposExist=(await pool.query('SELECT equipo_id,codigo,nombre,empresa_id,faena_id FROM equipos')).rows;
+    function norm(s){return (s||'').toString().toUpperCase().trim().replace(/\s+/g,' ').replace(/[.,]/g,'');}
+    function findEmpresa(n){
+      if(!n)return null;
+      var nu=norm(n);
+      for(var e of emps){
+        var r=norm(e.razon_social);
+        if(r===nu||r.indexOf(nu)>=0||nu.indexOf(r)>=0)return e.empresa_id;
+      }
+      return null;
+    }
+    function findFaena(n){
+      if(!n)return null;
+      var nu=norm(n);
+      for(var f of faenas){
+        if(norm(f.nombre)===nu||norm(f.codigo)===nu)return f.faena_id;
+      }
+      // Match parcial
+      for(var f of faenas){
+        if(norm(f.nombre).indexOf(nu)>=0||nu.indexOf(norm(f.nombre))>=0)return f.faena_id;
+      }
+      return null;
+    }
+    function findEquipo(nombre){
+      if(!nombre)return null;
+      var nu=norm(nombre);
+      for(var eq of equiposExist){
+        if(norm(eq.nombre)===nu||norm(eq.codigo)===nu)return eq;
+      }
+      return null;
+    }
+    function genCodigo(nombre){
+      var base=norm(nombre).replace(/[^A-Z0-9]/g,'-').replace(/-+/g,'-').replace(/^-|-$/g,'').slice(0,25);
+      return base||'EQ-'+Date.now();
+    }
+    const results=[];
+    for(const item of items){
+      const nombre=(item.nombre||'').trim();
+      if(!nombre){results.push({nombre:'(vacío)',ok:false,error:'Sin nombre'});continue;}
+      try{
+        const empresa_id=findEmpresa(item.empresa);
+        const faena_id=findFaena(item.faena);
+        const existente=findEquipo(nombre);
+        const tipo=item.tipo||null;
+        const tipoCat=item.categoria||null; // Maquinaria/Vehículo/etc.
+        if(existente){
+          // Actualizar empresa y faena si cambiaron
+          await pool.query('UPDATE equipos SET empresa_id=COALESCE($1,empresa_id),faena_id=COALESCE($2,faena_id),tipo=COALESCE($3,tipo),modificado_en=NOW() WHERE equipo_id=$4',[empresa_id,faena_id,tipo,existente.equipo_id]);
+          results.push({nombre:nombre,codigo:existente.codigo,ok:true,accion:'actualizado',empresa:empresa_id?'ok':'sin mapeo',faena:faena_id?'ok':'sin mapeo'});
+        } else {
+          // Crear nuevo
+          let codigo=item.codigo||genCodigo(nombre);
+          // Verificar que el código no exista
+          let suf=1;const base=codigo;
+          while(equiposExist.find(function(e){return (e.codigo||'').toUpperCase()===codigo.toUpperCase();})){
+            codigo=base+'-'+suf;suf++;
+          }
+          const r=await pool.query('INSERT INTO equipos(codigo,nombre,tipo,faena_id,empresa_id,tipo_cargo,activo) VALUES($1,$2,$3,$4,$5,$6,true) RETURNING equipo_id,codigo',
+            [codigo,nombre,tipo,faena_id,empresa_id,tipoCat&&tipoCat.toLowerCase().indexOf('centro')>=0?'cargo':'maquinaria']);
+          equiposExist.push({equipo_id:r.rows[0].equipo_id,codigo:r.rows[0].codigo,nombre:nombre,empresa_id:empresa_id,faena_id:faena_id});
+          results.push({nombre:nombre,codigo:r.rows[0].codigo,ok:true,accion:'creado',empresa:empresa_id?'ok':'sin mapeo',faena:faena_id?'ok':'sin mapeo'});
+        }
+      }catch(e){results.push({nombre:nombre,ok:false,error:e.message});}
+    }
+    const creados=results.filter(function(r){return r.accion==='creado';}).length;
+    const actualizados=results.filter(function(r){return r.accion==='actualizado';}).length;
+    const errores=results.filter(function(r){return !r.ok;}).length;
+    const sinEmpresa=results.filter(function(r){return r.empresa==='sin mapeo';}).length;
+    const sinFaena=results.filter(function(r){return r.faena==='sin mapeo';}).length;
+    res.json({results,resumen:{creados,actualizados,errores,sin_empresa:sinEmpresa,sin_faena:sinFaena,total:items.length}});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 // PROVEEDORES con nuevos campos
 const prvR=express.Router();
 prvR.get('/', auth, async(req,res)=>{try{res.json((await pool.query('SELECT * FROM proveedores ORDER BY nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
