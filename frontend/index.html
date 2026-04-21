@@ -5957,6 +5957,135 @@ function MobileTransporte(p){
   );
 }
 
+// ── Formulario de SOLICITUDES móvil ──
+function MobileSolicitudes(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var faenas=p.m.faenas||[];
+  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo;});
+  var subcats=(p.m.subcats||[]).filter(function(s){return s.activo;});
+  var[usuarios,setUsuarios]=useState([]);
+  var[msg,setMsg]=useState('');
+  var[saved,setSaved]=useState(false);
+  var[showAdv,setShowAdv]=useState(false);
+  var[form,setForm]=useState({dirigida_a_id:'',prioridad:'normal',detalle:'',cantidad:'1',empresa_id:'',faena_id:'',equipo_id:'',subcategoria_id:'',observacion:''});
+  useEffect(function(){
+    api('/usuarios','GET',null,p.tok).then(function(r){setUsuarios((Array.isArray(r)?r:[]).filter(function(u){return u.activo;}));}).catch(function(){});
+  },[p.tok]);
+  function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
+  function guardar(){
+    if(!form.dirigida_a_id){setMsg('Seleccione destinatario');return;}
+    if(!form.detalle){setMsg('Ingrese detalle');return;}
+    api('/solicitudes','POST',form,p.tok).then(function(){setSaved(true);setMsg('');}).catch(function(e){setMsg(e.message);});
+  }
+  function nuevo(){setSaved(false);setShowAdv(false);setForm({dirigida_a_id:form.dirigida_a_id,prioridad:'normal',detalle:'',cantidad:'1',empresa_id:'',faena_id:'',equipo_id:'',subcategoria_id:'',observacion:''});}
+  var F=function(lbl,content){return h('div',{className:'mob-field'},h('label',null,lbl),content);};
+  var PRIO=[{v:'normal',l:'Normal',c:'#3B82F6'},{v:'alta',l:'Alta',c:'#F59E0B'},{v:'urgente',l:'Urgente',c:'#EF4444'}];
+  if(saved)return h('div',{className:'mob-wrap'},
+    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Solicitud')),
+    h('div',{style:{textAlign:'center',padding:'60px 20px'}},
+      h('div',{style:{fontSize:48,marginBottom:12}},'✅'),
+      h('div',{style:{fontSize:16,fontWeight:700,color:'#166534',marginBottom:16}},'Solicitud enviada'),
+      h('button',{onClick:nuevo,className:'mob-submit',style:{maxWidth:240,margin:'16px auto',display:'block'}},'Nueva solicitud'),
+      h('button',{onClick:p.onBack,style:{background:'none',border:'1px solid #CBD5E1',padding:'12px 24px',borderRadius:8,marginTop:8,cursor:'pointer',fontSize:14}},'Volver al inicio')
+    )
+  );
+  return h('div',{className:'mob-wrap'},
+    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Nueva Solicitud')),
+    h('div',{className:'mob-form',style:{paddingBottom:40}},
+      msg&&h('div',{className:'al al-e',style:{marginBottom:10}},msg),
+      F('¿A quién va dirigida? *',h('select',{value:form.dirigida_a_id,onChange:function(e){upd('dirigida_a_id',e.target.value);}},h('option',{value:''},'Seleccione destinatario...'),usuarios.map(function(u){return h('option',{key:u.usuario_id,value:u.usuario_id},u.nombre);}))),
+      // Prioridad como botones grandes
+      h('div',{className:'mob-field'},
+        h('label',null,'Prioridad'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
+          PRIO.map(function(pr){
+            var on=form.prioridad===pr.v;
+            return h('button',{key:pr.v,onClick:function(){upd('prioridad',pr.v);},style:{padding:'14px 8px',borderRadius:8,border:'2px solid '+(on?pr.c:'#CBD5E1'),background:on?pr.c:'#fff',color:on?'#fff':'#475569',fontWeight:700,fontSize:13,cursor:'pointer'}},pr.l);
+          })
+        )
+      ),
+      F('¿Qué necesitas? *',h('textarea',{value:form.detalle,onChange:function(e){upd('detalle',e.target.value);},rows:3,placeholder:'Ej: 10 litros de aceite hidráulico'})),
+      F('Cantidad',h('input',{type:'number',value:form.cantidad,onChange:function(e){upd('cantidad',e.target.value);},min:0,step:0.1,inputMode:'decimal'})),
+      // Sección avanzada colapsable
+      h('button',{onClick:function(){setShowAdv(!showAdv);},style:{width:'100%',padding:12,background:'#F1F5F9',border:'1px dashed #CBD5E1',borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:600,color:'#475569',marginTop:4}},(showAdv?'▼ ':'▶ ')+'Opcional: empresa, faena, equipo'),
+      showAdv&&h('div',{style:{background:'#F8FAFC',borderRadius:8,padding:10,marginTop:6}},
+        F('Empresa',h('select',{value:form.empresa_id,onChange:function(e){upd('empresa_id',e.target.value);}},h('option',{value:''},'—'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+        F('Faena',h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);}},h('option',{value:''},'—'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+        F('Equipo',h('select',{value:form.equipo_id,onChange:function(e){upd('equipo_id',e.target.value);}},h('option',{value:''},'—'),equipos.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);}))),
+        F('Clasificación',h('select',{value:form.subcategoria_id,onChange:function(e){upd('subcategoria_id',e.target.value);}},h('option',{value:''},'—'),subcats.map(function(s){return h('option',{key:s.subcategoria_id,value:s.subcategoria_id},s.nombre);}))),
+        F('Observación',h('textarea',{value:form.observacion,onChange:function(e){upd('observacion',e.target.value);},rows:2}))
+      ),
+      h('button',{onClick:guardar,className:'mob-submit'},'Enviar solicitud')
+    )
+  );
+}
+
+// ── Formulario de RENDICIONES móvil ──
+function MobileRendiciones(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var faenas=p.m.faenas||[];
+  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo;});
+  var proveedores=(p.m.provs||[]).filter(function(pr){return pr.activo;});
+  var personal=(p.m.personal||[]).filter(function(x){return x.activo;});
+  var[msg,setMsg]=useState('');
+  var[saved,setSaved]=useState(false);
+  var[showAdv,setShowAdv]=useState(false);
+  var TIPOS=[{v:'combustible',l:'⛽ Combustible'},{v:'herramientas',l:'🔧 Herramientas'},{v:'repuestos',l:'⚙ Repuestos'},{v:'alimentacion',l:'🍽 Alimentación'},{v:'peaje',l:'🛣 Peaje'},{v:'otros',l:'📦 Otros'}];
+  var[form,setForm]=useState({persona_id:'',empresa_id:'',fecha_gasto:new Date().toISOString().slice(0,10),tipo_gasto:'otros',monto:'',descripcion:'',faena_id:'',equipo_id:'',proveedor_id:'',numero_documento:'',tiene_respaldo:false});
+  function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
+  function guardar(){
+    if(!form.persona_id){setMsg('Seleccione trabajador');return;}
+    if(!form.monto||parseFloat(form.monto)<=0){setMsg('Ingrese monto');return;}
+    if(!form.descripcion){setMsg('Ingrese descripción');return;}
+    api('/rend/gastos','POST',form,p.tok).then(function(){setSaved(true);setMsg('');}).catch(function(e){setMsg(e.message);});
+  }
+  function nuevo(){setSaved(false);setShowAdv(false);setForm(Object.assign({},form,{monto:'',descripcion:'',numero_documento:'',tiene_respaldo:false}));}
+  var F=function(lbl,content){return h('div',{className:'mob-field'},h('label',null,lbl),content);};
+  if(saved)return h('div',{className:'mob-wrap'},
+    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Rendición')),
+    h('div',{style:{textAlign:'center',padding:'60px 20px'}},
+      h('div',{style:{fontSize:48,marginBottom:12}},'✅'),
+      h('div',{style:{fontSize:16,fontWeight:700,color:'#166534',marginBottom:16}},'Gasto registrado'),
+      h('button',{onClick:nuevo,className:'mob-submit',style:{maxWidth:240,margin:'16px auto',display:'block'}},'Registrar otro'),
+      h('button',{onClick:p.onBack,style:{background:'none',border:'1px solid #CBD5E1',padding:'12px 24px',borderRadius:8,marginTop:8,cursor:'pointer',fontSize:14}},'Volver al inicio')
+    )
+  );
+  return h('div',{className:'mob-wrap'},
+    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Nuevo Gasto')),
+    h('div',{className:'mob-form',style:{paddingBottom:40}},
+      msg&&h('div',{className:'al al-e',style:{marginBottom:10}},msg),
+      F('Trabajador *',h('select',{value:form.persona_id,onChange:function(e){upd('persona_id',e.target.value);}},h('option',{value:''},'Seleccione...'),personal.map(function(pe){return h('option',{key:pe.persona_id,value:pe.persona_id},pe.nombre_completo);}))),
+      F('Fecha',h('input',{type:'date',value:form.fecha_gasto,onChange:function(e){upd('fecha_gasto',e.target.value);}})),
+      // Tipo de gasto como botones grandes
+      h('div',{className:'mob-field'},
+        h('label',null,'Tipo de gasto'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:8}},
+          TIPOS.map(function(t){
+            var on=form.tipo_gasto===t.v;
+            return h('button',{key:t.v,onClick:function(){upd('tipo_gasto',t.v);},style:{padding:'12px 6px',borderRadius:8,border:'2px solid '+(on?'#1E3A2D':'#CBD5E1'),background:on?'#1E3A2D':'#fff',color:on?'#D4C5A9':'#475569',fontWeight:600,fontSize:13,cursor:'pointer',textAlign:'left'}},t.l);
+          })
+        )
+      ),
+      F('Monto ($) *',h('input',{type:'number',value:form.monto,onChange:function(e){upd('monto',e.target.value);},min:0,step:1,inputMode:'decimal',placeholder:'0',style:{fontSize:18,fontWeight:700}})),
+      F('Descripción *',h('textarea',{value:form.descripcion,onChange:function(e){upd('descripcion',e.target.value);},rows:2,placeholder:'Ej: Bencina camioneta para viaje a faena'})),
+      F('Empresa',h('select',{value:form.empresa_id,onChange:function(e){upd('empresa_id',e.target.value);}},h('option',{value:''},'—'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+      // Sección avanzada
+      h('button',{onClick:function(){setShowAdv(!showAdv);},style:{width:'100%',padding:12,background:'#F1F5F9',border:'1px dashed #CBD5E1',borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:600,color:'#475569',marginTop:4}},(showAdv?'▼ ':'▶ ')+'Opcional: faena, equipo, respaldo'),
+      showAdv&&h('div',{style:{background:'#F8FAFC',borderRadius:8,padding:10,marginTop:6}},
+        F('Faena',h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);}},h('option',{value:''},'—'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+        F('Equipo',h('select',{value:form.equipo_id,onChange:function(e){upd('equipo_id',e.target.value);}},h('option',{value:''},'—'),equipos.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);}))),
+        F('Proveedor',h('select',{value:form.proveedor_id,onChange:function(e){upd('proveedor_id',e.target.value);}},h('option',{value:''},'—'),proveedores.map(function(pr){return h('option',{key:pr.proveedor_id,value:pr.proveedor_id},pr.nombre);}))),
+        F('N° documento (boleta/factura)',h('input',{type:'text',value:form.numero_documento,onChange:function(e){upd('numero_documento',e.target.value);},placeholder:'Opcional'})),
+        h('div',{style:{display:'flex',alignItems:'center',gap:10,padding:'8px 0'}},
+          h('input',{type:'checkbox',id:'chkresp',checked:form.tiene_respaldo,onChange:function(e){upd('tiene_respaldo',e.target.checked);},style:{width:20,height:20}}),
+          h('label',{htmlFor:'chkresp',style:{fontSize:14,fontWeight:600}},'Tiene respaldo documental')
+        )
+      ),
+      h('button',{onClick:guardar,className:'mob-submit'},'Registrar gasto')
+    )
+  );
+}
+
 // ── APP ──
 const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización'};
 
@@ -6018,6 +6147,8 @@ function App(){
     if(mobileView==='home')return h(MobileHome,{user:user,tok:tok,m:m,onNav:mobileNav,onLogout:handleLogout,onDesktop:goDesktop});
     // Módulo específico en mobile con topbar de vuelta
     if(mobileView==='trans-traslados')return h(MobileTransporte,{tok:tok,m:m,user:user,onBack:mobileBack});
+    if(mobileView==='solicitudes')return h(MobileSolicitudes,{tok:tok,m:m,user:user,onBack:mobileBack});
+    if(mobileView==='rendiciones')return h(MobileRendiciones,{tok:tok,m:m,user:user,onBack:mobileBack});
     // Para otros módulos: envolver en contenedor móvil con botón volver
     var mobileTitle=TITLES[mobileView]||mobileView;
     return h('div',{className:'mob-wrap',style:{background:'#F1F4F9'}},
@@ -6025,8 +6156,6 @@ function App(){
       h('div',{style:{padding:8,paddingBottom:40}},
         mobileView==='terreno'&&h(TerrenoView,{tok:tok,m:m,user:user}),
         mobileView==='mant-avisos'&&h(MantAvisos,{tok:tok,m:m}),
-        mobileView==='solicitudes'&&h(SolicitudesView,{tok:tok,m:m,user:user}),
-        mobileView==='rendiciones'&&h(RendicionesView,{tok:tok,m:m}),
         mobileView==='comb-distribuciones'&&h(CombDistribuciones,{tok:tok,m:m})
       )
     );
