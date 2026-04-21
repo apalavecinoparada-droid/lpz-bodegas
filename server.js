@@ -4514,6 +4514,59 @@ app.delete('/api/contratos/:id', auth, async(req,res)=>{
   try{await pool.query('DELETE FROM contratos WHERE contrato_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
 });
 
+// ══════════════════════════════════════════════════════
+// ADMIN — LIMPIEZA DE DATOS TRANSACCIONALES
+// ══════════════════════════════════════════════════════
+app.post('/api/admin/wipe-transacciones', auth, async(req,res)=>{
+  try{
+    // Solo admin puede ejecutar
+    const u=await pool.query('SELECT u.*,r.es_admin FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id WHERE u.usuario_id=$1',[req.user.id]);
+    if(!u.rows.length||!u.rows[0].es_admin)return res.status(403).json({error:'Solo administradores pueden ejecutar esta acción'});
+
+    const{confirmacion}=req.body;
+    if(confirmacion!=='BORRAR TODAS LAS TRANSACCIONES')return res.status(400).json({error:'Debe enviar confirmación exacta'});
+
+    const client=await pool.connect();
+    const borrados={};
+    try{
+      await client.query('BEGIN');
+      const tablas=[
+        'contratos','vacaciones_registros','trans_traslados','solicitudes',
+        'rend_gastos','rend_entregas','fin_cheques',
+        'terreno_tob_detalle','terreno_registros',
+        'mant_ot_tarea_personal','mant_ot_tareas','mant_ot_sistemas','mant_ot_materiales','mant_ot_personal','mant_ot',
+        'mant_avisos','mant_programacion','mant_lecturas',
+        'comb_cierre_guias','comb_cierres','comb_movimientos',
+        'movimiento_detalle','movimiento_encabezado',
+        'ordenes_compra_detalle','ordenes_compra','auditoria'
+      ];
+      for(const t of tablas){
+        try{
+          const c=await client.query(`SELECT COUNT(*) FROM ${t}`);
+          const count=parseInt(c.rows[0].count);
+          await client.query(`TRUNCATE TABLE ${t} RESTART IDENTITY CASCADE`);
+          borrados[t]=count;
+        }catch(e){borrados[t]='error: '+e.message;}
+      }
+      // Reset stocks
+      try{await client.query('UPDATE stock_actual SET stock=0,costo_promedio=0,ultima_actualizacion=NOW()');borrados.stock_actual='reseteado';}catch(e){}
+      try{await client.query('UPDATE comb_stock SET litros_disponibles=0,costo_promedio=0,ultima_actualizacion=NOW()');borrados.comb_stock='reseteado';}catch(e){}
+      // Reset horómetros si se pide
+      if(req.body.reset_horometros){
+        await client.query('UPDATE equipos SET horometro_actual=0,kilometraje_actual=0');
+        borrados.equipos_contadores='reseteados';
+      }
+      await client.query('COMMIT');
+      res.json({ok:true,borrados:borrados,usuario:req.user.email,fecha:new Date().toISOString()});
+    }catch(e){
+      await client.query('ROLLBACK');
+      res.status(500).json({error:e.message,borrados:borrados});
+    }finally{
+      client.release();
+    }
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 // SPA fallback — must be AFTER all API routes
 app.get('*', (req,res)=>res.sendFile(path.join(__dirname,'frontend','index.html')));
 
