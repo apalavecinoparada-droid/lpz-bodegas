@@ -542,6 +542,7 @@ async function autoSetup() {
   try{ await setupMantenciones(pool.query.bind(pool)); }catch(e){console.log('[WARN] mant tables:',e.message);}
   try{ await setupRendiciones(pool.query.bind(pool)); }catch(e){console.log('[WARN] rend tables:',e.message);}
   try{ await setupTransporte(pool.query.bind(pool)); }catch(e){console.log('[WARN] transporte tables:',e.message);}
+  try{ await setupContratos(pool.query.bind(pool)); }catch(e){console.log('[WARN] contratos tables:',e.message);}
   // Seed sistemas y tareas estándar
   try{
     const sc=await pool.query('SELECT COUNT(*) FROM mant_sistemas');
@@ -3162,18 +3163,18 @@ app.get('/api/personal', auth, async(req,res)=>{
 });
 app.post('/api/personal', auth, async(req,res)=>{
   try{
-    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id,es_transporte}=req.body;
+    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id,es_transporte,funcion_contrato,nacionalidad,estado_civil,afp,salud,region}=req.body;
     if(!nombre_completo) return res.status(400).json({error:'Nombre requerido'});
-    const r=await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id,es_transporte) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
-      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',faena_id||null,es_transporte||false]);
+    const r=await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id,es_transporte,funcion_contrato,nacionalidad,estado_civil,afp,salud,region) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28) RETURNING *`,
+      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',faena_id||null,es_transporte||false,funcion_contrato||null,nacionalidad||'Chileno(a)',estado_civil||null,afp||null,salud||'FONASA',region||'VIII del Bio Bio']);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.put('/api/personal/:id', auth, async(req,res)=>{
   try{
-    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,activo,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id,es_transporte}=req.body;
-    const r=await pool.query(`UPDATE personal SET empresa_id=$1,nombre_completo=$2,rut=$3,cargo=$4,especialidad=$5,telefono=$6,correo=$7,participa_mantencion=$8,valor_hora_hombre=$9,moneda=$10,activo=$11,fecha_ingreso=$12,cotizaciones_anteriores=$13,observaciones=$14,fecha_nacimiento=$15,direccion=$16,comuna=$17,tipo_contrato=$18,centro_costo=$19,fecha_termino=$20,categoria=$21,faena_id=$22,es_transporte=$23 WHERE persona_id=$24 RETURNING *`,
-      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',activo!==false,fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',faena_id||null,es_transporte||false,req.params.id]);
+    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,activo,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id,es_transporte,funcion_contrato,nacionalidad,estado_civil,afp,salud,region}=req.body;
+    const r=await pool.query(`UPDATE personal SET empresa_id=$1,nombre_completo=$2,rut=$3,cargo=$4,especialidad=$5,telefono=$6,correo=$7,participa_mantencion=$8,valor_hora_hombre=$9,moneda=$10,activo=$11,fecha_ingreso=$12,cotizaciones_anteriores=$13,observaciones=$14,fecha_nacimiento=$15,direccion=$16,comuna=$17,tipo_contrato=$18,centro_costo=$19,fecha_termino=$20,categoria=$21,faena_id=$22,es_transporte=$23,funcion_contrato=$24,nacionalidad=$25,estado_civil=$26,afp=$27,salud=$28,region=$29 WHERE persona_id=$30 RETURNING *`,
+      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',activo!==false,fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',faena_id||null,es_transporte||false,funcion_contrato||null,nacionalidad||'Chileno(a)',estado_civil||null,afp||null,salud||'FONASA',region||'VIII del Bio Bio',req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -3424,6 +3425,13 @@ async function setupRendiciones(q){
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS fecha_termino DATE');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS faena_id INT REFERENCES faenas(faena_id)');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS es_transporte BOOLEAN DEFAULT false');}catch(e){}
+  // Campos adicionales para generación de contrato
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS funcion_contrato TEXT');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS nacionalidad VARCHAR(50) DEFAULT \'Chileno(a)\'');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS estado_civil VARCHAR(30)');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS afp VARCHAR(30)');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS salud VARCHAR(30) DEFAULT \'FONASA\'');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS region VARCHAR(60) DEFAULT \'VIII del Bio Bio\'');}catch(e){}
 
   // ── Vacaciones ──
   await q(`CREATE TABLE IF NOT EXISTS feriados_chile (
@@ -4225,6 +4233,163 @@ app.get('/icon-:size.png', (req,res)=>{
   const s=parseInt(req.params.size)||192;
   res.setHeader('Content-Type','image/svg+xml');
   res.send(`<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}" viewBox="0 0 100 100"><rect width="100" height="100" rx="18" fill="#1E3A2D"/><text x="50" y="68" font-size="52" font-weight="700" text-anchor="middle" fill="#D4C5A9" font-family="Arial">LP</text></svg>`);
+});
+
+// ══════════════════════════════════════════════════════
+// MÓDULO CONTRATOS — GENERACIÓN AUTOMÁTICA
+// ══════════════════════════════════════════════════════
+async function setupContratos(q){
+  // Campos adicionales en empresas para contrato
+  try{await q("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS representante_nombre VARCHAR(150)");}catch(e){}
+  try{await q("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS representante_rut VARCHAR(15)");}catch(e){}
+  try{await q("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS region VARCHAR(60) DEFAULT 'VIII del Bio Bio'");}catch(e){}
+  try{await q("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS comuna VARCHAR(100)");}catch(e){}
+
+  // Funciones estándar por cargo (catálogo editable)
+  await q(`CREATE TABLE IF NOT EXISTS contrato_funciones (
+    funcion_id SERIAL PRIMARY KEY,
+    cargo VARCHAR(150) NOT NULL UNIQUE,
+    descripcion_funcion TEXT NOT NULL,
+    activo BOOLEAN DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  // Registro de contratos generados
+  await q(`CREATE TABLE IF NOT EXISTS contratos (
+    contrato_id SERIAL PRIMARY KEY,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    empresa_id INT NOT NULL REFERENCES empresas(empresa_id),
+    tipo_contrato VARCHAR(30) NOT NULL,
+    es_actualizacion BOOLEAN DEFAULT false,
+    fecha_contrato DATE NOT NULL,
+    fecha_inicio DATE NOT NULL,
+    fecha_termino DATE,
+    lugar_firma VARCHAR(100),
+    funcion_texto TEXT NOT NULL,
+    jornada_horas INT DEFAULT 44,
+    jornada_texto TEXT,
+    lugar_prestacion TEXT,
+    sueldo_base NUMERIC(12,2) NOT NULL DEFAULT 0,
+    bono_responsabilidad NUMERIC(12,2) DEFAULT 0,
+    bono_produccion_fijo NUMERIC(12,2) DEFAULT 0,
+    bono_produccion_variable BOOLEAN DEFAULT false,
+    bono_produccion_tarifa NUMERIC(12,2) DEFAULT 0,
+    bono_produccion_detalle TEXT,
+    semana_corrida BOOLEAN DEFAULT false,
+    asig_colacion NUMERIC(10,2) DEFAULT 0,
+    asig_movilizacion NUMERIC(10,2) DEFAULT 0,
+    asig_viatico NUMERIC(10,2) DEFAULT 0,
+    tiene_alimentacion BOOLEAN DEFAULT false,
+    alimentacion_detalle TEXT,
+    otros_beneficios TEXT,
+    observaciones TEXT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  // Seed funciones estándar por cargo
+  try{
+    const c=await q('SELECT COUNT(*) FROM contrato_funciones');
+    if(parseInt(c.rows[0].count)===0){
+      const funcs=[
+        ['MECANICO','Mantener, reparar y diagnosticar el correcto funcionamiento de la maquinaria forestal y equipos de la empresa, realizando mantenciones preventivas y correctivas, cambios de repuestos, ajustes mecánicos, hidráulicos y eléctricos según corresponda, registrando las intervenciones efectuadas y velando por el cumplimiento de los estándares de seguridad y calidad establecidos por la empresa.'],
+        ['AYUDANTE MECANICO','Apoyar al mecánico en las labores de mantención y reparación de maquinaria y equipos, preparando herramientas, repuestos e insumos, colaborando en el desarme, armado y limpieza de piezas, y realizando tareas complementarias de apoyo operativo bajo supervisión.'],
+        ['OPERADOR DE MAQUINARIA','Operar maquinaria forestal asignada (torre, skidder, harvester, forwarder, cargador u otros equipos) en las distintas faenas de la empresa, ejecutando las labores productivas conforme a las instrucciones operacionales recibidas, realizando el chequeo diario del equipo, reportando fallas o anomalías, y cumpliendo con los estándares de seguridad, calidad y producción establecidos.'],
+        ['OPERADOR DE EXCAVADORA','Operar excavadora hidráulica en labores de movimiento de tierra, construcción de caminos, carguío y tareas forestales según requerimientos de faena, realizando el chequeo diario del equipo, reportando fallas o anomalías y velando por el cumplimiento de los estándares operacionales y de seguridad.'],
+        ['OPERADOR DE RETROEXCAVADORA','Operar retroexcavadora en labores de excavación, movimiento de tierra, zanjas, nivelaciones y apoyo a faenas, efectuando mantención básica del equipo, reportando fallas y cumpliendo las instrucciones operacionales y normas de seguridad.'],
+        ['OPERADOR DE PROCESADOR','Operar procesador forestal en labores de descorte, trozado y clasificación de madera, cumpliendo con las especificaciones de largo, diámetro y calidad solicitadas, velando por la productividad y los estándares de seguridad establecidos.'],
+        ['OPERADOR DE TRINEUMATICO','Operar cargador trineumático en labores de carguío, apilado, madereo y traslado de madera dentro de faena, realizando chequeo diario del equipo y cumpliendo las instrucciones operacionales y de seguridad.'],
+        ['CHOFER CONDUCTOR DE CAMION','Conducir camión asignado por la empresa en labores de transporte de materiales, insumos o maquinaria entre puntos operacionales, velando por el correcto uso del vehículo, cumpliendo la normativa vigente de tránsito, realizando el chequeo diario y reportando fallas o novedades.'],
+        ['CHOFER CONDUCTOR DE CAMION TOLVA','Conducir y operar camión tolva en labores de movimiento de tierra, efectuando el traslado, carga y descarga de material según las necesidades de la faena, velando por el correcto uso del equipo y el cumplimiento de las instrucciones de la empresa.'],
+        ['CHOFER CAMA BAJA','Conducir camión cama baja en labores de traslado de maquinaria entre faenas y puntos operacionales, verificando el correcto amarre y aseguramiento de la carga, cumpliendo la normativa de tránsito aplicable a carga sobredimensionada, y reportando cualquier incidente o falla.'],
+        ['MOTOSIERRISTA','Efectuar labores de corte, volteo, desrame y trozado de madera con motosierra según instrucciones operacionales, manteniendo el equipo en buenas condiciones, respetando las medidas de seguridad y cumpliendo los estándares de producción y calidad establecidos.'],
+        ['JEFE DE FAENA','Dirigir, coordinar y supervisar las labores operacionales ejecutadas en la faena asignada, gestionando recursos humanos y técnicos, velando por el cumplimiento de los objetivos de producción, los estándares de seguridad y calidad, y reportando al nivel superior el avance y novedades de la operación.'],
+        ['SUPERVISOR','Supervisar las actividades operacionales del personal a cargo, asegurando el cumplimiento de los procedimientos, estándares de calidad, seguridad y productividad, detectando y reportando desviaciones, gestionando la asignación de tareas y apoyando la coordinación con la jefatura.'],
+        ['COORDINADOR DE OPERACIONES','Coordinar las operaciones productivas de la empresa, planificar la asignación de recursos humanos y maquinaria, interactuar con supervisores y jefes de faena, controlar indicadores operacionales, y gestionar la logística necesaria para el correcto desarrollo de las faenas.'],
+        ['PREVENCIONISTA DE RIESGOS','Gestionar el sistema de prevención de riesgos laborales de la empresa, elaborar procedimientos y planes, ejecutar capacitaciones, investigar incidentes y accidentes, realizar inspecciones de terreno, asesorar a las jefaturas y velar por el cumplimiento de la normativa legal vigente.'],
+        ['ADMINISTRATIVA','Ejecutar labores administrativas de apoyo a la gestión de la empresa, incluyendo registro y archivo de documentación, atención telefónica y presencial, ingreso de datos a sistemas, manejo de correspondencia y tareas similares asignadas por la jefatura.'],
+        ['ASISTENTE ADMINISTRATIVO','Apoyar en tareas administrativas de la empresa como ingreso de documentación, archivo, atención de consultas internas, manejo de planillas y colaborar en la gestión operativa diaria según las instrucciones recibidas de la jefatura.'],
+        ['CONTADORA','Llevar la contabilidad de la empresa, registrar operaciones económicas, elaborar estados financieros, gestionar obligaciones tributarias, coordinar con proveedores y asesorar a la administración en materias contables y financieras.'],
+        ['ENCARGADO DE COMPRAS','Gestionar el proceso de compras de la empresa, cotizar productos y servicios, emitir órdenes de compra, coordinar con proveedores, controlar plazos de entrega y asegurar el abastecimiento oportuno de insumos para las operaciones.'],
+        ['JEFE DE CUADRILLA','Liderar el trabajo en terreno de una cuadrilla de trabajadores, asignar tareas, verificar avances, controlar el uso de herramientas y elementos de protección personal, reportar producción y novedades a la jefatura superior.'],
+        ['SERENO','Vigilar las dependencias, maquinarias e instalaciones de la empresa durante los turnos asignados, controlando el ingreso y salida de personas y vehículos, reportando novedades y velando por la seguridad de los bienes.'],
+        ['TRABAJADOR MANUAL','Ejecutar labores operativas y de apoyo en terreno según instrucciones del supervisor o jefatura, incluyendo tareas de limpieza, despeje, ordenamiento, traslado de materiales y apoyo a las diversas faenas.'],
+        ['AYUDANTE DE OPERADOR MAQUINARIA','Apoyar al operador de maquinaria en las labores productivas, realizando tareas complementarias, preparando el área de trabajo, colaborando en el chequeo del equipo y en tareas auxiliares que permitan el correcto desarrollo de la operación.'],
+        ['GERENTE GENERAL','Dirigir, administrar y representar a la empresa, planificar e implementar estrategias de gestión, coordinar las distintas áreas operativas y administrativas, tomar decisiones ejecutivas y velar por el cumplimiento de los objetivos organizacionales.']
+      ];
+      for(const [cargo,desc] of funcs){
+        await q('INSERT INTO contrato_funciones(cargo,descripcion_funcion) VALUES($1,$2) ON CONFLICT(cargo) DO NOTHING',[cargo,desc]);
+      }
+      console.log('  [OK] Funciones de contrato cargadas ('+funcs.length+')');
+    }
+  }catch(e){console.log('[WARN] seed contratos:',e.message);}
+}
+
+// ── Funciones por cargo ──
+app.get('/api/contratos/funciones', auth, async(req,res)=>{
+  try{res.json((await pool.query('SELECT * FROM contrato_funciones WHERE activo=true ORDER BY cargo')).rows);}catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/contratos/funciones', auth, async(req,res)=>{
+  try{
+    const{cargo,descripcion_funcion}=req.body;
+    if(!cargo||!descripcion_funcion)return res.status(400).json({error:'Cargo y descripción requeridos'});
+    const r=await pool.query('INSERT INTO contrato_funciones(cargo,descripcion_funcion) VALUES($1,$2) ON CONFLICT(cargo) DO UPDATE SET descripcion_funcion=$2 RETURNING *',[cargo.toUpperCase(),descripcion_funcion]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/contratos/funciones/:id', auth, async(req,res)=>{
+  try{
+    const{cargo,descripcion_funcion,activo}=req.body;
+    const r=await pool.query('UPDATE contrato_funciones SET cargo=$1,descripcion_funcion=$2,activo=$3 WHERE funcion_id=$4 RETURNING *',[cargo.toUpperCase(),descripcion_funcion,activo!==false,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/contratos/funciones/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM contrato_funciones WHERE funcion_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+});
+// Función por cargo específico (para pre-cargar al seleccionar trabajador)
+app.get('/api/contratos/funcion-cargo/:cargo', auth, async(req,res)=>{
+  try{const r=await pool.query('SELECT * FROM contrato_funciones WHERE UPPER(cargo)=UPPER($1) AND activo=true LIMIT 1',[req.params.cargo]);res.json(r.rows[0]||null);}catch(e){res.status(500).json({error:e.message});}
+});
+
+// ── Contratos ──
+app.get('/api/contratos', auth, async(req,res)=>{
+  try{
+    const{persona_id}=req.query;
+    let w=['1=1'],v=[];
+    if(persona_id){v.push(persona_id);w.push(`c.persona_id=$${v.length}`);}
+    const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut AS persona_rut,p.cargo,e.razon_social AS empresa_nombre FROM contratos c JOIN personal p ON c.persona_id=p.persona_id JOIN empresas e ON c.empresa_id=e.empresa_id WHERE ${w.join(' AND ')} ORDER BY c.fecha_contrato DESC,c.contrato_id DESC`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/contratos/:id', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT c.*,p.*,e.razon_social AS empresa_nombre,e.rut AS empresa_rut,e.direccion AS empresa_direccion,e.comuna AS empresa_comuna,e.region AS empresa_region,e.representante_nombre,e.representante_rut,c.fecha_contrato,c.fecha_inicio,c.fecha_termino FROM contratos c JOIN personal p ON c.persona_id=p.persona_id JOIN empresas e ON c.empresa_id=e.empresa_id WHERE c.contrato_id=$1`,[req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Contrato no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/contratos', auth, async(req,res)=>{
+  try{
+    const b=req.body;
+    if(!b.persona_id||!b.empresa_id||!b.tipo_contrato||!b.fecha_contrato||!b.fecha_inicio||!b.funcion_texto){
+      return res.status(400).json({error:'Persona, empresa, tipo, fechas y función son obligatorios'});
+    }
+    if(b.tipo_contrato==='plazo_fijo'&&!b.fecha_termino){
+      return res.status(400).json({error:'Contrato a plazo fijo requiere fecha de término'});
+    }
+    const r=await pool.query(`INSERT INTO contratos(persona_id,empresa_id,tipo_contrato,es_actualizacion,fecha_contrato,fecha_inicio,fecha_termino,lugar_firma,funcion_texto,jornada_horas,jornada_texto,lugar_prestacion,sueldo_base,bono_responsabilidad,bono_produccion_fijo,bono_produccion_variable,bono_produccion_tarifa,bono_produccion_detalle,semana_corrida,asig_colacion,asig_movilizacion,asig_viatico,tiene_alimentacion,alimentacion_detalle,otros_beneficios,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING *`,
+      [b.persona_id,b.empresa_id,b.tipo_contrato,b.es_actualizacion||false,b.fecha_contrato,b.fecha_inicio,b.fecha_termino||null,b.lugar_firma||'NACIMIENTO',b.funcion_texto,parseInt(b.jornada_horas)||44,b.jornada_texto||null,b.lugar_prestacion||null,parseFloat(b.sueldo_base)||0,parseFloat(b.bono_responsabilidad)||0,parseFloat(b.bono_produccion_fijo)||0,b.bono_produccion_variable||false,parseFloat(b.bono_produccion_tarifa)||0,b.bono_produccion_detalle||null,b.semana_corrida||false,parseFloat(b.asig_colacion)||0,parseFloat(b.asig_movilizacion)||0,parseFloat(b.asig_viatico)||0,b.tiene_alimentacion||false,b.alimentacion_detalle||null,b.otros_beneficios||null,b.observaciones||null,req.user.email]);
+    // Si es contrato nuevo, actualizar fecha_ingreso en personal si no tiene
+    if(!b.es_actualizacion){
+      await pool.query('UPDATE personal SET fecha_ingreso=COALESCE(fecha_ingreso,$1),tipo_contrato=$2,fecha_termino=$3 WHERE persona_id=$4',
+        [b.fecha_inicio,({plazo_fijo:'A Plazo',indefinido:'Indefinido',obra_servicio:'Por Obra'})[b.tipo_contrato]||'Indefinido',b.fecha_termino||null,b.persona_id]);
+    }
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/contratos/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM contratos WHERE contrato_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
 });
 
 // SPA fallback — must be AFTER all API routes
