@@ -4386,7 +4386,23 @@ app.get('/api/contratos', auth, async(req,res)=>{
 });
 app.get('/api/contratos/:id', auth, async(req,res)=>{
   try{
-    const r=await pool.query(`SELECT c.*,p.*,e.razon_social AS empresa_nombre,e.rut AS empresa_rut,e.direccion AS empresa_direccion,e.comuna AS empresa_comuna,e.region AS empresa_region,e.representante_nombre,e.representante_rut,c.fecha_contrato,c.fecha_inicio,c.fecha_termino FROM contratos c JOIN personal p ON c.persona_id=p.persona_id JOIN empresas e ON c.empresa_id=e.empresa_id WHERE c.contrato_id=$1`,[req.params.id]);
+    const r=await pool.query(`SELECT
+      c.contrato_id,c.persona_id,c.empresa_id,c.tipo_contrato,c.es_actualizacion,
+      c.fecha_contrato,c.fecha_inicio,c.fecha_termino,c.lugar_firma,c.funcion_texto,
+      c.jornada_tipo,c.jornada_horas,c.jornada_texto,c.lugar_prestacion,
+      c.sueldo_base,c.bono_responsabilidad,c.bono_produccion_fijo,c.bono_produccion_variable,
+      c.bono_produccion_tarifa,c.bono_produccion_detalle,c.semana_corrida,
+      c.asig_colacion,c.asig_movilizacion,c.asig_viatico,c.tiene_alimentacion,c.alimentacion_detalle,
+      c.otros_beneficios,c.observaciones,c.usuario,c.creado_en,
+      p.nombre_completo,p.rut,p.cargo,p.fecha_nacimiento,p.direccion,p.comuna,
+      p.nacionalidad,p.estado_civil,p.region AS persona_region,
+      e.razon_social AS empresa_nombre,e.rut AS empresa_rut,
+      e.direccion AS empresa_direccion,e.comuna AS empresa_comuna,e.region AS empresa_region,
+      e.representante_nombre,e.representante_rut,e.logo_base64
+      FROM contratos c
+      JOIN personal p ON c.persona_id=p.persona_id
+      JOIN empresas e ON c.empresa_id=e.empresa_id
+      WHERE c.contrato_id=$1`,[req.params.id]);
     if(!r.rows.length)return res.status(404).json({error:'Contrato no encontrado'});
     res.json(r.rows[0]);
   }catch(e){res.status(500).json({error:e.message});}
