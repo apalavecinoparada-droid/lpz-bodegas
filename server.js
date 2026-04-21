@@ -541,6 +541,7 @@ async function autoSetup() {
   // Mantención module tables
   try{ await setupMantenciones(pool.query.bind(pool)); }catch(e){console.log('[WARN] mant tables:',e.message);}
   try{ await setupRendiciones(pool.query.bind(pool)); }catch(e){console.log('[WARN] rend tables:',e.message);}
+  try{ await setupTransporte(pool.query.bind(pool)); }catch(e){console.log('[WARN] transporte tables:',e.message);}
   // Seed sistemas y tareas estándar
   try{
     const sc=await pool.query('SELECT COUNT(*) FROM mant_sistemas');
@@ -3995,6 +3996,205 @@ app.patch('/api/solicitudes/:id/rechazar', auth, async(req,res)=>{
 });
 app.delete('/api/solicitudes/:id', auth, async(req,res)=>{
   try{await pool.query('DELETE FROM solicitudes WHERE solicitud_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+});
+
+// ══════════════════════════════════════════════════════
+// MÓDULO TRANSPORTE — TRASLADOS DE MAQUINARIA
+// ══════════════════════════════════════════════════════
+async function setupTransporte(q){
+  // Campo para marcar equipos de transporte
+  try{await q("ALTER TABLE equipos ADD COLUMN IF NOT EXISTS es_transporte BOOLEAN DEFAULT false");}catch(e){}
+  try{await q("ALTER TABLE equipos ADD COLUMN IF NOT EXISTS patente_carro VARCHAR(20)");}catch(e){}
+
+  // Tarifas de valorización
+  await q(`CREATE TABLE IF NOT EXISTS trans_tarifas (
+    tarifa_id SERIAL PRIMARY KEY,
+    nombre VARCHAR(100) NOT NULL,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    valor_km_cargado NUMERIC(10,2) NOT NULL DEFAULT 0,
+    valor_km_vacio NUMERIC(10,2) NOT NULL DEFAULT 0,
+    costo_fijo_salida NUMERIC(10,2) DEFAULT 0,
+    recargo_distancia_km NUMERIC(8,1) DEFAULT 0,
+    pct_recargo NUMERIC(5,2) DEFAULT 0,
+    vigente_desde DATE NOT NULL DEFAULT CURRENT_DATE,
+    vigente_hasta DATE,
+    activo BOOLEAN DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  // Registro de traslados
+  await q(`CREATE TABLE IF NOT EXISTS trans_traslados (
+    traslado_id SERIAL PRIMARY KEY,
+    fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+    empresa_id INT NOT NULL REFERENCES empresas(empresa_id),
+    camion_id INT NOT NULL REFERENCES equipos(equipo_id),
+    chofer_id INT NOT NULL REFERENCES personal(persona_id),
+    faena_id INT REFERENCES faenas(faena_id),
+    equipo_id INT REFERENCES equipos(equipo_id),
+    origen VARCHAR(200) NOT NULL,
+    destino VARCHAR(200) NOT NULL,
+    km_cargado NUMERIC(8,1) NOT NULL DEFAULT 0,
+    km_vacio NUMERIC(8,1) NOT NULL DEFAULT 0,
+    km_total NUMERIC(8,1) GENERATED ALWAYS AS (km_cargado + km_vacio) STORED,
+    odometro_inicio INT,
+    odometro_fin INT,
+    tarifa_id INT REFERENCES trans_tarifas(tarifa_id),
+    costo_km_cargado NUMERIC(12,2) DEFAULT 0,
+    costo_km_vacio NUMERIC(12,2) DEFAULT 0,
+    costo_fijo NUMERIC(12,2) DEFAULT 0,
+    costo_recargo NUMERIC(12,2) DEFAULT 0,
+    costo_total NUMERIC(12,2) DEFAULT 0,
+    estado VARCHAR(20) DEFAULT 'finalizado',
+    litros_combustible NUMERIC(10,2) DEFAULT 0,
+    estanque_id INT REFERENCES comb_estanques(estanque_id),
+    observaciones TEXT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    modificado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  await q('CREATE INDEX IF NOT EXISTS idx_trans_fecha ON trans_traslados(fecha)');
+  await q('CREATE INDEX IF NOT EXISTS idx_trans_empresa ON trans_traslados(empresa_id)');
+  await q('CREATE INDEX IF NOT EXISTS idx_trans_camion ON trans_traslados(camion_id)');
+  try{await q('ALTER TABLE trans_traslados ADD COLUMN IF NOT EXISTS litros_combustible NUMERIC(10,2) DEFAULT 0');}catch(e){}
+  try{await q('ALTER TABLE trans_traslados ADD COLUMN IF NOT EXISTS estanque_id INT REFERENCES comb_estanques(estanque_id)');}catch(e){}
+
+  // Seed camiones cama baja
+  try{
+    const cb=await q("SELECT COUNT(*) FROM equipos WHERE es_transporte=true");
+    if(parseInt(cb.rows[0].count)===0){
+      await q(`INSERT INTO equipos(codigo,nombre,tipo,patente_serie,patente_carro,es_transporte,tipo_cargo,activo) VALUES('CB-01','Camión Cama Baja 01','Camión Cama Baja','SRHC62','PWZR27',true,'transporte',true) ON CONFLICT(codigo) DO UPDATE SET es_transporte=true,patente_carro='PWZR27'`);
+      await q(`INSERT INTO equipos(codigo,nombre,tipo,patente_serie,patente_carro,es_transporte,tipo_cargo,activo) VALUES('CB-02','Camión Cama Baja 02','Camión Cama Baja','KSCX54','JP5378',true,'transporte',true) ON CONFLICT(codigo) DO UPDATE SET es_transporte=true,patente_carro='JP5378'`);
+      console.log('  [OK] Camiones cama baja creados');
+    }
+  }catch(e){console.log('[WARN] seed camiones:',e.message);}
+}
+
+// ── Tarifas transporte CRUD ──
+app.get('/api/trans/tarifas', auth, async(req,res)=>{
+  try{res.json((await pool.query('SELECT t.*,e.razon_social AS empresa_nombre FROM trans_tarifas t LEFT JOIN empresas e ON t.empresa_id=e.empresa_id ORDER BY t.activo DESC,t.vigente_desde DESC')).rows);}catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/trans/tarifas', auth, async(req,res)=>{
+  try{
+    const{nombre,empresa_id,valor_km_cargado,valor_km_vacio,costo_fijo_salida,recargo_distancia_km,pct_recargo,vigente_desde,vigente_hasta}=req.body;
+    if(!nombre)return res.status(400).json({error:'Nombre requerido'});
+    const r=await pool.query('INSERT INTO trans_tarifas(nombre,empresa_id,valor_km_cargado,valor_km_vacio,costo_fijo_salida,recargo_distancia_km,pct_recargo,vigente_desde,vigente_hasta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
+      [nombre,empresa_id||null,parseFloat(valor_km_cargado)||0,parseFloat(valor_km_vacio)||0,parseFloat(costo_fijo_salida)||0,parseFloat(recargo_distancia_km)||0,parseFloat(pct_recargo)||0,vigente_desde||new Date().toISOString().slice(0,10),vigente_hasta||null]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/trans/tarifas/:id', auth, async(req,res)=>{
+  try{
+    const{nombre,empresa_id,valor_km_cargado,valor_km_vacio,costo_fijo_salida,recargo_distancia_km,pct_recargo,vigente_desde,vigente_hasta,activo}=req.body;
+    const r=await pool.query('UPDATE trans_tarifas SET nombre=$1,empresa_id=$2,valor_km_cargado=$3,valor_km_vacio=$4,costo_fijo_salida=$5,recargo_distancia_km=$6,pct_recargo=$7,vigente_desde=$8,vigente_hasta=$9,activo=$10 WHERE tarifa_id=$11 RETURNING *',
+      [nombre,empresa_id||null,parseFloat(valor_km_cargado)||0,parseFloat(valor_km_vacio)||0,parseFloat(costo_fijo_salida)||0,parseFloat(recargo_distancia_km)||0,parseFloat(pct_recargo)||0,vigente_desde,vigente_hasta||null,activo!==false,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/trans/tarifas/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM trans_tarifas WHERE tarifa_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+});
+
+// ── Camiones transporte ──
+app.get('/api/trans/camiones', auth, async(req,res)=>{
+  try{res.json((await pool.query("SELECT equipo_id,codigo,nombre,patente_serie,patente_carro FROM equipos WHERE es_transporte=true AND activo=true ORDER BY codigo")).rows);}catch(e){res.status(500).json({error:e.message});}
+});
+
+// ── Choferes transporte (personal con cargo chofer o similar) ──
+app.get('/api/trans/choferes', auth, async(req,res)=>{
+  try{res.json((await pool.query("SELECT persona_id,nombre_completo,rut,cargo,empresa_id FROM personal WHERE activo=true AND (UPPER(cargo) LIKE '%CHOFER%' OR UPPER(cargo) LIKE '%CONDUCTOR%' OR UPPER(cargo) LIKE '%TRANSPORTE%') ORDER BY nombre_completo")).rows);}catch(e){res.status(500).json({error:e.message});}
+});
+
+// ── Función para resolver tarifa y calcular costos ──
+async function calcularCostoTraslado(empresa_id,fecha,km_cargado,km_vacio){
+  // Buscar tarifa: 1) empresa+fecha, 2) sin empresa+fecha, 3) cualquiera activa
+  let tarifa=null;
+  const q1=await pool.query("SELECT * FROM trans_tarifas WHERE activo=true AND (empresa_id=$1 OR empresa_id IS NULL) AND vigente_desde<=$2 AND (vigente_hasta IS NULL OR vigente_hasta>=$2) ORDER BY empresa_id DESC NULLS LAST LIMIT 1",[empresa_id,fecha]);
+  if(q1.rows.length)tarifa=q1.rows[0];
+  else{const q2=await pool.query("SELECT * FROM trans_tarifas WHERE activo=true ORDER BY vigente_desde DESC LIMIT 1");if(q2.rows.length)tarifa=q2.rows[0];}
+  if(!tarifa)return{tarifa_id:null,costo_km_cargado:0,costo_km_vacio:0,costo_fijo:0,costo_recargo:0,costo_total:0};
+  const ckc=parseFloat(km_cargado)*parseFloat(tarifa.valor_km_cargado);
+  const ckv=parseFloat(km_vacio)*parseFloat(tarifa.valor_km_vacio);
+  const cfijo=parseFloat(tarifa.costo_fijo_salida)||0;
+  let recargo=0;
+  const kmTotal=parseFloat(km_cargado)+parseFloat(km_vacio);
+  if(parseFloat(tarifa.recargo_distancia_km)>0&&kmTotal>parseFloat(tarifa.recargo_distancia_km)){
+    recargo=(ckc+ckv)*(parseFloat(tarifa.pct_recargo)/100);
+  }
+  return{tarifa_id:tarifa.tarifa_id,costo_km_cargado:Math.round(ckc),costo_km_vacio:Math.round(ckv),costo_fijo:Math.round(cfijo),costo_recargo:Math.round(recargo),costo_total:Math.round(ckc+ckv+cfijo+recargo)};
+}
+
+// ── Traslados CRUD ──
+app.get('/api/trans/traslados', auth, async(req,res)=>{
+  try{
+    const{empresa_id,camion_id,chofer_id,faena_id,equipo_id,estado,desde,hasta}=req.query;
+    let w=['1=1'],v=[];
+    if(empresa_id){v.push(empresa_id);w.push(`t.empresa_id=$${v.length}`);}
+    if(camion_id){v.push(camion_id);w.push(`t.camion_id=$${v.length}`);}
+    if(chofer_id){v.push(chofer_id);w.push(`t.chofer_id=$${v.length}`);}
+    if(faena_id){v.push(faena_id);w.push(`t.faena_id=$${v.length}`);}
+    if(equipo_id){v.push(equipo_id);w.push(`t.equipo_id=$${v.length}`);}
+    if(estado){v.push(estado);w.push(`t.estado=$${v.length}`);}
+    if(desde){v.push(desde);w.push(`t.fecha>=$${v.length}`);}
+    if(hasta){v.push(hasta);w.push(`t.fecha<=$${v.length}`);}
+    const r=await pool.query(`SELECT t.*,emp.razon_social AS empresa_nombre,cam.nombre AS camion_nombre,cam.patente_serie AS camion_patente,p.nombre_completo AS chofer_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo,est.codigo AS estanque_codigo,est.nombre AS estanque_nombre FROM trans_traslados t JOIN empresas emp ON t.empresa_id=emp.empresa_id JOIN equipos cam ON t.camion_id=cam.equipo_id JOIN personal p ON t.chofer_id=p.persona_id LEFT JOIN faenas f ON t.faena_id=f.faena_id LEFT JOIN equipos eq ON t.equipo_id=eq.equipo_id LEFT JOIN comb_estanques est ON t.estanque_id=est.estanque_id WHERE ${w.join(' AND ')} ORDER BY t.fecha DESC,t.traslado_id DESC`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.post('/api/trans/traslados', auth, async(req,res)=>{
+  try{
+    const{fecha,empresa_id,camion_id,chofer_id,faena_id,equipo_id,origen,destino,km_cargado,km_vacio,odometro_inicio,odometro_fin,estado,observaciones,litros_combustible,estanque_id}=req.body;
+    if(!empresa_id||!camion_id||!chofer_id||!origen||!destino)return res.status(400).json({error:'Empresa, camión, chofer, origen y destino son obligatorios'});
+    const kc=parseFloat(km_cargado)||0;const kv=parseFloat(km_vacio)||0;
+    if(kc<0||kv<0)return res.status(400).json({error:'Kilómetros no pueden ser negativos'});
+    if(kc+kv===0)return res.status(400).json({error:'Debe ingresar al menos km cargado o km vacío'});
+    if(odometro_inicio&&odometro_fin&&parseInt(odometro_fin)<parseInt(odometro_inicio))return res.status(400).json({error:'Odómetro final debe ser mayor al inicial'});
+    const lts=parseFloat(litros_combustible)||0;
+    if(lts<0)return res.status(400).json({error:'Litros no pueden ser negativos'});
+    const costos=await calcularCostoTraslado(empresa_id,fecha||new Date().toISOString().slice(0,10),kc,kv);
+    const r=await pool.query(`INSERT INTO trans_traslados(fecha,empresa_id,camion_id,chofer_id,faena_id,equipo_id,origen,destino,km_cargado,km_vacio,odometro_inicio,odometro_fin,tarifa_id,costo_km_cargado,costo_km_vacio,costo_fijo,costo_recargo,costo_total,estado,observaciones,litros_combustible,estanque_id,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING *`,
+      [fecha||new Date().toISOString().slice(0,10),empresa_id,camion_id,chofer_id,faena_id||null,equipo_id||null,origen,destino,kc,kv,odometro_inicio?parseInt(odometro_inicio):null,odometro_fin?parseInt(odometro_fin):null,costos.tarifa_id,costos.costo_km_cargado,costos.costo_km_vacio,costos.costo_fijo,costos.costo_recargo,costos.costo_total,estado||'finalizado',observaciones||null,lts,estanque_id||null,req.user.email]);
+    // Actualizar odómetro del camión
+    if(odometro_fin)await pool.query('UPDATE equipos SET kilometraje_actual=GREATEST(COALESCE(kilometraje_actual,0),$1) WHERE equipo_id=$2',[parseInt(odometro_fin),camion_id]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.put('/api/trans/traslados/:id', auth, async(req,res)=>{
+  try{
+    const{fecha,empresa_id,camion_id,chofer_id,faena_id,equipo_id,origen,destino,km_cargado,km_vacio,odometro_inicio,odometro_fin,estado,observaciones,litros_combustible,estanque_id}=req.body;
+    const kc=parseFloat(km_cargado)||0;const kv=parseFloat(km_vacio)||0;
+    if(kc<0||kv<0)return res.status(400).json({error:'Kilómetros no pueden ser negativos'});
+    const lts=parseFloat(litros_combustible)||0;
+    const costos=await calcularCostoTraslado(empresa_id,fecha,kc,kv);
+    const r=await pool.query(`UPDATE trans_traslados SET fecha=$1,empresa_id=$2,camion_id=$3,chofer_id=$4,faena_id=$5,equipo_id=$6,origen=$7,destino=$8,km_cargado=$9,km_vacio=$10,odometro_inicio=$11,odometro_fin=$12,tarifa_id=$13,costo_km_cargado=$14,costo_km_vacio=$15,costo_fijo=$16,costo_recargo=$17,costo_total=$18,estado=$19,observaciones=$20,litros_combustible=$21,estanque_id=$22,modificado_en=NOW() WHERE traslado_id=$23 RETURNING *`,
+      [fecha,empresa_id,camion_id,chofer_id,faena_id||null,equipo_id||null,origen,destino,kc,kv,odometro_inicio?parseInt(odometro_inicio):null,odometro_fin?parseInt(odometro_fin):null,costos.tarifa_id,costos.costo_km_cargado,costos.costo_km_vacio,costos.costo_fijo,costos.costo_recargo,costos.costo_total,estado||'finalizado',observaciones||null,lts,estanque_id||null,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.delete('/api/trans/traslados/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM trans_traslados WHERE traslado_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+});
+
+// ── Dashboard transporte ──
+app.get('/api/trans/dashboard', auth, async(req,res)=>{
+  try{
+    const{empresa_id,desde,hasta}=req.query;
+    let w=['t.estado!=\'anulado\''],v=[];
+    if(empresa_id){v.push(empresa_id);w.push(`t.empresa_id=$${v.length}`);}
+    if(desde){v.push(desde);w.push(`t.fecha>=$${v.length}`);}
+    if(hasta){v.push(hasta);w.push(`t.fecha<=$${v.length}`);}
+    const wh=w.join(' AND ');
+    const totales=await pool.query(`SELECT COUNT(*) AS total,COALESCE(SUM(km_cargado),0) AS km_cargado,COALESCE(SUM(km_vacio),0) AS km_vacio,COALESCE(SUM(km_cargado+km_vacio),0) AS km_total,COALESCE(SUM(costo_total),0) AS costo_total,COALESCE(SUM(litros_combustible),0) AS litros_total FROM trans_traslados t WHERE ${wh}`,v);
+    const porEmpresa=await pool.query(`SELECT emp.razon_social,COUNT(*) AS traslados,SUM(km_cargado+km_vacio) AS km,SUM(costo_total) AS costo FROM trans_traslados t JOIN empresas emp ON t.empresa_id=emp.empresa_id WHERE ${wh} GROUP BY emp.razon_social ORDER BY costo DESC`,v);
+    const porCamion=await pool.query(`SELECT cam.nombre,cam.patente_serie,COUNT(*) AS traslados,SUM(km_cargado+km_vacio) AS km,SUM(costo_total) AS costo FROM trans_traslados t JOIN equipos cam ON t.camion_id=cam.equipo_id WHERE ${wh} GROUP BY cam.nombre,cam.patente_serie ORDER BY traslados DESC`,v);
+    const porFaena=await pool.query(`SELECT COALESCE(f.nombre,'Sin faena') AS faena,COUNT(*) AS traslados,SUM(km_cargado+km_vacio) AS km,SUM(costo_total) AS costo FROM trans_traslados t LEFT JOIN faenas f ON t.faena_id=f.faena_id WHERE ${wh} GROUP BY f.nombre ORDER BY costo DESC`,v);
+    const topEquipos=await pool.query(`SELECT eq.nombre,eq.codigo,COUNT(*) AS traslados,SUM(km_cargado+km_vacio) AS km FROM trans_traslados t JOIN equipos eq ON t.equipo_id=eq.equipo_id WHERE ${wh} AND t.equipo_id IS NOT NULL GROUP BY eq.nombre,eq.codigo ORDER BY traslados DESC LIMIT 10`,v);
+    const topDestinos=await pool.query(`SELECT destino,COUNT(*) AS traslados,SUM(km_cargado+km_vacio) AS km FROM trans_traslados t WHERE ${wh} GROUP BY destino ORDER BY traslados DESC LIMIT 10`,v);
+    const porMes=await pool.query(`SELECT TO_CHAR(fecha,'YYYY-MM') AS mes,COUNT(*) AS traslados,SUM(km_cargado) AS km_cargado,SUM(km_vacio) AS km_vacio,SUM(costo_total) AS costo FROM trans_traslados t WHERE ${wh} GROUP BY mes ORDER BY mes`,v);
+    res.json({totales:totales.rows[0],porEmpresa:porEmpresa.rows,porCamion:porCamion.rows,porFaena:porFaena.rows,topEquipos:topEquipos.rows,topDestinos:topDestinos.rows,porMes:porMes.rows});
+  }catch(e){res.status(500).json({error:e.message});}
 });
 
 // SPA fallback — must be AFTER all API routes
