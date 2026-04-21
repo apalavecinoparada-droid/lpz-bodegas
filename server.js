@@ -3162,18 +3162,18 @@ app.get('/api/personal', auth, async(req,res)=>{
 });
 app.post('/api/personal', auth, async(req,res)=>{
   try{
-    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id}=req.body;
+    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id,es_transporte}=req.body;
     if(!nombre_completo) return res.status(400).json({error:'Nombre requerido'});
-    const r=await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING *`,
-      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',faena_id||null]);
+    const r=await pool.query(`INSERT INTO personal(empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id,es_transporte) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
+      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',faena_id||null,es_transporte||false]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.put('/api/personal/:id', auth, async(req,res)=>{
   try{
-    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,activo,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id}=req.body;
-    const r=await pool.query(`UPDATE personal SET empresa_id=$1,nombre_completo=$2,rut=$3,cargo=$4,especialidad=$5,telefono=$6,correo=$7,participa_mantencion=$8,valor_hora_hombre=$9,moneda=$10,activo=$11,fecha_ingreso=$12,cotizaciones_anteriores=$13,observaciones=$14,fecha_nacimiento=$15,direccion=$16,comuna=$17,tipo_contrato=$18,centro_costo=$19,fecha_termino=$20,categoria=$21,faena_id=$22 WHERE persona_id=$23 RETURNING *`,
-      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',activo!==false,fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',faena_id||null,req.params.id]);
+    const{empresa_id,nombre_completo,rut,cargo,especialidad,telefono,correo,participa_mantencion,valor_hora_hombre,moneda,activo,fecha_ingreso,cotizaciones_anteriores,observaciones,fecha_nacimiento,direccion,comuna,tipo_contrato,centro_costo,fecha_termino,categoria,faena_id,es_transporte}=req.body;
+    const r=await pool.query(`UPDATE personal SET empresa_id=$1,nombre_completo=$2,rut=$3,cargo=$4,especialidad=$5,telefono=$6,correo=$7,participa_mantencion=$8,valor_hora_hombre=$9,moneda=$10,activo=$11,fecha_ingreso=$12,cotizaciones_anteriores=$13,observaciones=$14,fecha_nacimiento=$15,direccion=$16,comuna=$17,tipo_contrato=$18,centro_costo=$19,fecha_termino=$20,categoria=$21,faena_id=$22,es_transporte=$23 WHERE persona_id=$24 RETURNING *`,
+      [empresa_id||null,nombre_completo,rut||null,cargo||null,especialidad||null,telefono||null,correo||null,participa_mantencion||false,valor_hora_hombre||null,moneda||'CLP',activo!==false,fecha_ingreso||null,parseInt(cotizaciones_anteriores)||0,observaciones||null,fecha_nacimiento||null,direccion||null,comuna||null,tipo_contrato||null,centro_costo||null,fecha_termino||null,categoria||'otros_faena',faena_id||null,es_transporte||false,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -3423,6 +3423,7 @@ async function setupRendiciones(q){
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS centro_costo VARCHAR(60)');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS fecha_termino DATE');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS faena_id INT REFERENCES faenas(faena_id)');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS es_transporte BOOLEAN DEFAULT false');}catch(e){}
 
   // ── Vacaciones ──
   await q(`CREATE TABLE IF NOT EXISTS feriados_chile (
@@ -4099,9 +4100,9 @@ app.get('/api/trans/camiones', auth, async(req,res)=>{
   try{res.json((await pool.query("SELECT equipo_id,codigo,nombre,patente_serie,patente_carro FROM equipos WHERE es_transporte=true AND activo=true ORDER BY codigo")).rows);}catch(e){res.status(500).json({error:e.message});}
 });
 
-// ── Choferes transporte (personal con cargo chofer o similar) ──
+// ── Choferes transporte (personal marcado como transporte) ──
 app.get('/api/trans/choferes', auth, async(req,res)=>{
-  try{res.json((await pool.query("SELECT persona_id,nombre_completo,rut,cargo,empresa_id FROM personal WHERE activo=true AND (UPPER(cargo) LIKE '%CHOFER%' OR UPPER(cargo) LIKE '%CONDUCTOR%' OR UPPER(cargo) LIKE '%TRANSPORTE%') ORDER BY nombre_completo")).rows);}catch(e){res.status(500).json({error:e.message});}
+  try{res.json((await pool.query("SELECT persona_id,nombre_completo,rut,cargo,empresa_id FROM personal WHERE activo=true AND es_transporte=true ORDER BY nombre_completo")).rows);}catch(e){res.status(500).json({error:e.message});}
 });
 
 // ── Función para resolver tarifa y calcular costos ──
