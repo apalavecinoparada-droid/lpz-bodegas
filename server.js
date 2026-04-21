@@ -1051,15 +1051,15 @@ const empR=express.Router();
 empR.get('/', auth, async(req,res)=>{try{res.json((await pool.query('SELECT * FROM empresas ORDER BY empresa_id')).rows);}catch(e){res.status(500).json({error:e.message});}});
 empR.post('/', auth, async(req,res)=>{
   try{
-    const{rut,razon_social,direccion,ciudad,giro,telefono,email}=req.body;
-    const r=await pool.query('INSERT INTO empresas(rut,razon_social,direccion,ciudad,giro,telefono,email,logo_base64) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[rut,razon_social,direccion||null,ciudad||null,giro||null,telefono||null,email||null,req.body.logo_base64||null]);
+    const{rut,razon_social,direccion,ciudad,giro,telefono,email,representante_nombre,representante_rut,comuna,region}=req.body;
+    const r=await pool.query('INSERT INTO empresas(rut,razon_social,direccion,ciudad,giro,telefono,email,logo_base64,representante_nombre,representante_rut,comuna,region) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',[rut,razon_social,direccion||null,ciudad||null,giro||null,telefono||null,email||null,req.body.logo_base64||null,representante_nombre||null,representante_rut||null,comuna||null,region||'VIII del Bio Bio']);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 empR.put('/:id', auth, async(req,res)=>{
   try{
-    const{rut,razon_social,direccion,ciudad,giro,telefono,email}=req.body;
-    const r=await pool.query('UPDATE empresas SET rut=$1,razon_social=$2,direccion=$3,ciudad=$4,giro=$5,telefono=$6,email=$7,logo_base64=$8,modificado_en=NOW() WHERE empresa_id=$9 RETURNING *',[rut,razon_social,direccion||null,ciudad||null,giro||null,telefono||null,email||null,req.body.logo_base64||null,req.params.id]);
+    const{rut,razon_social,direccion,ciudad,giro,telefono,email,representante_nombre,representante_rut,comuna,region}=req.body;
+    const r=await pool.query('UPDATE empresas SET rut=$1,razon_social=$2,direccion=$3,ciudad=$4,giro=$5,telefono=$6,email=$7,logo_base64=$8,representante_nombre=$9,representante_rut=$10,comuna=$11,region=$12,modificado_en=NOW() WHERE empresa_id=$13 RETURNING *',[rut,razon_social,direccion||null,ciudad||null,giro||null,telefono||null,email||null,req.body.logo_base64||null,representante_nombre||null,representante_rut||null,comuna||null,region||'VIII del Bio Bio',req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -4279,6 +4279,7 @@ async function setupContratos(q){
     fecha_termino DATE,
     lugar_firma VARCHAR(100),
     funcion_texto TEXT NOT NULL,
+    jornada_tipo VARCHAR(20) DEFAULT 'normal',
     jornada_horas INT DEFAULT 44,
     jornada_texto TEXT,
     lugar_prestacion TEXT,
@@ -4299,6 +4300,14 @@ async function setupContratos(q){
     usuario VARCHAR(100),
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
+  try{await q("ALTER TABLE contratos ADD COLUMN IF NOT EXISTS jornada_tipo VARCHAR(20) DEFAULT 'normal'");}catch(e){}
+
+  // Seed representante legal por defecto en empresas del grupo Poo
+  try{
+    await q("UPDATE empresas SET representante_nombre='LEONIDAS FERNANDO POO ZENTENO',representante_rut='8.413.067-2' WHERE representante_nombre IS NULL OR representante_nombre=''");
+    await q("UPDATE empresas SET comuna='Nacimiento' WHERE comuna IS NULL OR comuna=''");
+    await q("UPDATE empresas SET region='VIII del Bio Bio' WHERE region IS NULL OR region=''");
+  }catch(e){}
 
   // Seed funciones estándar por cargo
   try{
@@ -4391,8 +4400,8 @@ app.post('/api/contratos', auth, async(req,res)=>{
     if(b.tipo_contrato==='plazo_fijo'&&!b.fecha_termino){
       return res.status(400).json({error:'Contrato a plazo fijo requiere fecha de término'});
     }
-    const r=await pool.query(`INSERT INTO contratos(persona_id,empresa_id,tipo_contrato,es_actualizacion,fecha_contrato,fecha_inicio,fecha_termino,lugar_firma,funcion_texto,jornada_horas,jornada_texto,lugar_prestacion,sueldo_base,bono_responsabilidad,bono_produccion_fijo,bono_produccion_variable,bono_produccion_tarifa,bono_produccion_detalle,semana_corrida,asig_colacion,asig_movilizacion,asig_viatico,tiene_alimentacion,alimentacion_detalle,otros_beneficios,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING *`,
-      [b.persona_id,b.empresa_id,b.tipo_contrato,b.es_actualizacion||false,b.fecha_contrato,b.fecha_inicio,b.fecha_termino||null,b.lugar_firma||'NACIMIENTO',b.funcion_texto,parseInt(b.jornada_horas)||44,b.jornada_texto||null,b.lugar_prestacion||null,parseFloat(b.sueldo_base)||0,parseFloat(b.bono_responsabilidad)||0,parseFloat(b.bono_produccion_fijo)||0,b.bono_produccion_variable||false,parseFloat(b.bono_produccion_tarifa)||0,b.bono_produccion_detalle||null,b.semana_corrida||false,parseFloat(b.asig_colacion)||0,parseFloat(b.asig_movilizacion)||0,parseFloat(b.asig_viatico)||0,b.tiene_alimentacion||false,b.alimentacion_detalle||null,b.otros_beneficios||null,b.observaciones||null,req.user.email]);
+    const r=await pool.query(`INSERT INTO contratos(persona_id,empresa_id,tipo_contrato,es_actualizacion,fecha_contrato,fecha_inicio,fecha_termino,lugar_firma,funcion_texto,jornada_tipo,jornada_horas,jornada_texto,lugar_prestacion,sueldo_base,bono_responsabilidad,bono_produccion_fijo,bono_produccion_variable,bono_produccion_tarifa,bono_produccion_detalle,semana_corrida,asig_colacion,asig_movilizacion,asig_viatico,tiene_alimentacion,alimentacion_detalle,otros_beneficios,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28) RETURNING *`,
+      [b.persona_id,b.empresa_id,b.tipo_contrato,b.es_actualizacion||false,b.fecha_contrato,b.fecha_inicio,b.fecha_termino||null,b.lugar_firma||'Nacimiento',b.funcion_texto,b.jornada_tipo||'normal',parseInt(b.jornada_horas)||44,b.jornada_texto||null,b.lugar_prestacion||null,parseFloat(b.sueldo_base)||0,parseFloat(b.bono_responsabilidad)||0,parseFloat(b.bono_produccion_fijo)||0,b.bono_produccion_variable||false,parseFloat(b.bono_produccion_tarifa)||0,b.bono_produccion_detalle||null,b.semana_corrida||false,parseFloat(b.asig_colacion)||0,parseFloat(b.asig_movilizacion)||0,parseFloat(b.asig_viatico)||0,b.tiene_alimentacion||false,b.alimentacion_detalle||null,b.otros_beneficios||null,b.observaciones||null,req.user.email]);
     // Si es contrato nuevo, actualizar fecha_ingreso en personal si no tiene
     if(!b.es_actualizacion){
       await pool.query('UPDATE personal SET fecha_ingreso=COALESCE(fecha_ingreso,$1),tipo_contrato=$2,fecha_termino=$3 WHERE persona_id=$4',
