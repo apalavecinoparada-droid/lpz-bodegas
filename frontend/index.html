@@ -5577,7 +5577,7 @@ function UsuariosView(p){
   function eliminarRol(id){if(!confirm('Eliminar este rol?'))return;api('/roles/'+id,'DELETE',null,p.tok).then(function(){loadRoles();}).catch(function(e){alert(e.message);});}
   function toggleModulo(mod){setRolForm(function(f){var mods=f.modulos||[];var idx=mods.indexOf(mod);if(idx>=0)mods=mods.filter(function(m){return m!==mod;});else mods=mods.concat([mod]);return Object.assign({},f,{modulos:mods});});}
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
-  var tabs=[{k:'usuarios',l:'👤 Usuarios'},{k:'roles',l:'🔑 Roles y Permisos'}];
+  var tabs=[{k:'usuarios',l:'👤 Usuarios'},{k:'roles',l:'🔑 Roles y Permisos'},{k:'peligro',l:'⚠ Zona Peligrosa'}];
   return h('div',null,
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
       h('div',{style:{display:'flex',gap:4}},tabs.map(function(t){return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'6px 14px',borderRadius:5,fontSize:12,cursor:'pointer',border:'1px solid #CBD5E1',background:tab===t.k?'#1E3A2D':'#F8FAFC',color:tab===t.k?'#fff':'#475569',fontWeight:tab===t.k?600:400}},t.l);})),
@@ -5654,6 +5654,96 @@ function UsuariosView(p){
           !r.es_admin&&h('button',{onClick:function(){eliminarRol(r.rol_id);},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'🗑')
         );}}
       ],rows:rolesLocal,empty:'Sin roles'}))
+    ),
+    // ── TAB ZONA PELIGROSA ──
+    tab==='peligro'&&h(ZonaPeligroView,{tok:p.tok})
+  );
+}
+
+// ══ ZONA PELIGROSA — LIMPIEZA DE DATOS TRANSACCIONALES ══
+function ZonaPeligroView(p){
+  var[confirma,setConfirma]=useState('');
+  var[resetHoro,setResetHoro]=useState(false);
+  var[ejecutando,setEjecutando]=useState(false);
+  var[resultado,setResultado]=useState(null);
+  var[error,setError]=useState('');
+
+  function ejecutar(){
+    if(confirma!=='BORRAR TODAS LAS TRANSACCIONES'){
+      setError('Debe escribir exactamente: BORRAR TODAS LAS TRANSACCIONES');
+      return;
+    }
+    if(!confirm('⚠ ÚLTIMA ADVERTENCIA\n\nEsta acción borrará TODAS las transacciones del sistema de forma IRREVERSIBLE.\n\n¿Está completamente seguro de continuar?')){
+      return;
+    }
+    setEjecutando(true);setError('');setResultado(null);
+    api('/admin/wipe-transacciones','POST',{confirmacion:confirma,reset_horometros:resetHoro},p.tok).then(function(r){
+      setResultado(r);setEjecutando(false);setConfirma('');
+    }).catch(function(e){
+      setError(e.message);setEjecutando(false);
+    });
+  }
+
+  return h('div',null,
+    h('div',{style:{background:'#FEF2F2',border:'2px solid #DC2626',borderRadius:8,padding:20,marginBottom:16}},
+      h('div',{style:{display:'flex',alignItems:'center',gap:10,marginBottom:12}},
+        h('span',{style:{fontSize:32}},'⚠'),
+        h('div',null,
+          h('div',{style:{fontSize:16,fontWeight:700,color:'#991B1B'}},'LIMPIEZA DE DATOS TRANSACCIONALES'),
+          h('div',{style:{fontSize:12,color:'#7F1D1D'}},'Acción irreversible. Solo para uso administrativo al comenzar a usar el sistema desde cero.')
+        )
+      ),
+      h('div',{style:{background:'#fff',borderRadius:6,padding:12,marginBottom:12,fontSize:12,lineHeight:1.6}},
+        h('div',{style:{fontWeight:700,marginBottom:6,color:'#166534'}},'✅ Se CONSERVAN (maestros):'),
+        h('div',{style:{color:'#475569'}},'Empresas, Personal, Equipos/Cargos, Faenas, Productos, Bodegas, Proveedores, Estanques, Tipos de combustible, Modelos, Categorías, Tarifas de transporte, Funciones de contrato, Roles, Usuarios, Condiciones de pago, Tipos de documento, Motivos.')
+      ),
+      h('div',{style:{background:'#fff',borderRadius:6,padding:12,marginBottom:12,fontSize:12,lineHeight:1.6}},
+        h('div',{style:{fontWeight:700,marginBottom:6,color:'#991B1B'}},'🗑 Se BORRAN (transacciones):'),
+        h('div',{style:{color:'#475569'}},
+          '• Contratos de trabajo generados',h('br'),
+          '• Registros de vacaciones',h('br'),
+          '• Traslados de transporte',h('br'),
+          '• Solicitudes',h('br'),
+          '• Rendiciones (entregas y gastos)',h('br'),
+          '• Cheques',h('br'),
+          '• Registros de terreno (horómetros y TOB)',h('br'),
+          '• Mantención (OT, avisos, programación, lecturas)',h('br'),
+          '• Combustible (movimientos y cierres)',h('br'),
+          '• Movimientos de inventario (ingresos/salidas/traspasos)',h('br'),
+          '• Órdenes de compra',h('br'),
+          '• Auditoría'
+        ),
+        h('div',{style:{marginTop:8,padding:8,background:'#FEF3C7',borderRadius:4,fontSize:11,color:'#78350F'}},
+          '⚠ Stocks de inventario y combustible se RESETEAN a cero.'
+        )
+      ),
+      h('div',{style:{display:'flex',alignItems:'center',gap:8,marginBottom:12}},
+        h('input',{type:'checkbox',id:'chkhoro',checked:resetHoro,onChange:function(e){setResetHoro(e.target.checked);}}),
+        h('label',{htmlFor:'chkhoro',style:{fontSize:12,fontWeight:600,cursor:'pointer'}},'También resetear horómetros y kilometrajes de equipos a cero')
+      ),
+      h('div',{style:{marginBottom:12}},
+        h('label',{style:{fontSize:12,fontWeight:700,display:'block',marginBottom:4,color:'#991B1B'}},'Para confirmar, escriba exactamente: BORRAR TODAS LAS TRANSACCIONES'),
+        h('input',{type:'text',value:confirma,onChange:function(e){setConfirma(e.target.value);setError('');},style:{width:'100%',padding:'10px 12px',border:'2px solid '+(confirma==='BORRAR TODAS LAS TRANSACCIONES'?'#059669':'#DC2626'),borderRadius:6,fontSize:13,fontFamily:'monospace',letterSpacing:1,fontWeight:700,boxSizing:'border-box'},placeholder:'Escriba la frase de confirmación'})
+      ),
+      error&&h('div',{style:{background:'#FEE2E2',border:'1px solid #DC2626',color:'#991B1B',padding:10,borderRadius:6,fontSize:12,marginBottom:12}},'❌ '+error),
+      h('button',{
+        onClick:ejecutar,
+        disabled:ejecutando||confirma!=='BORRAR TODAS LAS TRANSACCIONES',
+        style:{width:'100%',padding:'14px',background:(ejecutando||confirma!=='BORRAR TODAS LAS TRANSACCIONES')?'#CBD5E1':'#DC2626',color:'#fff',border:'none',borderRadius:6,fontSize:14,fontWeight:700,cursor:(ejecutando||confirma!=='BORRAR TODAS LAS TRANSACCIONES')?'not-allowed':'pointer',letterSpacing:1}
+      },ejecutando?'⏳ Borrando...':'🗑 EJECUTAR LIMPIEZA')
+    ),
+    resultado&&h('div',{style:{background:'#F0FDF4',border:'2px solid #059669',borderRadius:8,padding:16}},
+      h('div',{style:{fontSize:14,fontWeight:700,color:'#166534',marginBottom:10}},'✅ Limpieza completada exitosamente'),
+      h('div',{style:{fontSize:11,color:'#475569',marginBottom:10}},'Ejecutado por: '+h('strong',null,resultado.usuario||'—')+' el '+new Date(resultado.fecha).toLocaleString('es-CL')),
+      h('div',{style:{background:'#fff',borderRadius:6,padding:10,fontSize:11,fontFamily:'monospace',maxHeight:300,overflowY:'auto'}},
+        Object.keys(resultado.borrados||{}).map(function(tbl){
+          var v=resultado.borrados[tbl];
+          return h('div',{key:tbl,style:{display:'flex',justifyContent:'space-between',padding:'3px 0',borderBottom:'1px solid #F1F5F9'}},
+            h('span',null,tbl),
+            h('strong',{style:{color:typeof v==='number'?(v>0?'#DC2626':'#94A3B8'):'#059669'}},typeof v==='number'?v+' registros':v)
+          );
+        })
+      )
     )
   );
 }
