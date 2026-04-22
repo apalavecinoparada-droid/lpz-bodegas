@@ -5329,10 +5329,38 @@ function TransporteView(p){
   var[fHasta,setFHasta]=useState(new Date().toISOString().slice(0,10));
   var emptyForm={fecha:new Date().toISOString().slice(0,10),empresa_id:'',camion_id:'',chofer_id:'',faena_id:'',equipo_id:'',origen:'',destino:'',km_cargado:'',km_vacio:'0',odometro_inicio:'',odometro_fin:'',estado:'finalizado',observaciones:'',litros_combustible:'0',estanque_id:''};
   var[form,setForm]=useState(emptyForm);
+  var[pendientes,setPendientes]=useState([]);
+  var[planSel,setPlanSel]=useState('');
 
   function loadBase(){
     api('/trans/camiones','GET',null,p.tok).then(function(r){setCamiones(r||[]);}).catch(function(){});
     api('/trans/choferes','GET',null,p.tok).then(function(r){setChoferes(r||[]);}).catch(function(){});
+  }
+  function loadPendientes(){
+    // Planificaciones pendientes últimos 7 días + próximos 14
+    var d=new Date();d.setDate(d.getDate()-7);var desde=d.toISOString().slice(0,10);
+    var d2=new Date();d2.setDate(d2.getDate()+14);var hasta=d2.toISOString().slice(0,10);
+    api('/trans/planificacion?solo_pendientes=1&desde='+desde+'&hasta='+hasta,'GET',null,p.tok).then(function(r){setPendientes(Array.isArray(r)?r:[]);}).catch(function(){});
+  }
+  function cargarDesdePlan(planId){
+    setPlanSel(planId);
+    if(!planId){return;}
+    var pl=pendientes.find(function(x){return String(x.plan_id)===String(planId);});
+    if(!pl)return;
+    setForm(function(f){return Object.assign({},f,{
+      fecha:(pl.fecha_plan+'').slice(0,10),
+      empresa_id:pl.empresa_id||'',
+      camion_id:pl.camion_id||'',
+      chofer_id:pl.chofer_id||'',
+      faena_id:pl.faena_id||'',
+      equipo_id:pl.equipo_id||'',
+      origen:pl.origen||'',
+      destino:pl.destino||'',
+      km_cargado:pl.km_cargado_plan||'',
+      km_vacio:pl.km_vacio_plan||'0',
+      observaciones:pl.observaciones||''
+    });});
+    setMsg('✓ Datos cargados desde planificación. Puede modificar lo necesario.');
   }
   function loadTraslados(){
     var q='?';if(fEmpresa)q+='empresa_id='+fEmpresa+'&';if(fCamion)q+='camion_id='+fCamion+'&';if(fDesde)q+='desde='+fDesde+'&';if(fHasta)q+='hasta='+fHasta+'&';
@@ -5342,10 +5370,10 @@ function TransporteView(p){
     var q='?';if(fEmpresa)q+='empresa_id='+fEmpresa+'&';if(fDesde)q+='desde='+fDesde+'&';if(fHasta)q+='hasta='+fHasta+'&';
     api('/trans/dashboard'+q,'GET',null,p.tok).then(function(r){setDash(r);}).catch(function(){});
   }
-  useEffect(function(){loadBase();},[p.tok]);
+  useEffect(function(){loadBase();loadPendientes();},[p.tok]);
   useEffect(function(){loadTraslados();loadDash();},[p.tok,fEmpresa,fCamion,fDesde,fHasta]);
 
-  function openNew(){setSel(null);setForm(emptyForm);setShowForm(true);setMsg('');}
+  function openNew(){setSel(null);setForm(emptyForm);setPlanSel('');setShowForm(true);setMsg('');}
   function openEdit(r){
     setSel(r);setForm({fecha:(r.fecha||'').slice(0,10),empresa_id:r.empresa_id||'',camion_id:r.camion_id||'',chofer_id:r.chofer_id||'',faena_id:r.faena_id||'',equipo_id:r.equipo_id||'',origen:r.origen||'',destino:r.destino||'',km_cargado:r.km_cargado||'',km_vacio:r.km_vacio||'0',odometro_inicio:r.odometro_inicio||'',odometro_fin:r.odometro_fin||'',estado:r.estado||'finalizado',observaciones:r.observaciones||'',litros_combustible:r.litros_combustible||'0',estanque_id:r.estanque_id||''});
     setShowForm(true);setMsg('');
@@ -5357,7 +5385,14 @@ function TransporteView(p){
     if(kc+kv===0){setMsg('Debe ingresar al menos km cargado o km vacío');return;}
     var url=sel?'/trans/traslados/'+sel.traslado_id:'/trans/traslados';
     var method=sel?'PUT':'POST';
-    api(url,method,form,p.tok).then(function(){loadTraslados();loadDash();setShowForm(false);setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});
+    api(url,method,form,p.tok).then(function(r){
+      // Si se cargó desde una planificación, marcarla como ejecutada
+      if(planSel&&r&&r.traslado_id&&!sel){
+        api('/trans/planificacion/'+planSel+'/ejecutar','POST',{traslado_id:r.traslado_id},p.tok).catch(function(){});
+      }
+      loadTraslados();loadDash();loadPendientes();setShowForm(false);setPlanSel('');setMsg('');
+    }).catch(function(e){setMsg('Error: '+e.message);});
+  }
   }
   function eliminar(id){if(!confirm('¿Eliminar este traslado?'))return;api('/trans/traslados/'+id,'DELETE',null,p.tok).then(function(){loadTraslados();loadDash();}).catch(function(e){alert(e.message);});}
   function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
@@ -5440,6 +5475,20 @@ function TransporteView(p){
     // Formulario
     showForm&&h('div',{className:'card',style:{marginBottom:12}},
       h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},sel?'Editar traslado':'Nuevo traslado'),
+      // Selector de planificación pendiente (solo al crear)
+      !sel&&pendientes.length>0&&h('div',{style:{background:'#EFF6FF',border:'1px solid #3B82F6',borderRadius:6,padding:10,marginBottom:10}},
+        h('label',{style:{fontSize:11,fontWeight:700,color:'#1E40AF',display:'block',marginBottom:4}},'📋 Cargar datos desde planificación (opcional)'),
+        h('select',{value:planSel,onChange:function(e){cargarDesdePlan(e.target.value);},style:Object.assign({},inpS,{background:'#fff'})},
+          h('option',{value:''},'— Sin planificación / Traslado directo —'),
+          pendientes.map(function(pl){
+            var fecha=(pl.fecha_plan+'').slice(0,10);
+            var hora=pl.hora_plan?' '+pl.hora_plan.slice(0,5):'';
+            var pri=pl.prioridad==='urgente'?' ⚠ URGENTE':pl.prioridad==='alta'?' ▲ ALTA':'';
+            return h('option',{key:pl.plan_id,value:pl.plan_id},fecha+hora+' · '+(pl.chofer_nombre||'?').split(' ')[0]+' · '+(pl.origen||'?')+' → '+(pl.destino||'?')+pri);
+          })
+        ),
+        planSel&&h('div',{style:{fontSize:10,color:'#1E40AF',marginTop:4}},'Al guardar, la planificación se marcará como ejecutada automáticamente.')
+      ),
       h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
         h('div',null,h('label',{style:lblS},'Fecha *'),h('input',{type:'date',value:form.fecha,onChange:function(e){upd('fecha',e.target.value);},style:inpS})),
         h('div',null,h('label',{style:lblS},'Empresa *'),h('select',{value:form.empresa_id,onChange:function(e){upd('empresa_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
@@ -5459,7 +5508,7 @@ function TransporteView(p){
         h('div',{style:{gridColumn:'span 2'}},h('label',{style:lblS},'Observaciones'),h('input',{type:'text',value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},style:inpS}))
       ),
       h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},
-        h(Btn,{v:'g',onClick:function(){setShowForm(false);setMsg('');}},null,'Cancelar'),
+        h(Btn,{v:'g',onClick:function(){setShowForm(false);setPlanSel('');setMsg('');}},null,'Cancelar'),
         h(Btn,{onClick:guardar},'Guardar')
       )
     ),
