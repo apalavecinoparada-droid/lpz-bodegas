@@ -5531,6 +5531,269 @@ function TransporteTarifas(p){
 }
 
 
+// ══ PLANIFICACIÓN DE TRASLADOS ══
+function PlanificacionView(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var faenas=p.m.faenas||[];
+  var personal=(p.m.personal||[]).filter(function(x){return x.activo;});
+  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo;});
+  var camiones=equipos.filter(function(e){return e.es_transporte;});
+  var choferes=personal.filter(function(x){return x.es_transporte;});
+
+  var[vista,setVista]=useState('calendario'); // calendario | agenda
+  var[mes,setMes]=useState(new Date().toISOString().slice(0,7)); // YYYY-MM
+  var[items,setItems]=useState([]);
+  var[filtChofer,setFiltChofer]=useState('');
+  var[filtEstado,setFiltEstado]=useState('');
+  var[showForm,setShowForm]=useState(false);
+  var[sel,setSel]=useState(null);
+  var[solape,setSolape]=useState(null);
+  var[msg,setMsg]=useState('');
+
+  var emptyForm={fecha_plan:'',hora_plan:'',empresa_id:'',camion_id:'',chofer_id:'',faena_id:'',equipo_id:'',origen:'',destino:'',km_cargado_plan:'',km_vacio_plan:'',prioridad:'normal',estado:'pendiente',observaciones:''};
+  var[form,setForm]=useState(emptyForm);
+
+  function load(){
+    var y=parseInt(mes.slice(0,4)),mm=parseInt(mes.slice(5,7));
+    var desde=mes+'-01';
+    var ult=new Date(y,mm,0).getDate();
+    var hasta=mes+'-'+String(ult).padStart(2,'0');
+    var q='?desde='+desde+'&hasta='+hasta;
+    if(filtChofer)q+='&chofer_id='+filtChofer;
+    if(filtEstado)q+='&estado='+filtEstado;
+    api('/trans/planificacion'+q,'GET',null,p.tok).then(function(r){setItems(Array.isArray(r)?r:[]);}).catch(function(){});
+  }
+  useEffect(load,[p.tok,mes,filtChofer,filtEstado]);
+
+  function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
+  function openNew(fechaPre){
+    setSel(null);
+    setForm(Object.assign({},emptyForm,{fecha_plan:fechaPre||new Date().toISOString().slice(0,10)}));
+    setSolape(null);setMsg('');setShowForm(true);
+  }
+  function openEdit(row){
+    setSel(row);
+    setForm({
+      fecha_plan:(row.fecha_plan+'').slice(0,10),
+      hora_plan:row.hora_plan?row.hora_plan.slice(0,5):'',
+      empresa_id:row.empresa_id||'',camion_id:row.camion_id||'',chofer_id:row.chofer_id||'',
+      faena_id:row.faena_id||'',equipo_id:row.equipo_id||'',
+      origen:row.origen||'',destino:row.destino||'',
+      km_cargado_plan:row.km_cargado_plan||'',km_vacio_plan:row.km_vacio_plan||'',
+      prioridad:row.prioridad||'normal',estado:row.estado||'pendiente',
+      observaciones:row.observaciones||''
+    });
+    setSolape(null);setMsg('');setShowForm(true);
+  }
+
+  // Validar solape al cambiar chofer/fecha
+  useEffect(function(){
+    if(!form.chofer_id||!form.fecha_plan){setSolape(null);return;}
+    var q='?fecha='+form.fecha_plan+'&chofer_id='+form.chofer_id;
+    if(sel)q+='&plan_id='+sel.plan_id;
+    api('/trans/planificacion/check-solape'+q,'GET',null,p.tok).then(function(r){
+      if(r&&r.solape)setSolape(r.traslados);else setSolape(null);
+    }).catch(function(){});
+  },[form.chofer_id,form.fecha_plan]);
+
+  function guardar(){
+    if(!form.fecha_plan){setMsg('Fecha obligatoria');return;}
+    if(!form.chofer_id||!form.camion_id){setMsg('Chofer y camión son obligatorios');return;}
+    var url=sel?'/trans/planificacion/'+sel.plan_id:'/trans/planificacion';
+    var method=sel?'PUT':'POST';
+    api(url,method,form,p.tok).then(function(){setShowForm(false);load();}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function eliminar(id){if(!confirm('¿Eliminar esta planificación?'))return;api('/trans/planificacion/'+id,'DELETE',null,p.tok).then(load).catch(function(e){alert(e.message);});}
+
+  var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3};
+
+  // Contadores
+  var total=items.length;
+  var pend=items.filter(function(x){return x.estado==='pendiente';}).length;
+  var curso=items.filter(function(x){return x.estado==='en_curso';}).length;
+  var ejec=items.filter(function(x){return x.estado==='ejecutado';}).length;
+  var canc=items.filter(function(x){return x.estado==='cancelado';}).length;
+
+  // Construir calendario mensual
+  function renderCalendario(){
+    var y=parseInt(mes.slice(0,4)),mm=parseInt(mes.slice(5,7));
+    var primerDia=new Date(y,mm-1,1);
+    var diaSemana=primerDia.getDay(); // 0=Dom
+    // Ajustar a lunes=0
+    var offset=(diaSemana+6)%7;
+    var ult=new Date(y,mm,0).getDate();
+    var celdas=[];
+    // Días del mes anterior (en gris)
+    for(var i=0;i<offset;i++){celdas.push({dia:null});}
+    // Días del mes
+    for(var d=1;d<=ult;d++){
+      var fecha=mes+'-'+String(d).padStart(2,'0');
+      var eventos=items.filter(function(x){return (x.fecha_plan+'').slice(0,10)===fecha;});
+      celdas.push({dia:d,fecha:fecha,eventos:eventos});
+    }
+    // Completar hasta múltiplo de 7
+    while(celdas.length%7!==0)celdas.push({dia:null});
+    var hoy=new Date().toISOString().slice(0,10);
+
+    var nombresDia=['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+    var colorEstado={pendiente:'#F59E0B',en_curso:'#3B82F6',ejecutado:'#10B981',cancelado:'#94A3B8'};
+    return h('div',{className:'card',style:{padding:0,overflow:'hidden'}},
+      // Encabezado días
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',background:'#1E3A2D',color:'#D4C5A9'}},
+        nombresDia.map(function(n){return h('div',{key:n,style:{padding:'8px 6px',textAlign:'center',fontSize:11,fontWeight:700,letterSpacing:1}},n);})
+      ),
+      // Grilla
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)'}},
+        celdas.map(function(c,idx){
+          if(!c.dia)return h('div',{key:idx,style:{minHeight:90,background:'#F8FAFC',borderRight:'1px solid #E2E8F0',borderBottom:'1px solid #E2E8F0'}});
+          var esHoy=c.fecha===hoy;
+          return h('div',{key:idx,style:{minHeight:90,padding:4,borderRight:'1px solid #E2E8F0',borderBottom:'1px solid #E2E8F0',background:esHoy?'#FEF3C7':'#fff',cursor:'pointer'},onClick:function(){openNew(c.fecha);}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:2}},
+              h('span',{style:{fontSize:11,fontWeight:esHoy?700:500,color:esHoy?'#78350F':'#64748B'}},c.dia),
+              c.eventos.length>0&&h('span',{style:{fontSize:9,background:'#1E3A2D',color:'#D4C5A9',padding:'1px 5px',borderRadius:8,fontWeight:600}},c.eventos.length)
+            ),
+            c.eventos.slice(0,3).map(function(ev,i){
+              return h('div',{key:i,onClick:function(e){e.stopPropagation();openEdit(ev);},style:{fontSize:9,padding:'2px 4px',borderRadius:3,marginBottom:2,background:'#fff',borderLeft:'3px solid '+(colorEstado[ev.estado]||'#94A3B8'),color:'#0F172A',cursor:'pointer',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},title:ev.origen+' → '+ev.destino+' ('+(ev.chofer_nombre||'')+')'},
+                ev.hora_plan?h('strong',{style:{marginRight:3}},ev.hora_plan.slice(0,5)):null,
+                (ev.camion_patente||ev.camion_nombre||'?')+' · '+((ev.chofer_nombre||'').split(' ')[0]||'?')
+              );
+            }),
+            c.eventos.length>3&&h('div',{style:{fontSize:9,color:'#64748B',textAlign:'center',marginTop:2}},'+'+(c.eventos.length-3)+' más')
+          );
+        })
+      )
+    );
+  }
+
+  // Renderizar agenda (lista agrupada por día)
+  function renderAgenda(){
+    var porDia={};
+    items.forEach(function(x){
+      var f=(x.fecha_plan+'').slice(0,10);
+      if(!porDia[f])porDia[f]=[];
+      porDia[f].push(x);
+    });
+    var fechas=Object.keys(porDia).sort();
+    if(fechas.length===0)return h('div',{className:'card',style:{textAlign:'center',padding:30,color:'#94A3B8'}},'Sin traslados planificados en este período');
+    var estLbl={pendiente:'Pendiente',en_curso:'En curso',ejecutado:'Ejecutado',cancelado:'Cancelado'};
+    var estCol={pendiente:'y',en_curso:'b',ejecutado:'g',cancelado:'gray'};
+    var priCol={normal:'#64748B',alta:'#F59E0B',urgente:'#DC2626'};
+    return h('div',null,fechas.map(function(f){
+      var d=new Date(f+'T00:00:00');
+      var nombreDia=['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'][d.getDay()];
+      return h('div',{key:f,className:'card',style:{marginBottom:10}},
+        h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D',borderBottom:'2px solid #1E3A2D',paddingBottom:6,marginBottom:8}},nombreDia+' '+d.getDate()+' de '+['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'][d.getMonth()]),
+        porDia[f].map(function(ev){
+          return h('div',{key:ev.plan_id,style:{padding:'8px 10px',marginBottom:4,borderLeft:'4px solid '+priCol[ev.prioridad||'normal'],background:'#F8FAFC',borderRadius:4,display:'grid',gridTemplateColumns:'90px 1fr auto',gap:10,alignItems:'center'}},
+            h('div',null,
+              ev.hora_plan?h('div',{style:{fontSize:14,fontWeight:700,color:'#1E3A2D'}},ev.hora_plan.slice(0,5)):h('div',{style:{fontSize:11,color:'#94A3B8'}},'Sin hora'),
+              h(Bg,{c:estCol[ev.estado]||'gray'},estLbl[ev.estado]||ev.estado)
+            ),
+            h('div',null,
+              h('div',{style:{fontSize:12,fontWeight:600}},(ev.origen||'?')+' → '+(ev.destino||'?')),
+              h('div',{style:{fontSize:11,color:'#64748B',marginTop:2}},
+                '🚛 '+(ev.camion_nombre||'?')+(ev.camion_patente?' ('+ev.camion_patente+')':''),
+                ' · 👤 '+(ev.chofer_nombre||'?'),
+                ev.equipo_nombre?' · 📦 '+ev.equipo_nombre:''
+              ),
+              ev.observaciones?h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:2,fontStyle:'italic'}},ev.observaciones):null
+            ),
+            h('div',{style:{display:'flex',gap:4}},
+              h(Btn,{v:'g',sm:true,onClick:function(){openEdit(ev);}},null,'✏'),
+              h(Btn,{v:'r',sm:true,onClick:function(){eliminar(ev.plan_id);}},null,'🗑')
+            )
+          );
+        })
+      );
+    }));
+  }
+
+  return h('div',null,
+    // Toolbar
+    h('div',{style:{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}},
+      h('input',{type:'month',value:mes,onChange:function(e){setMes(e.target.value);},style:Object.assign({},inpS,{width:150})}),
+      h('select',{value:filtChofer,onChange:function(e){setFiltChofer(e.target.value);},style:Object.assign({},inpS,{width:200})},
+        h('option',{value:''},'Todos los choferes'),
+        choferes.map(function(c){return h('option',{key:c.persona_id,value:c.persona_id},c.nombre_completo);})
+      ),
+      h('select',{value:filtEstado,onChange:function(e){setFiltEstado(e.target.value);},style:Object.assign({},inpS,{width:150})},
+        h('option',{value:''},'Todos los estados'),
+        h('option',{value:'pendiente'},'Pendientes'),
+        h('option',{value:'en_curso'},'En curso'),
+        h('option',{value:'ejecutado'},'Ejecutados'),
+        h('option',{value:'cancelado'},'Cancelados')
+      ),
+      h('div',{style:{display:'flex',gap:2,border:'1px solid #CBD5E1',borderRadius:5,overflow:'hidden'}},
+        h('button',{onClick:function(){setVista('calendario');},style:{padding:'6px 10px',background:vista==='calendario'?'#1E3A2D':'#fff',color:vista==='calendario'?'#fff':'#475569',border:'none',fontSize:11,cursor:'pointer'}},'📅 Calendario'),
+        h('button',{onClick:function(){setVista('agenda');},style:{padding:'6px 10px',background:vista==='agenda'?'#1E3A2D':'#fff',color:vista==='agenda'?'#fff':'#475569',border:'none',fontSize:11,cursor:'pointer'}},'📋 Agenda')
+      ),
+      h('div',{style:{flex:1}}),
+      h(Btn,{onClick:function(){openNew();}},'+ Nueva planificación')
+    ),
+    // KPIs
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:8,marginBottom:12}},
+      [{l:'Total mes',v:total,c:'#1E3A2D'},{l:'Pendientes',v:pend,c:'#F59E0B'},{l:'En curso',v:curso,c:'#3B82F6'},{l:'Ejecutados',v:ejec,c:'#10B981'},{l:'Cancelados',v:canc,c:'#94A3B8'}].map(function(k,i){
+        return h('div',{key:i,className:'card',style:{padding:10,textAlign:'center'}},
+          h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600,textTransform:'uppercase'}},k.l),
+          h('div',{style:{fontSize:24,fontWeight:700,color:k.c,marginTop:2}},k.v)
+        );
+      })
+    ),
+    // Vista
+    vista==='calendario'?renderCalendario():renderAgenda(),
+    // Modal form
+    showForm&&h(Modal,{title:sel?'Editar planificación':'Nueva planificación',onClose:function(){setShowForm(false);}},
+      h('div',{className:'mb'},
+        msg&&h('div',{className:'al al-e',style:{marginBottom:8}},msg),
+        solape&&h('div',{style:{background:'#FEF3C7',border:'1px solid #F59E0B',color:'#78350F',padding:10,borderRadius:6,fontSize:11,marginBottom:10}},
+          '⚠ Este chofer ya tiene ',solape.length,' traslado(s) planificado(s) ese día: ',
+          solape.map(function(s){return (s.hora_plan?s.hora_plan.slice(0,5)+' ':'')+(s.origen||'?')+' → '+(s.destino||'?');}).join(' · ')
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:8}},
+          h('div',null,h('label',{style:lblS},'Fecha *'),h('input',{type:'date',value:form.fecha_plan,onChange:function(e){upd('fecha_plan',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Hora estimada'),h('input',{type:'time',value:form.hora_plan,onChange:function(e){upd('hora_plan',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Prioridad'),h('select',{value:form.prioridad,onChange:function(e){upd('prioridad',e.target.value);},style:inpS},
+            h('option',{value:'normal'},'Normal'),h('option',{value:'alta'},'Alta'),h('option',{value:'urgente'},'Urgente')
+          ))
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}},
+          h('div',null,h('label',{style:lblS},'Empresa'),h('select',{value:form.empresa_id,onChange:function(e){upd('empresa_id',e.target.value);},style:inpS},h('option',{value:''},'—'),empresas.map(function(emp){return h('option',{key:emp.empresa_id,value:emp.empresa_id},emp.razon_social);}))),
+          h('div',null,h('label',{style:lblS},'Faena destino'),h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);},style:inpS},h('option',{value:''},'—'),faenas.filter(function(f){return !form.empresa_id||String(f.empresa_id)===String(form.empresa_id);}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})))
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}},
+          h('div',null,h('label',{style:lblS},'Camión *'),h('select',{value:form.camion_id,onChange:function(e){upd('camion_id',e.target.value);},style:inpS},h('option',{value:''},'—'),camiones.map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.nombre+(c.patente_serie?' ('+c.patente_serie+')':''));}))),
+          h('div',null,h('label',{style:lblS},'Chofer *'),h('select',{value:form.chofer_id,onChange:function(e){upd('chofer_id',e.target.value);},style:inpS},h('option',{value:''},'—'),choferes.map(function(ch){return h('option',{key:ch.persona_id,value:ch.persona_id},ch.nombre_completo);})))
+        ),
+        h('div',{style:{marginBottom:8}},
+          h('label',{style:lblS},'Equipo a trasladar'),
+          h('select',{value:form.equipo_id,onChange:function(e){upd('equipo_id',e.target.value);},style:inpS},h('option',{value:''},'—'),equipos.filter(function(eq){return !eq.es_transporte;}).map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);}))
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}},
+          h('div',null,h('label',{style:lblS},'Origen'),h('input',{type:'text',value:form.origen,onChange:function(e){upd('origen',e.target.value);},style:inpS,placeholder:'Ej: Faena Mec 3'})),
+          h('div',null,h('label',{style:lblS},'Destino'),h('input',{type:'text',value:form.destino,onChange:function(e){upd('destino',e.target.value);},style:inpS,placeholder:'Ej: Taller Lpoo'}))
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:8}},
+          h('div',null,h('label',{style:lblS},'Km cargado (est.)'),h('input',{type:'number',step:'0.1',value:form.km_cargado_plan,onChange:function(e){upd('km_cargado_plan',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Km vacío (est.)'),h('input',{type:'number',step:'0.1',value:form.km_vacio_plan,onChange:function(e){upd('km_vacio_plan',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Estado'),h('select',{value:form.estado,onChange:function(e){upd('estado',e.target.value);},style:inpS},
+            h('option',{value:'pendiente'},'Pendiente'),h('option',{value:'en_curso'},'En curso'),h('option',{value:'ejecutado'},'Ejecutado'),h('option',{value:'cancelado'},'Cancelado')
+          ))
+        ),
+        h('div',null,
+          h('label',{style:lblS},'Observaciones'),
+          h('textarea',{value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},rows:2,style:Object.assign({},inpS,{resize:'vertical'})})
+        )
+      ),
+      h('div',{className:'mf'},
+        sel&&h(Btn,{v:'r',onClick:function(){eliminar(sel.plan_id);setShowForm(false);}},null,'Eliminar'),
+        h(Btn,{v:'g',onClick:function(){setShowForm(false);}},null,'Cancelar'),
+        h(Btn,{onClick:guardar},'Guardar')
+      )
+    )
+  );
+}
+
 // ══ GESTIÓN DE USUARIOS Y ROLES ══
 var MODULOS_SISTEMA=[
   {k:'ordenes',l:'Órdenes de Compra'},
@@ -6550,37 +6813,132 @@ function MobileTransporte(p){
   var estanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
   var[camiones,setCamiones]=useState([]);
   var[choferes,setChoferes]=useState([]);
+  var[modo,setModo]=useState('pendientes'); // pendientes | form
+  var[pendientes,setPendientes]=useState([]);
+  var[planActivo,setPlanActivo]=useState(null);
   var[msg,setMsg]=useState('');
   var[saved,setSaved]=useState(false);
-  var[form,setForm]=useState({fecha:new Date().toISOString().slice(0,10),empresa_id:'',camion_id:'',chofer_id:'',faena_id:'',equipo_id:'',origen:'',destino:'',km_cargado:'',km_vacio:'0',litros_combustible:'0',estanque_id:'',observaciones:''});
+  var emptyForm={fecha:new Date().toISOString().slice(0,10),empresa_id:'',camion_id:'',chofer_id:'',faena_id:'',equipo_id:'',origen:'',destino:'',km_cargado:'',km_vacio:'0',litros_combustible:'0',estanque_id:'',observaciones:''};
+  var[form,setForm]=useState(emptyForm);
+
   useEffect(function(){
     api('/trans/camiones','GET',null,p.tok).then(function(r){setCamiones(r||[]);}).catch(function(){});
     api('/trans/choferes','GET',null,p.tok).then(function(r){setChoferes(r||[]);}).catch(function(){});
   },[p.tok]);
+
+  // Cargar pendientes del día + próximos días
+  function loadPendientes(){
+    var hoy=new Date().toISOString().slice(0,10);
+    var d=new Date();d.setDate(d.getDate()+14);var hasta=d.toISOString().slice(0,10);
+    api('/trans/planificacion?solo_pendientes=1&desde='+hoy+'&hasta='+hasta,'GET',null,p.tok).then(function(r){
+      setPendientes(Array.isArray(r)?r:[]);
+    }).catch(function(){});
+  }
+  useEffect(loadPendientes,[p.tok]);
+
   function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
+
+  function ejecutarPlan(plan){
+    // Pre-llenar formulario desde la planificación
+    setPlanActivo(plan);
+    setForm({
+      fecha:(plan.fecha_plan+'').slice(0,10),
+      empresa_id:plan.empresa_id||'',
+      camion_id:plan.camion_id||'',
+      chofer_id:plan.chofer_id||'',
+      faena_id:plan.faena_id||'',
+      equipo_id:plan.equipo_id||'',
+      origen:plan.origen||'',
+      destino:plan.destino||'',
+      km_cargado:plan.km_cargado_plan||'',
+      km_vacio:plan.km_vacio_plan||'0',
+      litros_combustible:'0',
+      estanque_id:'',
+      observaciones:plan.observaciones||''
+    });
+    setModo('form');setMsg('');setSaved(false);
+  }
+
+  function nuevoDirecto(){setPlanActivo(null);setForm(emptyForm);setModo('form');setMsg('');setSaved(false);}
+
   function guardar(){
     if(!form.empresa_id||!form.camion_id||!form.chofer_id){setMsg('Complete empresa, camión y chofer');return;}
     if(!form.origen||!form.destino){setMsg('Complete origen y destino');return;}
     var kc=parseFloat(form.km_cargado)||0;var kv=parseFloat(form.km_vacio)||0;
     if(kc+kv===0){setMsg('Ingrese kilómetros');return;}
-    api('/trans/traslados','POST',Object.assign({},form,{estado:'finalizado'}),p.tok).then(function(){
+    api('/trans/traslados','POST',Object.assign({},form,{estado:'finalizado'}),p.tok).then(function(r){
+      // Si viene de un plan, marcarlo como ejecutado
+      if(planActivo&&r&&r.traslado_id){
+        api('/trans/planificacion/'+planActivo.plan_id+'/ejecutar','POST',{traslado_id:r.traslado_id},p.tok).catch(function(){});
+      }
       setSaved(true);setMsg('');
+      loadPendientes();
     }).catch(function(e){setMsg(e.message);});
   }
-  function nuevo(){setSaved(false);setForm({fecha:new Date().toISOString().slice(0,10),empresa_id:form.empresa_id,camion_id:form.camion_id,chofer_id:form.chofer_id,faena_id:'',equipo_id:'',origen:'',destino:'',km_cargado:'',km_vacio:'0',litros_combustible:'0',estanque_id:'',observaciones:''});}
+
+  function volver(){setSaved(false);setPlanActivo(null);setModo('pendientes');setForm(emptyForm);}
+  function nuevo(){setSaved(false);setPlanActivo(null);setForm(Object.assign({},emptyForm,{empresa_id:form.empresa_id,camion_id:form.camion_id,chofer_id:form.chofer_id}));}
+
   var F=function(lbl,content){return h('div',{className:'mob-field'},h('label',null,lbl),content);};
+  var priCol={normal:'#64748B',alta:'#F59E0B',urgente:'#DC2626'};
+
+  // Pantalla éxito
   if(saved)return h('div',{className:'mob-wrap'},
-    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Traslado')),
+    h('div',{className:'mob-topbar'},h('button',{onClick:volver},'←'),h('h3',null,'Traslado')),
     h('div',{style:{textAlign:'center',padding:'60px 20px'}},
       h('div',{style:{fontSize:48,marginBottom:12}},'✅'),
       h('div',{style:{fontSize:16,fontWeight:700,color:'#166534',marginBottom:8}},'Traslado registrado'),
+      planActivo&&h('div',{style:{fontSize:12,color:'#64748B',marginBottom:12}},'Planificación marcada como ejecutada'),
       h('button',{onClick:nuevo,className:'mob-form mob-submit',style:{maxWidth:200,margin:'16px auto',display:'block'}},'Registrar otro'),
-      h('button',{onClick:p.onBack,style:{background:'none',border:'1px solid #CBD5E1',padding:'12px 24px',borderRadius:8,marginTop:8,cursor:'pointer',fontSize:14}},'Volver al inicio')
+      h('button',{onClick:volver,style:{background:'none',border:'1px solid #CBD5E1',padding:'12px 24px',borderRadius:8,marginTop:8,cursor:'pointer',fontSize:14}},'Volver a pendientes')
     )
   );
+
+  // Pantalla pendientes (default al entrar)
+  if(modo==='pendientes')return h('div',{className:'mob-wrap'},
+    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Traslados planificados')),
+    h('div',{style:{padding:'12px'}},
+      h('button',{onClick:nuevoDirecto,style:{width:'100%',padding:'14px',background:'#1E3A2D',color:'#D4C5A9',border:'none',borderRadius:10,fontSize:15,fontWeight:700,marginBottom:16,cursor:'pointer'}},'+ Nuevo traslado directo'),
+      pendientes.length===0?h('div',{style:{textAlign:'center',padding:'40px 20px',color:'#94A3B8'}},
+        h('div',{style:{fontSize:40,marginBottom:8}},'📭'),
+        h('div',{style:{fontSize:14}},'Sin traslados planificados'),
+        h('div',{style:{fontSize:11,marginTop:4}},'Use el botón de arriba para registrar uno nuevo')
+      ):h('div',null,
+        h('div',{style:{fontSize:11,fontWeight:700,color:'#64748B',marginBottom:8,textTransform:'uppercase',letterSpacing:1}},'Pendientes próximos 14 días'),
+        pendientes.map(function(pl){
+          var fecha=(pl.fecha_plan+'').slice(0,10);
+          var d=new Date(fecha+'T00:00:00');
+          var hoy=new Date().toISOString().slice(0,10);
+          var esHoy=fecha===hoy;
+          return h('div',{key:pl.plan_id,onClick:function(){ejecutarPlan(pl);},style:{padding:14,marginBottom:10,background:esHoy?'#FEF3C7':'#fff',borderLeft:'5px solid '+priCol[pl.prioridad||'normal'],borderRadius:8,boxShadow:'0 1px 3px rgba(0,0,0,.08)',cursor:'pointer'}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}},
+              h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D'}},
+                esHoy?'HOY':d.toLocaleDateString('es-CL',{weekday:'short',day:'numeric',month:'short'}).toUpperCase(),
+                pl.hora_plan?h('span',{style:{marginLeft:6,fontWeight:500}},pl.hora_plan.slice(0,5)):null
+              ),
+              pl.prioridad==='urgente'?h('span',{style:{fontSize:9,background:'#DC2626',color:'#fff',padding:'2px 6px',borderRadius:10,fontWeight:700}},'URGENTE'):pl.prioridad==='alta'?h('span',{style:{fontSize:9,background:'#F59E0B',color:'#fff',padding:'2px 6px',borderRadius:10,fontWeight:700}},'ALTA'):null
+            ),
+            h('div',{style:{fontSize:14,fontWeight:600,color:'#0F172A',marginBottom:4}},(pl.origen||'?')+' → '+(pl.destino||'?')),
+            h('div',{style:{fontSize:11,color:'#64748B'}},
+              '🚛 '+(pl.camion_patente||pl.camion_nombre||'?'),
+              pl.equipo_nombre?' · 📦 '+pl.equipo_nombre:''
+            ),
+            pl.observaciones?h('div',{style:{fontSize:11,color:'#94A3B8',marginTop:4,fontStyle:'italic'}},pl.observaciones):null,
+            h('div',{style:{marginTop:8,fontSize:11,color:'#1E3A2D',fontWeight:600}},'Tocar para ejecutar →')
+          );
+        })
+      )
+    )
+  );
+
+  // Formulario de ejecución
   return h('div',{className:'mob-wrap'},
-    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Nuevo Traslado')),
+    h('div',{className:'mob-topbar'},h('button',{onClick:volver},'←'),h('h3',null,planActivo?'Ejecutar planificación':'Nuevo traslado')),
     h('div',{className:'mob-form',style:{paddingBottom:40}},
+      planActivo&&h('div',{style:{background:'#DBEAFE',border:'1px solid #3B82F6',color:'#1E40AF',padding:10,borderRadius:8,fontSize:11,marginBottom:12}},
+        '📋 Ejecutando plan del ',(planActivo.fecha_plan+'').slice(0,10),planActivo.hora_plan?' '+planActivo.hora_plan.slice(0,5):'',
+        h('div',{style:{fontSize:10,marginTop:2,color:'#3B82F6'}},'Puede modificar cualquier dato según lo ocurrido')
+      ),
       msg&&h('div',{className:'al al-e',style:{marginBottom:10}},msg),
       F('Fecha',h('input',{type:'date',value:form.fecha,onChange:function(e){upd('fecha',e.target.value);}})),
       F('Empresa',h('select',{value:form.empresa_id,onChange:function(e){upd('empresa_id',e.target.value);}},h('option',{value:''},'Seleccione empresa...'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
@@ -6599,7 +6957,7 @@ function MobileTransporte(p){
         F('Estanque',h('select',{value:form.estanque_id,onChange:function(e){upd('estanque_id',e.target.value);}},h('option',{value:''},'—'),estanques.map(function(es){return h('option',{key:es.estanque_id,value:es.estanque_id},es.codigo+' — '+es.nombre);})))
       ),
       F('Observaciones',h('textarea',{value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},rows:2,placeholder:'Opcional'})),
-      h('button',{onClick:guardar,className:'mob-submit'},'Registrar traslado')
+      h('button',{onClick:guardar,className:'mob-submit'},planActivo?'✅ Confirmar ejecución':'Registrar traslado')
     )
   );
 }
@@ -6858,7 +7216,7 @@ function MobileTerreno(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','contratos':'Contratos de Trabajo'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo'};
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
@@ -6985,6 +7343,7 @@ function App(){
         canSee('transporte')&&grpHdr('trans','TRANSPORTE'),
         canSee('transporte')&&grp.trans&&h('div',null,
           navI('trans-traslados','🚛','Traslados Maquinaria',true),
+          navI('trans-planificacion','📅','Planificación',true),
           navI('trans-tarifas','💲','Tarifas Valorización',true)
         ),
         canSee('transporte')&&h('div',{className:'sb-sep'}),
@@ -7064,6 +7423,7 @@ function App(){
           view==='terreno'&&h(TerrenoView,{tok,m,user}),
           view==='fin-cheques'&&h(FinChequesView,{tok,m}),
           view==='trans-traslados'&&h(TransporteView,{tok,m}),
+          view==='trans-planificacion'&&h(PlanificacionView,{tok,m}),
           view==='trans-tarifas'&&h(TransporteTarifas,{tok,m}),
           view==='contratos'&&h(ContratosView,{tok,m,onRefresh:onMov}),
           view==='empresas'&&h(MasterV,{tok,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,activo:true},cols:[{lbl:'ID',k:'empresa_id',mono:true,w:50},{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
