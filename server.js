@@ -469,6 +469,7 @@ async function autoSetup() {
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_en TIMESTAMP",
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_por VARCHAR(100)",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS linea_num INT",
+    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS exenta BOOLEAN DEFAULT false",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS descripcion TEXT",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS subcategoria_id INT",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS faena_id INT",
@@ -1441,13 +1442,15 @@ ocR.post('/', auth, async(req,res)=>{
     const year=new Date().getFullYear();
     const seq=await client.query("SELECT nextval('seq_oc_num')");
     const numero_oc=`OC-${year}-${String(seq.rows[0].nextval).padStart(4,'0')}`;
-    const neto=lineas.reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
-    const iva=Math.round(neto*0.19);
+    const netoAfecto=lineas.filter(l=>!l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
+    const netoExento=lineas.filter(l=>l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
+    const neto=netoAfecto+netoExento;
+    const iva=Math.round(netoAfecto*0.19);
     const imp=parseFloat(impuesto_adicional)||0;
     const total=neto+iva+imp;
     const ocR2=await client.query('INSERT INTO ordenes_compra(numero_oc,empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,neto,iva,total,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING oc_id',[numero_oc,empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,req.user.email]);
     const ocId=ocR2.rows[0].oc_id;
-    for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',[ocId,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null]);}
+    for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[ocId,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
     await client.query('COMMIT');
     res.status(201).json({ok:true,oc_id:ocId,numero_oc});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
@@ -1461,11 +1464,12 @@ ocR.put('/:id', auth, async(req,res)=>{
     if(!chk.rows.length) throw new Error('OC no encontrada');
     if(chk.rows[0].estado!=='PENDIENTE') throw new Error('Solo se pueden editar ordenes PENDIENTES');
     const{empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,observaciones,lineas}=req.body;
-    const neto=lineas.reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
-    const iva=Math.round(neto*0.19);const imp=parseFloat(impuesto_adicional)||0;const total=neto+iva+imp;
+    const netoAfecto=lineas.filter(l=>!l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
+    const netoExento=lineas.filter(l=>l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
+    const neto=netoAfecto+netoExento;const iva=Math.round(netoAfecto*0.19);const imp=parseFloat(impuesto_adicional)||0;const total=neto+iva+imp;
     await client.query('UPDATE ordenes_compra SET empresa_id=$1,proveedor_id=$2,fecha_emision=$3,solicitante=$4,retira=$5,condicion_id=$6,impuesto_adicional=$7,neto=$8,iva=$9,total=$10,observaciones=$11,modificado_en=NOW() WHERE oc_id=$12',[empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,req.params.id]);
     await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
-    for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',[req.params.id,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null]);}
+    for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[req.params.id,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
     await client.query('COMMIT');res.json({ok:true});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
