@@ -5579,6 +5579,333 @@ function TransporteTarifas(p){
 }
 
 
+// ══ PROGRAMACIÓN SEMANAL DE MANO DE OBRA MANTENCIÓN ══
+function MantProgView(p){
+  var faenas=p.m.faenas||[];
+  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo;});
+  var DIAS_N=['LUN','MAR','MIÉ','JUE','VIE','SÁB','DOM'];
+  var MESES=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  var hoy=new Date();hoy.setHours(0,0,0,0);
+  var[vYear,setVYear]=useState(hoy.getFullYear());
+  var[vMonth,setVMonth]=useState(hoy.getMonth());
+  var[curWeek,setCurWeek]=useState(0);
+  var[items,setItems]=useState([]);
+  var[mecanicos,setMecanicos]=useState([]);
+  var[showForm,setShowForm]=useState(false);
+  var[sel,setSel]=useState(null);
+  var[msg,setMsg]=useState('');
+  var[fFaena,setFFaena]=useState('');
+  var[fEstado,setFEstado]=useState('');
+  var[fSearch,setFSearch]=useState('');
+  var[conflictos,setConflictos]=useState({});
+
+  // Generar semanas del mes
+  function getWeeks(y,m){
+    var weeks=[];var first=new Date(y,m,1);var dow=first.getDay();
+    var offset=dow===0?-6:1-dow;
+    var startMon=new Date(first);startMon.setDate(first.getDate()+offset);
+    for(var w=0;w<6;w++){
+      var mon=new Date(startMon);mon.setDate(startMon.getDate()+w*7);
+      var sun=new Date(mon);sun.setDate(mon.getDate()+6);
+      if(mon.getMonth()>m&&mon.getFullYear()>=y)break;
+      if(sun<new Date(y,m,1))continue;
+      var days=[];
+      for(var d=0;d<7;d++){
+        var dt=new Date(mon);dt.setDate(mon.getDate()+d);
+        days.push({n:DIAS_N[d],f:String(dt.getDate()).padStart(2,'0')+' '+MESES[dt.getMonth()].slice(0,3),w:dt.getDay()===0||dt.getDay()===6,date:new Date(dt),isPast:dt<hoy,isToday:dt.toISOString().slice(0,10)===hoy.toISOString().slice(0,10)});
+      }
+      // Número de semana ISO
+      var dUTC=new Date(Date.UTC(mon.getFullYear(),mon.getMonth(),mon.getDate()));
+      var dayN=dUTC.getUTCDay()||7;dUTC.setUTCDate(dUTC.getUTCDate()+4-dayN);
+      var ys=new Date(Date.UTC(dUTC.getUTCFullYear(),0,1));
+      var wnum=Math.ceil(((dUTC-ys)/86400000+1)/7);
+      weeks.push({label:'S'+wnum+': '+days[0].f+' – '+days[6].f,short:'S'+wnum,days:days,monday:new Date(mon)});
+    }
+    return weeks;
+  }
+  var semanas=getWeeks(vYear,vMonth);
+  // Find current week on first load
+  useEffect(function(){
+    var now=new Date();now.setHours(0,0,0,0);
+    for(var i=0;i<semanas.length;i++){
+      var s=semanas[i];var sun=new Date(s.monday);sun.setDate(s.monday.getDate()+6);
+      if(now>=s.monday&&now<=sun){setCurWeek(i);return;}
+    }
+  },[vYear,vMonth]);
+
+  function load(){
+    api('/mant/prog-semanal?anio='+vYear+'&mes='+vMonth,'GET',null,p.tok).then(function(r){setItems(Array.isArray(r)?r:[]);}).catch(function(){});
+  }
+  function loadMecanicos(){api('/mant/mecanicos','GET',null,p.tok).then(function(r){setMecanicos(Array.isArray(r)?r:[]);}).catch(function(){});}
+  useEffect(function(){load();loadMecanicos();},[p.tok,vYear,vMonth]);
+
+  function prevMonth(){var nm=vMonth-1,ny=vYear;if(nm<0){nm=11;ny--;}setVMonth(nm);setVYear(ny);setCurWeek(0);}
+  function nextMonth(){var nm=vMonth+1,ny=vYear;if(nm>11){nm=0;ny++;}setVMonth(nm);setVYear(ny);setCurWeek(0);}
+  function goToday(){setVYear(hoy.getFullYear());setVMonth(hoy.getMonth());}
+
+  // Crear default dias vacíos
+  function emptyDias(){return [[[''],['']],[[''],['']],[[''],['']],[[''],['']],[[''],['']],[[''],['']],[[''],['']]];}
+  var emptyForm={faena_id:'',faena_nombre:'',equipo_id:'',cargo_nombre:'',detalle:'',dias:emptyDias(),estado:'programado',semana_idx:curWeek};
+
+  var[form,setForm]=useState(emptyForm);
+
+  function openNew(){
+    setSel(null);setForm(Object.assign({},emptyForm,{semana_idx:curWeek}));
+    setShowForm(true);setMsg('');loadConflictos(curWeek,null);
+  }
+  function openEdit(row){
+    setSel(row);
+    var dias=row.dias||emptyDias();
+    // Asegurar estructura correcta
+    while(dias.length<7)dias.push([[''],['']]);
+    dias=dias.map(function(d){if(!Array.isArray(d))return[[''],['']];while(d.length<2)d.push(['']);return d.map(function(t){return Array.isArray(t)?t:[''];});});
+    setForm({faena_id:row.faena_id||'',faena_nombre:row.faena_nombre||'',equipo_id:row.equipo_id||'',cargo_nombre:row.cargo_nombre||row.equipo_codigo||'',detalle:row.detalle||'',dias:dias,estado:row.estado||'programado',semana_idx:row.semana_idx});
+    setShowForm(true);setMsg('');loadConflictos(row.semana_idx,row.prog_id);
+  }
+
+  function loadConflictos(weekIdx,exclId){
+    var q='?anio='+vYear+'&mes='+vMonth+'&semana_idx='+weekIdx;
+    if(exclId)q+='&excluir_id='+exclId;
+    api('/mant/prog-semanal/conflictos'+q,'GET',null,p.tok).then(function(r){setConflictos(r||{});}).catch(function(){});
+  }
+
+  function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
+  function updDia(di,ti,mi,val){
+    setForm(function(f){
+      var dias=JSON.parse(JSON.stringify(f.dias));
+      if(!dias[di])dias[di]=[[''],['']];
+      if(!dias[di][ti])dias[di][ti]=[''];
+      dias[di][ti][mi]=val;
+      return Object.assign({},f,{dias:dias});
+    });
+  }
+  function addMec(di,ti){
+    setForm(function(f){
+      var dias=JSON.parse(JSON.stringify(f.dias));
+      if(!dias[di])dias[di]=[[''],['']];
+      if(!dias[di][ti])dias[di][ti]=[''];
+      dias[di][ti].push('');
+      return Object.assign({},f,{dias:dias});
+    });
+  }
+  function rmMec(di,ti,mi){
+    setForm(function(f){
+      var dias=JSON.parse(JSON.stringify(f.dias));
+      dias[di][ti].splice(mi,1);
+      if(dias[di][ti].length===0)dias[di][ti]=[''];
+      return Object.assign({},f,{dias:dias});
+    });
+  }
+
+  function guardar(){
+    if(!form.cargo_nombre&&!form.equipo_id){setMsg('Seleccione un equipo o ingrese cargo');return;}
+    var semInicio=semanas[form.semana_idx]?semanas[form.semana_idx].monday.toISOString().slice(0,10):null;
+    // Limpiar dias: quitar entradas vacías
+    var diasClean=form.dias.map(function(d){return d.map(function(t){return t.filter(function(m){return m&&m.trim();});});});
+    var body=Object.assign({},form,{anio:vYear,mes:vMonth,semana_inicio:semInicio,dias:diasClean});
+    // Auto-rellenar cargo_nombre desde equipo si vacío
+    if(!body.cargo_nombre&&body.equipo_id){
+      var eq=equipos.find(function(e){return String(e.equipo_id)===String(body.equipo_id);});
+      if(eq)body.cargo_nombre=eq.nombre||eq.codigo;
+    }
+    // Auto-rellenar faena_nombre desde faena si vacío
+    if(!body.faena_nombre&&body.faena_id){
+      var fa=faenas.find(function(f){return String(f.faena_id)===String(body.faena_id);});
+      if(fa)body.faena_nombre=fa.nombre;
+    }
+    var url=sel?'/mant/prog-semanal/'+sel.prog_id:'/mant/prog-semanal';
+    var method=sel?'PUT':'POST';
+    api(url,method,body,p.tok).then(function(){setShowForm(false);load();}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function eliminar(id){if(!confirm('¿Eliminar esta tarea?'))return;api('/mant/prog-semanal/'+id,'DELETE',null,p.tok).then(load).catch(function(e){alert(e.message);});}
+  function cambiarEstado(id,est){api('/mant/prog-semanal/'+id,'PUT',Object.assign({},items.find(function(t){return t.prog_id===id;}),{estado:est}),p.tok).then(load).catch(function(){});}
+
+  // Filtrar por semana actual y filtros
+  var filtered=items.filter(function(t){return parseInt(t.semana_idx)===curWeek;});
+  if(fFaena)filtered=filtered.filter(function(t){return String(t.faena_id)===String(fFaena);});
+  if(fEstado)filtered=filtered.filter(function(t){return t.estado===fEstado;});
+  if(fSearch){var q=fSearch.toLowerCase();filtered=filtered.filter(function(t){return (t.cargo_nombre||'').toLowerCase().indexOf(q)>=0||(t.detalle||'').toLowerCase().indexOf(q)>=0||(t.faena_nombre||'').toLowerCase().indexOf(q)>=0||JSON.stringify(t.dias).toLowerCase().indexOf(q)>=0;});}
+
+  // Stats
+  var allWeek=items.filter(function(t){return parseInt(t.semana_idx)===curWeek;});
+  var total=allWeek.length;
+  var real=allWeek.filter(function(t){return t.estado==='realizado';}).length;
+  var enc=allWeek.filter(function(t){return t.estado==='en curso';}).length;
+  var pend=allWeek.filter(function(t){return t.estado==='pendiente';}).length;
+  var prog=allWeek.filter(function(t){return t.estado==='programado';}).length;
+  var pct=total?Math.round(real/total*100):0;
+
+  // Faena badge color
+  function faenaColor(fn){
+    var n=(fn||'').toUpperCase();
+    if(n.indexOf('MEC 4')>=0||n.indexOf('MEC. 4')>=0)return{bg:'rgba(245,166,35,.15)',border:'rgba(245,166,35,.4)',color:'#f5a623'};
+    if(n.indexOf('MEC 3')>=0||n.indexOf('MEC. 3')>=0)return{bg:'rgba(62,207,207,.15)',border:'rgba(62,207,207,.4)',color:'#3ecfcf'};
+    if(n.indexOf('TALLER')>=0)return{bg:'rgba(167,139,250,.15)',border:'rgba(167,139,250,.4)',color:'#a78bfa'};
+    return{bg:'rgba(74,158,255,.15)',border:'rgba(74,158,255,.4)',color:'#4a9eff'};
+  }
+  function estadoBg(e){return{programado:'b',realizado:'g','en curso':'y',pendiente:'r'}[e]||'gray';}
+
+  var inpS={width:'100%',padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var lblS={fontSize:10,fontWeight:600,display:'block',marginBottom:3,color:'#64748B',textTransform:'uppercase',letterSpacing:'.5px'};
+  var sem=semanas[curWeek]||{days:[]};
+
+  return h('div',null,
+    // Navegación mes
+    h('div',{style:{display:'flex',alignItems:'center',gap:10,marginBottom:12,background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:8,padding:'8px 14px'}},
+      h('button',{onClick:prevMonth,style:{width:28,height:28,borderRadius:5,border:'1px solid #CBD5E1',background:'#fff',cursor:'pointer',fontSize:16}},'‹'),
+      h('div',{style:{fontSize:16,fontWeight:700,color:'#1E3A2D',minWidth:180,textAlign:'center',letterSpacing:1}},MESES[vMonth].toUpperCase()+' '+vYear),
+      h('button',{onClick:nextMonth,style:{width:28,height:28,borderRadius:5,border:'1px solid #CBD5E1',background:'#fff',cursor:'pointer',fontSize:16}},'›'),
+      h('button',{onClick:goToday,style:{padding:'4px 10px',borderRadius:5,border:'1px solid #10B981',background:'transparent',color:'#10B981',cursor:'pointer',fontSize:10,fontWeight:600,letterSpacing:1}},'HOY'),
+      h('div',{style:{flex:1}}),
+      h(Btn,{onClick:openNew},'＋ Nueva Tarea')
+    ),
+    // KPIs
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:8,marginBottom:12}},
+      [{l:'Total',v:total,c:'#1E3A2D'},{l:'Realizadas',v:real,c:'#10B981'},{l:'En Curso',v:enc,c:'#F59E0B'},{l:'Pendientes',v:pend,c:'#EF4444'},{l:'Cumplimiento',v:pct+'%',c:'#06B6D4'}].map(function(k,i){
+        return h('div',{key:i,className:'card',style:{padding:10,textAlign:'center',borderTop:'3px solid '+k.c}},
+          h('div',{style:{fontSize:9,color:'#64748B',fontWeight:600,textTransform:'uppercase',letterSpacing:1}},k.l),
+          h('div',{style:{fontSize:26,fontWeight:700,color:k.c,marginTop:2}},k.v)
+        );
+      })
+    ),
+    // Semanas chips
+    h('div',{style:{display:'flex',alignItems:'center',gap:6,marginBottom:12,flexWrap:'wrap',background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:8,padding:'8px 12px'}},
+      h('span',{style:{fontSize:12,fontWeight:700,color:'#1E3A2D',letterSpacing:1}},'SEMANA'),
+      semanas.map(function(s,i){
+        return h('button',{key:i,onClick:function(){setCurWeek(i);},style:{padding:'4px 10px',borderRadius:16,border:'1px solid '+(i===curWeek?'#1E3A2D':'#CBD5E1'),background:i===curWeek?'#1E3A2D':'transparent',color:i===curWeek?'#D4C5A9':'#64748B',cursor:'pointer',fontSize:10,fontWeight:i===curWeek?600:400}},s.short+': '+s.days[0].f.slice(0,2)+'-'+s.days[6].f);
+      }),
+      h('div',{style:{flex:1}}),
+      h('select',{value:fFaena,onChange:function(e){setFFaena(e.target.value);},style:Object.assign({},inpS,{width:150})},h('option',{value:''},'Todas faenas'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})),
+      h('select',{value:fEstado,onChange:function(e){setFEstado(e.target.value);},style:Object.assign({},inpS,{width:120})},h('option',{value:''},'Todos'),h('option',{value:'realizado'},'Realizado'),h('option',{value:'pendiente'},'Pendiente'),h('option',{value:'en curso'},'En Curso'),h('option',{value:'programado'},'Programado'))
+    ),
+    // Búsqueda
+    h('div',{style:{marginBottom:12}},
+      h('input',{type:'text',value:fSearch,onChange:function(e){setFSearch(e.target.value);},placeholder:'🔍 Buscar cargo, mecánico, detalle...',style:Object.assign({},inpS,{padding:'9px 14px',fontSize:13})})
+    ),
+    // Tabla de programación
+    h('div',{className:'card',style:{padding:0,overflow:'auto'}},
+      h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+        h('thead',null,h('tr',null,
+          h('th',{style:{padding:'8px 10px',background:'#F1F5F9',borderBottom:'1px solid #E2E8F0',fontSize:10,fontWeight:700,textAlign:'left',minWidth:80}},'FAENA'),
+          h('th',{style:{padding:'8px 10px',background:'#F1F5F9',borderBottom:'1px solid #E2E8F0',fontSize:10,fontWeight:700,textAlign:'left',minWidth:120}},'CARGO'),
+          h('th',{style:{padding:'8px 10px',background:'#F1F5F9',borderBottom:'1px solid #E2E8F0',fontSize:10,fontWeight:700,textAlign:'left',minWidth:180}},'DETALLE'),
+          sem.days.map(function(d,i){
+            return h('th',{key:i,style:{padding:'8px 4px',background:d.isToday?'#FEF3C7':d.w?'#F8FAFC':'#F1F5F9',borderBottom:'1px solid #E2E8F0',textAlign:'center',minWidth:90,fontSize:9,fontWeight:700,color:d.isToday?'#78350F':d.w?'#94A3B8':'#475569'}},d.n,h('br'),d.f);
+          }),
+          h('th',{style:{padding:'8px 6px',background:'#F1F5F9',borderBottom:'1px solid #E2E8F0',fontSize:10,fontWeight:700,textAlign:'center',minWidth:80}},'ESTADO'),
+          h('th',{style:{padding:'8px 6px',background:'#F1F5F9',borderBottom:'1px solid #E2E8F0',minWidth:50}})
+        )),
+        h('tbody',null,
+          filtered.length===0?h('tr',null,h('td',{colSpan:12,style:{textAlign:'center',padding:30,color:'#94A3B8'}},'Sin tareas para esta semana')):
+          filtered.map(function(t){
+            var fc=faenaColor(t.faena_nombre);
+            var dias=t.dias||[];
+            return h('tr',{key:t.prog_id,style:{cursor:'pointer'},onClick:function(){openEdit(t);}},
+              h('td',{style:{padding:'6px 8px',borderBottom:'1px solid #F1F5F9'}},h('span',{style:{display:'inline-block',padding:'2px 6px',borderRadius:3,fontSize:9,fontWeight:600,background:fc.bg,border:'1px solid '+fc.border,color:fc.color}},(t.faena_nombre||'').length>18?(t.faena_nombre||'').slice(0,18)+'…':t.faena_nombre)),
+              h('td',{style:{padding:'6px 8px',borderBottom:'1px solid #F1F5F9',fontWeight:600,fontSize:11}},t.cargo_nombre),
+              h('td',{style:{padding:'6px 8px',borderBottom:'1px solid #F1F5F9',color:'#64748B',fontSize:10,maxWidth:200}},t.detalle),
+              sem.days.map(function(d,di){
+                var day=dias[di]||[[''],['']];
+                var t1=Array.isArray(day[0])?day[0].filter(Boolean):[];
+                var t2=Array.isArray(day[1])?day[1].filter(Boolean):[];
+                var all=t1.concat(t2);
+                return h('td',{key:di,style:{padding:'4px',borderBottom:'1px solid #F1F5F9',textAlign:'center',background:d.isToday?'rgba(254,243,199,.3)':d.w?'rgba(0,0,0,.02)':'transparent',verticalAlign:'top'}},
+                  all.map(function(m,mi){return h('span',{key:mi,style:{display:'inline-block',background:'rgba(30,58,45,.08)',border:'1px solid #E2E8F0',borderRadius:3,padding:'1px 4px',fontSize:9,margin:1,whiteSpace:'nowrap'}},m);})
+                );
+              }),
+              h('td',{style:{padding:'6px',borderBottom:'1px solid #F1F5F9',textAlign:'center'},onClick:function(e){e.stopPropagation();}},
+                h('select',{value:t.estado,onChange:function(e){cambiarEstado(t.prog_id,e.target.value);},style:{fontSize:9,padding:'2px 4px',borderRadius:10,border:'1px solid #CBD5E1',background:'transparent',cursor:'pointer',fontWeight:600}},
+                  h('option',{value:'programado'},'Programado'),h('option',{value:'en curso'},'En Curso'),h('option',{value:'realizado'},'Realizado'),h('option',{value:'pendiente'},'Pendiente')
+                )
+              ),
+              h('td',{style:{padding:'6px',borderBottom:'1px solid #F1F5F9'},onClick:function(e){e.stopPropagation();}},
+                h(Btn,{v:'r',sm:true,onClick:function(){eliminar(t.prog_id);}},null,'🗑')
+              )
+            );
+          })
+        )
+      )
+    ),
+    // Modal formulario
+    showForm&&h(Modal,{title:sel?'Editar tarea':'Nueva tarea de mantención',onClose:function(){setShowForm(false);}},
+      h('div',{className:'mb'},
+        msg&&h('div',{className:'al al-e',style:{marginBottom:8}},msg),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
+          h('div',null,h('label',{style:lblS},'Faena / Empresa'),h('select',{value:form.faena_id,onChange:function(e){
+            upd('faena_id',e.target.value);
+            var fa=faenas.find(function(f){return String(f.faena_id)===String(e.target.value);});
+            if(fa)upd('faena_nombre',fa.nombre);
+          },style:inpS},h('option',{value:''},'—'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+          h('div',null,h('label',{style:lblS},'Semana'),h('select',{value:form.semana_idx,onChange:function(e){
+            upd('semana_idx',parseInt(e.target.value));
+            loadConflictos(parseInt(e.target.value),sel?sel.prog_id:null);
+          },style:inpS},semanas.map(function(s,i){return h('option',{key:i,value:i},s.label);})))
+        ),
+        h('div',{style:{marginBottom:10}},
+          h('label',{style:lblS},'Cargo / Equipo'),
+          h('select',{value:form.equipo_id,onChange:function(e){
+            upd('equipo_id',e.target.value);
+            var eq=equipos.find(function(x){return String(x.equipo_id)===String(e.target.value);});
+            if(eq)upd('cargo_nombre',eq.nombre||eq.codigo);
+          },style:inpS},h('option',{value:''},'— Seleccione equipo —'),equipos.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);}))
+        ),
+        h('div',{style:{marginBottom:10}},h('label',{style:lblS},'Detalle de mantención'),h('textarea',{value:form.detalle,onChange:function(e){upd('detalle',e.target.value);},rows:2,style:Object.assign({},inpS,{resize:'vertical'}),placeholder:'Describe el trabajo a realizar...'})),
+        // Grilla de días × turnos
+        h('div',{style:{marginBottom:10}},
+          h('label',{style:lblS},'Mecánicos por día (Turno 1 / Turno 2)'),
+          h('div',{style:{border:'1px solid #E2E8F0',borderRadius:6,overflow:'hidden'}},
+            // Header
+            h('div',{style:{display:'grid',gridTemplateColumns:'70px 1fr 1fr',background:'#F1F5F9',borderBottom:'1px solid #E2E8F0'}},
+              h('div',{style:{padding:'6px 8px',fontSize:9,fontWeight:700,color:'#64748B',borderRight:'1px solid #E2E8F0'}},'DÍA'),
+              h('div',{style:{padding:'6px 8px',fontSize:9,fontWeight:700,color:'#64748B',borderRight:'1px solid #E2E8F0'}},'TURNO 1 / DÍA'),
+              h('div',{style:{padding:'6px 8px',fontSize:9,fontWeight:700,color:'#64748B'}},'TURNO 2 / NOCHE')
+            ),
+            // Rows por día
+            (semanas[form.semana_idx]||semanas[0]||{days:DIAS_N.map(function(n){return{n:n,f:'',w:false,isPast:false,isToday:false};})}).days.map(function(day,di){
+              var dayData=(form.dias[di]||[[''],['']]);
+              return h('div',{key:di,style:{display:'grid',gridTemplateColumns:'70px 1fr 1fr',borderBottom:di<6?'1px solid #E2E8F0':'none',background:day.isPast?'rgba(0,0,0,.03)':day.isToday?'rgba(254,243,199,.3)':day.w?'rgba(0,0,0,.02)':'#fff'}},
+                h('div',{style:{padding:'6px 8px',borderRight:'1px solid #E2E8F0',display:'flex',flexDirection:'column',justifyContent:'center'}},
+                  h('div',{style:{fontSize:11,fontWeight:600,color:day.isToday?'#10B981':day.isPast?'#94A3B8':'#1E3A2D'}},day.n),
+                  h('div',{style:{fontSize:9,color:'#94A3B8'}},day.f)
+                ),
+                // Turno 1 y Turno 2
+                [0,1].map(function(ti){
+                  var turno=dayData[ti]||[''];
+                  return h('div',{key:ti,style:{padding:'4px 6px',borderRight:ti===0?'1px solid #E2E8F0':'none'}},
+                    turno.map(function(mec,mi){
+                      // Detectar conflicto
+                      var confKey=(mec||'').trim().toUpperCase();
+                      var confData=conflictos[confKey];
+                      var hasConflict=confData&&confData.some(function(c){return c.dia===di;});
+                      return h('div',{key:mi,style:{display:'flex',alignItems:'center',gap:3,marginBottom:3}},
+                        h('select',{value:mec,onChange:function(e){updDia(di,ti,mi,e.target.value);},style:Object.assign({},inpS,{flex:1,fontSize:10,padding:'3px 5px',borderColor:hasConflict?'#F59E0B':'#CBD5E1',background:hasConflict?'rgba(245,166,35,.1)':'#fff'})},
+                          h('option',{value:''},'—'),
+                          mecanicos.map(function(m){return h('option',{key:m.persona_id,value:m.nombre_completo},m.nombre_completo);}),
+                          h('option',{value:'_otro'},'Otro (escribir)')
+                        ),
+                        turno.length>1&&h('button',{onClick:function(){rmMec(di,ti,mi);},style:{width:18,height:18,border:'none',background:'transparent',color:'#94A3B8',cursor:'pointer',fontSize:12,padding:0}},'×')
+                      );
+                    }),
+                    h('button',{onClick:function(){addMec(di,ti);},style:{marginTop:2,padding:'2px 6px',border:'1px dashed #CBD5E1',borderRadius:3,background:'transparent',color:'#94A3B8',cursor:'pointer',fontSize:9}},'+')
+                  );
+                })
+              );
+            })
+          )
+        ),
+        h('div',null,h('label',{style:lblS},'Estado'),h('select',{value:form.estado,onChange:function(e){upd('estado',e.target.value);},style:inpS},
+          h('option',{value:'programado'},'Programado'),h('option',{value:'en curso'},'En Curso'),h('option',{value:'realizado'},'Realizado'),h('option',{value:'pendiente'},'Pendiente')
+        ))
+      ),
+      h('div',{className:'mf'},
+        sel&&h(Btn,{v:'r',onClick:function(){eliminar(sel.prog_id);setShowForm(false);}},null,'Eliminar'),
+        h(Btn,{v:'g',onClick:function(){setShowForm(false);}},null,'Cancelar'),
+        h(Btn,{onClick:guardar},'Guardar Tarea')
+      )
+    )
+  );
+}
+
 // ══ PLANIFICACIÓN DE TRASLADOS ══
 function PlanificacionView(p){
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
@@ -7264,7 +7591,7 @@ function MobileTerreno(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo'};
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
@@ -7382,7 +7709,8 @@ function App(){
           navI('mant-programacion','📅','Programación',true),
           navI('mant-historial','📜','Historial Técnico',true),
           navI('mant-sistemas','⚙','Sistemas',true),
-          navI('mant-tareas-std','🔩','Tareas Estándar',true)
+          navI('mant-tareas-std','🔩','Tareas Estándar',true),
+          navI('mant-prog','📊','Prog. Mano de Obra',true)
         ),
         canSee('mantencion')&&h('div',{className:'sb-sep'}),
         canSee('terreno')&&grpHdr('terr','TERRENO'),
@@ -7457,6 +7785,7 @@ function App(){
           view==='mant-historial'&&h(MantHistorial,{tok,m}),
           view==='mant-sistemas'&&h(MantSistemasAdmin,{tok,m}),
           view==='mant-tareas-std'&&h(MantTareasStdAdmin,{tok,m}),
+          view==='mant-prog'&&h(MantProgView,{tok,m}),
           view==='personal'&&h(Personal,{tok,m}),
           view==='dashboard'&&h(Dashboard,{tok,alerts,setView}),
           view==='ingresos'&&h(IngresoView,{tok,m,onMov}),
