@@ -1543,19 +1543,22 @@ function VacacionesView(p){
 
   // Calcular días progresivos según ley chilena
   // Art. 68 Código del Trabajo:
-  // - Se requiere 10 años de trabajo total (incluye empleadores anteriores vía cotizaciones)
+  // - Se requiere 10 años de trabajo total (incluye empleadores anteriores)
   // - Por cada 3 años NUEVOS con el empleador actual, después de completar 10 años totales, se suma 1 día
-  // - Si el trabajador ya tenía 10+ años de cotizaciones anteriores, los años con empleador actual cuentan desde el día 1
+  // - Si tiene_antiguedad_previa=true (default), se reconocen 10 años previos → los años con empleador actual cuentan desde el día 1
+  // - Si tiene_antiguedad_previa=false, solo cuentan los años con el empleador actual (necesita 10 años en la empresa primero)
   function parseFechaLocal(f){if(!f)return null;var s=(f+'').slice(0,10).split('-');if(s.length<3)return null;return new Date(parseInt(s[0]),parseInt(s[1])-1,parseInt(s[2]));}
   function aniosDesde(fecha){if(!fecha)return 0;var d=parseFechaLocal(fecha);if(!d||isNaN(d.getTime()))return 0;var hoy=new Date();var a=Math.floor((hoy-d)/(365.25*24*60*60*1000));return a<0?0:a;}
   function calcProgresivos(per){
     if(!per||!per.fecha_ingreso)return 0;
     var aniosEmpleador=aniosDesde(per.fecha_ingreso);
-    var cotizMeses=parseInt(per.cotizaciones_anteriores)||0;
-    var aniosPrevios=Math.floor(cotizMeses/12);
+    // Si tiene antigüedad previa reconocida (default true), se suman 10 años
+    var aniosPrevios=(per.tiene_antiguedad_previa!==false)?10:0;
     var aniosTotal=aniosPrevios+aniosEmpleador;
     if(aniosTotal<10)return 0;
+    // Años para llegar a 10 totales (cuántos años del empleador actual se "gastan" en llegar a 10)
     var aniosParaLlegar10=Math.max(0,10-aniosPrevios);
+    // Años contables = los que sobran después de llegar a 10
     var aniosContables=aniosEmpleador-aniosParaLlegar10;
     if(aniosContables<3)return 0;
     return Math.floor(aniosContables/3);
@@ -1684,15 +1687,16 @@ function VacacionesView(p){
           'Ingreso: '+fmtD(selPersona.fecha_ingreso),
           (function(){
             var aniosEmp=aniosDesde(selPersona.fecha_ingreso);
-            var cotizM=parseInt(selPersona.cotizaciones_anteriores)||0;
-            var aniosPrev=Math.floor(cotizM/12);
+            var tieneAnt=selPersona.tiene_antiguedad_previa!==false;
+            var aniosPrev=tieneAnt?10:0;
             var total=aniosPrev+aniosEmp;
-            var parts=[' | Antigüedad: '+aniosEmp+' año(s) empleador'];
-            if(aniosPrev>0)parts.push(aniosPrev+' año(s) anteriores = '+total+' total');
+            var parts=[' | Antigüedad: '+aniosEmp+' año(s) en empresa'];
+            if(tieneAnt)parts.push(' + 10 años reconocidos (Art. 68) = '+total+' total');
+            else parts.push(' | Sin antigüedad previa reconocida');
             if(progresivos>0)parts.push(' | ✓ Progresivos: '+progresivos+' día(s)');
-            else if(total>=10){var falta=3-((aniosEmp-Math.max(0,10-aniosPrev))%3);parts.push(' | Progresivos: 0 (requiere '+falta+' año(s) más)');}
-            else parts.push(' | Progresivos: 0 (faltan '+(10-total)+' año(s) para 10)');
-            return parts.join(', ');
+            else if(total>=10){var falta=3-((aniosEmp-Math.max(0,10-aniosPrev))%3);if(falta===3)falta=0;parts.push(' | Próximo progresivo en '+(falta>0?falta:3)+' año(s)');}
+            else parts.push(' | Progresivos: 0 (faltan '+(10-total)+' año(s) para 10 totales)');
+            return parts.join('');
           })()
         ),
         msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:6,fontSize:11}},msg),
@@ -6608,12 +6612,12 @@ function Personal(p){
   const faenas=p.m.faenas||[];
   const CATEGORIAS=[{v:'operador',l:'Operador'},{v:'mantencion',l:'Mantención'},{v:'jefe_faena',l:'Jefe de Faena'},{v:'supervisor',l:'Supervisor'},{v:'administracion',l:'Administración'},{v:'otros_faena',l:'Otros Faena'}];
   const TIPOS_CONTRATO=[{v:'Indefinido',l:'Indefinido'},{v:'A Plazo',l:'A Plazo'},{v:'Por Obra',l:'Por Obra'},{v:'Honorarios',l:'Honorarios'}];
-  const emptyForm={empresa_id:'',nombre_completo:'',rut:'',cargo:'',especialidad:'',telefono:'',correo:'',participa_mantencion:false,es_transporte:false,valor_hora_hombre:'',moneda:'CLP',fecha_ingreso:'',cotizaciones_anteriores:0,observaciones:'',fecha_nacimiento:'',direccion:'',comuna:'',tipo_contrato:'',centro_costo:'',fecha_termino:'',categoria:'otros_faena',faena_id:'',funcion_contrato:'',nacionalidad:'Chileno(a)',estado_civil:'',afp:'',salud:'FONASA',region:'VIII del Bio Bio',sueldo_base:'0',bono_responsabilidad:'0',bono_produccion_fijo:'0',bono_produccion_variable:false,bono_produccion_tarifa:'0',bono_produccion_detalle:'',semana_corrida:false,asig_colacion:'0',asig_movilizacion:'0',asig_viatico:'0',tiene_alimentacion:false,alimentacion_detalle:''};
+  const emptyForm={empresa_id:'',nombre_completo:'',rut:'',cargo:'',especialidad:'',telefono:'',correo:'',participa_mantencion:false,es_transporte:false,valor_hora_hombre:'',moneda:'CLP',fecha_ingreso:'',cotizaciones_anteriores:0,observaciones:'',fecha_nacimiento:'',direccion:'',comuna:'',tipo_contrato:'',centro_costo:'',fecha_termino:'',categoria:'otros_faena',faena_id:'',funcion_contrato:'',nacionalidad:'Chileno(a)',estado_civil:'',afp:'',salud:'FONASA',region:'VIII del Bio Bio',sueldo_base:'0',bono_responsabilidad:'0',bono_produccion_fijo:'0',bono_produccion_variable:false,bono_produccion_tarifa:'0',bono_produccion_detalle:'',semana_corrida:false,asig_colacion:'0',asig_movilizacion:'0',asig_viatico:'0',tiene_alimentacion:false,alimentacion_detalle:'',tiene_antiguedad_previa:true};
   const[form,setForm]=useState(emptyForm);
   function load(){api('/personal','GET',null,p.tok).then(function(r){setPersonas(Array.isArray(r)?r:[]);}).catch(function(){});}
   useEffect(load,[p.tok]);
   function openNew(){setSel(null);setForm(emptyForm);setShowForm(true);setMsg('');}
-  function openEdit(row){setSel(row);setForm({empresa_id:row.empresa_id||'',nombre_completo:row.nombre_completo||'',rut:row.rut||'',cargo:row.cargo||'',especialidad:row.especialidad||'',telefono:row.telefono||'',correo:row.correo||'',participa_mantencion:!!row.participa_mantencion,es_transporte:!!row.es_transporte,valor_hora_hombre:row.valor_hora_hombre||'',moneda:row.moneda||'CLP',fecha_ingreso:row.fecha_ingreso?(row.fecha_ingreso+'').slice(0,10):'',cotizaciones_anteriores:row.cotizaciones_anteriores||0,observaciones:row.observaciones||'',fecha_nacimiento:row.fecha_nacimiento?(row.fecha_nacimiento+'').slice(0,10):'',direccion:row.direccion||'',comuna:row.comuna||'',tipo_contrato:row.tipo_contrato||'',centro_costo:row.centro_costo||'',fecha_termino:row.fecha_termino?(row.fecha_termino+'').slice(0,10):'',categoria:row.categoria||'otros_faena',faena_id:row.faena_id||'',funcion_contrato:row.funcion_contrato||'',nacionalidad:row.nacionalidad||'Chileno(a)',estado_civil:row.estado_civil||'',afp:row.afp||'',salud:row.salud||'FONASA',region:row.region||'VIII del Bio Bio',sueldo_base:row.sueldo_base||'0',bono_responsabilidad:row.bono_responsabilidad||'0',bono_produccion_fijo:row.bono_produccion_fijo||'0',bono_produccion_variable:!!row.bono_produccion_variable,bono_produccion_tarifa:row.bono_produccion_tarifa||'0',bono_produccion_detalle:row.bono_produccion_detalle||'',semana_corrida:!!row.semana_corrida,asig_colacion:row.asig_colacion||'0',asig_movilizacion:row.asig_movilizacion||'0',asig_viatico:row.asig_viatico||'0',tiene_alimentacion:!!row.tiene_alimentacion,alimentacion_detalle:row.alimentacion_detalle||''});setShowForm(true);setMsg('');}
+  function openEdit(row){setSel(row);setForm({empresa_id:row.empresa_id||'',nombre_completo:row.nombre_completo||'',rut:row.rut||'',cargo:row.cargo||'',especialidad:row.especialidad||'',telefono:row.telefono||'',correo:row.correo||'',participa_mantencion:!!row.participa_mantencion,es_transporte:!!row.es_transporte,valor_hora_hombre:row.valor_hora_hombre||'',moneda:row.moneda||'CLP',fecha_ingreso:row.fecha_ingreso?(row.fecha_ingreso+'').slice(0,10):'',cotizaciones_anteriores:row.cotizaciones_anteriores||0,observaciones:row.observaciones||'',fecha_nacimiento:row.fecha_nacimiento?(row.fecha_nacimiento+'').slice(0,10):'',direccion:row.direccion||'',comuna:row.comuna||'',tipo_contrato:row.tipo_contrato||'',centro_costo:row.centro_costo||'',fecha_termino:row.fecha_termino?(row.fecha_termino+'').slice(0,10):'',categoria:row.categoria||'otros_faena',faena_id:row.faena_id||'',funcion_contrato:row.funcion_contrato||'',nacionalidad:row.nacionalidad||'Chileno(a)',estado_civil:row.estado_civil||'',afp:row.afp||'',salud:row.salud||'FONASA',region:row.region||'VIII del Bio Bio',sueldo_base:row.sueldo_base||'0',bono_responsabilidad:row.bono_responsabilidad||'0',bono_produccion_fijo:row.bono_produccion_fijo||'0',bono_produccion_variable:!!row.bono_produccion_variable,bono_produccion_tarifa:row.bono_produccion_tarifa||'0',bono_produccion_detalle:row.bono_produccion_detalle||'',semana_corrida:!!row.semana_corrida,asig_colacion:row.asig_colacion||'0',asig_movilizacion:row.asig_movilizacion||'0',asig_viatico:row.asig_viatico||'0',tiene_alimentacion:!!row.tiene_alimentacion,alimentacion_detalle:row.alimentacion_detalle||'',tiene_antiguedad_previa:row.tiene_antiguedad_previa!==false});setShowForm(true);setMsg('');}
   function guardar(){
     if(!form.nombre_completo){setMsg('Nombre requerido');return;}
     if(form.participa_mantencion&&!form.valor_hora_hombre){setMsg('Valor hora hombre obligatorio para personal de mantención');return;}
@@ -6728,7 +6732,11 @@ function Personal(p){
         h('div',null,h('label',{style:lblS},'Especialidad'),h('input',{type:'text',value:form.especialidad,onChange:function(e){setForm(function(f){return Object.assign({},f,{especialidad:e.target.value});});},style:inp})),
         h('div',null,h('label',{style:lblS},'Teléfono'),h('input',{type:'text',value:form.telefono,onChange:function(e){setForm(function(f){return Object.assign({},f,{telefono:e.target.value});});},style:inp})),
         h('div',null,h('label',{style:lblS},'Correo'),h('input',{type:'email',value:form.correo,onChange:function(e){setForm(function(f){return Object.assign({},f,{correo:e.target.value});});},style:inp})),
-        h('div',null,h('label',{style:lblS},'Cotiz. anteriores (meses)'),h('input',{type:'number',value:form.cotizaciones_anteriores,onChange:function(e){setForm(function(f){return Object.assign({},f,{cotizaciones_anteriores:e.target.value});});},style:inp,placeholder:'0',title:'Meses cotizados con empleadores anteriores (para feriado progresivo)'})),
+        h('div',{style:{display:'flex',alignItems:'center',gap:8,paddingTop:14}},
+          h('input',{type:'checkbox',id:'chkant',checked:form.tiene_antiguedad_previa!==false,onChange:function(e){setForm(function(f){return Object.assign({},f,{tiene_antiguedad_previa:e.target.checked,cotizaciones_anteriores:e.target.checked?120:0});});}}),
+          h('label',{htmlFor:'chkant',style:{fontSize:12,fontWeight:600,cursor:'pointer',color:'#1E3A2D'}},'Tiene 10+ años de antigüedad con otros empleadores'),
+          h('span',{style:{fontSize:10,color:'#64748B'}},'(Art. 68 CT — feriado progresivo)')
+        ),
         h('div',{style:{display:'flex',alignItems:'center',gap:8,paddingTop:14}},
           h('input',{type:'checkbox',id:'chkpm',checked:!!form.participa_mantencion,onChange:function(e){setForm(function(f){return Object.assign({},f,{participa_mantencion:e.target.checked});});}}),
           h('label',{htmlFor:'chkpm',style:{fontSize:12,fontWeight:600,cursor:'pointer'}},'Participa en mantención')
