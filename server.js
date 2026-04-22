@@ -4160,6 +4160,34 @@ async function setupTransporte(q){
   await q('CREATE INDEX IF NOT EXISTS idx_trans_camion ON trans_traslados(camion_id)');
   try{await q('ALTER TABLE trans_traslados ADD COLUMN IF NOT EXISTS litros_combustible NUMERIC(10,2) DEFAULT 0');}catch(e){}
   try{await q('ALTER TABLE trans_traslados ADD COLUMN IF NOT EXISTS estanque_id INT REFERENCES comb_estanques(estanque_id)');}catch(e){}
+  try{await q('ALTER TABLE trans_traslados ADD COLUMN IF NOT EXISTS planificacion_id INT');}catch(e){}
+
+  // Tabla planificación (referencia para el chofer)
+  await q(`CREATE TABLE IF NOT EXISTS trans_planificacion (
+    plan_id SERIAL PRIMARY KEY,
+    fecha_plan DATE NOT NULL,
+    hora_plan TIME,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    camion_id INT REFERENCES equipos(equipo_id),
+    chofer_id INT REFERENCES personal(persona_id),
+    faena_id INT REFERENCES faenas(faena_id),
+    equipo_id INT REFERENCES equipos(equipo_id),
+    origen VARCHAR(200),
+    destino VARCHAR(200),
+    km_cargado_plan NUMERIC(8,1) DEFAULT 0,
+    km_vacio_plan NUMERIC(8,1) DEFAULT 0,
+    tarifa_id INT REFERENCES trans_tarifas(tarifa_id),
+    prioridad VARCHAR(15) DEFAULT 'normal',
+    estado VARCHAR(20) DEFAULT 'pendiente',
+    traslado_id INT REFERENCES trans_traslados(traslado_id),
+    observaciones TEXT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    modificado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  await q('CREATE INDEX IF NOT EXISTS idx_plan_fecha ON trans_planificacion(fecha_plan)');
+  await q('CREATE INDEX IF NOT EXISTS idx_plan_chofer ON trans_planificacion(chofer_id)');
+  await q('CREATE INDEX IF NOT EXISTS idx_plan_estado ON trans_planificacion(estado)');
 
   // Seed camiones cama baja
   try{
@@ -4298,6 +4326,101 @@ app.get('/api/trans/dashboard', auth, async(req,res)=>{
     const porMes=await pool.query(`SELECT TO_CHAR(fecha,'YYYY-MM') AS mes,COUNT(*) AS traslados,SUM(km_cargado) AS km_cargado,SUM(km_vacio) AS km_vacio,SUM(costo_total) AS costo FROM trans_traslados t WHERE ${wh} GROUP BY mes ORDER BY mes`,v);
     res.json({totales:totales.rows[0],porEmpresa:porEmpresa.rows,porCamion:porCamion.rows,porFaena:porFaena.rows,topEquipos:topEquipos.rows,topDestinos:topDestinos.rows,porMes:porMes.rows});
   }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ══ PLANIFICACIÓN DE TRASLADOS ══
+app.get('/api/trans/planificacion', auth, async(req,res)=>{
+  try{
+    const{desde,hasta,chofer_id,estado,solo_pendientes}=req.query;
+    let w=['1=1'],v=[];
+    if(desde){v.push(desde);w.push(`p.fecha_plan>=$${v.length}`);}
+    if(hasta){v.push(hasta);w.push(`p.fecha_plan<=$${v.length}`);}
+    if(chofer_id){v.push(chofer_id);w.push(`p.chofer_id=$${v.length}`);}
+    if(estado){v.push(estado);w.push(`p.estado=$${v.length}`);}
+    if(solo_pendientes==='1')w.push(`p.estado IN ('pendiente','en_curso')`);
+    const r=await pool.query(`SELECT p.*,
+      emp.razon_social AS empresa_nombre,
+      cam.nombre AS camion_nombre,cam.patente_serie AS camion_patente,
+      per.nombre_completo AS chofer_nombre,per.rut AS chofer_rut,
+      f.nombre AS faena_nombre,
+      eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo
+      FROM trans_planificacion p
+      LEFT JOIN empresas emp ON p.empresa_id=emp.empresa_id
+      LEFT JOIN equipos cam ON p.camion_id=cam.equipo_id
+      LEFT JOIN personal per ON p.chofer_id=per.persona_id
+      LEFT JOIN faenas f ON p.faena_id=f.faena_id
+      LEFT JOIN equipos eq ON p.equipo_id=eq.equipo_id
+      WHERE ${w.join(' AND ')}
+      ORDER BY p.fecha_plan,p.hora_plan NULLS LAST,p.plan_id`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.get('/api/trans/planificacion/:id', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT p.*,
+      emp.razon_social AS empresa_nombre,
+      cam.nombre AS camion_nombre,cam.patente_serie AS camion_patente,cam.patente_carro AS camion_patente_carro,
+      per.nombre_completo AS chofer_nombre,per.rut AS chofer_rut,
+      f.nombre AS faena_nombre,
+      eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo
+      FROM trans_planificacion p
+      LEFT JOIN empresas emp ON p.empresa_id=emp.empresa_id
+      LEFT JOIN equipos cam ON p.camion_id=cam.equipo_id
+      LEFT JOIN personal per ON p.chofer_id=per.persona_id
+      LEFT JOIN faenas f ON p.faena_id=f.faena_id
+      LEFT JOIN equipos eq ON p.equipo_id=eq.equipo_id
+      WHERE p.plan_id=$1`,[req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Planificación no encontrada'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// Detectar solapamiento horario del chofer
+app.get('/api/trans/planificacion/check-solape', auth, async(req,res)=>{
+  try{
+    const{fecha,chofer_id,hora,plan_id}=req.query;
+    if(!fecha||!chofer_id)return res.json({solape:false});
+    let w=['p.fecha_plan=$1','p.chofer_id=$2',`p.estado IN ('pendiente','en_curso')`],v=[fecha,chofer_id];
+    if(plan_id){v.push(plan_id);w.push(`p.plan_id!=$${v.length}`);}
+    const r=await pool.query(`SELECT p.plan_id,p.hora_plan,p.origen,p.destino FROM trans_planificacion p WHERE ${w.join(' AND ')}`,v);
+    res.json({solape:r.rows.length>0,traslados:r.rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.post('/api/trans/planificacion', auth, async(req,res)=>{
+  try{
+    const b=req.body;
+    if(!b.fecha_plan)return res.status(400).json({error:'Fecha es obligatoria'});
+    const r=await pool.query(`INSERT INTO trans_planificacion(fecha_plan,hora_plan,empresa_id,camion_id,chofer_id,faena_id,equipo_id,origen,destino,km_cargado_plan,km_vacio_plan,tarifa_id,prioridad,estado,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
+      [b.fecha_plan,b.hora_plan||null,b.empresa_id||null,b.camion_id||null,b.chofer_id||null,b.faena_id||null,b.equipo_id||null,b.origen||null,b.destino||null,parseFloat(b.km_cargado_plan)||0,parseFloat(b.km_vacio_plan)||0,b.tarifa_id||null,b.prioridad||'normal',b.estado||'pendiente',b.observaciones||null,req.user.email]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.put('/api/trans/planificacion/:id', auth, async(req,res)=>{
+  try{
+    const b=req.body;
+    const r=await pool.query(`UPDATE trans_planificacion SET fecha_plan=$1,hora_plan=$2,empresa_id=$3,camion_id=$4,chofer_id=$5,faena_id=$6,equipo_id=$7,origen=$8,destino=$9,km_cargado_plan=$10,km_vacio_plan=$11,tarifa_id=$12,prioridad=$13,estado=$14,observaciones=$15,modificado_en=NOW() WHERE plan_id=$16 RETURNING *`,
+      [b.fecha_plan,b.hora_plan||null,b.empresa_id||null,b.camion_id||null,b.chofer_id||null,b.faena_id||null,b.equipo_id||null,b.origen||null,b.destino||null,parseFloat(b.km_cargado_plan)||0,parseFloat(b.km_vacio_plan)||0,b.tarifa_id||null,b.prioridad||'normal',b.estado||'pendiente',b.observaciones||null,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.delete('/api/trans/planificacion/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM trans_planificacion WHERE plan_id=$1',[req.params.id]);res.json({ok:true});}
+  catch(e){res.status(400).json({error:e.message});}
+});
+
+// Marcar planificación como ejecutada y vincular al traslado real
+app.post('/api/trans/planificacion/:id/ejecutar', auth, async(req,res)=>{
+  try{
+    const{traslado_id}=req.body;
+    if(!traslado_id)return res.status(400).json({error:'traslado_id requerido'});
+    await pool.query(`UPDATE trans_planificacion SET estado='ejecutado',traslado_id=$1,modificado_en=NOW() WHERE plan_id=$2`,[traslado_id,req.params.id]);
+    await pool.query(`UPDATE trans_traslados SET planificacion_id=$1 WHERE traslado_id=$2`,[req.params.id,traslado_id]);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
 });
 
 // ══ PWA — MANIFEST, SERVICE WORKER, ICON ══
