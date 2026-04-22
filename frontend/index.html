@@ -5761,7 +5761,23 @@ function MantProgView(p){
         [{k:'programacion',l:'Programación'},{k:'cronograma',l:'Cronograma'},{k:'cumplimiento',l:'Cumplimiento'}].map(function(t){return h('button',{key:t.k,onClick:function(){setVista(t.k);},style:{padding:'6px 14px',borderRadius:6,border:'1px solid '+(vista===t.k?'#1E3A2D':'#CBD5E1'),background:vista===t.k?'#1E3A2D':'transparent',color:vista===t.k?'#D4C5A9':'#64748B',cursor:'pointer',fontSize:11,fontWeight:vista===t.k?600:400,letterSpacing:1}},t.l);})
       ),
       h('div',{style:{flex:1}}),
-      vista==='programacion'&&h(Btn,{onClick:openNew},'＋ Nueva Tarea')
+      vista==='programacion'&&h(Btn,{onClick:openNew},'＋ Nueva Tarea'),
+      h('label',{style:{display:'inline-block'}},
+        h(Btn,{v:'g',sm:true,onClick:function(){document.getElementById('import-prog-mant').click();}},null,'📥 Importar JSON'),
+        h('input',{id:'import-prog-mant',type:'file',accept:'.json',style:{display:'none'},onChange:function(e){
+          var f=e.target.files[0];if(!f)return;
+          var reader=new FileReader();reader.onload=function(ev){
+            try{var data=JSON.parse(ev.target.result);
+              if(!Array.isArray(data)){alert('Debe ser un array JSON');return;}
+              if(!confirm('¿Importar '+data.length+' tareas de mantención?'))return;
+              api('/mant/prog-semanal/import','POST',data,p.tok).then(function(r){
+                alert('Importación completada:\n✅ Creados: '+(r.creados||0)+'\n❌ Errores: '+(r.errores||0));load();
+              }).catch(function(err){alert('Error: '+err.message);});
+            }catch(err){alert('JSON inválido: '+err.message);}
+            e.target.value='';
+          };reader.readAsText(f);
+        }})
+      )
     ),
     // KPIs
     vista==='programacion'&&h('div',{style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:8,marginBottom:12}},
@@ -5874,69 +5890,94 @@ function MantProgView(p){
       var allM=items,mT=allM.length,mR=allM.filter(function(t){return t.estado==='realizado';}).length;
       var mE=allM.filter(function(t){return t.estado==='en curso';}).length,mP=allM.filter(function(t){return t.estado==='pendiente';}).length;
       var mPr=allM.filter(function(t){return t.estado==='programado';}).length,mPc=mT?Math.round(mR/mT*100):0;
-      // Por faena
       var pf={};allM.forEach(function(t){var fn=t.faena_nombre||'?';if(!pf[fn])pf[fn]={t:0,r:0};pf[fn].t++;if(t.estado==='realizado')pf[fn].r++;});
       var fArr=Object.keys(pf).map(function(fn){return{n:fn,t:pf[fn].t,r:pf[fn].r,p:pf[fn].t?Math.round(pf[fn].r/pf[fn].t*100):0};}).sort(function(a,b){return b.t-a.t;});
-      // Mecánicos
       var ml={};allM.forEach(function(t){(t.dias||[]).forEach(function(d){if(!Array.isArray(d))return;d.forEach(function(tu){if(!Array.isArray(tu))return;tu.forEach(function(m){if(m&&m.trim()&&m.length>2)ml[m.trim()]=(ml[m.trim()]||0)+1;});});});});
       var mArr=Object.keys(ml).map(function(n){return{n:n,c:ml[n]};}).sort(function(a,b){return b.c-a.c;});var mMax=mArr[0]?mArr[0].c:1;
-      // Ranking
       var cc={};allM.forEach(function(t){var k=t.cargo_nombre||'?';if(!cc[k])cc[k]={t:0,f:t.faena_nombre||''};cc[k].t++;});
       var rArr=Object.keys(cc).map(function(c){return{c:c,t:cc[c].t,f:cc[c].f};}).sort(function(a,b){return b.t-a.t;});var rMax=rArr[0]?rArr[0].t:1;
-      // Por semana
       var pSem=semanas.map(function(s,i){var st=items.filter(function(t){return parseInt(t.semana_idx)===i;});var tot=st.length,re=st.filter(function(t){return t.estado==='realizado';}).length;return{l:s.short,t:tot,r:re,p:tot?Math.round(re/tot*100):0};});
       var dData=[{l:'Realizado',v:mR,c:'#10B981'},{l:'En Curso',v:mE,c:'#F59E0B'},{l:'Pendiente',v:mP,c:'#EF4444'},{l:'Programado',v:mPr,c:'#3B82F6'}];
 
-      return h('div',null,
-        // KPIs mes
-        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:8,marginBottom:16}},
+      return h('div',{style:{maxWidth:'100%'}},
+        // KPIs mes — full width
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10,marginBottom:16}},
           [{l:'Total Mes',v:mT,c:'#1E3A2D'},{l:'Realizadas',v:mR,c:'#10B981'},{l:'En Curso',v:mE,c:'#F59E0B'},{l:'Pendientes',v:mP,c:'#EF4444'},{l:'Cumplimiento',v:mPc+'%',c:'#06B6D4'}].map(function(k,i){
-            return h('div',{key:i,className:'card',style:{padding:12,textAlign:'center',borderTop:'3px solid '+k.c}},
-              h('div',{style:{fontSize:9,color:'#64748B',fontWeight:600,textTransform:'uppercase',letterSpacing:1}},k.l),
-              h('div',{style:{fontSize:28,fontWeight:700,color:k.c,marginTop:2}},k.v)
+            return h('div',{key:i,className:'card',style:{padding:14,textAlign:'center',borderTop:'3px solid '+k.c}},
+              h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600,textTransform:'uppercase',letterSpacing:1}},k.l),
+              h('div',{style:{fontSize:32,fontWeight:700,color:k.c,marginTop:4}},k.v)
             );
           })
         ),
+        // Fila 1: Donut + Barras faena (50/50)
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16,marginBottom:16}},
-          // Donut
-          h('div',{className:'card',style:{padding:16}},
-            h('div',{style:{fontSize:14,fontWeight:700,marginBottom:16,color:'#1E3A2D'}},'Estado General de Tareas'),
-            h('div',{style:{display:'flex',alignItems:'center',gap:24}},
-              h('svg',{viewBox:'0 0 36 36',style:{width:140,height:140,transform:'rotate(-90deg)'}},
+          h('div',{className:'card',style:{padding:20}},
+            h('div',{style:{fontSize:15,fontWeight:700,marginBottom:20,color:'#1E3A2D'}},'Estado General de Tareas'),
+            h('div',{style:{display:'flex',alignItems:'center',justifyContent:'center',gap:40}},
+              h('svg',{viewBox:'0 0 36 36',style:{width:180,height:180,transform:'rotate(-90deg)'}},
                 (function(){var off=0;return dData.map(function(d,i){var pc=mT>0?d.v/mT*100:0;var el=h('circle',{key:i,cx:18,cy:18,r:15.9,fill:'transparent',stroke:d.c,strokeWidth:3.5,strokeDasharray:pc+' '+(100-pc),strokeDashoffset:-off,strokeLinecap:'round'});off+=pc;return el;});})()
               ),
-              h('div',{style:{display:'flex',flexDirection:'column',gap:8}},
-                dData.map(function(d,i){return h('div',{key:i,style:{display:'flex',alignItems:'center',gap:8,fontSize:12}},h('div',{style:{width:10,height:10,borderRadius:'50%',background:d.c}}),h('span',null,d.l),h('strong',{style:{marginLeft:'auto',fontFamily:'monospace'}},mT>0?Math.round(d.v/mT*100):0,'%'));})
+              h('div',{style:{display:'flex',flexDirection:'column',gap:12}},
+                dData.map(function(d,i){var pct=mT>0?Math.round(d.v/mT*100):0;return h('div',{key:i,style:{display:'flex',alignItems:'center',gap:10,fontSize:13}},h('div',{style:{width:12,height:12,borderRadius:'50%',background:d.c}}),h('span',{style:{minWidth:80}},d.l),h('strong',{style:{fontSize:20,fontFamily:'monospace',minWidth:50,textAlign:'right',color:d.c}},d.v),h('span',{style:{color:'#94A3B8',fontSize:11,marginLeft:4}},pct+'%'));})
               )
             )
           ),
-          // Barras faena
-          h('div',{className:'card',style:{padding:16}},
-            h('div',{style:{fontSize:14,fontWeight:700,marginBottom:16,color:'#1E3A2D'}},'Cumplimiento por Faena'),
-            h('div',{style:{display:'flex',flexDirection:'column',gap:10}},
-              fArr.map(function(f,i){var fc=faenaColor(f.n);return h('div',{key:i},h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:3}},h('span',{style:{fontSize:11,color:fc.color}},f.n.length>25?f.n.slice(0,25)+'…':f.n),h('span',{style:{fontSize:11,fontWeight:700,fontFamily:'monospace'}},f.p,'% (',f.r,'/',f.t,')')),h('div',{style:{height:6,background:'#F1F5F9',borderRadius:3,overflow:'hidden'}},h('div',{style:{height:'100%',width:f.p+'%',borderRadius:3,background:'linear-gradient(90deg,'+fc.color+',#10B981)',transition:'width .6s'}})));})
-            )
-          ),
-          // Tendencia semanal
-          h('div',{className:'card',style:{padding:16}},
-            h('div',{style:{fontSize:14,fontWeight:700,marginBottom:16,color:'#1E3A2D'}},'Tendencia por Semana'),
-            h('div',{style:{display:'flex',alignItems:'flex-end',gap:12,height:150,padding:'0 8px'}},
-              pSem.map(function(s,i){return h('div',{key:i,style:{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:4}},h('div',{style:{fontSize:11,fontWeight:700}},s.p,'%'),h('div',{style:{width:'100%',height:Math.max(s.p*1.2,4),background:'linear-gradient(180deg,#10B981,#06B6D4)',borderRadius:'4px 4px 0 0'}}),h('div',{style:{fontSize:9,fontWeight:600,color:'#64748B'}},s.l),h('div',{style:{fontSize:8,color:'#94A3B8'}},s.r,'/',s.t));})
-            )
-          ),
-          // Carga mecánicos
-          h('div',{className:'card',style:{padding:16}},
-            h('div',{style:{fontSize:14,fontWeight:700,marginBottom:16,color:'#1E3A2D'}},'Carga de Mecánicos'),
-            h('div',{style:{display:'flex',flexDirection:'column',gap:5,maxHeight:280,overflowY:'auto'}},
-              mArr.map(function(m,i){return h('div',{key:i,style:{display:'flex',alignItems:'center',gap:8}},h('div',{style:{fontSize:10,minWidth:130,fontFamily:'monospace',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},m.n),h('div',{style:{flex:1,height:5,background:'#F1F5F9',borderRadius:3,overflow:'hidden'}},h('div',{style:{height:'100%',width:Math.round(m.c/mMax*100)+'%',borderRadius:3,background:'#06B6D4'}})),h('div',{style:{fontSize:10,color:'#64748B',minWidth:18,textAlign:'right',fontFamily:'monospace'}},m.c));})
+          h('div',{className:'card',style:{padding:20}},
+            h('div',{style:{fontSize:15,fontWeight:700,marginBottom:20,color:'#1E3A2D'}},'Cumplimiento por Faena'),
+            h('div',{style:{display:'flex',flexDirection:'column',gap:14}},
+              fArr.map(function(f,i){var fc=faenaColor(f.n);return h('div',{key:i},h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},h('span',{style:{fontSize:12,fontWeight:600,color:fc.color}},f.n),h('span',{style:{fontSize:12,fontWeight:700,fontFamily:'monospace'}},f.p+'%',' ',h('span',{style:{color:'#94A3B8',fontWeight:400}},'('+f.r+'/'+f.t+')'))),h('div',{style:{height:8,background:'#F1F5F9',borderRadius:4,overflow:'hidden'}},h('div',{style:{height:'100%',width:Math.max(f.p,2)+'%',borderRadius:4,background:'linear-gradient(90deg,'+fc.color+',#10B981)',transition:'width .6s'}})));})
             )
           )
         ),
-        // Ranking
-        h('div',{className:'card',style:{padding:16}},
-          h('div',{style:{fontSize:14,fontWeight:700,marginBottom:16,color:'#1E3A2D'}},'🏆 Ranking — Equipos más Intervenidos'),
-          h('div',{style:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:8}},
-            rArr.slice(0,20).map(function(r,i){var fc=faenaColor(r.f);var pc=i===0?'#F59E0B':i===1?'#9CA3AF':i===2?'#CD7C3B':'#CBD5E1';return h('div',{key:i,style:{display:'flex',alignItems:'center',gap:10,background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:8,padding:'10px 12px'}},h('div',{style:{fontSize:24,fontWeight:700,color:pc,minWidth:28,textAlign:'center'}},i+1),h('div',{style:{flex:1,minWidth:0}},h('div',{style:{fontSize:11,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},r.c),h('span',{style:{display:'inline-block',padding:'1px 5px',borderRadius:3,fontSize:8,background:fc.bg,border:'1px solid '+fc.border,color:fc.color,marginTop:2}},r.f),h('div',{style:{marginTop:4,height:4,background:'#E2E8F0',borderRadius:2,overflow:'hidden'}},h('div',{style:{height:'100%',width:Math.round(r.t/rMax*100)+'%',borderRadius:2,background:'linear-gradient(90deg,#06B6D4,#F59E0B)'}}))),h('div',{style:{fontSize:20,fontWeight:700,color:'#06B6D4',minWidth:28,textAlign:'right'}},r.t));})
+        // Fila 2: Tendencia semanal (full width)
+        h('div',{className:'card',style:{padding:20,marginBottom:16}},
+          h('div',{style:{fontSize:15,fontWeight:700,marginBottom:20,color:'#1E3A2D'}},'Tendencia de Cumplimiento por Semana'),
+          h('div',{style:{display:'flex',alignItems:'flex-end',gap:16,height:200,padding:'0 20px'}},
+            pSem.map(function(s,i){
+              var barH=Math.max(s.p*1.6,6);
+              return h('div',{key:i,style:{flex:1,display:'flex',flexDirection:'column',alignItems:'center',gap:6}},
+                h('div',{style:{fontSize:16,fontWeight:700,color:s.p>0?'#1E3A2D':'#94A3B8'}},s.p+'%'),
+                h('div',{style:{width:'100%',maxWidth:80,height:barH,background:s.p>0?'linear-gradient(180deg,#10B981,#06B6D4)':'#E2E8F0',borderRadius:'6px 6px 0 0',transition:'height .6s'}}),
+                h('div',{style:{fontSize:12,fontWeight:700,color:'#1E3A2D',marginTop:4}},s.l),
+                h('div',{style:{fontSize:11,color:'#64748B'}},s.r+'/'+s.t),
+                h('div',{style:{fontSize:9,color:'#94A3B8'}},s.t===0?'sin tareas':'tareas')
+              );
+            })
+          )
+        ),
+        // Fila 3: Carga mecánicos (full width)
+        h('div',{className:'card',style:{padding:20,marginBottom:16}},
+          h('div',{style:{fontSize:15,fontWeight:700,marginBottom:20,color:'#1E3A2D'}},'Carga de Mecánicos — Asignaciones del Mes'),
+          mArr.length===0?h('div',{style:{color:'#94A3B8',textAlign:'center',padding:30}},'Sin asignaciones'):
+          h('div',{style:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:'6px 24px'}},
+            mArr.map(function(m,i){return h('div',{key:i,style:{display:'flex',alignItems:'center',gap:10,padding:'4px 0'}},
+              h('div',{style:{fontSize:11,minWidth:180,fontFamily:'monospace',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',color:'#1E3A2D'}},m.n),
+              h('div',{style:{flex:1,height:8,background:'#F1F5F9',borderRadius:4,overflow:'hidden'}},
+                h('div',{style:{height:'100%',width:Math.round(m.c/mMax*100)+'%',borderRadius:4,background:'linear-gradient(90deg,#06B6D4,#1E3A2D)'}})
+              ),
+              h('div',{style:{fontSize:13,color:'#1E3A2D',minWidth:24,textAlign:'right',fontFamily:'monospace',fontWeight:700}},m.c)
+            );})
+          )
+        ),
+        // Fila 4: Ranking equipos (full width, 3 columnas)
+        h('div',{className:'card',style:{padding:20}},
+          h('div',{style:{fontSize:15,fontWeight:700,marginBottom:20,color:'#1E3A2D'}},'🏆 Ranking — Equipos más Intervenidos del Mes'),
+          rArr.length===0?h('div',{style:{color:'#94A3B8',textAlign:'center',padding:30}},'Sin datos'):
+          h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10}},
+            rArr.slice(0,24).map(function(r,i){
+              var fc=faenaColor(r.f);var pc=i===0?'#F59E0B':i===1?'#9CA3AF':i===2?'#CD7C3B':'#CBD5E1';
+              return h('div',{key:i,style:{display:'flex',alignItems:'center',gap:10,background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:8,padding:'10px 12px'}},
+                h('div',{style:{fontSize:24,fontWeight:700,color:pc,minWidth:28,textAlign:'center'}},i+1),
+                h('div',{style:{flex:1,minWidth:0}},
+                  h('div',{style:{fontSize:12,fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},r.c),
+                  h('span',{style:{display:'inline-block',padding:'1px 6px',borderRadius:3,fontSize:9,background:fc.bg,border:'1px solid '+fc.border,color:fc.color,marginTop:2}},r.f),
+                  h('div',{style:{marginTop:5,height:5,background:'#E2E8F0',borderRadius:3,overflow:'hidden'}},
+                    h('div',{style:{height:'100%',width:Math.round(r.t/rMax*100)+'%',borderRadius:3,background:'linear-gradient(90deg,#06B6D4,#F59E0B)'}})
+                  )
+                ),
+                h('div',{style:{fontSize:22,fontWeight:700,color:'#06B6D4',minWidth:28,textAlign:'right'}},r.t)
+              );
+            })
           )
         )
       );
