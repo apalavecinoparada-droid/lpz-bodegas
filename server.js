@@ -4532,6 +4532,23 @@ app.get('/api/mant/mecanicos', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
+// Importación masiva de programación semanal
+app.post('/api/mant/prog-semanal/import', auth, async(req,res)=>{
+  try{
+    const items=Array.isArray(req.body)?req.body:[];
+    if(!items.length)return res.status(400).json({error:'Array vacío'});
+    let creados=0,errores=0;
+    for(const b of items){
+      try{
+        await pool.query(`INSERT INTO mant_prog_semanal(anio,mes,semana_idx,faena_nombre,cargo_nombre,detalle,dias,estado,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [b.anio||2026,b.mes!==undefined?b.mes:3,parseInt(b.semana_idx)||0,b.faena_nombre||null,b.cargo_nombre||null,b.detalle||null,JSON.stringify(b.dias||[]),b.estado||'programado',req.user.email]);
+        creados++;
+      }catch(e){errores++;}
+    }
+    res.json({ok:true,creados,errores,total:items.length});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 // ══ PWA — MANIFEST, SERVICE WORKER, ICON ══
 app.get('/manifest.json', (req,res)=>{
   res.json({
