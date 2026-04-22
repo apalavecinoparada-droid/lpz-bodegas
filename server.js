@@ -543,6 +543,7 @@ async function autoSetup() {
   try{ await setupRendiciones(pool.query.bind(pool)); }catch(e){console.log('[WARN] rend tables:',e.message);}
   try{ await setupTransporte(pool.query.bind(pool)); }catch(e){console.log('[WARN] transporte tables:',e.message);}
   try{ await setupContratos(pool.query.bind(pool)); }catch(e){console.log('[WARN] contratos tables:',e.message);}
+  try{ await setupProgMant(pool.query.bind(pool)); }catch(e){console.log('[WARN] prog mant tables:',e.message);}
   // Seed sistemas y tareas estándar
   try{
     const sc=await pool.query('SELECT COUNT(*) FROM mant_sistemas');
@@ -4423,6 +4424,114 @@ app.post('/api/trans/planificacion/:id/ejecutar', auth, async(req,res)=>{
   }catch(e){res.status(400).json({error:e.message});}
 });
 
+// ══════════════════════════════════════════════════════
+// PROGRAMACIÓN SEMANAL DE MANTENCIÓN
+// ══════════════════════════════════════════════════════
+async function setupProgMant(q){
+  await q(`CREATE TABLE IF NOT EXISTS mant_prog_semanal (
+    prog_id SERIAL PRIMARY KEY,
+    anio INT NOT NULL,
+    mes INT NOT NULL,
+    semana_idx INT NOT NULL DEFAULT 0,
+    semana_inicio DATE,
+    faena_id INT REFERENCES faenas(faena_id),
+    faena_nombre VARCHAR(200),
+    equipo_id INT REFERENCES equipos(equipo_id),
+    cargo_nombre VARCHAR(200),
+    detalle TEXT,
+    dias JSONB NOT NULL DEFAULT '[[[""],[""]],[[""],[""]],[[""],[""]],[[""],[""]],[[""],[""]],[[""],[""]],[[""],[""]]]',
+    estado VARCHAR(30) DEFAULT 'programado',
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    modificado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  await q('CREATE INDEX IF NOT EXISTS idx_mps_anio_mes ON mant_prog_semanal(anio,mes)');
+  await q('CREATE INDEX IF NOT EXISTS idx_mps_equipo ON mant_prog_semanal(equipo_id)');
+  await q('CREATE INDEX IF NOT EXISTS idx_mps_estado ON mant_prog_semanal(estado)');
+}
+
+// GET — listar tareas de un mes (opcionalmente semana)
+app.get('/api/mant/prog-semanal', auth, async(req,res)=>{
+  try{
+    const{anio,mes,semana_idx,faena_id,estado}=req.query;
+    let w=['1=1'],v=[];
+    if(anio){v.push(anio);w.push(`p.anio=$${v.length}`);}
+    if(mes!==undefined&&mes!==''){v.push(mes);w.push(`p.mes=$${v.length}`);}
+    if(semana_idx!==undefined&&semana_idx!==''){v.push(semana_idx);w.push(`p.semana_idx=$${v.length}`);}
+    if(faena_id){v.push(faena_id);w.push(`p.faena_id=$${v.length}`);}
+    if(estado){v.push(estado);w.push(`p.estado=$${v.length}`);}
+    const r=await pool.query(`SELECT p.*,
+      f.nombre AS faena_join_nombre,
+      eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo
+      FROM mant_prog_semanal p
+      LEFT JOIN faenas f ON p.faena_id=f.faena_id
+      LEFT JOIN equipos eq ON p.equipo_id=eq.equipo_id
+      WHERE ${w.join(' AND ')}
+      ORDER BY p.semana_idx,p.faena_nombre,p.cargo_nombre,p.prog_id`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.post('/api/mant/prog-semanal', auth, async(req,res)=>{
+  try{
+    const b=req.body;
+    if(!b.anio||b.mes===undefined)return res.status(400).json({error:'Año y mes requeridos'});
+    const r=await pool.query(`INSERT INTO mant_prog_semanal(anio,mes,semana_idx,semana_inicio,faena_id,faena_nombre,equipo_id,cargo_nombre,detalle,dias,estado,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [b.anio,b.mes,parseInt(b.semana_idx)||0,b.semana_inicio||null,b.faena_id||null,b.faena_nombre||null,b.equipo_id||null,b.cargo_nombre||null,b.detalle||null,JSON.stringify(b.dias||[]),b.estado||'programado',req.user.email]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.put('/api/mant/prog-semanal/:id', auth, async(req,res)=>{
+  try{
+    const b=req.body;
+    const r=await pool.query(`UPDATE mant_prog_semanal SET anio=$1,mes=$2,semana_idx=$3,semana_inicio=$4,faena_id=$5,faena_nombre=$6,equipo_id=$7,cargo_nombre=$8,detalle=$9,dias=$10,estado=$11,modificado_en=NOW() WHERE prog_id=$12 RETURNING *`,
+      [b.anio,b.mes,parseInt(b.semana_idx)||0,b.semana_inicio||null,b.faena_id||null,b.faena_nombre||null,b.equipo_id||null,b.cargo_nombre||null,b.detalle||null,JSON.stringify(b.dias||[]),b.estado||'programado',req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.delete('/api/mant/prog-semanal/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM mant_prog_semanal WHERE prog_id=$1',[req.params.id]);res.json({ok:true});}
+  catch(e){res.status(400).json({error:e.message});}
+});
+
+// Detección de conflictos: mecánicos asignados en un día/semana
+app.get('/api/mant/prog-semanal/conflictos', auth, async(req,res)=>{
+  try{
+    const{anio,mes,semana_idx,excluir_id}=req.query;
+    let w=['p.anio=$1','p.mes=$2','p.semana_idx=$3'],v=[anio,mes,semana_idx];
+    if(excluir_id){v.push(excluir_id);w.push(`p.prog_id!=$${v.length}`);}
+    const r=await pool.query(`SELECT p.prog_id,p.cargo_nombre,p.faena_nombre,p.dias FROM mant_prog_semanal p WHERE ${w.join(' AND ')}`,v);
+    // Construir mapa de mecánico → día → tareas
+    const mapa={};
+    r.rows.forEach(function(t){
+      var dias=t.dias||[];
+      dias.forEach(function(day,di){
+        if(!Array.isArray(day))return;
+        day.forEach(function(turno,ti){
+          if(!Array.isArray(turno))return;
+          turno.forEach(function(mec){
+            if(!mec||!mec.trim()||mec.trim().length<3)return;
+            var k=mec.trim().toUpperCase();
+            if(!mapa[k])mapa[k]=[];
+            mapa[k].push({dia:di,turno:ti,cargo:t.cargo_nombre,faena:t.faena_nombre,prog_id:t.prog_id});
+          });
+        });
+      });
+    });
+    res.json(mapa);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// Mecánicos del personal de mantención
+app.get('/api/mant/mecanicos', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT persona_id,nombre_completo,cargo FROM personal WHERE activo=true AND participa_mantencion=true ORDER BY nombre_completo`);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 // ══ PWA — MANIFEST, SERVICE WORKER, ICON ══
 app.get('/manifest.json', (req,res)=>{
   res.json({
@@ -4654,7 +4763,7 @@ app.post('/api/admin/wipe-transacciones', auth, async(req,res)=>{
       'rend_gastos','rend_entregas','fin_cheques',
       'terreno_tob_detalle','terreno_registros',
       'mant_ot_tarea_personal','mant_ot_tareas','mant_ot_sistemas','mant_ot_materiales','mant_ot_personal','mant_ot',
-      'mant_avisos','mant_programacion','mant_lecturas',
+      'mant_avisos','mant_programacion','mant_lecturas','mant_prog_semanal',
       'comb_cierre_guias','comb_cierres','comb_movimientos',
       'movimiento_detalle','movimiento_encabezado',
       'ordenes_compra_detalle','ordenes_compra','auditoria'
