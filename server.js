@@ -468,6 +468,7 @@ async function autoSetup() {
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS modificado_en TIMESTAMP DEFAULT NOW()",
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_en TIMESTAMP",
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_por VARCHAR(100)",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS recibido_en TIMESTAMP",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS linea_num INT",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS exenta BOOLEAN DEFAULT false",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS descripcion TEXT",
@@ -1486,23 +1487,48 @@ ocR.patch('/:id/cerrar', auth, async(req,res)=>{
   }catch(e){res.status(400).json({error:e.message});}
 });
 ocR.patch('/:id/anular', auth, async(req,res)=>{
+  const client=await pool.connect();
   try{
-    const chk=await pool.query('SELECT estado,movimiento_id FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
+    await client.query('BEGIN');
+    const chk=await client.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length) return res.status(404).json({error:'OC no encontrada'});
-    if(chk.rows[0].estado==='ANULADA') return res.status(400).json({error:'La OC ya esta anulada'});
-    if(chk.rows[0].movimiento_id) return res.status(400).json({error:'No se puede anular: ya se recibieron productos en bodega.'});
-    await pool.query("UPDATE ordenes_compra SET estado='ANULADA',anulado_en=NOW(),anulado_por=$1 WHERE oc_id=$2",[req.user.email,req.params.id]);
+    const oc=chk.rows[0];
+    if(oc.estado==='ANULADA') return res.status(400).json({error:'La OC ya esta anulada'});
+    // Si tiene movimiento de inventario, no se puede anular desde aquí
+    if(oc.movimiento_id) return res.status(400).json({error:'No se puede anular: ya se recibieron productos en bodega. Anule el movimiento primero.'});
+    // Revertir movimientos de combustible asociados
+    if(oc.recibido_en||oc.numero_oc){
+      const combMovs=await client.query("SELECT * FROM comb_movimientos WHERE oc_referencia=$1 AND estado='ACTIVO'",[oc.numero_oc]);
+      for(const mv of combMovs.rows){
+        // Restar del stock
+        await client.query('UPDATE comb_stock SET litros_disponibles=GREATEST(0,litros_disponibles-$1),ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[parseFloat(mv.litros),mv.estanque_destino_id,mv.tipo_id]);
+        // Marcar movimiento como anulado
+        await client.query("UPDATE comb_movimientos SET estado='ANULADO',anulado_en=NOW(),anulado_por=$1,motivo_anulacion='OC anulada' WHERE mov_id=$2",[req.user.email,mv.mov_id]);
+      }
+    }
+    await client.query("UPDATE ordenes_compra SET estado='ANULADA',anulado_en=NOW(),anulado_por=$1,recibido_en=NULL WHERE oc_id=$2",[req.user.email,req.params.id]);
+    await client.query('COMMIT');
     res.json({ok:true});
-  }catch(e){res.status(400).json({error:e.message});}
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 ocR.delete('/:id', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
-    const chk=await client.query('SELECT estado,movimiento_id FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
+    const chk=await client.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length) return res.status(404).json({error:'OC no encontrada'});
-    if(chk.rows[0].estado!=='PENDIENTE') return res.status(400).json({error:'Solo se pueden eliminar OC en estado PENDIENTE'});
-    if(chk.rows[0].movimiento_id) return res.status(400).json({error:'No se puede eliminar: tiene movimientos asociados'});
+    const oc=chk.rows[0];
+    // Si tiene movimiento de inventario en bodega, no permitir eliminar
+    if(oc.movimiento_id) return res.status(400).json({error:'No se puede eliminar: tiene movimientos de bodega asociados. Anule el movimiento primero.'});
+    // Revertir movimientos de combustible si hay
+    if(oc.recibido_en||oc.numero_oc){
+      const combMovs=await client.query("SELECT * FROM comb_movimientos WHERE oc_referencia=$1 AND estado='ACTIVO'",[oc.numero_oc]);
+      for(const mv of combMovs.rows){
+        await client.query('UPDATE comb_stock SET litros_disponibles=GREATEST(0,litros_disponibles-$1),ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[parseFloat(mv.litros),mv.estanque_destino_id,mv.tipo_id]);
+        await client.query("UPDATE comb_movimientos SET estado='ANULADO',anulado_en=NOW(),anulado_por=$1,motivo_anulacion='OC eliminada' WHERE mov_id=$2",[req.user.email,mv.mov_id]);
+      }
+    }
     await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
     await client.query('DELETE FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     await client.query('COMMIT');
@@ -1518,6 +1544,7 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
     if(!ocQ.rows.length) throw new Error('OC no encontrada');
     const oc=ocQ.rows[0];
     if(oc.estado!=='CERRADA') throw new Error('Solo se pueden recibir ordenes CERRADAS');
+    if(oc.recibido_en) throw new Error('Esta OC ya fue recibida el '+(oc.recibido_en+'').slice(0,10)+'. No se puede recibir nuevamente.');
     if(oc.movimiento_id) throw new Error('Esta OC ya fue recibida en bodega');
     const{bodega_id}=req.body;
     const prod_map=req.body.prod_map||{};
@@ -1557,6 +1584,13 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
       }
     }
     // Combustible lines → comb_stock
+    // Determinar si es provisorio (guía de despacho = aún no facturado)
+    var docTipo='';
+    if(oc.tipo_doc_id){
+      var tdR=await client.query('SELECT nombre FROM tipos_documento WHERE tipo_doc_id=$1',[oc.tipo_doc_id]);
+      if(tdR.rows.length)docTipo=(tdR.rows[0].nombre||'').toLowerCase();
+    }
+    var esProvisorio=docTipo.indexOf('gu')>=0||docTipo.indexOf('despacho')>=0||docTipo.indexOf('provisori')>=0;
     for(const l of lineasComb){
       const estanqueId=parseInt(comb_map[String(l.detalle_id)]);
       const lts=parseFloat(l.cantidad),pu=parseFloat(l.precio_unitario)||0;
@@ -1572,10 +1606,10 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
       }else{
         await client.query('INSERT INTO comb_stock(estanque_id,tipo_id,litros_disponibles,costo_promedio) VALUES($1,$2,$3,$4)',[estanqueId,tipoId,lts,pu]);
       }
-      await client.query('INSERT INTO comb_movimientos(tipo_mov,empresa_id,fecha,tipo_id,estanque_destino_id,litros,precio_unitario,costo_total,proveedor_id,numero_documento,oc_referencia,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
-        ['INGRESO_STOCK',empresaId,oc.fecha_documento||new Date().toISOString().split('T')[0],tipoId,estanqueId,lts,pu,lts*pu,oc.proveedor_id,oc.numero_documento,oc.numero_oc,req.user.email]);
+      await client.query('INSERT INTO comb_movimientos(tipo_mov,empresa_id,fecha,tipo_id,estanque_destino_id,litros,precio_unitario,costo_total,proveedor_id,numero_documento,oc_referencia,usuario,es_provisorio) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+        ['INGRESO_STOCK',empresaId,oc.fecha_documento||new Date().toISOString().split('T')[0],tipoId,estanqueId,lts,pu,lts*pu,oc.proveedor_id,oc.numero_documento,oc.numero_oc,req.user.email,esProvisorio]);
     }
-    await client.query('UPDATE ordenes_compra SET movimiento_id=$1,modificado_en=NOW() WHERE oc_id=$2',[movId,req.params.id]);
+    await client.query('UPDATE ordenes_compra SET movimiento_id=$1,recibido_en=NOW(),modificado_en=NOW() WHERE oc_id=$2',[movId,req.params.id]);
     await client.query('COMMIT');
     res.json({ok:true,movimiento_id:movId,comb_lines:lineasComb.length});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
@@ -1590,6 +1624,7 @@ ocR.patch('/:id/reabrir', auth, async(req,res)=>{
     if(!chk.rows.length) throw new Error('OC no encontrada');
     const oc=chk.rows[0];
     if(oc.estado!=='CERRADA') throw new Error('Solo se pueden reabrir ordenes en estado CERRADA');
+    if(oc.recibido_en) throw new Error('No se puede reabrir: la OC ya fue recibida el '+(oc.recibido_en+'').slice(0,10)+'. Debe revertir la recepción primero.');
     if(oc.movimiento_id) throw new Error('No se puede reabrir: la OC ya genero un ingreso a bodega (movimiento #'+oc.movimiento_id+'). Anule el movimiento primero si desea reabrir la OC.');
     const motivo=req.body.motivo||'Sin motivo especificado';
     await client.query("UPDATE ordenes_compra SET estado='PENDIENTE',tipo_doc_id=NULL,numero_documento=NULL,fecha_documento=NULL,reabierto_en=NOW(),reabierto_por=$1,motivo_reapertura=$2,modificado_en=NOW() WHERE oc_id=$3",[req.user.email,motivo,req.params.id]);
