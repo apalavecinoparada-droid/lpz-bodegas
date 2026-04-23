@@ -2221,6 +2221,18 @@ function OCGuiasView(p){
   function updAjuste(tipoId,key,val){
     setAjustesComb(function(a){var k=String(tipoId);return Object.assign({},a,{[k]:Object.assign({},a[k]||{},{[key]:val})});});
   }
+  // Estado: líneas OC cargadas bajo demanda
+  var[ocLineasMap,setOcLineasMap]=useState({});
+  var[expandedId,setExpandedId]=useState(null);
+  function toggleExpand(ocId){
+    if(expandedId===ocId){setExpandedId(null);return;}
+    setExpandedId(ocId);
+    if(!ocLineasMap[ocId]){
+      api('/oc/'+ocId+'/lineas','GET',null,p.tok).then(function(r){
+        setOcLineasMap(function(m){return Object.assign({},m,{[ocId]:Array.isArray(r)?r:[]});});
+      }).catch(function(){});
+    }
+  }
 
   function openFacturar(){
     if(!selIds.length){alert('Seleccione al menos una guía');return;}
@@ -2299,31 +2311,72 @@ function OCGuiasView(p){
           h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'left'}},'Fecha'),
           h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Neto'),
           h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Total'),
-          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Litros')
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Litros'),
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'center',width:40}},'')
         )),
         h('tbody',null,
-          pendientes.map(function(oc){
+          pendientes.reduce(function(acc,oc){
             var isSel=selIds.includes(oc.oc_id);
             var hasComb=parseFloat(oc.litros_comb)>0;
-            return h('tr',{key:oc.oc_id,onClick:function(){toggleSel(oc.oc_id);},style:{cursor:'pointer',background:isSel?'#F0FDF4':''}},
-              h('td',{style:{padding:'6px 8px',textAlign:'center'}},h('input',{type:'checkbox',checked:isSel,readOnly:true,style:{cursor:'pointer'}})),
-              h('td',{style:{padding:'6px 8px',fontFamily:'monospace',fontWeight:600}},oc.numero_oc),
-              h('td',{style:{padding:'6px 8px',color:'#64748B'}},oc.empresa_nombre||'—'),
-              h('td',{style:{padding:'6px 8px'}},
+            var isExp=expandedId===oc.oc_id;
+            acc.push(h('tr',{key:oc.oc_id,style:{cursor:'pointer',background:isSel?'#F0FDF4':(isExp?'#F8FAFC':'')}},
+              h('td',{onClick:function(){toggleSel(oc.oc_id);},style:{padding:'6px 8px',textAlign:'center'}},h('input',{type:'checkbox',checked:isSel,readOnly:true,style:{cursor:'pointer'}})),
+              h('td',{onClick:function(){toggleSel(oc.oc_id);},style:{padding:'6px 8px',fontFamily:'monospace',fontWeight:600}},oc.numero_oc),
+              h('td',{onClick:function(){toggleSel(oc.oc_id);},style:{padding:'6px 8px',color:'#64748B'}},oc.empresa_nombre||'—'),
+              h('td',{onClick:function(){toggleSel(oc.oc_id);},style:{padding:'6px 8px'}},
                 h('div',{style:{fontSize:10,color:'#475569'}},oc.tipo_doc_nombre||'Guía'),
                 oc.numero_documento&&h('div',{style:{fontSize:9,fontFamily:'monospace',color:'#94A3B8'}},'#'+oc.numero_documento)
               ),
-              h('td',{style:{padding:'6px 8px'}},fmtD(oc.fecha_documento||oc.fecha_emision)),
-              h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace'}},CLP(Math.round(parseFloat(oc.neto)||0))),
-              h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',fontWeight:600}},CLP(Math.round(parseFloat(oc.total)||0))),
-              h('td',{style:{padding:'6px 8px',textAlign:'right'}},hasComb?h('span',{style:{background:'#FEF3C7',color:'#92400E',padding:'2px 6px',borderRadius:10,fontSize:10,fontWeight:600}},parseFloat(oc.litros_comb).toFixed(0)+' lts'):h('span',{style:{color:'#CBD5E1',fontSize:10}},'—'))
-            );
-          }),
+              h('td',{onClick:function(){toggleSel(oc.oc_id);},style:{padding:'6px 8px'}},fmtD(oc.fecha_documento||oc.fecha_emision)),
+              h('td',{onClick:function(){toggleSel(oc.oc_id);},style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace'}},CLP(Math.round(parseFloat(oc.neto)||0))),
+              h('td',{onClick:function(){toggleSel(oc.oc_id);},style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',fontWeight:600}},CLP(Math.round(parseFloat(oc.total)||0))),
+              h('td',{onClick:function(){toggleSel(oc.oc_id);},style:{padding:'6px 8px',textAlign:'right'}},hasComb?h('span',{style:{background:'#FEF3C7',color:'#92400E',padding:'2px 6px',borderRadius:10,fontSize:10,fontWeight:600}},parseFloat(oc.litros_comb).toFixed(0)+' lts'):h('span',{style:{color:'#CBD5E1',fontSize:10}},'—')),
+              h('td',{style:{padding:'6px 8px',textAlign:'center'}},h('button',{onClick:function(e){e.stopPropagation();toggleExpand(oc.oc_id);},style:{border:'1px solid #CBD5E1',background:isExp?'#1E3A2D':'#fff',color:isExp?'#fff':'#475569',borderRadius:4,padding:'2px 8px',fontSize:10,cursor:'pointer'}},isExp?'▴':'▾'))
+            ));
+            if(isExp){
+              var lineas=ocLineasMap[oc.oc_id];
+              acc.push(h('tr',{key:oc.oc_id+'-exp',style:{background:'#F8FAFC'}},
+                h('td',{colSpan:9,style:{padding:'8px 20px'}},
+                  h('div',{style:{fontSize:10,fontWeight:700,color:'#475569',marginBottom:6,textTransform:'uppercase'}},'Líneas de la OC'),
+                  !lineas?h('div',{style:{color:'#94A3B8',fontSize:11,padding:4}},'Cargando...'):
+                  lineas.length===0?h('div',{style:{color:'#94A3B8',fontSize:11,padding:4}},'Sin líneas'):
+                  h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:10,background:'#fff',border:'1px solid #E2E8F0'}},
+                    h('thead',null,h('tr',null,
+                      h('th',{style:{padding:'4px 8px',background:'#F1F5F9',textAlign:'left'}},'Descripción'),
+                      h('th',{style:{padding:'4px 8px',background:'#F1F5F9',textAlign:'left'}},'Subcategoría'),
+                      h('th',{style:{padding:'4px 8px',background:'#F1F5F9',textAlign:'left'}},'Producto'),
+                      h('th',{style:{padding:'4px 8px',background:'#F1F5F9',textAlign:'right'}},'Cant.'),
+                      h('th',{style:{padding:'4px 8px',background:'#F1F5F9',textAlign:'right'}},'P. Unit.'),
+                      h('th',{style:{padding:'4px 8px',background:'#F1F5F9',textAlign:'right'}},'Total'),
+                      h('th',{style:{padding:'4px 8px',background:'#F1F5F9',textAlign:'center'}},'¿Combustible?')
+                    )),
+                    h('tbody',null,lineas.map(function(l){
+                      var txt=((l.descripcion||'')+' '+(l.subcat_nombre||l.subcategoria_nombre||'')+' '+(l.prod_nombre||l.producto_nombre||'')).toUpperCase();
+                      var esDiesel=/DIESEL|PETR/.test(txt);
+                      var esGasolina=/GASOLINA|BENCINA|NAFTA/.test(txt);
+                      var esComb=esDiesel||esGasolina;
+                      return h('tr',{key:l.detalle_id},
+                        h('td',{style:{padding:'4px 8px'}},l.descripcion||'—'),
+                        h('td',{style:{padding:'4px 8px',color:'#64748B'}},l.subcat_nombre||l.subcategoria_nombre||'—'),
+                        h('td',{style:{padding:'4px 8px',color:'#64748B'}},l.prod_nombre||l.producto_nombre||'—'),
+                        h('td',{style:{padding:'4px 8px',textAlign:'right',fontFamily:'monospace'}},(parseFloat(l.cantidad)||0).toFixed(2)),
+                        h('td',{style:{padding:'4px 8px',textAlign:'right',fontFamily:'monospace'}},CLP(Math.round(parseFloat(l.precio_unitario)||0))),
+                        h('td',{style:{padding:'4px 8px',textAlign:'right',fontFamily:'monospace',fontWeight:600}},CLP(Math.round((parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0)))),
+                        h('td',{style:{padding:'4px 8px',textAlign:'center'}},esComb?h('span',{style:{background:esDiesel?'#FEF3C7':'#DBEAFE',color:esDiesel?'#92400E':'#1D4ED8',padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:600}},esDiesel?'🚛 DIESEL':'⛽ GASOLINA'):h('span',{style:{color:'#CBD5E1',fontSize:9}},'no'))
+                      );
+                    }))
+                  )
+                )
+              ));
+            }
+            return acc;
+          },[]),
           selIds.length>0&&h('tr',{style:{background:'#F0FDF4',fontWeight:700}},
             h('td',{colSpan:5,style:{padding:'8px',textAlign:'right',fontSize:12}},'Total seleccionado ('+selIds.length+' guías):'),
             h('td',{style:{padding:'8px',textAlign:'right',fontFamily:'monospace',fontSize:12}},CLP(Math.round(sumNeto))),
             h('td',{style:{padding:'8px',textAlign:'right',fontFamily:'monospace',fontSize:13,color:'#15803D'}},CLP(Math.round(sumTotal))),
-            h('td',{style:{padding:'8px',textAlign:'right',fontFamily:'monospace',fontSize:11,color:'#92400E'}},sumLitros>0?sumLitros.toFixed(0)+' lts':'')
+            h('td',{style:{padding:'8px',textAlign:'right',fontFamily:'monospace',fontSize:11,color:'#92400E'}},sumLitros>0?sumLitros.toFixed(0)+' lts':''),
+            h('td')
           )
         )
       )
