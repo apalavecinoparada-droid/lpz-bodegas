@@ -2153,6 +2153,182 @@ function ImportZipDTE(p){
   );
 }
 
+// ══ GUÍAS DE DESPACHO — FACTURACIÓN ══
+function OCGuiasView(p){
+  var provs=(p.m.provs||[]).filter(function(pr){return pr.activo;});
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var[provsPend,setProvsPend]=useState([]);
+  var[selProv,setSelProv]=useState('');
+  var[pendientes,setPendientes]=useState([]);
+  var[facturas,setFacturas]=useState([]);
+  var[selIds,setSelIds]=useState([]);
+  var[showForm,setShowForm]=useState(false);
+  var[form,setForm]=useState({numero_factura:'',fecha_factura:new Date().toISOString().slice(0,10),neto:'',iva:'',ie_total:'0',total:'',observaciones:'',empresa_id:''});
+  var[msg,setMsg]=useState('');
+
+  function loadProvsPend(){api('/oc-guias/proveedores-pendientes','GET',null,p.tok).then(function(r){setProvsPend(Array.isArray(r)?r:[]);}).catch(function(){});}
+  function loadPendientes(pid){
+    if(!pid){setPendientes([]);return;}
+    api('/oc-guias/pendientes?proveedor_id='+pid,'GET',null,p.tok).then(function(r){setPendientes(Array.isArray(r)?r:[]);setSelIds([]);}).catch(function(){});
+  }
+  function loadFacturas(pid){
+    var qs=pid?'?proveedor_id='+pid:'';
+    api('/oc-guias/facturas'+qs,'GET',null,p.tok).then(function(r){setFacturas(Array.isArray(r)?r:[]);}).catch(function(){});
+  }
+  useEffect(function(){loadProvsPend();},[p.tok]);
+  useEffect(function(){loadPendientes(selProv);loadFacturas(selProv);},[selProv]);
+
+  function toggleSel(id){setSelIds(function(ids){return ids.includes(id)?ids.filter(function(x){return x!==id;}):ids.concat([id]);});}
+  function selectAll(){setSelIds(pendientes.map(function(r){return r.oc_id;}));}
+  function selectNone(){setSelIds([]);}
+
+  var selOcs=pendientes.filter(function(r){return selIds.includes(r.oc_id);});
+  var sumNeto=selOcs.reduce(function(s,r){return s+(parseFloat(r.neto)||0);},0);
+  var sumTotal=selOcs.reduce(function(s,r){return s+(parseFloat(r.total)||0);},0);
+
+  function openFacturar(){
+    if(!selIds.length){alert('Seleccione al menos una guía');return;}
+    var emp=selOcs[0]?selOcs[0].empresa_id:'';
+    setForm({numero_factura:'',fecha_factura:new Date().toISOString().slice(0,10),neto:String(Math.round(sumNeto)),iva:String(Math.round(sumNeto*0.19)),ie_total:'0',total:String(Math.round(sumTotal)),observaciones:'',empresa_id:String(emp||'')});
+    setShowForm(true);setMsg('');
+  }
+  function guardar(){
+    if(!form.numero_factura){setMsg('Ingrese N° de factura');return;}
+    var body=Object.assign({},form,{proveedor_id:parseInt(selProv),oc_ids:selIds});
+    api('/oc-guias/facturar','POST',body,p.tok).then(function(){
+      setShowForm(false);setSelIds([]);loadPendientes(selProv);loadFacturas(selProv);loadProvsPend();
+    }).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function eliminarFactura(fid){
+    if(!confirm('¿Eliminar esta factura? Las guías volverán a quedar pendientes.'))return;
+    api('/oc-guias/facturas/'+fid,'DELETE',null,p.tok).then(function(){loadPendientes(selProv);loadFacturas(selProv);loadProvsPend();}).catch(function(e){alert(e.message);});
+  }
+
+  var inpS={width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var lblS={fontSize:10,fontWeight:600,display:'block',marginBottom:3,color:'#64748B',textTransform:'uppercase',letterSpacing:'.5px'};
+
+  return h('div',null,
+    // Proveedores con guías pendientes
+    h('div',{className:'card',style:{padding:16,marginBottom:16}},
+      h('div',{style:{fontSize:14,fontWeight:700,marginBottom:12,color:'#1E3A2D'}},'Proveedores con guías pendientes de facturar'),
+      provsPend.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:20,textAlign:'center'}},'No hay guías de despacho pendientes de facturar'):
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(280px,1fr))',gap:10}},
+        provsPend.map(function(pr){
+          var isActive=String(pr.proveedor_id)===String(selProv);
+          return h('div',{key:pr.proveedor_id,onClick:function(){setSelProv(String(pr.proveedor_id));},style:{padding:'12px 16px',borderRadius:8,border:'2px solid '+(isActive?'#1E3A2D':'#E2E8F0'),background:isActive?'#F0FDF4':'#fff',cursor:'pointer',transition:'all .2s'}},
+            h('div',{style:{fontSize:13,fontWeight:600,color:'#1E3A2D'}},pr.nombre),
+            h('div',{style:{fontSize:10,color:'#64748B',marginTop:2}},pr.rut||''),
+            h('div',{style:{display:'flex',justifyContent:'space-between',marginTop:6}},
+              h('span',{style:{fontSize:11,color:'#F59E0B',fontWeight:600}},pr.guias_pendientes+' guía(s)'),
+              h('span',{style:{fontSize:11,fontWeight:700,fontFamily:'monospace'}},CLP(Math.round(parseFloat(pr.monto_total)||0)))
+            )
+          );
+        })
+      )
+    ),
+    // Guías pendientes del proveedor seleccionado
+    selProv&&h('div',{className:'card',style:{padding:16,marginBottom:16}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
+        h('div',{style:{fontSize:14,fontWeight:700,color:'#1E3A2D'}},'Guías pendientes — '+(provsPend.find(function(pr){return String(pr.proveedor_id)===String(selProv);})||{}).nombre),
+        h('div',{style:{display:'flex',gap:6}},
+          h('button',{onClick:selectAll,style:{padding:'4px 10px',borderRadius:4,border:'1px solid #CBD5E1',background:'#fff',fontSize:10,cursor:'pointer'}},'Seleccionar todas'),
+          h('button',{onClick:selectNone,style:{padding:'4px 10px',borderRadius:4,border:'1px solid #CBD5E1',background:'#fff',fontSize:10,cursor:'pointer'}},'Deseleccionar'),
+          selIds.length>0&&h(Btn,{onClick:openFacturar},'📄 Facturar '+selIds.length+' guía(s)')
+        )
+      ),
+      pendientes.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,textAlign:'center',padding:20}},'Sin guías pendientes para este proveedor'):
+      h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+        h('thead',null,h('tr',null,
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'center',width:30}},''),
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'left'}},'N° OC'),
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'left'}},'Empresa'),
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'left'}},'Documento'),
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'left'}},'Fecha'),
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Neto'),
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Total')
+        )),
+        h('tbody',null,
+          pendientes.map(function(oc){
+            var isSel=selIds.includes(oc.oc_id);
+            return h('tr',{key:oc.oc_id,onClick:function(){toggleSel(oc.oc_id);},style:{cursor:'pointer',background:isSel?'#F0FDF4':''}},
+              h('td',{style:{padding:'6px 8px',textAlign:'center'}},h('input',{type:'checkbox',checked:isSel,readOnly:true,style:{cursor:'pointer'}})),
+              h('td',{style:{padding:'6px 8px',fontFamily:'monospace',fontWeight:600}},oc.numero_oc),
+              h('td',{style:{padding:'6px 8px',color:'#64748B'}},oc.empresa_nombre||'—'),
+              h('td',{style:{padding:'6px 8px'}},
+                h('div',{style:{fontSize:10,color:'#475569'}},oc.tipo_doc_nombre||'Guía'),
+                oc.numero_documento&&h('div',{style:{fontSize:9,fontFamily:'monospace',color:'#94A3B8'}},'#'+oc.numero_documento)
+              ),
+              h('td',{style:{padding:'6px 8px'}},fmtD(oc.fecha_documento||oc.fecha_emision)),
+              h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace'}},CLP(Math.round(parseFloat(oc.neto)||0))),
+              h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',fontWeight:600}},CLP(Math.round(parseFloat(oc.total)||0)))
+            );
+          }),
+          selIds.length>0&&h('tr',{style:{background:'#F0FDF4',fontWeight:700}},
+            h('td',{colSpan:5,style:{padding:'8px',textAlign:'right',fontSize:12}},'Total seleccionado ('+selIds.length+' guías):'),
+            h('td',{style:{padding:'8px',textAlign:'right',fontFamily:'monospace',fontSize:12}},CLP(Math.round(sumNeto))),
+            h('td',{style:{padding:'8px',textAlign:'right',fontFamily:'monospace',fontSize:13,color:'#15803D'}},CLP(Math.round(sumTotal)))
+          )
+        )
+      )
+    ),
+    // Historial de facturas
+    selProv&&facturas.length>0&&h('div',{className:'card',style:{padding:16}},
+      h('div',{style:{fontSize:14,fontWeight:700,marginBottom:12,color:'#1E3A2D'}},'Facturas emitidas'),
+      h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+        h('thead',null,h('tr',null,
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'left'}},'N° Factura'),
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'left'}},'Fecha'),
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'left'}},'Proveedor'),
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'center'}},'Guías'),
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Neto'),
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Total'),
+          h('th',{style:{padding:'8px',background:'#F1F5F9'}})
+        )),
+        h('tbody',null,facturas.map(function(f){
+          return h('tr',{key:f.factura_id},
+            h('td',{style:{padding:'6px 8px',fontWeight:600,fontFamily:'monospace'}},f.numero_factura),
+            h('td',{style:{padding:'6px 8px'}},fmtD(f.fecha_factura)),
+            h('td',{style:{padding:'6px 8px'}},f.proveedor_nombre),
+            h('td',{style:{padding:'6px 8px',textAlign:'center'}},
+              h('span',{style:{background:'#EFF6FF',color:'#1D4ED8',padding:'2px 6px',borderRadius:10,fontSize:10,fontWeight:600}},f.num_guias),
+              h('div',{style:{fontSize:9,color:'#94A3B8',marginTop:2}},f.guias_str)
+            ),
+            h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace'}},CLP(Math.round(parseFloat(f.neto)||0))),
+            h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',fontWeight:600}},CLP(Math.round(parseFloat(f.total)||0))),
+            h('td',{style:{padding:'6px 8px'}},h(Btn,{v:'r',sm:true,onClick:function(){eliminarFactura(f.factura_id);}},null,'🗑'))
+          );
+        }))
+      )
+    ),
+    // Modal facturar
+    showForm&&h(Modal,{title:'Facturar guías seleccionadas',onClose:function(){setShowForm(false);}},
+      h('div',{className:'mb'},
+        msg&&h('div',{className:'al al-e',style:{marginBottom:8}},msg),
+        h('div',{style:{background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:6,padding:'10px 14px',marginBottom:12}},
+          h('div',{style:{fontSize:12,fontWeight:600,color:'#166534'}},selIds.length+' guía(s) seleccionadas'),
+          h('div',{style:{fontSize:11,color:'#15803D'}},'Neto acumulado: '+CLP(Math.round(sumNeto))+' | Total acumulado: '+CLP(Math.round(sumTotal)))
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}},
+          h('div',null,h('label',{style:lblS},'N° Factura *'),h('input',{value:form.numero_factura,onChange:function(e){setForm(function(f){return Object.assign({},f,{numero_factura:e.target.value});});},style:inpS,placeholder:'Ej: 48545794'})),
+          h('div',null,h('label',{style:lblS},'Fecha factura'),h('input',{type:'date',value:form.fecha_factura,onChange:function(e){setForm(function(f){return Object.assign({},f,{fecha_factura:e.target.value});});},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Empresa'),h('select',{value:form.empresa_id,onChange:function(e){setForm(function(f){return Object.assign({},f,{empresa_id:e.target.value});});},style:inpS},h('option',{value:''},'—'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})))
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10,marginBottom:10}},
+          h('div',null,h('label',{style:lblS},'Neto $'),h('input',{type:'number',value:form.neto,onChange:function(e){setForm(function(f){return Object.assign({},f,{neto:e.target.value});});},style:inpS})),
+          h('div',null,h('label',{style:lblS},'IVA $'),h('input',{type:'number',value:form.iva,onChange:function(e){setForm(function(f){return Object.assign({},f,{iva:e.target.value});});},style:inpS})),
+          h('div',null,h('label',{style:lblS},'IE Total $'),h('input',{type:'number',value:form.ie_total,onChange:function(e){setForm(function(f){return Object.assign({},f,{ie_total:e.target.value});});},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Total factura $'),h('input',{type:'number',value:form.total,onChange:function(e){setForm(function(f){return Object.assign({},f,{total:e.target.value});});},style:inpS}))
+        ),
+        h('div',{style:{marginBottom:10}},h('label',{style:lblS},'Observaciones'),h('input',{value:form.observaciones,onChange:function(e){setForm(function(f){return Object.assign({},f,{observaciones:e.target.value});});},style:inpS,placeholder:'Notas opcionales...'}))
+      ),
+      h('div',{className:'mf'},
+        h(Btn,{v:'g',onClick:function(){setShowForm(false);}},null,'Cancelar'),
+        h(Btn,{onClick:guardar},'Crear Factura y Asociar Guías')
+      )
+    )
+  );
+}
+
 function OCView(p){
   const empresas=p.m&&Array.isArray(p.m.empresas)?p.m.empresas:[];
   const provs=p.m&&Array.isArray(p.m.provs)?p.m.provs:[];
@@ -7831,7 +8007,7 @@ function MobileTerreno(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','oc-guias':'Guías de Despacho'};
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
@@ -7917,7 +8093,7 @@ function App(){
       h('div',{className:'sb-logo'},h('h1',null,'Empresas Poo'),h('p',null,'Sistema de Gestión')),
       h('div',{style:{padding:'4px 0',flex:1}},
         canSee('ordenes')&&grpHdr('oc','ORDENES DE COMPRA'),
-        canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true)),
+        canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true),navI('oc-guias','📋','Guías de Despacho',true)),
         canSee('ordenes')&&h('div',{className:'sb-sep'}),
         canSee('combustibles')&&grpHdr('comb','CONTROL DE COMBUSTIBLES'),
         canSee('combustibles')&&grp.comb&&h('div',null,
@@ -7926,7 +8102,7 @@ function App(){
           navI('comb-traspasos','⇄','Traspasos Estanques',true),
           navI('comb-distribuciones','↑','Distribuciones',true),
           navI('comb-reportes','◈','Reportes',true),
-          navI('comb-cierre','⚖','Cierre Quincenal',true),
+          navI('comb-cierre','⚖','Cierre Copec',true),
           navI('comb-kardex','≡','Kardex Estanque',true)
         ),
         canSee('combustibles')&&h('div',{className:'sb-sep'}),
@@ -8034,6 +8210,7 @@ function App(){
           view==='kardex'&&h(KardexView,{tok,m}),
           view==='reportes'&&h(ReportesView,{tok,m}),
           view==='ordenes'&&h(OCView,{tok,m}),
+          view==='oc-guias'&&h(OCGuiasView,{tok,m}),
           view==='rendiciones'&&h(RendicionesView,{tok,m}),
           view==='vacaciones'&&h(VacacionesView,{tok,m}),
           view==='solicitudes'&&h(SolicitudesView,{tok,m,user}),
