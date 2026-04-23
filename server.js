@@ -546,6 +546,7 @@ async function autoSetup() {
   try{ await setupTransporte(pool.query.bind(pool)); }catch(e){console.log('[WARN] transporte tables:',e.message);}
   try{ await setupContratos(pool.query.bind(pool)); }catch(e){console.log('[WARN] contratos tables:',e.message);}
   try{ await setupProgMant(pool.query.bind(pool)); }catch(e){console.log('[WARN] prog mant tables:',e.message);}
+  try{ await setupFacturaGuias(pool.query.bind(pool)); }catch(e){console.log('[WARN] factura guias tables:',e.message);}
   // Seed sistemas y tareas estándar
   try{
     const sc=await pool.query('SELECT COUNT(*) FROM mant_sistemas');
@@ -4587,6 +4588,121 @@ app.post('/api/mant/prog-semanal/import', auth, async(req,res)=>{
     }
     res.json({ok:true,creados,errores,total:items.length});
   }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ══════════════════════════════════════════════════════
+// FACTURACIÓN DE GUÍAS DE DESPACHO
+// ══════════════════════════════════════════════════════
+async function setupFacturaGuias(q){
+  await q(`CREATE TABLE IF NOT EXISTS oc_factura_guias (
+    factura_id SERIAL PRIMARY KEY,
+    proveedor_id INT NOT NULL REFERENCES proveedores(proveedor_id),
+    empresa_id INT REFERENCES empresas(empresa_id),
+    numero_factura VARCHAR(50),
+    fecha_factura DATE,
+    neto NUMERIC(14,2) DEFAULT 0,
+    iva NUMERIC(14,2) DEFAULT 0,
+    ie_total NUMERIC(14,2) DEFAULT 0,
+    total NUMERIC(14,2) DEFAULT 0,
+    observaciones TEXT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS factura_guia_id INT REFERENCES oc_factura_guias(factura_id)');
+}
+
+// Listar OCs con guía de despacho pendientes de facturar
+app.get('/api/oc-guias/pendientes', auth, async(req,res)=>{
+  try{
+    const{proveedor_id,empresa_id}=req.query;
+    let w=["oc.estado='CERRADA'","oc.factura_guia_id IS NULL"],v=[];
+    // Filtrar OCs cuyo tipo_doc es guía de despacho
+    w.push("(td.nombre ILIKE '%gu_a%' OR td.nombre ILIKE '%despacho%' OR td.nombre ILIKE '%provisori%')");
+    if(proveedor_id){v.push(proveedor_id);w.push(`oc.proveedor_id=$${v.length}`);}
+    if(empresa_id){v.push(empresa_id);w.push(`oc.empresa_id=$${v.length}`);}
+    const r=await pool.query(`SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,td.nombre AS tipo_doc_nombre
+      FROM ordenes_compra oc
+      LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id
+      LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
+      LEFT JOIN tipos_documento td ON oc.tipo_doc_id=td.tipo_doc_id
+      WHERE ${w.join(' AND ')}
+      ORDER BY oc.fecha_emision,oc.oc_id`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// Listar proveedores que tienen guías pendientes
+app.get('/api/oc-guias/proveedores-pendientes', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT DISTINCT pr.proveedor_id,pr.nombre,pr.rut,COUNT(oc.oc_id) AS guias_pendientes,SUM(oc.total) AS monto_total
+      FROM ordenes_compra oc
+      JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
+      LEFT JOIN tipos_documento td ON oc.tipo_doc_id=td.tipo_doc_id
+      WHERE oc.estado='CERRADA' AND oc.factura_guia_id IS NULL
+        AND (td.nombre ILIKE '%gu_a%' OR td.nombre ILIKE '%despacho%' OR td.nombre ILIKE '%provisori%')
+      GROUP BY pr.proveedor_id,pr.nombre,pr.rut
+      ORDER BY pr.nombre`);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// Crear factura asociando guías
+app.post('/api/oc-guias/facturar', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const{proveedor_id,empresa_id,numero_factura,fecha_factura,neto,iva,ie_total,total,observaciones,oc_ids}=req.body;
+    if(!proveedor_id||!numero_factura)throw new Error('Proveedor y N° factura requeridos');
+    if(!Array.isArray(oc_ids)||!oc_ids.length)throw new Error('Seleccione al menos una guía');
+    const fr=await client.query(`INSERT INTO oc_factura_guias(proveedor_id,empresa_id,numero_factura,fecha_factura,neto,iva,ie_total,total,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING factura_id`,
+      [proveedor_id,empresa_id||null,numero_factura,fecha_factura||new Date().toISOString().slice(0,10),parseFloat(neto)||0,parseFloat(iva)||0,parseFloat(ie_total)||0,parseFloat(total)||0,observaciones||null,req.user.email]);
+    const fid=fr.rows[0].factura_id;
+    // Asociar OCs
+    for(const ocId of oc_ids){
+      await client.query('UPDATE ordenes_compra SET factura_guia_id=$1 WHERE oc_id=$2 AND factura_guia_id IS NULL',[fid,ocId]);
+    }
+    // Si hay movimientos de combustible provisorios para estas OCs, actualizar con datos de la factura
+    for(const ocId of oc_ids){
+      const ocR=await client.query('SELECT numero_oc FROM ordenes_compra WHERE oc_id=$1',[ocId]);
+      if(ocR.rows.length){
+        await client.query("UPDATE comb_movimientos SET numero_documento=$1 WHERE oc_referencia=$2 AND es_provisorio=true AND cierre_id IS NULL",[numero_factura,ocR.rows[0].numero_oc]);
+      }
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ok:true,factura_id:fid});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// Listar facturas de guías
+app.get('/api/oc-guias/facturas', auth, async(req,res)=>{
+  try{
+    const{proveedor_id}=req.query;
+    let w=['1=1'],v=[];
+    if(proveedor_id){v.push(proveedor_id);w.push(`f.proveedor_id=$${v.length}`);}
+    const r=await pool.query(`SELECT f.*,pr.nombre AS proveedor_nombre,e.razon_social AS empresa_nombre,
+      (SELECT COUNT(*) FROM ordenes_compra oc WHERE oc.factura_guia_id=f.factura_id) AS num_guias,
+      (SELECT STRING_AGG(oc.numero_oc,', ') FROM ordenes_compra oc WHERE oc.factura_guia_id=f.factura_id) AS guias_str
+      FROM oc_factura_guias f
+      LEFT JOIN proveedores pr ON f.proveedor_id=pr.proveedor_id
+      LEFT JOIN empresas e ON f.empresa_id=e.empresa_id
+      WHERE ${w.join(' AND ')}
+      ORDER BY f.creado_en DESC`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// Eliminar factura de guías (desasocia las OCs)
+app.delete('/api/oc-guias/facturas/:id', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    await client.query('UPDATE ordenes_compra SET factura_guia_id=NULL WHERE factura_guia_id=$1',[req.params.id]);
+    await client.query('DELETE FROM oc_factura_guias WHERE factura_id=$1',[req.params.id]);
+    await client.query('COMMIT');
+    res.json({ok:true});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 
 // ══ PWA — MANIFEST, SERVICE WORKER, ICON ══
