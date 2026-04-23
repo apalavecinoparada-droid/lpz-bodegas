@@ -4616,11 +4616,11 @@ app.get('/api/oc-guias/pendientes', auth, async(req,res)=>{
   try{
     const{proveedor_id,empresa_id}=req.query;
     let w=["oc.estado='CERRADA'","oc.factura_guia_id IS NULL"],v=[];
-    // Filtrar OCs cuyo tipo_doc es guía de despacho
     w.push("(td.nombre ILIKE '%gu_a%' OR td.nombre ILIKE '%despacho%' OR td.nombre ILIKE '%provisori%')");
     if(proveedor_id){v.push(proveedor_id);w.push(`oc.proveedor_id=$${v.length}`);}
     if(empresa_id){v.push(empresa_id);w.push(`oc.empresa_id=$${v.length}`);}
-    const r=await pool.query(`SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,td.nombre AS tipo_doc_nombre
+    const r=await pool.query(`SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,td.nombre AS tipo_doc_nombre,
+      (SELECT COALESCE(SUM(cm.litros),0) FROM comb_movimientos cm WHERE cm.oc_referencia=oc.numero_oc AND cm.estado='ACTIVO') AS litros_comb
       FROM ordenes_compra oc
       LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id
       LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
@@ -4646,12 +4646,12 @@ app.get('/api/oc-guias/proveedores-pendientes', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
-// Crear factura asociando guías
+// Crear factura asociando guías + recalcular combustible
 app.post('/api/oc-guias/facturar', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
-    const{proveedor_id,empresa_id,numero_factura,fecha_factura,neto,iva,ie_total,total,observaciones,oc_ids}=req.body;
+    const{proveedor_id,empresa_id,numero_factura,fecha_factura,neto,iva,ie_total,total,observaciones,oc_ids,neto_litro_definitivo}=req.body;
     if(!proveedor_id||!numero_factura)throw new Error('Proveedor y N° factura requeridos');
     if(!Array.isArray(oc_ids)||!oc_ids.length)throw new Error('Seleccione al menos una guía');
     const fr=await client.query(`INSERT INTO oc_factura_guias(proveedor_id,empresa_id,numero_factura,fecha_factura,neto,iva,ie_total,total,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING factura_id`,
@@ -4661,15 +4661,52 @@ app.post('/api/oc-guias/facturar', auth, async(req,res)=>{
     for(const ocId of oc_ids){
       await client.query('UPDATE ordenes_compra SET factura_guia_id=$1 WHERE oc_id=$2 AND factura_guia_id IS NULL',[fid,ocId]);
     }
-    // Si hay movimientos de combustible provisorios para estas OCs, actualizar con datos de la factura
-    for(const ocId of oc_ids){
-      const ocR=await client.query('SELECT numero_oc FROM ordenes_compra WHERE oc_id=$1',[ocId]);
-      if(ocR.rows.length){
-        await client.query("UPDATE comb_movimientos SET numero_documento=$1 WHERE oc_referencia=$2 AND es_provisorio=true AND cierre_id IS NULL",[numero_factura,ocR.rows[0].numero_oc]);
+    // Recalcular combustible si hay movimientos provisorios
+    const newPU=parseFloat(neto_litro_definitivo)||0;
+    if(newPU>0){
+      // Recopilar todos los numero_oc de las OCs seleccionadas
+      const ocNums=[];
+      for(const ocId of oc_ids){
+        const ocR=await client.query('SELECT numero_oc FROM ordenes_compra WHERE oc_id=$1',[ocId]);
+        if(ocR.rows.length)ocNums.push(ocR.rows[0].numero_oc);
+      }
+      // Buscar movimientos de combustible provisorios de estas OCs
+      for(const numOC of ocNums){
+        const movs=await client.query("SELECT * FROM comb_movimientos WHERE oc_referencia=$1 AND estado='ACTIVO' AND es_provisorio=true",[numOC]);
+        for(const mv of movs.rows){
+          const oldPU=parseFloat(mv.precio_unitario)||0;
+          const lts=parseFloat(mv.litros)||0;
+          if(lts<=0)continue;
+          const delta=(newPU-oldPU)*lts;
+          // Actualizar movimiento con precio definitivo
+          await client.query('UPDATE comb_movimientos SET precio_unitario=$1,costo_total=$2,es_provisorio=false,numero_documento=$3 WHERE mov_id=$4',
+            [newPU,lts*newPU,numero_factura,mv.mov_id]);
+          // Recalcular costo_promedio del estanque
+          if(mv.estanque_destino_id&&mv.tipo_id){
+            const stk=await client.query('SELECT litros_disponibles,costo_promedio FROM comb_stock WHERE estanque_id=$1 AND tipo_id=$2',[mv.estanque_destino_id,mv.tipo_id]);
+            if(stk.rows.length){
+              const curLts=parseFloat(stk.rows[0].litros_disponibles)||0;
+              const curCpp=parseFloat(stk.rows[0].costo_promedio)||0;
+              const curValue=curLts*curCpp;
+              const newValue=curValue+delta;
+              const newCpp=curLts>0?newValue/curLts:newPU;
+              await client.query('UPDATE comb_stock SET costo_promedio=$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',
+                [Math.max(0,newCpp),mv.estanque_destino_id,mv.tipo_id]);
+            }
+          }
+        }
+      }
+    }else{
+      // Sin recálculo, solo actualizar numero_documento en provisorios
+      for(const ocId of oc_ids){
+        const ocR=await client.query('SELECT numero_oc FROM ordenes_compra WHERE oc_id=$1',[ocId]);
+        if(ocR.rows.length){
+          await client.query("UPDATE comb_movimientos SET numero_documento=$1,es_provisorio=false WHERE oc_referencia=$2 AND es_provisorio=true AND cierre_id IS NULL",[numero_factura,ocR.rows[0].numero_oc]);
+        }
       }
     }
     await client.query('COMMIT');
-    res.status(201).json({ok:true,factura_id:fid});
+    res.status(201).json({ok:true,factura_id:fid,recalculado:newPU>0});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
