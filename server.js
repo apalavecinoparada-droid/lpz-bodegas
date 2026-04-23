@@ -4591,6 +4591,25 @@ app.post('/api/mant/prog-semanal/import', auth, async(req,res)=>{
 });
 
 // ══════════════════════════════════════════════════════
+// Importación masiva de subcategorías
+app.post('/api/subcategorias/import', auth, async(req,res)=>{
+  try{
+    const{categoria_id,items}=req.body;
+    if(!categoria_id)return res.status(400).json({error:'categoria_id requerido'});
+    if(!Array.isArray(items)||!items.length)return res.status(400).json({error:'items vacío'});
+    let creadas=0,existentes=0;
+    for(const item of items){
+      const nombre=String(item.nombre||'').trim();
+      if(!nombre)continue;
+      const exists=await pool.query('SELECT 1 FROM subcategorias WHERE categoria_id=$1 AND nombre=$2',[categoria_id,nombre]);
+      if(exists.rows.length){existentes++;continue;}
+      await pool.query('INSERT INTO subcategorias(categoria_id,nombre,activo) VALUES($1,$2,true)',[categoria_id,nombre]);
+      creadas++;
+    }
+    res.json({ok:true,creadas,existentes,total:items.length});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 // FACTURACIÓN DE GUÍAS DE DESPACHO
 // ══════════════════════════════════════════════════════
 async function setupFacturaGuias(q){
