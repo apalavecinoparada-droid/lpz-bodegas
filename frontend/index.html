@@ -2185,17 +2185,28 @@ function OCGuiasView(p){
   var selOcs=pendientes.filter(function(r){return selIds.includes(r.oc_id);});
   var sumNeto=selOcs.reduce(function(s,r){return s+(parseFloat(r.neto)||0);},0);
   var sumTotal=selOcs.reduce(function(s,r){return s+(parseFloat(r.total)||0);},0);
+  var sumLitros=selOcs.reduce(function(s,r){return s+(parseFloat(r.litros_comb)||0);},0);
+  var tieneComb=sumLitros>0;
 
   function openFacturar(){
     if(!selIds.length){alert('Seleccione al menos una guía');return;}
     var emp=selOcs[0]?selOcs[0].empresa_id:'';
-    setForm({numero_factura:'',fecha_factura:new Date().toISOString().slice(0,10),neto:String(Math.round(sumNeto)),iva:String(Math.round(sumNeto*0.19)),ie_total:'0',total:String(Math.round(sumTotal)),observaciones:'',empresa_id:String(emp||'')});
+    setForm({numero_factura:'',fecha_factura:new Date().toISOString().slice(0,10),neto:'',iva:'',ie_total:'0',total:'',observaciones:'',empresa_id:String(emp||''),neto_litro_definitivo:''});
     setShowForm(true);setMsg('');
   }
+  // Auto-calcular neto/lt cuando se ingresa neto de factura y hay combustible
+  var formNetoNum=parseFloat(form.neto)||0;
+  var formIENum=parseFloat(form.ie_total)||0;
+  var calcNetoLt=sumLitros>0&&formNetoNum>0?formNetoNum/sumLitros:0;
+
   function guardar(){
     if(!form.numero_factura){setMsg('Ingrese N° de factura');return;}
-    var body=Object.assign({},form,{proveedor_id:parseInt(selProv),oc_ids:selIds});
-    api('/oc-guias/facturar','POST',body,p.tok).then(function(){
+    var netoLtDef=tieneComb?calcNetoLt:0;
+    var body=Object.assign({},form,{proveedor_id:parseInt(selProv),oc_ids:selIds,neto_litro_definitivo:netoLtDef});
+    api('/oc-guias/facturar','POST',body,p.tok).then(function(r){
+      var msg2='Factura creada correctamente.';
+      if(r.recalculado)msg2+=' Stock de combustible recalculado a $'+Math.round(netoLtDef)+'/lt.';
+      alert(msg2);
       setShowForm(false);setSelIds([]);loadPendientes(selProv);loadFacturas(selProv);loadProvsPend();
     }).catch(function(e){setMsg('Error: '+e.message);});
   }
@@ -2245,11 +2256,13 @@ function OCGuiasView(p){
           h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'left'}},'Documento'),
           h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'left'}},'Fecha'),
           h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Neto'),
-          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Total')
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Total'),
+          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Litros')
         )),
         h('tbody',null,
           pendientes.map(function(oc){
             var isSel=selIds.includes(oc.oc_id);
+            var hasComb=parseFloat(oc.litros_comb)>0;
             return h('tr',{key:oc.oc_id,onClick:function(){toggleSel(oc.oc_id);},style:{cursor:'pointer',background:isSel?'#F0FDF4':''}},
               h('td',{style:{padding:'6px 8px',textAlign:'center'}},h('input',{type:'checkbox',checked:isSel,readOnly:true,style:{cursor:'pointer'}})),
               h('td',{style:{padding:'6px 8px',fontFamily:'monospace',fontWeight:600}},oc.numero_oc),
@@ -2260,13 +2273,15 @@ function OCGuiasView(p){
               ),
               h('td',{style:{padding:'6px 8px'}},fmtD(oc.fecha_documento||oc.fecha_emision)),
               h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace'}},CLP(Math.round(parseFloat(oc.neto)||0))),
-              h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',fontWeight:600}},CLP(Math.round(parseFloat(oc.total)||0)))
+              h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',fontWeight:600}},CLP(Math.round(parseFloat(oc.total)||0))),
+              h('td',{style:{padding:'6px 8px',textAlign:'right'}},hasComb?h('span',{style:{background:'#FEF3C7',color:'#92400E',padding:'2px 6px',borderRadius:10,fontSize:10,fontWeight:600}},parseFloat(oc.litros_comb).toFixed(0)+' lts'):h('span',{style:{color:'#CBD5E1',fontSize:10}},'—'))
             );
           }),
           selIds.length>0&&h('tr',{style:{background:'#F0FDF4',fontWeight:700}},
             h('td',{colSpan:5,style:{padding:'8px',textAlign:'right',fontSize:12}},'Total seleccionado ('+selIds.length+' guías):'),
             h('td',{style:{padding:'8px',textAlign:'right',fontFamily:'monospace',fontSize:12}},CLP(Math.round(sumNeto))),
-            h('td',{style:{padding:'8px',textAlign:'right',fontFamily:'monospace',fontSize:13,color:'#15803D'}},CLP(Math.round(sumTotal)))
+            h('td',{style:{padding:'8px',textAlign:'right',fontFamily:'monospace',fontSize:13,color:'#15803D'}},CLP(Math.round(sumTotal))),
+            h('td',{style:{padding:'8px',textAlign:'right',fontFamily:'monospace',fontSize:11,color:'#92400E'}},sumLitros>0?sumLitros.toFixed(0)+' lts':'')
           )
         )
       )
@@ -2306,7 +2321,8 @@ function OCGuiasView(p){
         msg&&h('div',{className:'al al-e',style:{marginBottom:8}},msg),
         h('div',{style:{background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:6,padding:'10px 14px',marginBottom:12}},
           h('div',{style:{fontSize:12,fontWeight:600,color:'#166534'}},selIds.length+' guía(s) seleccionadas'),
-          h('div',{style:{fontSize:11,color:'#15803D'}},'Neto acumulado: '+CLP(Math.round(sumNeto))+' | Total acumulado: '+CLP(Math.round(sumTotal)))
+          h('div',{style:{fontSize:11,color:'#15803D'}},'Total acumulado guías: '+CLP(Math.round(sumTotal))),
+          tieneComb&&h('div',{style:{fontSize:11,color:'#92400E',marginTop:2}},'⛽ '+sumLitros.toFixed(0)+' litros de combustible — se recalculará el stock al facturar')
         ),
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}},
           h('div',null,h('label',{style:lblS},'N° Factura *'),h('input',{value:form.numero_factura,onChange:function(e){setForm(function(f){return Object.assign({},f,{numero_factura:e.target.value});});},style:inpS,placeholder:'Ej: 48545794'})),
@@ -2314,16 +2330,39 @@ function OCGuiasView(p){
           h('div',null,h('label',{style:lblS},'Empresa'),h('select',{value:form.empresa_id,onChange:function(e){setForm(function(f){return Object.assign({},f,{empresa_id:e.target.value});});},style:inpS},h('option',{value:''},'—'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})))
         ),
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10,marginBottom:10}},
-          h('div',null,h('label',{style:lblS},'Neto $'),h('input',{type:'number',value:form.neto,onChange:function(e){setForm(function(f){return Object.assign({},f,{neto:e.target.value});});},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Neto factura $'),h('input',{type:'number',value:form.neto,onChange:function(e){setForm(function(f){return Object.assign({},f,{neto:e.target.value});});},style:inpS,placeholder:'Base afecta neta'})),
           h('div',null,h('label',{style:lblS},'IVA $'),h('input',{type:'number',value:form.iva,onChange:function(e){setForm(function(f){return Object.assign({},f,{iva:e.target.value});});},style:inpS})),
           h('div',null,h('label',{style:lblS},'IE Total $'),h('input',{type:'number',value:form.ie_total,onChange:function(e){setForm(function(f){return Object.assign({},f,{ie_total:e.target.value});});},style:inpS})),
           h('div',null,h('label',{style:lblS},'Total factura $'),h('input',{type:'number',value:form.total,onChange:function(e){setForm(function(f){return Object.assign({},f,{total:e.target.value});});},style:inpS}))
+        ),
+        // Recálculo combustible
+        tieneComb&&formNetoNum>0&&h('div',{style:{background:'#FEF3C7',border:'2px solid #FDE68A',borderRadius:8,padding:'14px 16px',marginBottom:10}},
+          h('div',{style:{fontSize:13,fontWeight:700,color:'#92400E',marginBottom:8}},'⛽ Recálculo de Combustible'),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:16,textAlign:'center'}},
+            h('div',null,
+              h('div',{style:{fontSize:9,color:'#78350F',textTransform:'uppercase',fontWeight:600}},'Litros totales'),
+              h('div',{style:{fontSize:22,fontWeight:700,color:'#92400E'}},sumLitros.toFixed(0))
+            ),
+            h('div',null,
+              h('div',{style:{fontSize:9,color:'#78350F',textTransform:'uppercase',fontWeight:600}},'Neto / Litro definitivo'),
+              h('div',{style:{fontSize:22,fontWeight:700,color:'#15803D'}},CLP(Math.round(calcNetoLt)))
+            ),
+            h('div',null,
+              h('div',{style:{fontSize:9,color:'#78350F',textTransform:'uppercase',fontWeight:600}},'IE / Litro'),
+              h('div',{style:{fontSize:22,fontWeight:700,color:'#DC2626'}},formIENum>0&&sumLitros>0?CLP(Math.round(formIENum/sumLitros)):'—')
+            )
+          ),
+          h('div',{style:{fontSize:10,color:'#78350F',marginTop:8,borderTop:'1px solid #FDE68A',paddingTop:6}},
+            'Al crear la factura, el stock de combustible se actualizará de ',
+            h('strong',null,'precio provisorio'),' → ',h('strong',{style:{color:'#15803D'}},CLP(Math.round(calcNetoLt))+'/lt'),
+            ' en todos los estanques afectados.'
+          )
         ),
         h('div',{style:{marginBottom:10}},h('label',{style:lblS},'Observaciones'),h('input',{value:form.observaciones,onChange:function(e){setForm(function(f){return Object.assign({},f,{observaciones:e.target.value});});},style:inpS,placeholder:'Notas opcionales...'}))
       ),
       h('div',{className:'mf'},
         h(Btn,{v:'g',onClick:function(){setShowForm(false);}},null,'Cancelar'),
-        h(Btn,{onClick:guardar},'Crear Factura y Asociar Guías')
+        h(Btn,{onClick:guardar},tieneComb?'Facturar + Recalcular Stock':'Crear Factura y Asociar Guías')
       )
     )
   );
