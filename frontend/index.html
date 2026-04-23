@@ -8403,7 +8403,33 @@ function App(){
           view==='productos'&&h(MasterV,{tok,titulo:'Producto',ep:'productos',pk:'producto_id',Form:ProdForm,importKey:'productos',blank:{codigo:'',nombre:'',descripcion:'',categoria_id:'',subcategoria_id:'',unidad_medida:'UN',stock_minimo:0,stock_maximo:'',costo_referencia:0,unidad_compra:'',factor_conversion:1,activo:true},extra:{cats:m.cats,subcats:m.subcats},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Subcategoria',k:'subcategoria_nombre'},{lbl:'UM',k:'unidad_medida'},{lbl:'Stk min',k:'stock_minimo'},{lbl:'Costo ref.',render:r=>CLP(r.costo_referencia)}]}),
           view==='categorias'&&h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}},
             h('div',null,h('h3',{style:{marginBottom:8,fontWeight:700}},'Categorias'),h(MasterV,{tok,titulo:'Categoria',ep:'categorias',pk:'categoria_id',Form:CatForm,blank:{nombre:'',descripcion:'',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]})),
-            h('div',null,h('h3',{style:{marginBottom:8,fontWeight:700}},'Subcategorias'),h(MasterV,{tok,titulo:'Subcategoria',ep:'subcategorias',pk:'subcategoria_id',Form:SubcatForm,blank:{nombre:'',categoria_id:'',activo:true},extra:{cats:m.cats},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Categoria',render:r=>(m.cats.find(c=>c.categoria_id===r.categoria_id)||{}).nombre||'—'}]}))
+            h('div',null,
+              h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+                h('h3',{style:{fontWeight:700}},'Subcategorias'),
+                h('label',{style:{display:'inline-block'}},
+                  h(Btn,{v:'g',sm:true,onClick:function(){document.getElementById('import-subcats').click();}},null,'📥 Importar JSON'),
+                  h('input',{id:'import-subcats',type:'file',accept:'.json',style:{display:'none'},onChange:function(e){
+                    var f=e.target.files[0];if(!f)return;
+                    var catId=prompt('Ingrese el ID de la categoría para asignar las subcategorías.\n\nCategorías:\n'+(m.cats||[]).map(function(c){return c.categoria_id+' = '+c.nombre;}).join('\n'));
+                    if(!catId)return;
+                    var reader=new FileReader();
+                    reader.onload=function(ev){
+                      try{
+                        var data=JSON.parse(ev.target.result);
+                        if(!Array.isArray(data))throw new Error('Debe ser un array JSON');
+                        if(!confirm('¿Importar '+data.length+' subcategorías en categoría '+catId+'?'))return;
+                        api('/subcategorias/import','POST',{categoria_id:parseInt(catId),items:data},tok).then(function(r){
+                          alert('✅ Creadas: '+r.creadas+'\n🔄 Ya existían: '+r.existentes+'\nTotal: '+r.total);
+                          location.reload();
+                        }).catch(function(err){alert('Error: '+err.message);});
+                      }catch(err){alert('Archivo inválido: '+err.message);}
+                      e.target.value='';
+                    };reader.readAsText(f);
+                  }})
+                )
+              ),
+              h(MasterV,{tok,titulo:'Subcategoria',ep:'subcategorias',pk:'subcategoria_id',Form:SubcatForm,blank:{nombre:'',categoria_id:'',activo:true},extra:{cats:m.cats},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Categoria',render:r=>(m.cats.find(c=>c.categoria_id===r.categoria_id)||{}).nombre||'—'}]})
+            )
           ),
           view==='faenas'&&h(MasterV,{tok,titulo:'Faena',ep:'faenas',pk:'faena_id',Form:FaenaForm,blank:{codigo:'',nombre:'',descripcion:'',empresa_id:'',activo:true},extra:{empresas:m.empresas},importKey:'faenas',cols:[{lbl:'Empresa',render:function(r){return (m.empresas.find(function(e){return e.empresa_id===parseInt(r.empresa_id||0);})||{}).razon_social||'—';}},{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
           view==='equipos'&&h(MasterV,{tok,titulo:'Cargo / Centro de costo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',importBulkJSON:'/api/import/equipos',blank:{empresa_id:'',tipo_cargo:'maquinaria',codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',modelo_id:'',anio:'',placa_patente:'',chasis:'',contacto_terreno:'',horas_productivas_dia:'12',patente_serie:'',activo:true},extra:{faenas:m.faenas,empresas:m.empresas,modelos:m.modelos||[]},cols:[{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Tipo',render:function(r){var tc=r.tipo_cargo||'maquinaria';var colors={maquinaria:'b',camioneta:'teal',camion:'p',camion_estanque:'y',camion_cama_baja:'y',camion_mantencion:'p',furgon:'teal',estanque:'y',faena:'g',taller:'gray',equipos_taller:'gray',administracion:'b'};return h(Bg,{c:colors[tc]||'gray'},tc.replace(/_/g,' '));}},{lbl:'Código',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Modelo',render:function(r){return r.modelo_marca?(r.modelo_marca+' '+r.modelo_nombre):(r.marca?(r.marca+' '+(r.modelo||'')):'—');}},{lbl:'Faena',k:'faena_nombre'}]}),
