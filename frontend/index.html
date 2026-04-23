@@ -2187,22 +2187,32 @@ function OCGuiasView(p){
   var sumTotal=selOcs.reduce(function(s,r){return s+(parseFloat(r.total)||0);},0);
   var sumLitros=selOcs.reduce(function(s,r){return s+(parseFloat(r.litros_comb)||0);},0);
 
-  // Agrupar combustibles por tipo
-  var combPorTipo={};
+  // Agrupar combustibles por CATEGORÍA (diesel/gasolina)
+  var combPorCat={};
   selOcs.forEach(function(oc){
     var lineas=oc.comb_lineas||[];
     if(!Array.isArray(lineas))return;
     lineas.forEach(function(l){
-      if(!l.tipo_id)return;
-      var k=String(l.tipo_id);
-      if(!combPorTipo[k])combPorTipo[k]={tipo_id:l.tipo_id,tipo_nombre:l.tipo_nombre||('Tipo '+l.tipo_id),litros:0,precio_prov:0,count:0};
-      combPorTipo[k].litros+=parseFloat(l.litros)||0;
-      combPorTipo[k].precio_prov+=(parseFloat(l.precio_unitario)||0)*(parseFloat(l.litros)||0);
-      combPorTipo[k].count++;
+      var cat=l.categoria;
+      if(!cat||cat==='otro')return;
+      if(!combPorCat[cat])combPorCat[cat]={categoria:cat,litros:0,precio_prov:0,count:0,sources:{stock:0,directo:0},tipos_nombres:{}};
+      var lts=parseFloat(l.litros)||0;
+      combPorCat[cat].litros+=lts;
+      combPorCat[cat].precio_prov+=(parseFloat(l.precio_unitario)||0)*lts;
+      combPorCat[cat].count++;
+      if(l.source==='stock')combPorCat[cat].sources.stock++;
+      else combPorCat[cat].sources.directo++;
+      if(l.tipo_nombre)combPorCat[cat].tipos_nombres[l.tipo_nombre]=true;
+      else if(l.descripcion)combPorCat[cat].tipos_nombres[l.descripcion.substring(0,20)]=true;
     });
   });
-  var tiposComb=Object.values(combPorTipo).map(function(t){
-    return Object.assign({},t,{precio_prov_prom:t.litros>0?t.precio_prov/t.litros:0});
+  var tiposComb=Object.values(combPorCat).map(function(t){
+    return Object.assign({},t,{
+      precio_prov_prom:t.litros>0?t.precio_prov/t.litros:0,
+      tipo_id:t.categoria, // usamos categoría como ID
+      tipo_nombre:t.categoria==='diesel'?'Diesel / Petróleo':'Gasolina / Bencina',
+      nombres_str:Object.keys(t.tipos_nombres).join(', ')
+    });
   }).sort(function(a,b){return b.litros-a.litros;});
   var tieneComb=tiposComb.length>0;
 
@@ -2226,14 +2236,13 @@ function OCGuiasView(p){
   }
   function guardar(){
     if(!form.numero_factura){setMsg('Ingrese N° de factura');return;}
-    // Construir array de ajustes: calcular per-lt desde totales
     var ajustes=tiposComb.map(function(t){
       var aj=ajustesComb[String(t.tipo_id)]||{};
       var totalN=parseFloat(aj.total_neto)||0;
       var totalIE=parseFloat(aj.total_ie)||0;
       var netoLt=t.litros>0?totalN/t.litros:0;
       var ieLt=t.litros>0?totalIE/t.litros:0;
-      return{tipo_id:t.tipo_id,neto_lt:netoLt,ie_lt:ieLt};
+      return{categoria:t.categoria,neto_lt:netoLt,ie_lt:ieLt};
     }).filter(function(a){return a.neto_lt>0;});
     var body=Object.assign({},form,{proveedor_id:parseInt(selProv),oc_ids:selIds,combustible_ajustes:ajustes});
     api('/oc-guias/facturar','POST',body,p.tok).then(function(r){
@@ -2355,7 +2364,7 @@ function OCGuiasView(p){
         h('div',{style:{background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:6,padding:'10px 14px',marginBottom:12}},
           h('div',{style:{fontSize:12,fontWeight:600,color:'#166534'}},selIds.length+' guía(s) seleccionadas'),
           h('div',{style:{fontSize:11,color:'#15803D'}},'Total acumulado guías: '+CLP(Math.round(sumTotal))),
-          tieneComb&&h('div',{style:{fontSize:11,color:'#92400E',marginTop:2}},'⛽ '+tiposComb.map(function(t){return t.tipo_nombre+' '+t.litros.toFixed(0)+' lts';}).join(' | ')+' — se recalcularán al facturar')
+          tieneComb&&h('div',{style:{fontSize:11,color:'#92400E',marginTop:2}},'⛽ '+tiposComb.map(function(t){return t.tipo_nombre+': '+t.litros.toFixed(0)+' lts';}).join(' | '))
         ),
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}},
           h('div',null,h('label',{style:lblS},'N° Factura *'),h('input',{value:form.numero_factura,onChange:function(e){setForm(function(f){return Object.assign({},f,{numero_factura:e.target.value});});},style:inpS,placeholder:'Ej: 48545794'})),
@@ -2393,11 +2402,15 @@ function OCGuiasView(p){
               var totalIE=parseFloat(aj.total_ie)||0;
               var netoLt=t.litros>0?totalNeto/t.litros:0;
               var ieLt=t.litros>0?totalIE/t.litros:0;
-              var esDiesel=(t.tipo_nombre||'').toLowerCase().indexOf('diesel')>=0||(t.tipo_nombre||'').toLowerCase().indexOf('petr')>=0;
+              var esDiesel=t.categoria==='diesel';
               return h('tr',{key:k},
                 h('td',{style:{padding:'6px 8px',fontWeight:600,color:esDiesel?'#92400E':'#1D4ED8'}},
                   esDiesel?'🚛 ':'⛽ ',t.tipo_nombre,
-                  h('div',{style:{fontSize:9,color:'#64748B',fontWeight:400}},t.count+' mov.')
+                  h('div',{style:{fontSize:9,color:'#64748B',fontWeight:400,marginTop:2}},
+                    t.count+' línea(s)',
+                    t.sources.stock>0&&h('span',{style:{background:'#EFF6FF',color:'#1D4ED8',padding:'1px 4px',borderRadius:3,marginLeft:4,fontSize:8,fontWeight:600}},t.sources.stock+' stock'),
+                    t.sources.directo>0&&h('span',{style:{background:'#F0FDF4',color:'#166534',padding:'1px 4px',borderRadius:3,marginLeft:4,fontSize:8,fontWeight:600}},t.sources.directo+' directo')
+                  )
                 ),
                 h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',fontWeight:600}},t.litros.toFixed(0)+' lts'),
                 h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',color:'#94A3B8',fontSize:10}},CLP(Math.round(t.precio_prov_prom))+'/lt'),
