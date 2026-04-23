@@ -677,6 +677,7 @@ function CalcCombustible(p){
   const[modoImpDir,setModoImpDir]=useState('total');
   const[litros,setLitros]=useState('');
   const[totalGuia,setTotalGuia]=useState('');
+  const[incluyeIVA,setIncluyeIVA]=useState(true);
 
   function fetchUTM(){
     setUtmLoading(true);
@@ -696,8 +697,8 @@ function CalcCombustible(p){
     ? utmNum*tasa/1000*litrosNum
     : (modoImpDir==='por_litro'?impEspDirNum*litrosNum:impEspDirNum);
   var baseIVA=totalNum-impEspTotal;
-  var neto=baseIVA/1.19;
-  var iva=neto*0.19;
+  var neto=incluyeIVA?baseIVA/1.19:baseIVA;
+  var iva=incluyeIVA?neto*0.19:baseIVA*0.19;
   var netoPorLitro=litrosNum>0?neto/litrosNum:0;
   var ok=litrosNum>0&&totalNum>0&&baseIVA>0&&(modoCalc==='utm'?utmNum>0:impEspDirNum>0);
 
@@ -719,7 +720,13 @@ function CalcCombustible(p){
       // Inputs comunes
       h('div',{className:'g2',style:{marginBottom:10}},
         h(FI,{k:'litros',l:'Litros (guía)',type:'number',item:{litros},onChange:function(v){setLitros(v.litros);},ph:'Ej: 2899'}),
-        h(FI,{k:'totalGuia',l:'Total guía ($)',type:'number',item:{totalGuia},onChange:function(v){setTotalGuia(v.totalGuia);},ph:'Ej: 4.380.389'})
+        h(FI,{k:'totalGuia',l:'Total documento ($)',type:'number',item:{totalGuia},onChange:function(v){setTotalGuia(v.totalGuia);},ph:'Ej: 2.266.500'})
+      ),
+      // Toggle IVA
+      h('div',{style:{display:'flex',gap:8,marginBottom:10,alignItems:'center',padding:'6px 10px',background:incluyeIVA?'#FEF3C7':'#EFF6FF',borderRadius:6,border:'1px solid '+(incluyeIVA?'#FDE68A':'#BFDBFE')}},
+        h('span',{style:{fontSize:11,fontWeight:600,color:'#475569'}},'El total ingresado:'),
+        h('button',{onClick:function(){setIncluyeIVA(true);},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(incluyeIVA?'#F59E0B':'#CBD5E1'),background:incluyeIVA?'#FEF3C7':'transparent',fontWeight:incluyeIVA?700:400,fontSize:11,cursor:'pointer',color:incluyeIVA?'#92400E':'#64748B'}},'Incluye IVA + IE (guía/factura Copec)'),
+        h('button',{onClick:function(){setIncluyeIVA(false);},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(incluyeIVA?'#CBD5E1':'#3B82F6'),background:incluyeIVA?'transparent':'#EFF6FF',fontWeight:incluyeIVA?400:700,fontSize:11,cursor:'pointer',color:incluyeIVA?'#64748B':'#1D4ED8'}},'Solo neto + IE (sin IVA)')
       ),
       // Modo-specific
       modoCalc==='utm'?h('div',{style:{marginBottom:10}},
@@ -764,11 +771,13 @@ function CalcCombustible(p){
         ok?h('div',null,
           h('div',{style:{marginBottom:8}},
             h('div',{style:{fontSize:11,fontWeight:600,color:'#64748B',marginBottom:4,textTransform:'uppercase',letterSpacing:'.5px'}},'Desglose'),
-            h('div',{style:rowS},h('span',{style:{color:'#64748B'}},'Total guía'),h('span',{style:{fontWeight:600}},CLP(Math.round(totalNum)))),
+            h('div',{style:rowS},h('span',{style:{color:'#64748B'}},'Total documento'),h('span',{style:{fontWeight:600}},CLP(Math.round(totalNum)))),
             h('div',{style:rowS},h('span',{style:{color:'#64748B'}},'− Imp. específico'),h('span',{style:{fontWeight:600,color:'#DC2626'}},'-'+CLP(Math.round(impEspTotal)))),
-            h('div',{style:rowS},h('span',{style:{color:'#64748B'}},'= Base IVA'),h('span',{style:{fontWeight:600}},CLP(Math.round(baseIVA)))),
-            h('div',{style:rowS},h('span',{style:{color:'#64748B'}},'− IVA 19%'),h('span',{style:{fontWeight:600,color:'#DC2626'}},'-'+CLP(Math.round(iva)))),
-            h('div',{style:{display:'flex',justifyContent:'space-between',padding:'5px 0',fontSize:13}},h('span',{style:{color:'#64748B'}},'= Neto total'),h('span',{style:{fontWeight:600}},CLP(Math.round(neto))))
+            incluyeIVA?h('div',{style:rowS},h('span',{style:{color:'#64748B'}},'= Base IVA'),h('span',{style:{fontWeight:600}},CLP(Math.round(baseIVA)))):null,
+            incluyeIVA?h('div',{style:rowS},h('span',{style:{color:'#64748B'}},'÷ 1.19'),h('span',{style:{fontWeight:600}},'')):null,
+            h('div',{style:{display:'flex',justifyContent:'space-between',padding:'5px 0',fontSize:13,borderBottom:'1px solid #F1F5F9'}},h('span',{style:{color:'#166534',fontWeight:600}},'= Neto total'),h('span',{style:{fontWeight:700,color:'#166534'}},CLP(Math.round(neto)))),
+            h('div',{style:rowS},h('span',{style:{color:'#64748B'}},incluyeIVA?'IVA (incluido en total)':'IVA 19% (referencial)'),h('span',{style:{fontWeight:600}},CLP(Math.round(iva)))),
+            !incluyeIVA?h('div',{style:{fontSize:10,color:'#06B6D4',marginTop:4,fontStyle:'italic'}},'Guía sin IVA → Neto = Total − IE directamente'):null
           ),
           h('div',{style:{background:'#DCFCE7',borderRadius:6,padding:'10px 14px',textAlign:'center'}},
             h('div',{style:{fontSize:11,color:'#166534'}},'PRECIO NETO POR LITRO'),
@@ -780,7 +789,7 @@ function CalcCombustible(p){
           )
         ):h('div',{style:{color:'#94A3B8',fontSize:13,textAlign:'center'}},'Complete los campos para ver el resultado')
       ),
-      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Modo UTM: Imp. esp. = UTM × tasa / 1000 × lts. Modo directo: use el valor de la factura. Neto = (Total − Imp. esp.) ÷ 1.19 ÷ lts.')
+      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},incluyeIVA?'Factura: Neto = (Total − Imp. esp.) ÷ 1.19':'Guía: Neto = Total − Imp. esp. (sin IVA en el documento)')
     )
   );
 }
@@ -2663,7 +2672,8 @@ function ImportarDesdeFacto(p){
   );
 }
 
-function CalcCombustibleInline(){
+function CalcCombustibleInline(props){
+  var onUsar=props.onUsar;
   var TASAS={diesel:1.5,gasolina:6.0};
   const[tipoComb,setTipoComb]=useState('diesel');
   const[modoCalc,setModoCalc]=useState('utm'); // 'utm' | 'directo'
@@ -2676,6 +2686,7 @@ function CalcCombustibleInline(){
   // Comunes
   const[litros,setLitros]=useState('');
   const[totalGuia,setTotalGuia]=useState('');
+  const[incluyeIVA,setIncluyeIVA]=useState(true); // true=guía/factura Copec (incluye IVA+IE), false=doc sin IVA
 
   function fetchUTM(){
     setUtmLoading(true);
@@ -2698,8 +2709,8 @@ function CalcCombustibleInline(){
     : (modoImpDir==='por_litro'?impEspDirNum*litrosNum:impEspDirNum);
 
   var baseIVA=totalNum-impEspTotal;
-  var neto=baseIVA/1.19;
-  var iva=neto*0.19;
+  var neto=incluyeIVA?baseIVA/1.19:baseIVA;
+  var iva=incluyeIVA?neto*0.19:baseIVA*0.19;
   var netoPorLitro=litrosNum>0?neto/litrosNum:0;
   var ok=litrosNum>0&&totalNum>0&&baseIVA>0&&(modoCalc==='utm'?utmNum>0:impEspDirNum>0);
 
@@ -2724,9 +2735,15 @@ function CalcCombustibleInline(){
         h('input',{type:'number',value:litros,onChange:function(e){setLitros(e.target.value);},style:inpS,placeholder:'Ej: 2899'})
       ),
       h('div',null,
-        h('label',{style:{fontSize:10,fontWeight:600,display:'block',marginBottom:2,color:'#92400E'}},'Total guía ($)'),
-        h('input',{type:'number',value:totalGuia,onChange:function(e){setTotalGuia(e.target.value);},style:inpS,placeholder:'Ej: 4.380.389'})
+        h('label',{style:{fontSize:10,fontWeight:600,display:'block',marginBottom:2,color:'#92400E'}},'Total documento ($)'),
+        h('input',{type:'number',value:totalGuia,onChange:function(e){setTotalGuia(e.target.value);},style:inpS,placeholder:'Ej: 2.266.500'})
       )
+    ),
+    // Toggle IVA
+    h('div',{style:{display:'flex',gap:8,marginBottom:8,alignItems:'center',padding:'4px 6px',background:incluyeIVA?'#FEF3C7':'#EFF6FF',borderRadius:5,border:'1px solid '+(incluyeIVA?'#FDE68A':'#BFDBFE')}},
+      h('span',{style:{fontSize:10,fontWeight:600,color:'#64748B'}},'El total ingresado:'),
+      h('button',{onClick:function(){setIncluyeIVA(true);},style:{padding:'3px 8px',borderRadius:4,border:'1px solid '+(incluyeIVA?'#F59E0B':'#CBD5E1'),background:incluyeIVA?'#FEF3C7':'transparent',fontWeight:incluyeIVA?700:400,fontSize:10,cursor:'pointer',color:incluyeIVA?'#92400E':'#64748B'}},'Incluye IVA + IE (guía/factura Copec)'),
+      h('button',{onClick:function(){setIncluyeIVA(false);},style:{padding:'3px 8px',borderRadius:4,border:'1px solid '+(incluyeIVA?'#CBD5E1':'#3B82F6'),background:incluyeIVA?'transparent':'#EFF6FF',fontWeight:incluyeIVA?400:700,fontSize:10,cursor:'pointer',color:incluyeIVA?'#64748B':'#1D4ED8'}},'Solo neto + IE (sin IVA)')
     ),
     // Modo-specific inputs
     modoCalc==='utm'?h('div',null,
@@ -2742,7 +2759,7 @@ function CalcCombustibleInline(){
           h('div',null,
             h('div',{style:{fontSize:9,color:'#991B1B',textTransform:'uppercase',fontWeight:600,letterSpacing:1}},'Imp. Específico Total'),
             h('div',{style:{fontSize:24,fontWeight:700,color:'#DC2626'}},CLP(Math.round(impEspTotal))),
-            litrosNum>0&&h('div',{style:{fontSize:10,color:'#991B1B'}},'$'+Math.round(impEspTotal/litrosNum)+'/lt')
+            litrosNum>0&&h('div',{style:{fontSize:10,color:'#991B1B'}},'$'+(impEspTotal/litrosNum).toFixed(2)+'/lt')
           ),
           h('div',null,
             h('div',{style:{fontSize:9,color:'#92400E',textTransform:'uppercase',fontWeight:600,letterSpacing:1}},'IVA 19%'),
@@ -2755,14 +2772,40 @@ function CalcCombustibleInline(){
         ),
         h('div',{style:{borderTop:'1px solid #FECACA',marginTop:10,paddingTop:10,display:'flex',justifyContent:'space-between',alignItems:'center'}},
           h('div',{style:{fontSize:10,color:'#78350F',lineHeight:1.6}},
-            'Total guía: '+CLP(totalNum)+' − IE: '+CLP(Math.round(impEspTotal))+' = Base IVA: '+CLP(Math.round(baseIVA)),
+            'Total: '+CLP(totalNum)+' − IE: '+CLP(Math.round(impEspTotal))+' = '+(incluyeIVA?'Base IVA':'Neto')+': '+CLP(Math.round(baseIVA)),
+            incluyeIVA?h('span',null,h('br'),'Base IVA: '+CLP(Math.round(baseIVA))+' / 1.19 = Neto: '+CLP(Math.round(neto))):null,
             h('br'),
-            'Base IVA: '+CLP(Math.round(baseIVA))+' / 1.19 = Neto: '+CLP(Math.round(neto))
+            incluyeIVA?null:h('span',{style:{fontSize:9,color:'#06B6D4'}},'(Guía sin IVA → Neto = Total − IE directamente)'),
+            h('br'),
+            litrosNum>0?h('span',{style:{fontWeight:600}},'Neto/lt: '+CLP(Math.round(netoPorLitro))):null
           ),
           litrosNum>0&&h('div',{style:{textAlign:'right'}},
             h('div',{style:{fontSize:9,color:'#166534',textTransform:'uppercase',fontWeight:600}},'Precio neto/litro'),
             h('div',{style:{fontSize:26,fontWeight:700,color:'#15803D'}},CLP(Math.round(netoPorLitro)))
           )
+        ),
+        // Verificación del total reconstruido
+        litrosNum>0&&h('div',{style:{borderTop:'1px solid #FECACA',marginTop:8,paddingTop:8}},
+          (function(){
+            var netoRedondeado=Math.round(netoPorLitro)*litrosNum;
+            var totalRedondeado=netoRedondeado+Math.round(netoRedondeado*0.19)+Math.round(impEspTotal);
+            var diff=totalRedondeado-totalNum;
+            var netoDecimal=Math.round(neto/litrosNum*10000)/10000;
+            var netoDecTotal=Math.round(netoDecimal*litrosNum);
+            var totalDecimal=netoDecTotal+Math.round(netoDecTotal*0.19)+Math.round(impEspTotal);
+            var diffDec=totalDecimal-totalNum;
+            return h('div',{style:{fontSize:10,lineHeight:1.6}},
+              diff!==0?h('div',{style:{color:'#DC2626'}},'⚠ Con $'+CLP(Math.round(netoPorLitro))+'/lt (entero): total reconstruido = '+CLP(totalRedondeado)+' → diferencia '+CLP(Math.abs(diff))):null,
+              h('div',{style:{color:'#15803D',fontWeight:600}},'✓ Con $'+netoDecimal.toFixed(4)+'/lt: total = '+CLP(totalDecimal)+(diffDec!==0?' (dif: '+CLP(Math.abs(diffDec))+')':' → cuadra exacto'))
+            );
+          })()
+        ),
+        // Botón Usar en OC
+        onUsar&&litrosNum>0&&h('div',{style:{borderTop:'1px solid #FECACA',marginTop:8,paddingTop:8,textAlign:'center'}},
+          h('button',{onClick:function(){
+            var npl4=Math.round(neto/litrosNum*10000)/10000;
+            onUsar({litros:litrosNum,netoPorLitro:npl4,ie:Math.round(impEspTotal),neto:Math.round(neto),iva:Math.round(iva),tipoComb:tipoComb==='diesel'?'Diesel':'Gasolina'});
+          },style:{padding:'8px 20px',background:'#15803D',color:'#fff',border:'none',borderRadius:6,fontWeight:700,fontSize:12,cursor:'pointer'}},'✓ Usar en OC — '+litrosNum+' lts × $'+(neto/litrosNum).toFixed(4)+'/lt + IE $'+CLP(Math.round(impEspTotal)))
         )
       ),
       impEspTotal<=0&&h('div',{style:{fontSize:11,color:'#92400E',fontStyle:'italic',marginTop:6}},'Complete los campos para calcular')
@@ -2942,7 +2985,15 @@ function OCFormModal(p){
           setShowOCR(false);
         },onMsg:function(m){setOcrMsg(m);}}),
       showCalcOC&&h('div',{style:{background:'#FFFBEB',border:'2px solid #FDE68A',borderRadius:8,padding:'16px',marginBottom:12}},
-        h(CalcCombustibleInline,{})
+        h(CalcCombustibleInline,{onUsar:function(data){
+          sf('impuesto_adicional',String(data.ie));
+          setForm(function(f){
+            var lineas=f.lineas.slice();
+            if(lineas.length===0)lineas=[{descripcion:'',prod_id:'',subcat_id:'',faena_id:'',eq_id:'',cantidad:'1',precio_unitario:'0',ingresa_bodega:false,bodega_destino_id:'',exenta:false}];
+            lineas[0]=Object.assign({},lineas[0],{descripcion:lineas[0].descripcion||data.tipoComb,cantidad:String(data.litros),precio_unitario:String(data.netoPorLitro)});
+            return Object.assign({},f,{lineas:lineas});
+          });
+        }})
       ),
       h('div',{className:'mf'},h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),h(Btn,{onClick:save,disabled:saving},saving?'Guardando...':'Guardar OC'))
     )
