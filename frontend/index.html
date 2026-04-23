@@ -3196,6 +3196,7 @@ function OCFormModal(p){
   const blank={empresa_id:'',proveedor_id:'',fecha_emision:TODAY,solicitante:'',retira:'',condicion_id:'',impuesto_adicional:'0',observaciones:'',lineas:[{descripcion:'',prod_id:'',subcat_id:'',faena_id:'',eq_id:'',cantidad:'1',precio_unitario:'0',ingresa_bodega:false,bodega_destino_id:'',exenta:false}]};
   const[form,setForm]=useState(isNew?blank:{empresa_id:str(p.oc.empresa_id||''),proveedor_id:str(p.oc.proveedor_id||''),fecha_emision:p.oc.fecha_emision||TODAY,solicitante:p.oc.solicitante||'',retira:p.oc.retira||'',condicion_id:str(p.oc.condicion_id||''),impuesto_adicional:str(p.oc.impuesto_adicional||0),observaciones:p.oc.observaciones||'',lineas:(p.oc.lineas||[]).map(l=>({descripcion:l.descripcion||'',prod_id:str(l.producto_id||''),subcat_id:str(l.subcategoria_id||''),faena_id:str(l.faena_id||''),eq_id:str(l.equipo_id||''),cantidad:str(l.cantidad||1),precio_unitario:str(l.precio_unitario||0),ingresa_bodega:!!l.ingresa_bodega,bodega_destino_id:str(l.bodega_destino_id||''),exenta:!!l.exenta}))});
   const[err,setErr]=useState('');const[saving,setSaving]=useState(false);const[showCalcOC,setShowCalcOC]=useState(false);const[showOCR,setShowOCR]=useState(false);const[ocrLoading,setOcrLoading]=useState(false);const[ocrMsg,setOcrMsg]=useState('');
+  const[preciosIVA,setPreciosIVA]=useState(false);
   const[importProvData,setImportProvData]=useState(null);
   const[extraProvs,setExtraProvs]=useState([]);
   var allProvs=provs.concat(extraProvs);
@@ -3221,7 +3222,7 @@ function OCFormModal(p){
   function remL(i){if(form.lineas.length<=1)return;setForm(function(f){return Object.assign({},f,{lineas:f.lineas.filter(function(_,j){return j!==i;})});});}
   function updL(i,k,v){setForm(function(f){return Object.assign({},f,{lineas:f.lineas.map(function(l,j){return j===i?Object.assign({},l,{[k]:v}):l;})});});}
   function pickProd(i,pid){const pr=prods.find(q=>String(q.producto_id)===pid);setForm(function(f){return Object.assign({},f,{lineas:f.lineas.map(function(l,j){return j===i?Object.assign({},l,{prod_id:pid,precio_unitario:str(pr&&pr.costo_referencia||0),subcat_id:str(pr&&pr.subcategoria_id||'')}):l;})});});}
-  const netoAfecto=form.lineas.filter(function(l){return !l.exenta;}).reduce(function(s,l){return s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0);},0);
+  const netoAfecto=form.lineas.filter(function(l){return !l.exenta;}).reduce(function(s,l){var raw=(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0);return s+(preciosIVA?raw/1.19:raw);},0);
   const netoExento=form.lineas.filter(function(l){return !!l.exenta;}).reduce(function(s,l){return s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0);},0);
   const neto=netoAfecto+netoExento;
   const iva=Math.round(netoAfecto*0.19);
@@ -3232,7 +3233,7 @@ function OCFormModal(p){
     if(!form.proveedor_id||!form.fecha_emision){setErr('Proveedor y fecha son obligatorios');return;}
     if(!form.lineas.length){setErr('Debe ingresar al menos una linea');return;}
     setSaving(true);
-    const body={empresa_id:form.empresa_id||null,proveedor_id:parseInt(form.proveedor_id),fecha_emision:form.fecha_emision,solicitante:form.solicitante||null,retira:form.retira||null,condicion_id:form.condicion_id||null,impuesto_adicional:imp,observaciones:form.observaciones||null,lineas:form.lineas.map(function(l){return{descripcion:l.descripcion||null,producto_id:l.prod_id||null,subcategoria_id:l.subcat_id||null,faena_id:l.faena_id||null,equipo_id:l.eq_id||null,cantidad:parseFloat(l.cantidad)||0,precio_unitario:parseFloat(l.precio_unitario)||0,ingresa_bodega:l.ingresa_bodega||false,bodega_destino_id:l.bodega_destino_id||null,exenta:!!l.exenta};})};
+    const body={empresa_id:form.empresa_id||null,proveedor_id:parseInt(form.proveedor_id),fecha_emision:form.fecha_emision,solicitante:form.solicitante||null,retira:form.retira||null,condicion_id:form.condicion_id||null,impuesto_adicional:imp,observaciones:form.observaciones||null,lineas:form.lineas.map(function(l){var pu=parseFloat(l.precio_unitario)||0;if(preciosIVA&&!l.exenta)pu=pu/1.19;return{descripcion:l.descripcion||null,producto_id:l.prod_id||null,subcategoria_id:l.subcat_id||null,faena_id:l.faena_id||null,equipo_id:l.eq_id||null,cantidad:parseFloat(l.cantidad)||0,precio_unitario:pu,ingresa_bodega:l.ingresa_bodega||false,bodega_destino_id:l.bodega_destino_id||null,exenta:!!l.exenta};})};
     const method=isNew?'POST':'PUT';
     const path=isNew?'/ordenes-compra':'/ordenes-compra/'+p.oc.oc_id;
     api(path,method,body,p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
@@ -3262,14 +3263,20 @@ function OCFormModal(p){
           h(FR,{label:'Observaciones',style:{gridColumn:'span 2'}},h(Inp,{value:form.observaciones,onChange:v=>sf('observaciones',v),ph:'Notas internas...'}))
         ),
         h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',margin:'14px 0 6px'}},
-          h('strong',{style:{fontSize:13}},'Detalle de la Orden'),
+          h('div',{style:{display:'flex',alignItems:'center',gap:12}},
+            h('strong',{style:{fontSize:13}},'Detalle de la Orden'),
+            h('label',{style:{display:'flex',alignItems:'center',gap:5,cursor:'pointer',padding:'4px 10px',borderRadius:5,border:'1px solid '+(preciosIVA?'#F59E0B':'#CBD5E1'),background:preciosIVA?'#FEF3C7':'transparent',transition:'all .2s'}},
+              h('input',{type:'checkbox',checked:preciosIVA,onChange:function(e){setPreciosIVA(e.target.checked);},style:{cursor:'pointer'}}),
+              h('span',{style:{fontSize:11,fontWeight:600,color:preciosIVA?'#92400E':'#64748B'}},'Precios con IVA incluido')
+            )
+          ),
           h(Btn,{v:'g',sm:true,onClick:addL},'+ Agregar linea')
         ),
         h('div',{style:{overflowX:'auto'}},
           h('table',{style:{minWidth:900}},
             h('thead',null,h('tr',null,
               h('th',{style:{width:'22%'}},'Detalle libre'),h('th',{style:{width:'14%'}},'Tipo de Producto'),h('th',{style:{width:'10%'}},'Faena'),h('th',{style:{width:'10%'}},'Equipo'),
-              h('th',{style:{width:'8%'}},'Cant.'),h('th',{style:{width:'10%'}},'Precio unit.'),h('th',{style:{width:'5%'},className:'tc'},'Exenta'),h('th',{className:'tr',style:{width:'9%'}},'Total'),
+              h('th',{style:{width:'8%'}},'Cant.'),h('th',{style:{width:'10%'}},preciosIVA?'P. c/IVA':'Precio unit.'),h('th',{style:{width:'5%'},className:'tc'},'Exenta'),h('th',{className:'tr',style:{width:'9%'}},preciosIVA?'Neto':'Total'),
               h('th',{style:{width:'5%'},className:'tc'},'A bodega'),h('th',{style:{width:'4%'}})
             )),
             h('tbody',null,...form.lineas.map(function(l,i){
@@ -3283,7 +3290,11 @@ function OCFormModal(p){
                 h('td',null,h('input',{type:'number',min:.001,step:'any',value:l.cantidad,onChange:function(e){updL(i,'cantidad',e.target.value);},style:{width:'100%',padding:'4px 5px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:11}})),
                 h('td',null,h('input',{type:'number',min:0,step:'any',value:l.precio_unitario,onChange:function(e){updL(i,'precio_unitario',e.target.value);},style:{width:'100%',padding:'4px 5px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:11}})),
                 h('td',{className:'tc'},h('input',{type:'checkbox',checked:!!l.exenta,onChange:function(e){updL(i,'exenta',e.target.checked);},style:{cursor:'pointer'},title:'Marcar si esta línea es exenta de IVA'})),
-                h('td',{className:'tr mono',style:{fontSize:11,color:l.exenta?'#06B6D4':'inherit'}},CLP((parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0)),l.exenta?h('span',{style:{fontSize:8,display:'block',color:'#06B6D4'}},'exenta'):null),
+                h('td',{className:'tr mono',style:{fontSize:11,color:l.exenta?'#06B6D4':'inherit'}},
+                  (function(){var raw=(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0);var net=preciosIVA&&!l.exenta?raw/1.19:raw;return CLP(Math.round(net));})(),
+                  l.exenta?h('span',{style:{fontSize:8,display:'block',color:'#06B6D4'}},'exenta'):null,
+                  preciosIVA&&!l.exenta&&parseFloat(l.precio_unitario)>0?h('span',{style:{fontSize:8,display:'block',color:'#F59E0B'}},'÷1.19'):null
+                ),
                 h('td',{className:'tc'},h('input',{type:'checkbox',checked:!!l.ingresa_bodega,onChange:function(e){updL(i,'ingresa_bodega',e.target.checked);},style:{cursor:'pointer'}})),
                 h('td',{className:'tc'},form.lineas.length>1&&h('button',{onClick:function(){remL(i);},style:{background:'none',border:'none',cursor:'pointer',color:'#EF4444',fontSize:15}},'×'))
               );
@@ -3291,6 +3302,7 @@ function OCFormModal(p){
           )
         ),
         h('div',{className:'totals-box'},
+          preciosIVA&&h('div',{style:{fontSize:10,color:'#F59E0B',fontWeight:600,marginBottom:4,padding:'4px 8px',background:'#FEF3C7',borderRadius:4}},'⚠ Precios ingresados con IVA — el sistema calcula neto automáticamente (÷ 1.19)'),
           netoExento>0&&h('div',{className:'total-row'},h('span',null,'Neto afecto:'),h('span',{className:'mono'},CLP(netoAfecto))),
           netoExento>0&&h('div',{className:'total-row'},h('span',{style:{color:'#06B6D4'}},h('em',null,'Neto exento:')),h('span',{className:'mono',style:{color:'#06B6D4'}},CLP(netoExento))),
           h('div',{className:'total-row'},h('span',null,'Neto:'),h('span',{className:'mono'},CLP(neto))),
