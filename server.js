@@ -4619,16 +4619,49 @@ app.get('/api/oc-guias/pendientes', auth, async(req,res)=>{
     w.push("(td.nombre ILIKE '%gu_a%' OR td.nombre ILIKE '%despacho%' OR td.nombre ILIKE '%provisori%')");
     if(proveedor_id){v.push(proveedor_id);w.push(`oc.proveedor_id=$${v.length}`);}
     if(empresa_id){v.push(empresa_id);w.push(`oc.empresa_id=$${v.length}`);}
-    const r=await pool.query(`SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,td.nombre AS tipo_doc_nombre,
-      (SELECT COALESCE(SUM(cm.litros),0) FROM comb_movimientos cm WHERE cm.oc_referencia=oc.numero_oc AND cm.estado='ACTIVO') AS litros_comb,
-      (SELECT COALESCE(json_agg(json_build_object('mov_id',cm.mov_id,'tipo_id',cm.tipo_id,'tipo_nombre',ct.nombre,'litros',cm.litros,'precio_unitario',cm.precio_unitario,'estanque_id',cm.estanque_destino_id) ORDER BY ct.nombre),'[]'::json)
-        FROM comb_movimientos cm LEFT JOIN comb_tipos ct ON cm.tipo_id=ct.tipo_id WHERE cm.oc_referencia=oc.numero_oc AND cm.estado='ACTIVO') AS comb_lineas
+    const r=await pool.query(`SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,td.nombre AS tipo_doc_nombre
       FROM ordenes_compra oc
       LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id
       LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
       LEFT JOIN tipos_documento td ON oc.tipo_doc_id=td.tipo_doc_id
       WHERE ${w.join(' AND ')}
       ORDER BY oc.fecha_emision,oc.oc_id`,v);
+    function detectCat(txt){
+      var u=String(txt||'').toUpperCase();
+      if(/DIESEL|PETR[OÓ]LEO|PETROLEO/.test(u))return'diesel';
+      if(/GASOLINA|BENCINA|NAFTA/.test(u))return'gasolina';
+      return null;
+    }
+    for(const row of r.rows){
+      var comb_lineas=[];
+      // 1) Movimientos de stock
+      const movs=await pool.query(`SELECT cm.mov_id,cm.tipo_id,cm.litros,cm.precio_unitario,cm.estanque_destino_id,ct.nombre AS tipo_nombre
+        FROM comb_movimientos cm LEFT JOIN comb_tipos ct ON cm.tipo_id=ct.tipo_id
+        WHERE cm.oc_referencia=$1 AND cm.estado='ACTIVO'`,[row.numero_oc]);
+      movs.rows.forEach(function(m){
+        var cat=detectCat(m.tipo_nombre);
+        if(cat)comb_lineas.push({source:'stock',mov_id:m.mov_id,tipo_id:m.tipo_id,tipo_nombre:m.tipo_nombre,categoria:cat,litros:parseFloat(m.litros)||0,precio_unitario:parseFloat(m.precio_unitario)||0,estanque_id:m.estanque_destino_id});
+      });
+      // 2) Si no hay stock, buscar en líneas OC via subcategoría
+      if(movs.rows.length===0){
+        const dets=await pool.query(`SELECT d.detalle_id,d.descripcion,d.cantidad,d.precio_unitario,
+          sc.nombre AS subcat_nombre
+          FROM ordenes_compra_detalle d
+          LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,(SELECT p.subcategoria_id FROM productos p WHERE p.producto_id=d.producto_id))=sc.subcategoria_id
+          WHERE d.oc_id=$1`,[row.oc_id]);
+        dets.rows.forEach(function(d){
+          var cat=detectCat(d.subcat_nombre)||detectCat(d.descripcion);
+          if(cat){
+            comb_lineas.push({source:'directo',detalle_id:d.detalle_id,tipo_id:null,
+              tipo_nombre:d.subcat_nombre||d.descripcion,
+              descripcion:d.descripcion,categoria:cat,
+              litros:parseFloat(d.cantidad)||0,precio_unitario:parseFloat(d.precio_unitario)||0});
+          }
+        });
+      }
+      row.comb_lineas=comb_lineas;
+      row.litros_comb=comb_lineas.reduce(function(s,l){return s+(parseFloat(l.litros)||0);},0);
+    }
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -4648,7 +4681,7 @@ app.get('/api/oc-guias/proveedores-pendientes', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
-// Crear factura asociando guías + recalcular combustible por tipo
+// Crear factura asociando guías + recalcular combustible por categoría
 app.post('/api/oc-guias/facturar', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
@@ -4663,51 +4696,84 @@ app.post('/api/oc-guias/facturar', auth, async(req,res)=>{
     for(const ocId of oc_ids){
       await client.query('UPDATE ordenes_compra SET factura_guia_id=$1 WHERE oc_id=$2 AND factura_guia_id IS NULL',[fid,ocId]);
     }
-    // Recolectar numero_oc de las OCs
-    const ocNums=[];
-    for(const ocId of oc_ids){
-      const ocR=await client.query('SELECT numero_oc FROM ordenes_compra WHERE oc_id=$1',[ocId]);
-      if(ocR.rows.length)ocNums.push(ocR.rows[0].numero_oc);
-    }
-    // Mapa de ajustes por tipo: {tipo_id: {neto_lt, ie_lt}}
-    const ajustes={};
+    // Mapa de ajustes por categoría: {diesel: {neto_lt, ie_lt}, gasolina: {neto_lt, ie_lt}}
+    const ajustes={diesel:null,gasolina:null};
     if(Array.isArray(combustible_ajustes)){
       combustible_ajustes.forEach(function(a){
-        if(a.tipo_id)ajustes[String(a.tipo_id)]={neto_lt:parseFloat(a.neto_lt)||0,ie_lt:parseFloat(a.ie_lt)||0};
+        if(a.categoria&&a.neto_lt>0)ajustes[a.categoria]={neto_lt:parseFloat(a.neto_lt)||0,ie_lt:parseFloat(a.ie_lt)||0};
       });
     }
-    // Procesar cada movimiento de combustible
+    // Función helper: detectar categoría por string
+    function detectCat(s){
+      var u=String(s||'').toUpperCase();
+      if(u.indexOf('DIESEL')>=0||u.indexOf('PETR')>=0)return'diesel';
+      if(u.indexOf('GASOLINA')>=0||u.indexOf('BENCINA')>=0||u.indexOf('NAFTA')>=0)return'gasolina';
+      return null;
+    }
     let recalculados=0;
-    for(const numOC of ocNums){
-      const movs=await client.query("SELECT * FROM comb_movimientos WHERE oc_referencia=$1 AND estado='ACTIVO'",[numOC]);
+    // Recolectar numero_oc de las OCs
+    const ocs=[];
+    for(const ocId of oc_ids){
+      const ocR=await client.query('SELECT oc_id,numero_oc FROM ordenes_compra WHERE oc_id=$1',[ocId]);
+      if(ocR.rows.length)ocs.push(ocR.rows[0]);
+    }
+    for(const oc of ocs){
+      // 1) Procesar movimientos de stock (comb_movimientos)
+      const movs=await client.query("SELECT cm.*,ct.nombre AS tipo_nombre FROM comb_movimientos cm LEFT JOIN comb_tipos ct ON cm.tipo_id=ct.tipo_id WHERE cm.oc_referencia=$1 AND cm.estado='ACTIVO'",[oc.numero_oc]);
       for(const mv of movs.rows){
-        const aj=ajustes[String(mv.tipo_id)];
-        if(!aj||!aj.neto_lt)continue; // Sin ajuste para este tipo, saltar
-        const oldPU=parseFloat(mv.precio_unitario)||0;
-        const lts=parseFloat(mv.litros)||0;
-        if(lts<=0)continue;
-        const newPU=aj.neto_lt;
-        const delta=(newPU-oldPU)*lts;
-        // Actualizar movimiento
-        await client.query('UPDATE comb_movimientos SET precio_unitario=$1,costo_total=$2,es_provisorio=false,numero_documento=$3 WHERE mov_id=$4',
-          [newPU,lts*newPU,numero_factura,mv.mov_id]);
-        // Ajustar comb_stock
-        if(mv.estanque_destino_id&&mv.tipo_id){
-          const stk=await client.query('SELECT litros_disponibles,costo_promedio FROM comb_stock WHERE estanque_id=$1 AND tipo_id=$2',[mv.estanque_destino_id,mv.tipo_id]);
-          if(stk.rows.length){
-            const curLts=parseFloat(stk.rows[0].litros_disponibles)||0;
-            const curCpp=parseFloat(stk.rows[0].costo_promedio)||0;
-            const curValue=curLts*curCpp;
-            const newValue=curValue+delta;
-            const newCpp=curLts>0?Math.max(0,newValue/curLts):newPU;
-            await client.query('UPDATE comb_stock SET costo_promedio=$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',
-              [newCpp,mv.estanque_destino_id,mv.tipo_id]);
+        const cat=detectCat(mv.tipo_nombre);
+        const aj=cat?ajustes[cat]:null;
+        if(aj){
+          const oldPU=parseFloat(mv.precio_unitario)||0;
+          const lts=parseFloat(mv.litros)||0;
+          if(lts>0){
+            const newPU=aj.neto_lt;
+            const delta=(newPU-oldPU)*lts;
+            await client.query('UPDATE comb_movimientos SET precio_unitario=$1,costo_total=$2,es_provisorio=false,numero_documento=$3 WHERE mov_id=$4',
+              [newPU,lts*newPU,numero_factura,mv.mov_id]);
+            if(mv.estanque_destino_id&&mv.tipo_id){
+              const stk=await client.query('SELECT litros_disponibles,costo_promedio FROM comb_stock WHERE estanque_id=$1 AND tipo_id=$2',[mv.estanque_destino_id,mv.tipo_id]);
+              if(stk.rows.length){
+                const curLts=parseFloat(stk.rows[0].litros_disponibles)||0;
+                const curCpp=parseFloat(stk.rows[0].costo_promedio)||0;
+                const newVal=curLts*curCpp+delta;
+                const newCpp=curLts>0?Math.max(0,newVal/curLts):newPU;
+                await client.query('UPDATE comb_stock SET costo_promedio=$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[newCpp,mv.estanque_destino_id,mv.tipo_id]);
+              }
+            }
+            recalculados++;
           }
         }
-        recalculados++;
       }
-      // Para movimientos sin ajuste específico (no en ajustes), solo quitar provisorio y actualizar doc
-      await client.query("UPDATE comb_movimientos SET numero_documento=$1,es_provisorio=false WHERE oc_referencia=$2 AND es_provisorio=true AND cierre_id IS NULL",[numero_factura,numOC]);
+      // Si hubo stock, también desmarcar provisorios remanentes
+      if(movs.rows.length>0){
+        await client.query("UPDATE comb_movimientos SET numero_documento=$1,es_provisorio=false WHERE oc_referencia=$2 AND es_provisorio=true AND cierre_id IS NULL",[numero_factura,oc.numero_oc]);
+      }
+      // 2) Procesar consumo directo: líneas de OC con keywords combustible (solo si no hay movimientos de stock)
+      if(movs.rows.length===0){
+        const detLines=await client.query(`SELECT * FROM ordenes_compra_detalle
+          WHERE oc_id=$1 AND (UPPER(COALESCE(descripcion,'')) LIKE '%DIESEL%' OR UPPER(COALESCE(descripcion,'')) LIKE '%GASOLINA%'
+            OR UPPER(COALESCE(descripcion,'')) LIKE '%PETR%' OR UPPER(COALESCE(descripcion,'')) LIKE '%BENCINA%' OR UPPER(COALESCE(descripcion,'')) LIKE '%NAFTA%')`,[oc.oc_id]);
+        let ocChanged=false;
+        for(const d of detLines.rows){
+          const cat=detectCat(d.descripcion);
+          const aj=cat?ajustes[cat]:null;
+          if(aj&&aj.neto_lt>0){
+            await client.query('UPDATE ordenes_compra_detalle SET precio_unitario=$1 WHERE detalle_id=$2',[aj.neto_lt,d.detalle_id]);
+            ocChanged=true;recalculados++;
+          }
+        }
+        // Si cambió algún precio, recalcular totales de la OC
+        if(ocChanged){
+          const recalc=await client.query(`SELECT COALESCE(SUM(cantidad*precio_unitario),0) AS neto FROM ordenes_compra_detalle WHERE oc_id=$1`,[oc.oc_id]);
+          const newNeto=parseFloat(recalc.rows[0].neto)||0;
+          const newIVA=Math.round(newNeto*0.19);
+          const ocD=await client.query('SELECT impuesto_adicional FROM ordenes_compra WHERE oc_id=$1',[oc.oc_id]);
+          const imp=parseFloat((ocD.rows[0]||{}).impuesto_adicional)||0;
+          const newTotal=newNeto+newIVA+imp;
+          await client.query('UPDATE ordenes_compra SET neto=$1,iva=$2,total=$3,modificado_en=NOW() WHERE oc_id=$4',[newNeto,newIVA,newTotal,oc.oc_id]);
+        }
+      }
     }
     await client.query('COMMIT');
     res.status(201).json({ok:true,factura_id:fid,recalculados});
