@@ -2170,15 +2170,15 @@ app.get('/api/comb/panel-stats', auth, async(req,res)=>{
     // Stock actual por estanque (no filtra por fecha — es estado actual)
     const stockQ=await pool.query(`
       SELECT cs.estanque_id,e.nombre AS estanque_nombre,e.tipo_estanque,e.codigo,
-        emp.razon_social AS empresa_nombre,ct.nombre AS tipo_nombre,
+        COALESCE(emp.razon_social,'Todas las empresas') AS empresa_nombre,ct.nombre AS tipo_nombre,
         cs.litros_disponibles,cs.costo_promedio,
         ROUND(cs.litros_disponibles*cs.costo_promedio,0) AS valor_total
       FROM comb_stock cs
       JOIN comb_estanques e ON cs.estanque_id=e.estanque_id
-      JOIN empresas emp ON e.empresa_id=emp.empresa_id
+      LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
       JOIN comb_tipos ct ON cs.tipo_id=ct.tipo_id
       WHERE cs.litros_disponibles>0
-      ORDER BY emp.razon_social,e.nombre`);
+      ORDER BY COALESCE(emp.razon_social,'ZZZ'),e.nombre`);
 
     // Compras del período (INGRESO_STOCK)
     const comprasQ=await pool.query(`
