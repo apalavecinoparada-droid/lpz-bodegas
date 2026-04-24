@@ -3418,15 +3418,44 @@ function OCRecibirModal(p){
   const[factorMap,setFactorMap]=useState({});
   const[bodega_id,setBodega]=useState('');
 
-  // State for combustible lines: {detalle_id: estanque_id}
-  const initEstMap={};lineasComb.forEach(function(l){initEstMap[l.detalle_id]='';});
-  const[estMap,setEstMap]=useState(initEstMap);
+  // State for combustible lines: {detalle_id: [{estanque_id, litros}]}
+  const initSplitMap={};lineasComb.forEach(function(l){initSplitMap[l.detalle_id]=[{estanque_id:'',litros:String(parseFloat(l.cantidad)||0)}];});
+  const[splitMap,setSplitMap]=useState(initSplitMap);
 
   const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
 
   function setProd(did,val){setProdMap(function(m){var n=Object.assign({},m);n[did]=val;return n;});}
   function setFactor(did,val){setFactorMap(function(m){var n=Object.assign({},m);n[did]=val;return n;});}
-  function setEst(did,val){setEstMap(function(m){var n=Object.assign({},m);n[did]=val;return n;});}
+  function setSplit(did,idx,key,val){
+    setSplitMap(function(m){
+      var n=Object.assign({},m);
+      var arr=(n[did]||[]).slice();
+      arr[idx]=Object.assign({},arr[idx],{[key]:val});
+      n[did]=arr;return n;
+    });
+  }
+  function addSplit(did){
+    setSplitMap(function(m){
+      var n=Object.assign({},m);
+      var arr=(n[did]||[]).slice();
+      // Calcular litros restantes
+      var linea=lineasComb.find(function(l){return l.detalle_id===did;});
+      var totalLinea=parseFloat((linea||{}).cantidad)||0;
+      var asignados=arr.reduce(function(s,a){return s+(parseFloat(a.litros)||0);},0);
+      var rest=Math.max(0,totalLinea-asignados);
+      arr.push({estanque_id:'',litros:String(rest)});
+      n[did]=arr;return n;
+    });
+  }
+  function removeSplit(did,idx){
+    setSplitMap(function(m){
+      var n=Object.assign({},m);
+      var arr=(n[did]||[]).slice();
+      if(arr.length<=1)return m; // mínimo 1
+      arr.splice(idx,1);
+      n[did]=arr;return n;
+    });
+  }
 
   function getEffectiveFactor(did,selProd){
     if(factorMap[did]!==undefined&&factorMap[did]!=='')return parseFloat(factorMap[did])||1;
@@ -3434,18 +3463,38 @@ function OCRecibirModal(p){
   }
 
   const lineasInvListas=lineasInv.filter(function(l){return !!prodMap[l.detalle_id];});
-  const lineasCombListas=lineasComb.filter(function(l){return !!estMap[l.detalle_id];});
+  const lineasCombListas=lineasComb.filter(function(l){
+    var splits=splitMap[l.detalle_id]||[];
+    return splits.some(function(s){return !!s.estanque_id;});
+  });
   const totalListas=lineasInvListas.length+lineasCombListas.length;
 
   function save(){
     setErr('');
     if(totalListas===0){setErr('Debe asignar destino a al menos una linea.');return;}
+    // Validar litros no excedan cantidad de línea
+    for(var i=0;i<lineasComb.length;i++){
+      var l=lineasComb[i];
+      var splits=splitMap[l.detalle_id]||[];
+      var totalAsig=splits.reduce(function(s,a){return s+(parseFloat(a.litros)||0);},0);
+      var totalLinea=parseFloat(l.cantidad)||0;
+      if(totalAsig>totalLinea+0.01){
+        setErr('Línea "'+l.descripcion+'": asignó '+totalAsig.toFixed(0)+' lts pero la OC tiene '+totalLinea.toFixed(0)+' lts.');
+        return;
+      }
+    }
     setSaving(true);
+    // Construir comb_splits: {detalle_id: [{estanque_id, litros}]}
+    var combSplits={};
+    lineasComb.forEach(function(l){
+      var splits=(splitMap[l.detalle_id]||[]).filter(function(s){return !!s.estanque_id&&parseFloat(s.litros)>0;});
+      if(splits.length)combSplits[l.detalle_id]=splits.map(function(s){return{estanque_id:parseInt(s.estanque_id),litros:parseFloat(s.litros)};});
+    });
     var payload={
       bodega_id:bodega_id||null,
       prod_map:prodMap,
       factor_map:factorMap,
-      comb_map:estMap  // {detalle_id: estanque_id}
+      comb_splits:combSplits
     };
     api('/ordenes-compra/'+p.oc.oc_id+'/recibir-bodega','POST',payload,p.tok)
       .then(function(){p.onSave();})
@@ -3465,36 +3514,55 @@ function OCRecibirModal(p){
         ),
         lineasBodega.length===0&&h('div',{className:'al al-e'},'No hay lineas marcadas con "A Bodega".'),
 
-        // COMBUSTIBLE LINES
+        // COMBUSTIBLE LINES — distribución multi-estanque
         lineasComb.length>0&&h('div',{style:{marginBottom:14}},
-          h('div',{style:{fontWeight:600,fontSize:13,marginBottom:6,color:'#D97706'}},'⛽ Lineas de combustible ('+lineasComb.length+') — ingreso a estanque'),
-          h('div',{style:{fontSize:11,color:'#64748B',marginBottom:6}},'Seleccione el estanque de destino para cada linea.'),
-          h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
-            h('thead',null,h('tr',null,
-              h('th',{style:thStyle},'Detalle'),
-              h('th',{style:thStyle},'Litros'),
-              h('th',{style:thStyle},'Tipo combustible'),
-              h('th',{style:thStyle},'Estanque destino'),
-              h('th',{style:Object.assign({},thStyle,{textAlign:'right'})},'Costo/lt')
-            )),
-            h('tbody',null,...lineasComb.map(function(l,i){
-              var ct=getCombTipo(l);
-              var estsFilt=ct?combEstanques.filter(function(e){return !e.tipo_combustible_id||e.tipo_combustible_id===ct.tipo_id;}):combEstanques;
-              return h('tr',{key:i},
-                h('td',{style:tdStyle},l.descripcion||'—'),
-                h('td',{style:Object.assign({},tdStyle,{textAlign:'right',fontFamily:'monospace'})},(parseFloat(l.cantidad)||0).toFixed(1)),
-                h('td',{style:tdStyle},ct?h(Bg,{c:'y'},ct.nombre):'—'),
-                h('td',{style:tdStyle},
-                  h('select',{value:estMap[l.detalle_id]||'',onChange:function(e){setEst(l.detalle_id,e.target.value);},
-                    style:{width:'100%',padding:'3px 5px',fontSize:11,border:'1px solid #CBD5E1',borderRadius:4}},
-                    h('option',{value:''},'— Seleccione estanque —'),
-                    estsFilt.map(function(e){return h('option',{key:e.estanque_id,value:e.estanque_id},e.nombre+(e.litros_disponibles?' ('+parseFloat(e.litros_disponibles).toFixed(0)+' lts)':''));})
-                  )
+          h('div',{style:{fontWeight:600,fontSize:13,marginBottom:6,color:'#D97706'}},'⛽ Lineas de combustible ('+lineasComb.length+') — distribución a estanques'),
+          h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},'Distribuya los litros de cada línea entre uno o más estanques. Click "+ Estanque" para dividir la carga.'),
+          lineasComb.map(function(l,li){
+            var ct=getCombTipo(l);
+            var estsFilt=ct?combEstanques.filter(function(e){return !e.tipo_combustible_id||e.tipo_combustible_id===ct.tipo_id;}):combEstanques;
+            var splits=splitMap[l.detalle_id]||[];
+            var totalLinea=parseFloat(l.cantidad)||0;
+            var totalAsig=splits.reduce(function(s,a){return s+(parseFloat(a.litros)||0);},0);
+            var restante=totalLinea-totalAsig;
+            return h('div',{key:li,style:{background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:8,padding:'10px 14px',marginBottom:8}},
+              h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+                h('div',null,
+                  h('span',{style:{fontWeight:600,fontSize:12}},l.descripcion||'Combustible'),
+                  ct&&h(Bg,{c:'y'},ct.nombre),
+                  h('span',{style:{fontFamily:'monospace',fontSize:12,marginLeft:8,fontWeight:700}},totalLinea.toFixed(0)+' lts'),
+                  h('span',{style:{fontFamily:'monospace',fontSize:11,marginLeft:6,color:'#64748B'}},'@ '+CLP(Math.round(parseFloat(l.precio_unitario)||0))+'/lt')
                 ),
-                h('td',{style:Object.assign({},tdStyle,{textAlign:'right'})},(parseFloat(l.precio_unitario)||0)>0?CLP(Math.round(l.precio_unitario)):'—')
-              );
-            }))
-          ),
+                h('button',{onClick:function(){addSplit(l.detalle_id);},style:{padding:'3px 10px',fontSize:10,border:'1px solid #D97706',background:'#FEF3C7',borderRadius:4,cursor:'pointer',fontWeight:600,color:'#92400E'}},'+ Estanque')
+              ),
+              splits.map(function(sp,si){
+                return h('div',{key:si,style:{display:'flex',gap:8,alignItems:'center',marginBottom:4}},
+                  h('select',{value:sp.estanque_id||'',onChange:function(e){setSplit(l.detalle_id,si,'estanque_id',e.target.value);},
+                    style:{flex:2,padding:'5px 8px',fontSize:11,border:'1px solid #CBD5E1',borderRadius:4}},
+                    h('option',{value:''},'— Seleccione estanque —'),
+                    estsFilt.map(function(e){
+                      var cap=e.capacidad_max?parseFloat(e.capacidad_max):0;
+                      var stk=e.litros_disponibles?parseFloat(e.litros_disponibles):0;
+                      var disp=cap>0?cap-stk:0;
+                      return h('option',{key:e.estanque_id,value:e.estanque_id},e.nombre+(cap>0?' ('+stk.toFixed(0)+'/'+cap.toFixed(0)+' lts — disp: '+disp.toFixed(0)+')':''));
+                    })
+                  ),
+                  h('input',{type:'number',min:'0',step:'1',value:sp.litros,onChange:function(e){setSplit(l.detalle_id,si,'litros',e.target.value);},
+                    style:{flex:0.7,padding:'5px 8px',fontSize:12,border:'1px solid #D97706',borderRadius:4,fontFamily:'monospace',fontWeight:600,textAlign:'right',background:'#FEFCE8'},placeholder:'Litros'}),
+                  h('span',{style:{fontSize:10,color:'#64748B',width:20}},'lts'),
+                  splits.length>1&&h('button',{onClick:function(){removeSplit(l.detalle_id,si);},style:{padding:'2px 6px',fontSize:10,border:'1px solid #EF4444',background:'#FEF2F2',borderRadius:3,cursor:'pointer',color:'#DC2626'}},'✕')
+                );
+              }),
+              h('div',{style:{display:'flex',justifyContent:'space-between',marginTop:6,fontSize:10,fontWeight:600}},
+                h('span',{style:{color:Math.abs(restante)<0.01?'#10B981':restante>0?'#D97706':'#DC2626'}},
+                  Math.abs(restante)<0.01?'✓ Distribución completa':
+                  restante>0?'⚠ Faltan '+restante.toFixed(0)+' lts por asignar':
+                  '❌ Excede en '+Math.abs(restante).toFixed(0)+' lts'
+                ),
+                h('span',{style:{color:'#64748B'}},'Asignado: '+totalAsig.toFixed(0)+' / '+totalLinea.toFixed(0)+' lts')
+              )
+            );
+          }),
           lineasCombListas.length>0&&h('div',{className:'al al-s',style:{marginTop:4}},lineasCombListas.length+' linea(s) de combustible listas.')
         ),
 
@@ -4395,11 +4463,10 @@ function CombEstanques(p){
 
   function save(){
     setMsg('');setIsErr(false);
-    if(!empresa){setMsg('Seleccione una empresa');setIsErr(true);return;}
     if(!codigo.trim()){setMsg('El codigo es obligatorio');setIsErr(true);return;}
     if(!nombre.trim()){setMsg('El nombre es obligatorio');setIsErr(true);return;}
     var body={
-      empresa_id:parseInt(empresa),
+      empresa_id:empresa?parseInt(empresa):null,
       codigo:codigo.trim(),
       nombre:nombre.trim(),
       tipo_estanque:tipoEst||'FIJO',
@@ -4425,7 +4492,7 @@ function CombEstanques(p){
     ),
     h('div',{className:'card'},
       h(TBL,{cols:[
-        {lbl:'Empresa',k:'empresa_nombre'},
+        {lbl:'Empresa',render:function(r){return r.empresa_nombre||h('span',{style:{color:'#10B981',fontWeight:600,fontSize:10}},'Todas las empresas');}},
         {lbl:'Codigo',k:'codigo',mono:true},
         {lbl:'Nombre',k:'nombre'},
         {lbl:'Tipo',k:'tipo_estanque'},
@@ -4450,9 +4517,9 @@ function CombEstanques(p){
         isErr&&h('div',{className:'al al-e',style:{marginBottom:12}},msg),
         h('div',{className:'g2',style:{marginBottom:10}},
           h('div',null,
-            h('label',{style:lblStyle},'Empresa *'),
+            h('label',{style:lblStyle},'Empresa'),
             h('select',{value:empresa,onChange:function(e){setEmpresa(e.target.value);},style:inpStyle},
-              h('option',{value:''},'Seleccione...'),
+              h('option',{value:''},'Todas las empresas'),
               empresas.map(function(e){return h('option',{key:e.empresa_id,value:String(e.empresa_id)},e.razon_social);})
             )
           ),
