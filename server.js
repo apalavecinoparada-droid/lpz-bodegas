@@ -1937,14 +1937,14 @@ app.patch('/api/comb/estanques/:id/activo', auth, async(req,res)=>{
 app.get('/api/comb/stock', auth, async(req,res)=>{
   try{
     const r=await pool.query(`SELECT cs.*,e.nombre AS estanque_nombre,e.codigo AS estanque_codigo,e.tipo_estanque,
-      emp.razon_social AS empresa_nombre, ct.nombre AS tipo_nombre,
+      COALESCE(emp.razon_social,'Todas las empresas') AS empresa_nombre, ct.nombre AS tipo_nombre,
       ROUND(cs.litros_disponibles*cs.costo_promedio,0) AS valor_total
       FROM comb_stock cs
       JOIN comb_estanques e ON cs.estanque_id=e.estanque_id
-      JOIN empresas emp ON e.empresa_id=emp.empresa_id
+      LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
       JOIN comb_tipos ct ON cs.tipo_id=ct.tipo_id
       WHERE cs.litros_disponibles>0
-      ORDER BY emp.razon_social,e.nombre`);
+      ORDER BY COALESCE(emp.razon_social,'ZZZ'),e.nombre`);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
