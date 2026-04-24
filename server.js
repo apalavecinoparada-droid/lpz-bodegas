@@ -547,6 +547,7 @@ async function autoSetup() {
   try{ await setupContratos(pool.query.bind(pool)); }catch(e){console.log('[WARN] contratos tables:',e.message);}
   try{ await setupProgMant(pool.query.bind(pool)); }catch(e){console.log('[WARN] prog mant tables:',e.message);}
   try{ await setupFacturaGuias(pool.query.bind(pool)); }catch(e){console.log('[WARN] factura guias tables:',e.message);}
+  try{ await pool.query('ALTER TABLE comb_estanques ALTER COLUMN empresa_id DROP NOT NULL'); }catch(e){}
   // Seed sistemas y tareas estándar
   try{
     const sc=await pool.query('SELECT COUNT(*) FROM mant_sistemas');
@@ -1520,16 +1521,44 @@ ocR.delete('/:id', auth, async(req,res)=>{
     const chk=await client.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length) return res.status(404).json({error:'OC no encontrada'});
     const oc=chk.rows[0];
-    // Si tiene movimiento de inventario en bodega, no permitir eliminar
-    if(oc.movimiento_id) return res.status(400).json({error:'No se puede eliminar: tiene movimientos de bodega asociados. Anule el movimiento primero.'});
-    // Revertir movimientos de combustible si hay
+    // Solo admin puede eliminar OCs cerradas/recibidas
+    if((oc.estado==='CERRADA'||oc.movimiento_id||oc.recibido_en)&&req.user.rol!=='ADMINISTRADOR'&&req.user.rol!=='Administrador'){
+      return res.status(403).json({error:'Solo administradores pueden eliminar OCs cerradas o recibidas.'});
+    }
+    // 1) Revertir movimientos de inventario (bodega) si los hay
+    if(oc.movimiento_id){
+      const dets=await client.query('SELECT * FROM movimiento_detalle WHERE movimiento_id=$1',[oc.movimiento_id]);
+      const enc=await client.query('SELECT * FROM movimiento_encabezado WHERE movimiento_id=$1',[oc.movimiento_id]);
+      const bodegaId=enc.rows.length?enc.rows[0].bodega_id:null;
+      for(const d of dets.rows){
+        const pid=d.producto_id,qty=parseFloat(d.cantidad)||0,cu=parseFloat(d.costo_unitario)||0;
+        // Buscar la bodega destino (puede ser la de la línea o la del encabezado)
+        const lineaDet=await client.query('SELECT bodega_destino_id FROM ordenes_compra_detalle WHERE oc_id=$1 AND producto_id=$2 LIMIT 1',[req.params.id,pid]);
+        const bodDest=(lineaDet.rows[0]||{}).bodega_destino_id||bodegaId;
+        if(bodDest){
+          // Restar del stock (puede quedar negativo si ya se distribuyó)
+          await client.query('UPDATE stock_actual SET cantidad_disponible=cantidad_disponible-$1,ultima_actualizacion=NOW() WHERE producto_id=$2 AND bodega_id=$3',[qty,pid,bodDest]);
+        }
+      }
+      await client.query('DELETE FROM movimiento_detalle WHERE movimiento_id=$1',[oc.movimiento_id]);
+      await client.query('DELETE FROM movimiento_encabezado WHERE movimiento_id=$1',[oc.movimiento_id]);
+    }
+    // 2) Revertir movimientos de combustible si hay
     if(oc.recibido_en||oc.numero_oc){
       const combMovs=await client.query("SELECT * FROM comb_movimientos WHERE oc_referencia=$1 AND estado='ACTIVO'",[oc.numero_oc]);
       for(const mv of combMovs.rows){
-        await client.query('UPDATE comb_stock SET litros_disponibles=GREATEST(0,litros_disponibles-$1),ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[parseFloat(mv.litros),mv.estanque_destino_id,mv.tipo_id]);
+        // Restar litros del stock del estanque (puede quedar negativo)
+        if(mv.estanque_destino_id&&mv.tipo_id){
+          await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles-$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[parseFloat(mv.litros),mv.estanque_destino_id,mv.tipo_id]);
+        }
         await client.query("UPDATE comb_movimientos SET estado='ANULADO',anulado_en=NOW(),anulado_por=$1,motivo_anulacion='OC eliminada' WHERE mov_id=$2",[req.user.email,mv.mov_id]);
       }
     }
+    // 3) Desasociar de factura de guías si aplica
+    if(oc.factura_guia_id){
+      await client.query('UPDATE ordenes_compra SET factura_guia_id=NULL WHERE oc_id=$1',[req.params.id]);
+    }
+    // 4) Eliminar OC
     await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
     await client.query('DELETE FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     await client.query('COMMIT');
@@ -1551,10 +1580,14 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
     const prod_map=req.body.prod_map||{};
     const factor_map=req.body.factor_map||{};
     const comb_map=req.body.comb_map||{};
+    const comb_splits=req.body.comb_splits||{}; // {detalle_id: [{estanque_id, litros}]}
     let lineas=await client.query('SELECT * FROM ordenes_compra_detalle WHERE oc_id=$1 AND ingresa_bodega=true',[req.params.id]);
     if(!lineas.rows.length) lineas=await client.query('SELECT * FROM ordenes_compra_detalle WHERE oc_id=$1 AND (ingresa_bodega IS NULL OR ingresa_bodega=true)',[req.params.id]);
     if(!lineas.rows.length) throw new Error('No hay lineas marcadas para ingresar.');
-    const lineasComb=lineas.rows.filter(function(l){return !!comb_map[String(l.detalle_id)];});
+    // Detectar líneas combustible: usa comb_splits (nuevo) o comb_map (legacy)
+    const lineasComb=lineas.rows.filter(function(l){
+      return !!comb_splits[String(l.detalle_id)]||!!comb_map[String(l.detalle_id)];
+    });
     const lineasInv=lineas.rows.filter(function(l){
       const pid=prod_map[String(l.detalle_id)]?parseInt(prod_map[String(l.detalle_id)]):l.producto_id;
       return !!pid&&!comb_map[String(l.detalle_id)];
@@ -1593,22 +1626,33 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
     }
     var esProvisorio=docTipo.indexOf('gu')>=0||docTipo.indexOf('despacho')>=0||docTipo.indexOf('provisori')>=0;
     for(const l of lineasComb){
-      const estanqueId=parseInt(comb_map[String(l.detalle_id)]);
-      const lts=parseFloat(l.cantidad),pu=parseFloat(l.precio_unitario)||0;
-      const estQ=await client.query('SELECT tipo_combustible_id,empresa_id FROM comb_estanques WHERE estanque_id=$1',[estanqueId]);
-      if(!estQ.rows.length) throw new Error('Estanque no encontrado');
-      const tipoId=estQ.rows[0].tipo_combustible_id,empresaId=estQ.rows[0].empresa_id;
-      if(!tipoId) throw new Error('El estanque no tiene tipo de combustible asignado. Configure el estanque primero.');
-      const stk=await client.query('SELECT litros_disponibles,costo_promedio FROM comb_stock WHERE estanque_id=$1 AND tipo_id=$2',[estanqueId,tipoId]);
-      if(stk.rows.length){
-        const curQ=parseFloat(stk.rows[0].litros_disponibles),curCpp=parseFloat(stk.rows[0].costo_promedio);
-        const newQ=curQ+lts,newCpp=newQ>0?(curQ*curCpp+lts*pu)/newQ:pu;
-        await client.query('UPDATE comb_stock SET litros_disponibles=$1,costo_promedio=$2,ultima_actualizacion=NOW() WHERE estanque_id=$3 AND tipo_id=$4',[newQ,newCpp,estanqueId,tipoId]);
-      }else{
-        await client.query('INSERT INTO comb_stock(estanque_id,tipo_id,litros_disponibles,costo_promedio) VALUES($1,$2,$3,$4)',[estanqueId,tipoId,lts,pu]);
+      // Determinar destinos: comb_splits (multi) o comb_map (legacy single)
+      var destinos=[];
+      if(comb_splits[String(l.detalle_id)]){
+        destinos=comb_splits[String(l.detalle_id)].filter(function(s){return s.estanque_id&&parseFloat(s.litros)>0;});
+      }else if(comb_map[String(l.detalle_id)]){
+        destinos=[{estanque_id:parseInt(comb_map[String(l.detalle_id)]),litros:parseFloat(l.cantidad)}];
       }
-      await client.query('INSERT INTO comb_movimientos(tipo_mov,empresa_id,fecha,tipo_id,estanque_destino_id,litros,precio_unitario,costo_total,proveedor_id,numero_documento,oc_referencia,usuario,es_provisorio) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
-        ['INGRESO_STOCK',empresaId,oc.fecha_documento||new Date().toISOString().split('T')[0],tipoId,estanqueId,lts,pu,lts*pu,oc.proveedor_id,oc.numero_documento,oc.numero_oc,req.user.email,esProvisorio]);
+      const pu=parseFloat(l.precio_unitario)||0;
+      for(const dest of destinos){
+        const estanqueId=parseInt(dest.estanque_id);
+        const lts=parseFloat(dest.litros);
+        if(!estanqueId||!lts)continue;
+        const estQ=await client.query('SELECT tipo_combustible_id,empresa_id FROM comb_estanques WHERE estanque_id=$1',[estanqueId]);
+        if(!estQ.rows.length) throw new Error('Estanque no encontrado');
+        const tipoId=estQ.rows[0].tipo_combustible_id,empresaId=estQ.rows[0].empresa_id;
+        if(!tipoId) throw new Error('El estanque no tiene tipo de combustible asignado. Configure el estanque primero.');
+        const stk=await client.query('SELECT litros_disponibles,costo_promedio FROM comb_stock WHERE estanque_id=$1 AND tipo_id=$2',[estanqueId,tipoId]);
+        if(stk.rows.length){
+          const curQ=parseFloat(stk.rows[0].litros_disponibles),curCpp=parseFloat(stk.rows[0].costo_promedio);
+          const newQ=curQ+lts,newCpp=newQ>0?(curQ*curCpp+lts*pu)/newQ:pu;
+          await client.query('UPDATE comb_stock SET litros_disponibles=$1,costo_promedio=$2,ultima_actualizacion=NOW() WHERE estanque_id=$3 AND tipo_id=$4',[newQ,newCpp,estanqueId,tipoId]);
+        }else{
+          await client.query('INSERT INTO comb_stock(estanque_id,tipo_id,litros_disponibles,costo_promedio) VALUES($1,$2,$3,$4)',[estanqueId,tipoId,lts,pu]);
+        }
+        await client.query('INSERT INTO comb_movimientos(tipo_mov,empresa_id,fecha,tipo_id,estanque_destino_id,litros,precio_unitario,costo_total,proveedor_id,numero_documento,oc_referencia,usuario,es_provisorio) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+          ['INGRESO_STOCK',empresaId,oc.fecha_documento||new Date().toISOString().split('T')[0],tipoId,estanqueId,lts,pu,lts*pu,oc.proveedor_id,oc.numero_documento,oc.numero_oc,req.user.email,esProvisorio]);
+      }
     }
     await client.query('UPDATE ordenes_compra SET movimiento_id=$1,recibido_en=NOW(),modificado_en=NOW() WHERE oc_id=$2',[movId,req.params.id]);
     await client.query('COMMIT');
@@ -1851,9 +1895,8 @@ app.post('/api/comb/estanques', auth, async(req,res)=>{
   console.log('[COMB-EST POST] body:', JSON.stringify(req.body));
   try{
     const{empresa_id,codigo,nombre,tipo_estanque,ubicacion,capacidad_max,tipo_combustible_id,observaciones}=req.body;
-    const empId=parseInt(empresa_id);
+    const empId=empresa_id?parseInt(empresa_id):null;
     console.log('[COMB-EST POST] empId:', empId, 'codigo:', codigo, 'nombre:', nombre);
-    if(!empId) return res.status(400).json({error:'Debe seleccionar una empresa'});
     if(!codigo) return res.status(400).json({error:'El codigo es obligatorio'});
     if(!nombre) return res.status(400).json({error:'El nombre es obligatorio'});
     const r=await pool.query('INSERT INTO comb_estanques(empresa_id,codigo,nombre,tipo_estanque,ubicacion,capacidad_max,tipo_combustible_id,observaciones) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
@@ -1868,8 +1911,7 @@ app.post('/api/comb/estanques', auth, async(req,res)=>{
 app.put('/api/comb/estanques/:id', auth, async(req,res)=>{
   try{
     const{empresa_id,codigo,nombre,tipo_estanque,ubicacion,capacidad_max,tipo_combustible_id,observaciones}=req.body;
-    const empId=parseInt(empresa_id);
-    if(!empId) return res.status(400).json({error:'Debe seleccionar una empresa'});
+    const empId=empresa_id?parseInt(empresa_id):null;
     const r=await pool.query('UPDATE comb_estanques SET empresa_id=$1,codigo=$2,nombre=$3,tipo_estanque=$4,ubicacion=$5,capacidad_max=$6,tipo_combustible_id=$7,observaciones=$8 WHERE estanque_id=$9 RETURNING *',
       [empId,codigo.trim(),nombre.trim(),tipo_estanque||'FIJO',ubicacion||null,capacidad_max?parseFloat(capacidad_max):null,tipo_combustible_id?parseInt(tipo_combustible_id):null,observaciones||null,req.params.id]);
     res.json(r.rows[0]);
