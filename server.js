@@ -1447,9 +1447,9 @@ ocR.post('/', auth, async(req,res)=>{
     const numero_oc=`OC-${year}-${String(seq.rows[0].nextval).padStart(4,'0')}`;
     const netoAfecto=lineas.filter(l=>!l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
     const netoExento=lineas.filter(l=>l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
-    const neto=netoAfecto+netoExento;
+    const neto=Math.round(netoAfecto+netoExento);
     const iva=Math.round(netoAfecto*0.19);
-    const imp=parseFloat(impuesto_adicional)||0;
+    const imp=Math.round(parseFloat(impuesto_adicional)||0);
     const total=neto+iva+imp;
     const ocR2=await client.query('INSERT INTO ordenes_compra(numero_oc,empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,neto,iva,total,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING oc_id',[numero_oc,empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,req.user.email]);
     const ocId=ocR2.rows[0].oc_id;
@@ -1469,7 +1469,7 @@ ocR.put('/:id', auth, async(req,res)=>{
     const{empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,observaciones,lineas}=req.body;
     const netoAfecto=lineas.filter(l=>!l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
     const netoExento=lineas.filter(l=>l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
-    const neto=netoAfecto+netoExento;const iva=Math.round(netoAfecto*0.19);const imp=parseFloat(impuesto_adicional)||0;const total=neto+iva+imp;
+    const neto=Math.round(netoAfecto+netoExento);const iva=Math.round(netoAfecto*0.19);const imp=Math.round(parseFloat(impuesto_adicional)||0);const total=neto+iva+imp;
     await client.query('UPDATE ordenes_compra SET empresa_id=$1,proveedor_id=$2,fecha_emision=$3,solicitante=$4,retira=$5,condicion_id=$6,impuesto_adicional=$7,neto=$8,iva=$9,total=$10,observaciones=$11,modificado_en=NOW() WHERE oc_id=$12',[empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,req.params.id]);
     await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
     for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[req.params.id,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
@@ -1640,7 +1640,7 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
         if(!estanqueId||!lts)continue;
         const estQ=await client.query('SELECT tipo_combustible_id,empresa_id FROM comb_estanques WHERE estanque_id=$1',[estanqueId]);
         if(!estQ.rows.length) throw new Error('Estanque no encontrado');
-        const tipoId=estQ.rows[0].tipo_combustible_id,empresaId=estQ.rows[0].empresa_id;
+        const tipoId=estQ.rows[0].tipo_combustible_id,empresaId=oc.empresa_id||estQ.rows[0].empresa_id;
         if(!tipoId) throw new Error('El estanque no tiene tipo de combustible asignado. Configure el estanque primero.');
         const stk=await client.query('SELECT litros_disponibles,costo_promedio FROM comb_stock WHERE estanque_id=$1 AND tipo_id=$2',[estanqueId,tipoId]);
         if(stk.rows.length){
@@ -1791,7 +1791,7 @@ app.post('/api/import/bulk-oc', auth, async(req,res)=>{
       const seq=await client.query("SELECT nextval('seq_oc_num')");
       const numero_oc='OC-'+year+'-'+String(seq.rows[0].nextval).padStart(4,'0');
       const lineas=item.lineas||[];
-      const neto=sign*lineas.reduce(function(s,l){return s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0);},0);
+      const neto=Math.round(sign*lineas.reduce(function(s,l){return s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0);},0));
       const iva=Math.round(neto*0.19);
       const total=neto+iva;
       const ocRes=await client.query(
