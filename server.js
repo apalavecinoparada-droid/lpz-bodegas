@@ -4591,6 +4591,49 @@ app.post('/api/mant/prog-semanal/import', auth, async(req,res)=>{
 });
 
 // ══════════════════════════════════════════════════════
+// Importación masiva de usuarios
+app.post('/api/usuarios/import', auth, async(req,res)=>{
+  try{
+    const items=req.body;
+    if(!Array.isArray(items)||!items.length)return res.status(400).json({error:'Array vacío'});
+    let creados=0,existentes=0,errores=[];
+    // Cargar roles, empresas, faenas
+    const rolesR=await pool.query('SELECT rol_id,nombre FROM roles');
+    const empR=await pool.query('SELECT empresa_id,razon_social FROM empresas');
+    const faeR=await pool.query('SELECT faena_id,nombre FROM faenas');
+    for(const u of items){
+      try{
+        const email=String(u.email||'').trim().toLowerCase();
+        if(!email){errores.push(u.nombre+': sin email');continue;}
+        const exists=await pool.query('SELECT 1 FROM usuarios WHERE email=$1 OR (username IS NOT NULL AND username=$2)',[email,u.username||null]);
+        if(exists.rows.length){existentes++;continue;}
+        const hash=await require('bcryptjs').hash(String(u.password||'123456'),10);
+        // Buscar rol_id
+        const rolName=String(u.rol||'').trim();
+        const rolRow=rolesR.rows.find(r=>r.nombre.toLowerCase()===rolName.toLowerCase());
+        const rid=rolRow?rolRow.rol_id:null;
+        const rolStr=rolRow?rolRow.nombre:rolName;
+        // Buscar empresa_id
+        let eid=null;
+        if(u.empresa&&u.empresa!=='Todas las empresas'){
+          const empRow=empR.rows.find(e=>e.razon_social===u.empresa);
+          if(empRow)eid=empRow.empresa_id;
+        }
+        // Buscar faena_id
+        let fid=null;
+        if(u.faena&&u.faena!=='Todas las faenas'){
+          const faeRow=faeR.rows.find(f=>f.nombre===u.faena);
+          if(faeRow)fid=faeRow.faena_id;
+        }
+        await pool.query('INSERT INTO usuarios(email,username,nombre,password_hash,rol,rol_id,empresa_id,faena_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)',
+          [email,u.username||null,u.nombre,hash,rolStr,rid,eid,fid]);
+        creados++;
+      }catch(e2){errores.push((u.nombre||u.email)+': '+e2.message);}
+    }
+    res.json({ok:true,creados,existentes,errores,total:items.length});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 // Importación masiva de subcategorías
 app.post('/api/subcategorias/import', auth, async(req,res)=>{
   try{
