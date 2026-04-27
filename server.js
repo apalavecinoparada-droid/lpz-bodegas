@@ -5141,13 +5141,15 @@ async function setupAnexos(q){
     contrato_id INT REFERENCES contratos(contrato_id),
     fecha_anexo DATE NOT NULL,
     fecha_contrato_original DATE,
-    funcion_original VARCHAR(255),
+    funcion_original TEXT,
     lugar_firma VARCHAR(120) DEFAULT 'Nacimiento',
     clausulas JSONB NOT NULL DEFAULT '[]',
     observaciones TEXT,
     usuario VARCHAR(120),
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
+  // Migración: si la columna ya existía como VARCHAR(255), ampliar
+  try{await q('ALTER TABLE contrato_anexos ALTER COLUMN funcion_original TYPE TEXT');}catch(e){}
 }
 setupAnexos(pool.query.bind(pool)).catch(function(e){console.log('[WARN] anexos:',e.message);});
 
@@ -5207,11 +5209,13 @@ app.post('/api/anexos', auth, async(req,res)=>{
     }
     const creados=[];
     for(const pid of personas){
-      // Buscar último contrato del trabajador para fecha original y función
-      const ultC=await client.query('SELECT contrato_id,fecha_contrato,funcion_texto FROM contratos WHERE persona_id=$1 AND empresa_id=$2 ORDER BY fecha_contrato DESC,contrato_id DESC LIMIT 1',[pid,b.empresa_id]);
+      // Buscar último contrato del trabajador para fecha original
+      const ultC=await client.query('SELECT contrato_id,fecha_contrato FROM contratos WHERE persona_id=$1 AND empresa_id=$2 ORDER BY fecha_contrato DESC,contrato_id DESC LIMIT 1',[pid,b.empresa_id]);
       const cId=ultC.rows.length?ultC.rows[0].contrato_id:null;
       const fOrig=ultC.rows.length?ultC.rows[0].fecha_contrato:null;
-      const funOrig=ultC.rows.length?ultC.rows[0].funcion_texto:(b.funcion_original||null);
+      // Usar el cargo del trabajador (no la descripción de funciones)
+      const persR=await client.query('SELECT cargo FROM personal WHERE persona_id=$1',[pid]);
+      const funOrig=persR.rows.length?persR.rows[0].cargo:(b.funcion_original||null);
       const r=await client.query(`INSERT INTO contrato_anexos(persona_id,empresa_id,contrato_id,fecha_anexo,fecha_contrato_original,funcion_original,lugar_firma,clausulas,observaciones,usuario)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10) RETURNING anexo_id`,
         [pid,b.empresa_id,cId,b.fecha_anexo,fOrig,funOrig,b.lugar_firma||'Nacimiento',JSON.stringify(b.clausulas),b.observaciones||null,req.user.email]);
