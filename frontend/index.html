@@ -7490,7 +7490,7 @@ function ContratosView(p){
   return h('div',null,
     // Tabs
     h('div',{style:{display:'flex',gap:6,marginBottom:12}},
-      [{k:'generar',l:'📝 Generar Contrato'},{k:'historial',l:'📋 Historial'},{k:'funciones',l:'⚙ Funciones por Cargo'}].map(function(t){
+      [{k:'generar',l:'📝 Generar Contrato'},{k:'historial',l:'📋 Historial'},{k:'anexos',l:'📎 Anexos'},{k:'funciones',l:'⚙ Funciones por Cargo'}].map(function(t){
         return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'7px 14px',borderRadius:5,fontSize:12,cursor:'pointer',border:'1px solid #CBD5E1',background:tab===t.k?'#1E3A2D':'#F8FAFC',color:tab===t.k?'#D4C5A9':'#475569',fontWeight:600}},t.l);
       })
     ),
@@ -7651,9 +7651,301 @@ function ContratosView(p){
       )
     ),
 
+    // TAB ANEXOS
+    tab==='anexos'&&h(AnexosView,{tok:p.tok,m:p.m,empresas:empresas,personal:personal}),
+
     // TAB FUNCIONES
     tab==='funciones'&&h(FuncionesView,{tok:p.tok,funciones:funciones,reload:loadFunciones})
   );
+}
+
+// ── Vista de Anexos ──
+function AnexosView(p){
+  var faenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
+  var[anexos,setAnexos]=useState([]);
+  var[modo,setModo]=useState('individual'); // individual | masivo | listar
+  var[showForm,setShowForm]=useState(false);
+  var[fPersona,setFPersona]=useState('');
+  // Form individual
+  var emptyClausula={numero:'SEGUNDA',titulo:'Lugar de Trabajo',texto:'Se establece como lugar de trabajo: Fundo Caballo de Palo, de propiedad de Forestal Mininco Spa., comuna de Curanilahue, región de Biobío.'};
+  var emptyForm={persona_id:'',empresa_id:'',fecha_anexo:new Date().toISOString().slice(0,10),lugar_firma:'Nacimiento',clausulas:[Object.assign({},emptyClausula)],observaciones:''};
+  var[form,setForm]=useState(emptyForm);
+  // Form masivo
+  var[masivoForm,setMasivoForm]=useState({faena_id:'',empresa_id:'',fecha_anexo:new Date().toISOString().slice(0,10),lugar_firma:'Nacimiento',fundo:'Caballo de Palo',propiedad:'Forestal Mininco Spa.',comuna:'Curanilahue',region:'Biobío'});
+  var[selPersonas,setSelPersonas]=useState([]);
+
+  function loadAnexos(){
+    var qs=fPersona?'?persona_id='+fPersona:'';
+    api('/anexos'+qs,'GET',null,p.tok).then(function(r){setAnexos(Array.isArray(r)?r:[]);}).catch(function(){});
+  }
+  useEffect(function(){loadAnexos();},[p.tok,fPersona]);
+
+  function uIndi(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
+  function uClausula(idx,k,v){setForm(function(f){var arr=f.clausulas.slice();arr[idx]=Object.assign({},arr[idx],{[k]:v});return Object.assign({},f,{clausulas:arr});});}
+  function addClausula(){setForm(function(f){return Object.assign({},f,{clausulas:f.clausulas.concat([Object.assign({},emptyClausula,{numero:'',titulo:'',texto:''})])});});}
+  function removeClausula(idx){setForm(function(f){var arr=f.clausulas.slice();arr.splice(idx,1);return Object.assign({},f,{clausulas:arr});});}
+  function uMas(k,v){setMasivoForm(function(f){return Object.assign({},f,{[k]:v});});}
+
+  // Personal filtrado por faena para selección masiva
+  var personalFaena=masivoForm.faena_id?p.personal.filter(function(x){return String(x.faena_id)===String(masivoForm.faena_id);}):[];
+
+  function toggleSel(pid){setSelPersonas(function(arr){return arr.indexOf(pid)>=0?arr.filter(function(x){return x!==pid;}):arr.concat([pid]);});}
+  function selectAll(){setSelPersonas(personalFaena.map(function(x){return x.persona_id;}));}
+  function selectNone(){setSelPersonas([]);}
+
+  function guardarIndividual(){
+    if(!form.persona_id||!form.empresa_id){alert('Trabajador y empresa son obligatorios');return;}
+    if(!form.clausulas.length||form.clausulas.some(function(c){return !c.numero||!c.texto;})){alert('Cada cláusula debe tener número y texto');return;}
+    api('/anexos','POST',form,p.tok).then(function(r){
+      alert('✅ Anexo creado');
+      setShowForm(false);setForm(emptyForm);loadAnexos();
+      // Auto-generar el documento
+      if(r.creados&&r.creados.length)setTimeout(function(){generarAnexoDoc(r.creados[0],'word');},300);
+    }).catch(function(e){alert('Error: '+e.message);});
+  }
+  function guardarMasivo(){
+    if(!masivoForm.faena_id||!masivoForm.empresa_id){alert('Faena y empresa son obligatorias');return;}
+    if(!selPersonas.length){alert('Seleccione al menos un trabajador');return;}
+    if(!masivoForm.fundo){alert('Ingrese el nombre del fundo');return;}
+    var texto='Se establece como lugar de trabajo: Fundo '+masivoForm.fundo+', de propiedad '+masivoForm.propiedad+', comuna de '+masivoForm.comuna+', región de '+masivoForm.region+'.';
+    var body={
+      empresa_id:masivoForm.empresa_id,
+      fecha_anexo:masivoForm.fecha_anexo,
+      lugar_firma:masivoForm.lugar_firma,
+      persona_ids:selPersonas,
+      clausulas:[{numero:'SEGUNDA',titulo:'Lugar de Trabajo',texto:texto}],
+      observaciones:'Generación masiva — Faena: '+(faenas.find(function(f){return String(f.faena_id)===String(masivoForm.faena_id);})||{}).nombre
+    };
+    api('/anexos','POST',body,p.tok).then(function(r){
+      alert('✅ Se crearon '+r.total+' anexos. Generando documentos...');
+      setSelPersonas([]);loadAnexos();
+      // Generar todos los docs en cadena
+      if(r.creados&&r.creados.length){
+        var i=0;
+        function next(){
+          if(i>=r.creados.length)return;
+          generarAnexoDoc(r.creados[i],'word');
+          i++;setTimeout(next,800);
+        }
+        next();
+      }
+    }).catch(function(e){alert('Error: '+e.message);});
+  }
+
+  function eliminarAnexo(id){
+    if(!confirm('¿Eliminar este anexo?'))return;
+    api('/anexos/'+id,'DELETE',null,p.tok).then(function(){loadAnexos();}).catch(function(e){alert(e.message);});
+  }
+
+  function generarAnexoDoc(anexoId,formato){
+    api('/anexos/'+anexoId,'GET',null,p.tok).then(function(a){
+      var html=buildAnexoHTML(a);
+      var nombre=(a.nombre_completo||'anexo').replace(/\s+/g,'_');
+      var fecha=(a.fecha_anexo+'').slice(0,10).replace(/-/g,'');
+      if(formato==='pdf'){
+        var w=window.open('','_blank');
+        if(!w){alert('Permita popups');return;}
+        w.document.write(html);w.document.close();
+        w.document.title='Anexo_'+nombre+'_'+fecha;
+        setTimeout(function(){w.focus();w.print();},500);
+      }else{
+        var blob=new Blob(['\ufeff'+html],{type:'application/msword;charset=utf-8'});
+        var url=URL.createObjectURL(blob);
+        var link=document.createElement('a');
+        link.href=url;link.download='Anexo_'+nombre+'_'+fecha+'.doc';
+        document.body.appendChild(link);link.click();
+        setTimeout(function(){document.body.removeChild(link);URL.revokeObjectURL(url);},100);
+      }
+    }).catch(function(e){alert(e.message);});
+  }
+
+  return h('div',null,
+    // Sub-tabs
+    h('div',{style:{display:'flex',gap:6,marginBottom:12}},
+      [{k:'individual',l:'➕ Anexo Individual'},{k:'masivo',l:'📦 Generación Masiva'},{k:'listar',l:'📋 Listado de Anexos'}].map(function(t){
+        return h('button',{key:t.k,onClick:function(){setModo(t.k);},
+          style:{padding:'6px 14px',borderRadius:5,fontSize:11,cursor:'pointer',border:'1px solid #CBD5E1',background:modo===t.k?'#F59E0B':'#F8FAFC',color:modo===t.k?'#fff':'#475569',fontWeight:600}},t.l);
+      })
+    ),
+    // INDIVIDUAL
+    modo==='individual'&&h('div',{className:'card'},
+      h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#92400E'}},'Generar anexo para un trabajador'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:12}},
+        h('div',null,h('label',{style:lblS},'Trabajador *'),h('select',{value:form.persona_id,onChange:function(e){uIndi('persona_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),p.personal.map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo+(x.rut?' ('+x.rut+')':''));}))),
+        h('div',null,h('label',{style:lblS},'Empresa *'),h('select',{value:form.empresa_id,onChange:function(e){uIndi('empresa_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),p.empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+        h('div',null,h('label',{style:lblS},'Fecha anexo *'),h('input',{type:'date',value:form.fecha_anexo,onChange:function(e){uIndi('fecha_anexo',e.target.value);},style:inpS}))
+      ),
+      h('div',{style:{display:'grid',gridTemplateColumns:'200px 1fr',gap:10,marginBottom:12}},
+        h('div',null,h('label',{style:lblS},'Lugar firma'),h('input',{type:'text',value:form.lugar_firma,onChange:function(e){uIndi('lugar_firma',e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:lblS},'Observaciones'),h('input',{type:'text',value:form.observaciones,onChange:function(e){uIndi('observaciones',e.target.value);},style:inpS,placeholder:'(opcional)'}))
+      ),
+      // Cláusulas a modificar
+      h('div',{style:{background:'#FFF7ED',border:'2px solid #FED7AA',borderRadius:6,padding:12,marginBottom:12}},
+        h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:8}},
+          h('div',{style:{fontSize:12,fontWeight:700,color:'#9A3412'}},'📝 Cláusulas a modificar'),
+          h('button',{onClick:addClausula,style:{padding:'3px 10px',fontSize:11,background:'#F59E0B',color:'#fff',border:'none',borderRadius:4,cursor:'pointer',fontWeight:600}},'+ Cláusula')
+        ),
+        form.clausulas.map(function(c,i){
+          return h('div',{key:i,style:{background:'#fff',border:'1px solid #FCD34D',borderRadius:5,padding:10,marginBottom:8}},
+            h('div',{style:{display:'grid',gridTemplateColumns:'120px 1fr 30px',gap:8,marginBottom:6,alignItems:'end'}},
+              h('div',null,h('label',{style:lblS},'N° Cláusula'),h('select',{value:c.numero,onChange:function(e){uClausula(i,'numero',e.target.value);},style:inpS},
+                h('option',{value:'PRIMERA'},'PRIMERA'),
+                h('option',{value:'SEGUNDA'},'SEGUNDA'),
+                h('option',{value:'TERCERA'},'TERCERA'),
+                h('option',{value:'CUARTA'},'CUARTA'),
+                h('option',{value:'QUINTA'},'QUINTA'),
+                h('option',{value:'SEXTA'},'SEXTA'),
+                h('option',{value:'SEPTIMA'},'SÉPTIMA'),
+                h('option',{value:'OCTAVA'},'OCTAVA'),
+                h('option',{value:'NOVENA'},'NOVENA'),
+                h('option',{value:'DECIMA'},'DÉCIMA')
+              )),
+              h('div',null,h('label',{style:lblS},'Título (opcional)'),h('input',{type:'text',value:c.titulo,onChange:function(e){uClausula(i,'titulo',e.target.value);},style:inpS,placeholder:'Ej: Lugar de Trabajo, Remuneración, etc.'})),
+              form.clausulas.length>1&&h('button',{onClick:function(){removeClausula(i);},style:{padding:'5px',background:'#FEF2F2',color:'#DC2626',border:'1px solid #FCA5A5',borderRadius:4,cursor:'pointer',fontSize:14}},'✕')
+            ),
+            h('label',{style:lblS},'Nuevo texto de la cláusula *'),
+            h('textarea',{value:c.texto,onChange:function(e){uClausula(i,'texto',e.target.value);},rows:3,style:Object.assign({},inpS,{resize:'vertical'}),placeholder:'Ej: Se establece como lugar de trabajo: Fundo Caballo de Palo, de propiedad de Forestal Mininco Spa., comuna de Curanilahue, región de Biobío.'})
+          );
+        })
+      ),
+      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8}},
+        h(Btn,{v:'g',onClick:function(){setForm(emptyForm);}},null,'Limpiar'),
+        h(Btn,{onClick:guardarIndividual},'💾 Crear anexo y generar documento')
+      )
+    ),
+    // MASIVO
+    modo==='masivo'&&h('div',{className:'card'},
+      h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#92400E'}},'Generación masiva — Cláusula Segunda (Lugar de Trabajo)'),
+      h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:5,padding:8,fontSize:11,color:'#1E40AF',marginBottom:12}},
+        '💡 Se generará el mismo anexo (modificación de la cláusula segunda) para todos los trabajadores seleccionados de la faena.'
+      ),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}},
+        h('div',null,h('label',{style:lblS},'Faena *'),h('select',{value:masivoForm.faena_id,onChange:function(e){uMas('faena_id',e.target.value);setSelPersonas([]);},style:inpS},h('option',{value:''},'Seleccione faena...'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+        h('div',null,h('label',{style:lblS},'Empresa *'),h('select',{value:masivoForm.empresa_id,onChange:function(e){uMas('empresa_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),p.empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+        h('div',null,h('label',{style:lblS},'Fecha anexo *'),h('input',{type:'date',value:masivoForm.fecha_anexo,onChange:function(e){uMas('fecha_anexo',e.target.value);},style:inpS}))
+      ),
+      // Datos del fundo
+      h('div',{style:{background:'#FEF3C7',border:'1px solid #FDE68A',borderRadius:5,padding:10,marginBottom:12}},
+        h('div',{style:{fontSize:11,fontWeight:700,color:'#92400E',marginBottom:6}},'🌲 Lugar de trabajo'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:8}},
+          h('div',null,h('label',{style:lblS},'Nombre del fundo *'),h('input',{type:'text',value:masivoForm.fundo,onChange:function(e){uMas('fundo',e.target.value);},style:inpS,placeholder:'Ej: Caballo de Palo'})),
+          h('div',null,h('label',{style:lblS},'Propietario *'),h('input',{type:'text',value:masivoForm.propiedad,onChange:function(e){uMas('propiedad',e.target.value);},style:inpS,placeholder:'Ej: Forestal Mininco Spa.'}))
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}},
+          h('div',null,h('label',{style:lblS},'Comuna *'),h('input',{type:'text',value:masivoForm.comuna,onChange:function(e){uMas('comuna',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Región *'),h('input',{type:'text',value:masivoForm.region,onChange:function(e){uMas('region',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Lugar firma'),h('input',{type:'text',value:masivoForm.lugar_firma,onChange:function(e){uMas('lugar_firma',e.target.value);},style:inpS}))
+        ),
+        h('div',{style:{marginTop:8,padding:8,background:'#fff',border:'1px dashed #FCD34D',borderRadius:4,fontSize:11,color:'#78350F',fontStyle:'italic'}},
+          'Vista previa: "Se establece como lugar de trabajo: Fundo ',h('strong',null,masivoForm.fundo||'___'),', de propiedad ',h('strong',null,masivoForm.propiedad||'___'),', comuna de ',h('strong',null,masivoForm.comuna||'___'),', región de ',h('strong',null,masivoForm.region||'___'),'."'
+        )
+      ),
+      // Lista personas faena
+      masivoForm.faena_id&&h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,padding:10,marginBottom:12}},
+        h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:8}},
+          h('div',{style:{fontSize:12,fontWeight:700}},'Personal de la faena ('+personalFaena.length+' trabajadores) — '+selPersonas.length+' seleccionado(s)'),
+          h('div',{style:{display:'flex',gap:6}},
+            h('button',{onClick:selectAll,style:{padding:'3px 10px',fontSize:10,border:'1px solid #CBD5E1',background:'#F8FAFC',borderRadius:4,cursor:'pointer'}},'Seleccionar todos'),
+            h('button',{onClick:selectNone,style:{padding:'3px 10px',fontSize:10,border:'1px solid #CBD5E1',background:'#F8FAFC',borderRadius:4,cursor:'pointer'}},'Deseleccionar')
+          )
+        ),
+        personalFaena.length===0?h('div',{style:{color:'#94A3B8',fontSize:11,padding:20,textAlign:'center'}},'No hay personal asignado a esta faena'):
+        h('div',{style:{maxHeight:300,overflow:'auto',display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:4}},
+          personalFaena.map(function(x){
+            var sel=selPersonas.indexOf(x.persona_id)>=0;
+            return h('div',{key:x.persona_id,onClick:function(){toggleSel(x.persona_id);},style:{display:'flex',alignItems:'center',gap:6,padding:'5px 8px',background:sel?'#FEF3C7':'#F8FAFC',border:'1px solid '+(sel?'#F59E0B':'#E2E8F0'),borderRadius:4,cursor:'pointer'}},
+              h('input',{type:'checkbox',checked:sel,readOnly:true}),
+              h('div',{style:{flex:1}},
+                h('div',{style:{fontSize:11,fontWeight:600}},x.nombre_completo),
+                h('div',{style:{fontSize:9,color:'#64748B'}},(x.rut||'—')+' — '+(x.cargo||'Sin cargo'))
+              )
+            );
+          })
+        )
+      ),
+      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8}},
+        h(Btn,{onClick:guardarMasivo,disabled:!selPersonas.length},'📦 Crear '+selPersonas.length+' anexo(s) y generar documentos')
+      )
+    ),
+    // LISTAR
+    modo==='listar'&&h('div',{className:'card'},
+      h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:10}},
+        h('div',{style:{fontSize:13,fontWeight:700}},'Anexos generados ('+anexos.length+')'),
+        h('select',{value:fPersona,onChange:function(e){setFPersona(e.target.value);},style:Object.assign({},inpS,{maxWidth:300})},h('option',{value:''},'Todos los trabajadores'),p.personal.map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo);}))
+      ),
+      anexos.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:20,textAlign:'center'}},'No hay anexos registrados'):
+      h('table',{className:'tbl',style:{width:'100%',fontSize:11}},
+        h('thead',null,h('tr',null,
+          h('th',null,'Fecha'),
+          h('th',null,'Trabajador'),
+          h('th',null,'Empresa'),
+          h('th',null,'Faena'),
+          h('th',null,'Cláusulas'),
+          h('th',null,'Observaciones'),
+          h('th',null,'')
+        )),
+        h('tbody',null,anexos.map(function(a){
+          var cs=Array.isArray(a.clausulas)?a.clausulas:[];
+          return h('tr',{key:a.anexo_id},
+            h('td',null,fmtD(a.fecha_anexo)),
+            h('td',null,h('div',{style:{fontWeight:600}},a.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},a.rut||'')),
+            h('td',null,a.empresa_nombre),
+            h('td',null,a.faena_nombre||'—'),
+            h('td',null,cs.map(function(c){return h('span',{key:c.numero,style:{display:'inline-block',background:'#FEF3C7',color:'#92400E',padding:'1px 6px',borderRadius:10,fontSize:9,fontWeight:600,marginRight:3}},c.numero);})),
+            h('td',null,h('span',{style:{fontSize:10,color:'#64748B'}},a.observaciones||'—')),
+            h('td',null,h('div',{style:{display:'flex',gap:3}},
+              h(Btn,{v:'a',sm:true,onClick:function(){generarAnexoDoc(a.anexo_id,'word');}},null,'📄 Word'),
+              h(Btn,{v:'a',sm:true,onClick:function(){generarAnexoDoc(a.anexo_id,'pdf');}},null,'📑 PDF'),
+              h(Btn,{v:'r',sm:true,onClick:function(){eliminarAnexo(a.anexo_id);}},null,'🗑')
+            ))
+          );
+        }))
+      )
+    )
+  );
+}
+
+// ── Builder HTML del anexo ──
+function buildAnexoHTML(a){
+  var cs=Array.isArray(a.clausulas)?a.clausulas:[];
+  var fechaTxt=fmtFechaLarga(a.fecha_anexo);
+  var nClausulas=cs.length===1?'la siguiente cláusula':'las siguientes cláusulas';
+  var clausulasHTML=cs.map(function(c){
+    return '<p><strong>Cláusula '+(c.numero||'')+(c.titulo?' — '+c.titulo:'')+':</strong></p><p>'+(c.texto||'')+'</p>';
+  }).join('');
+  var logo=a.logo_base64?'<img src="data:image/png;base64,'+a.logo_base64+'" style="max-height:80px;max-width:200px;margin-bottom:10px"/>':'';
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Anexo Contrato</title>'+
+    '<style>body{font-family:Calibri,Arial,sans-serif;font-size:12pt;line-height:1.5;margin:2cm;color:#000}'+
+    'h2{text-align:center;font-size:14pt;margin-bottom:20px}'+
+    'p{text-align:justify;margin:8px 0}'+
+    '.firmas{margin-top:60px;width:100%;border-collapse:collapse}'+
+    '.firmas td{width:50%;text-align:center;padding:30px 10px 10px;border-top:1px solid #000;font-size:10pt;vertical-align:top}'+
+    '@media print{body{margin:1.5cm}}</style></head><body>'+
+    logo+
+    '<h2>ANEXO CONTRATO DE TRABAJO</h2>'+
+    '<p>En <strong>'+(a.lugar_firma||'Nacimiento')+'</strong>, a <strong>'+fechaTxt+'</strong>, entre <strong>'+(a.empresa_nombre||'')+'</strong>, RUT <strong>'+(a.empresa_rut||'')+'</strong>'+
+    (a.representante_nombre?', representada legalmente por don/a <strong>'+a.representante_nombre+'</strong>'+(a.representante_rut?', Cédula Nacional de Identidad <strong>'+a.representante_rut+'</strong>':''):'')+
+    ', en adelante "el Empleador" o "la Empresa", y don/a <strong>'+(a.nombre_completo||'')+'</strong>, Cédula Nacional de Identidad <strong>'+(a.rut||'')+'</strong>, en adelante indistintamente el "trabajador", se acuerda lo siguiente:</p>'+
+    '<p><strong>PRIMERO: Antecedentes</strong></p>'+
+    '<p>Con fecha '+(a.fecha_contrato_original?fmtFechaLarga(a.fecha_contrato_original):fechaTxt)+' las partes celebraron un contrato de trabajo en virtud del cual don/a '+(a.nombre_completo||'')+' ha prestado sus servicios en calidad de '+((a.funcion_original||a.cargo||'').toUpperCase())+' para la Empresa, en adelante "el Contrato de Trabajo".</p>'+
+    '<p><strong>SEGUNDO: Modificación al Contrato de Trabajo</strong></p>'+
+    '<p>Las partes acuerdan que a contar de esta fecha modificar '+nClausulas+':</p>'+
+    clausulasHTML+
+    '<p><strong>TERCERO: Final</strong></p>'+
+    '<p>En todo lo no modificado por el presente instrumento, seguirá rigiendo el Contrato de Trabajo.</p>'+
+    '<p>El presente instrumento se firma en dos ejemplares del mismo tenor, quedando uno en poder de cada parte.</p>'+
+    '<table class="firmas"><tr>'+
+    '<td>'+(a.empresa_nombre||'')+'<br/>'+(a.empresa_rut||'')+(a.representante_nombre?'<br/>Representante Legal: '+(a.representante_rut||''):'')+'</td>'+
+    '<td>'+(a.nombre_completo||'')+'<br/>'+(a.rut||'')+'</td>'+
+    '</tr></table>'+
+    '</body></html>';
+}
+
+function fmtFechaLarga(f){
+  if(!f)return'';
+  var d=new Date(f+(f.indexOf('T')<0?'T00:00:00':''));
+  var meses=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  return d.getDate()+' de '+meses[d.getMonth()]+' de '+d.getFullYear();
 }
 
 // ── Mantenedor de funciones por cargo ──
