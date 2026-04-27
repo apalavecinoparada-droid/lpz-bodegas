@@ -5289,6 +5289,7 @@ async function setupFiniquitos(q){
     causal VARCHAR(200),
     causal_hecho TEXT,
     cargo VARCHAR(150),
+    estado VARCHAR(20) DEFAULT 'PENDIENTE',
     indem_anios_servicio NUMERIC(14,2) DEFAULT 0,
     indem_vacaciones NUMERIC(14,2) DEFAULT 0,
     indem_tiempo_servido NUMERIC(14,2) DEFAULT 0,
@@ -5297,6 +5298,7 @@ async function setupFiniquitos(q){
     usuario VARCHAR(120),
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
+  try{await q("ALTER TABLE cartas_termino ADD COLUMN IF NOT EXISTS estado VARCHAR(20) DEFAULT 'PENDIENTE'");}catch(e){}
 }
 setupFiniquitos(pool.query.bind(pool)).catch(function(e){console.log('[WARN] finiquitos:',e.message);});
 
@@ -5332,14 +5334,30 @@ app.get('/api/finiquitos/:id', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.post('/api/finiquitos', auth, async(req,res)=>{
+  const client=await pool.connect();
   try{
+    await client.query('BEGIN');
     const b=req.body;
     if(!b.persona_id||!b.empresa_id||!b.fecha_inicio||!b.fecha_termino)throw new Error('Datos obligatorios faltantes');
-    const r=await pool.query(`INSERT INTO finiquitos(persona_id,empresa_id,causal,fecha_inicio,fecha_termino,fecha_aviso,es_zona_extrema,tipo_sueldo,valor_sueldo_minimo,valor_uf,sueldo_base,gratificacion_mensual,asignacion_colacion,asignacion_movilizacion,haber_var_mes1,haber_var_mes2,haber_var_mes3,promedio_variable,dias_feriado_tomados,dias_inhabiles,remuneracion_pendiente,descuentos,anios_servicio,dias_feriado_legal,dias_feriado_pendiente,total_haberes,indem_aviso_previo,indem_anios_servicio,indem_vacaciones,indem_tiempo_servido,total_finiquito,observaciones,usuario)
+    const r=await client.query(`INSERT INTO finiquitos(persona_id,empresa_id,causal,fecha_inicio,fecha_termino,fecha_aviso,es_zona_extrema,tipo_sueldo,valor_sueldo_minimo,valor_uf,sueldo_base,gratificacion_mensual,asignacion_colacion,asignacion_movilizacion,haber_var_mes1,haber_var_mes2,haber_var_mes3,promedio_variable,dias_feriado_tomados,dias_inhabiles,remuneracion_pendiente,descuentos,anios_servicio,dias_feriado_legal,dias_feriado_pendiente,total_haberes,indem_aviso_previo,indem_anios_servicio,indem_vacaciones,indem_tiempo_servido,total_finiquito,observaciones,usuario)
       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33) RETURNING finiquito_id`,
       [b.persona_id,b.empresa_id,b.causal||null,b.fecha_inicio,b.fecha_termino,b.fecha_aviso||null,b.es_zona_extrema||false,b.tipo_sueldo||'Fijo',b.valor_sueldo_minimo||0,b.valor_uf||0,b.sueldo_base||0,b.gratificacion_mensual!==false,b.asignacion_colacion||0,b.asignacion_movilizacion||0,b.haber_var_mes1||0,b.haber_var_mes2||0,b.haber_var_mes3||0,b.promedio_variable||0,b.dias_feriado_tomados||0,b.dias_inhabiles||0,b.remuneracion_pendiente||0,b.descuentos||0,b.anios_servicio||0,b.dias_feriado_legal||0,b.dias_feriado_pendiente||0,b.total_haberes||0,b.indem_aviso_previo||0,b.indem_anios_servicio||0,b.indem_vacaciones||0,b.indem_tiempo_servido||0,b.total_finiquito||0,b.observaciones||null,req.user.email]);
-    res.status(201).json({ok:true,finiquito_id:r.rows[0].finiquito_id});
-  }catch(e){res.status(400).json({error:e.message});}
+    const finiquito_id=r.rows[0].finiquito_id;
+    // Traspasar valores a la(s) carta(s) PENDIENTE del mismo trabajador y empresa
+    const cartaUpd=await client.query(`UPDATE cartas_termino SET 
+        finiquito_id=$1,
+        indem_anios_servicio=$2,
+        indem_vacaciones=$3,
+        indem_tiempo_servido=$4,
+        indem_aviso_previo=$5,
+        estado='COMPLETADA'
+      WHERE persona_id=$6 AND empresa_id=$7 AND (estado IS NULL OR estado='PENDIENTE')
+      RETURNING carta_id`,
+      [finiquito_id,b.indem_anios_servicio||0,b.indem_vacaciones||0,b.indem_tiempo_servido||0,b.indem_aviso_previo||0,b.persona_id,b.empresa_id]);
+    await client.query('COMMIT');
+    res.status(201).json({ok:true,finiquito_id:finiquito_id,cartas_actualizadas:cartaUpd.rows.length});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 app.delete('/api/finiquitos/:id', auth, async(req,res)=>{
   try{await pool.query('DELETE FROM finiquitos WHERE finiquito_id=$1',[req.params.id]);res.json({ok:true});}
