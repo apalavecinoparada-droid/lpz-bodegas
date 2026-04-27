@@ -5235,6 +5235,163 @@ app.delete('/api/anexos/:id', auth, async(req,res)=>{
 });
 
 // ══════════════════════════════════════════════════════
+// FINIQUITOS
+// ══════════════════════════════════════════════════════
+async function setupFiniquitos(q){
+  await q(`CREATE TABLE IF NOT EXISTS finiquitos (
+    finiquito_id SERIAL PRIMARY KEY,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    empresa_id INT NOT NULL REFERENCES empresas(empresa_id),
+    causal VARCHAR(200),
+    fecha_inicio DATE,
+    fecha_termino DATE,
+    fecha_aviso DATE,
+    es_zona_extrema BOOLEAN DEFAULT false,
+    tipo_sueldo VARCHAR(20) DEFAULT 'Fijo',
+    valor_sueldo_minimo NUMERIC(14,2),
+    valor_uf NUMERIC(14,4),
+    sueldo_base NUMERIC(14,2) DEFAULT 0,
+    gratificacion_mensual BOOLEAN DEFAULT true,
+    asignacion_colacion NUMERIC(14,2) DEFAULT 0,
+    asignacion_movilizacion NUMERIC(14,2) DEFAULT 0,
+    haber_var_mes1 NUMERIC(14,2) DEFAULT 0,
+    haber_var_mes2 NUMERIC(14,2) DEFAULT 0,
+    haber_var_mes3 NUMERIC(14,2) DEFAULT 0,
+    promedio_variable NUMERIC(14,2) DEFAULT 0,
+    dias_feriado_tomados NUMERIC(8,2) DEFAULT 0,
+    dias_inhabiles NUMERIC(8,2) DEFAULT 0,
+    remuneracion_pendiente NUMERIC(14,2) DEFAULT 0,
+    descuentos NUMERIC(14,2) DEFAULT 0,
+    -- Resultados calculados
+    anios_servicio NUMERIC(8,2),
+    dias_feriado_legal NUMERIC(8,2),
+    dias_feriado_pendiente NUMERIC(8,2),
+    total_haberes NUMERIC(14,2),
+    indem_aviso_previo NUMERIC(14,2) DEFAULT 0,
+    indem_anios_servicio NUMERIC(14,2) DEFAULT 0,
+    indem_vacaciones NUMERIC(14,2) DEFAULT 0,
+    indem_tiempo_servido NUMERIC(14,2) DEFAULT 0,
+    total_finiquito NUMERIC(14,2),
+    observaciones TEXT,
+    usuario VARCHAR(120),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  try{await q('ALTER TABLE finiquitos ADD COLUMN IF NOT EXISTS descuentos NUMERIC(14,2) DEFAULT 0');}catch(e){}
+  // Cartas de término de contrato
+  await q(`CREATE TABLE IF NOT EXISTS cartas_termino (
+    carta_id SERIAL PRIMARY KEY,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    empresa_id INT NOT NULL REFERENCES empresas(empresa_id),
+    finiquito_id INT REFERENCES finiquitos(finiquito_id),
+    fecha_carta DATE NOT NULL,
+    fecha_contrato DATE,
+    fecha_termino DATE NOT NULL,
+    causal VARCHAR(200),
+    causal_hecho TEXT,
+    cargo VARCHAR(150),
+    indem_anios_servicio NUMERIC(14,2) DEFAULT 0,
+    indem_vacaciones NUMERIC(14,2) DEFAULT 0,
+    indem_tiempo_servido NUMERIC(14,2) DEFAULT 0,
+    indem_aviso_previo NUMERIC(14,2) DEFAULT 0,
+    observaciones TEXT,
+    usuario VARCHAR(120),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+}
+setupFiniquitos(pool.query.bind(pool)).catch(function(e){console.log('[WARN] finiquitos:',e.message);});
+
+app.get('/api/finiquitos', auth, async(req,res)=>{
+  try{
+    const{persona_id}=req.query;
+    let w=['1=1'],v=[];
+    if(persona_id){v.push(persona_id);w.push(`f.persona_id=$${v.length}`);}
+    const r=await pool.query(`SELECT f.*,p.nombre_completo,p.rut,p.cargo,p.fecha_ingreso,
+      e.razon_social AS empresa_nombre,e.rut AS empresa_rut,e.direccion AS empresa_direccion,
+      e.comuna AS empresa_comuna,e.region AS empresa_region,
+      e.representante_nombre,e.representante_rut,e.logo_base64,e.firma_representante,e.timbre_empresa
+      FROM finiquitos f
+      JOIN personal p ON f.persona_id=p.persona_id
+      JOIN empresas e ON f.empresa_id=e.empresa_id
+      WHERE ${w.join(' AND ')}
+      ORDER BY f.creado_en DESC`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/finiquitos/:id', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT f.*,p.nombre_completo,p.rut,p.cargo,p.fecha_ingreso,p.direccion AS persona_direccion,p.comuna AS persona_comuna,p.region AS persona_region,
+      e.razon_social AS empresa_nombre,e.rut AS empresa_rut,e.direccion AS empresa_direccion,
+      e.comuna AS empresa_comuna,e.region AS empresa_region,
+      e.representante_nombre,e.representante_rut,e.logo_base64,e.firma_representante,e.timbre_empresa
+      FROM finiquitos f
+      JOIN personal p ON f.persona_id=p.persona_id
+      JOIN empresas e ON f.empresa_id=e.empresa_id
+      WHERE f.finiquito_id=$1`,[req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Finiquito no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/finiquitos', auth, async(req,res)=>{
+  try{
+    const b=req.body;
+    if(!b.persona_id||!b.empresa_id||!b.fecha_inicio||!b.fecha_termino)throw new Error('Datos obligatorios faltantes');
+    const r=await pool.query(`INSERT INTO finiquitos(persona_id,empresa_id,causal,fecha_inicio,fecha_termino,fecha_aviso,es_zona_extrema,tipo_sueldo,valor_sueldo_minimo,valor_uf,sueldo_base,gratificacion_mensual,asignacion_colacion,asignacion_movilizacion,haber_var_mes1,haber_var_mes2,haber_var_mes3,promedio_variable,dias_feriado_tomados,dias_inhabiles,remuneracion_pendiente,descuentos,anios_servicio,dias_feriado_legal,dias_feriado_pendiente,total_haberes,indem_aviso_previo,indem_anios_servicio,indem_vacaciones,indem_tiempo_servido,total_finiquito,observaciones,usuario)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33) RETURNING finiquito_id`,
+      [b.persona_id,b.empresa_id,b.causal||null,b.fecha_inicio,b.fecha_termino,b.fecha_aviso||null,b.es_zona_extrema||false,b.tipo_sueldo||'Fijo',b.valor_sueldo_minimo||0,b.valor_uf||0,b.sueldo_base||0,b.gratificacion_mensual!==false,b.asignacion_colacion||0,b.asignacion_movilizacion||0,b.haber_var_mes1||0,b.haber_var_mes2||0,b.haber_var_mes3||0,b.promedio_variable||0,b.dias_feriado_tomados||0,b.dias_inhabiles||0,b.remuneracion_pendiente||0,b.descuentos||0,b.anios_servicio||0,b.dias_feriado_legal||0,b.dias_feriado_pendiente||0,b.total_haberes||0,b.indem_aviso_previo||0,b.indem_anios_servicio||0,b.indem_vacaciones||0,b.indem_tiempo_servido||0,b.total_finiquito||0,b.observaciones||null,req.user.email]);
+    res.status(201).json({ok:true,finiquito_id:r.rows[0].finiquito_id});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/finiquitos/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM finiquitos WHERE finiquito_id=$1',[req.params.id]);res.json({ok:true});}
+  catch(e){res.status(400).json({error:e.message});}
+});
+
+// Cartas de término de contrato
+app.get('/api/cartas-termino', auth, async(req,res)=>{
+  try{
+    const{persona_id}=req.query;
+    let w=['1=1'],v=[];
+    if(persona_id){v.push(persona_id);w.push(`c.persona_id=$${v.length}`);}
+    const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut,p.cargo,p.direccion AS persona_direccion,p.comuna AS persona_comuna,
+      e.razon_social AS empresa_nombre,e.rut AS empresa_rut,
+      e.representante_nombre,e.representante_rut,e.logo_base64,e.firma_representante,e.timbre_empresa
+      FROM cartas_termino c
+      JOIN personal p ON c.persona_id=p.persona_id
+      JOIN empresas e ON c.empresa_id=e.empresa_id
+      WHERE ${w.join(' AND ')}
+      ORDER BY c.fecha_carta DESC,c.carta_id DESC`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/cartas-termino/:id', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut,p.cargo,p.direccion AS persona_direccion,p.comuna AS persona_comuna,
+      e.razon_social AS empresa_nombre,e.rut AS empresa_rut,
+      e.representante_nombre,e.representante_rut,e.logo_base64,e.firma_representante,e.timbre_empresa
+      FROM cartas_termino c
+      JOIN personal p ON c.persona_id=p.persona_id
+      JOIN empresas e ON c.empresa_id=e.empresa_id
+      WHERE c.carta_id=$1`,[req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Carta no encontrada'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/cartas-termino', auth, async(req,res)=>{
+  try{
+    const b=req.body;
+    if(!b.persona_id||!b.empresa_id||!b.fecha_carta||!b.fecha_termino)throw new Error('Datos obligatorios faltantes');
+    const r=await pool.query(`INSERT INTO cartas_termino(persona_id,empresa_id,finiquito_id,fecha_carta,fecha_contrato,fecha_termino,causal,causal_hecho,cargo,indem_anios_servicio,indem_vacaciones,indem_tiempo_servido,indem_aviso_previo,observaciones,usuario)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING carta_id`,
+      [b.persona_id,b.empresa_id,b.finiquito_id||null,b.fecha_carta,b.fecha_contrato||null,b.fecha_termino,b.causal||null,b.causal_hecho||null,b.cargo||null,b.indem_anios_servicio||0,b.indem_vacaciones||0,b.indem_tiempo_servido||0,b.indem_aviso_previo||0,b.observaciones||null,req.user.email]);
+    res.status(201).json({ok:true,carta_id:r.rows[0].carta_id});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/cartas-termino/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM cartas_termino WHERE carta_id=$1',[req.params.id]);res.json({ok:true});}
+  catch(e){res.status(400).json({error:e.message});}
+});
+
+// ══════════════════════════════════════════════════════
 // ADMIN — LIMPIEZA DE DATOS TRANSACCIONALES
 // ══════════════════════════════════════════════════════
 app.post('/api/admin/wipe-transacciones', auth, async(req,res)=>{
