@@ -7675,6 +7675,7 @@ function AnexosView(p){
   // Form masivo
   var[masivoForm,setMasivoForm]=useState({faena_id:'',empresa_id:'',fecha_anexo:new Date().toISOString().slice(0,10),lugar_firma:'Nacimiento',fundo:'Caballo de Palo',propiedad:'Forestal Mininco Spa.',comuna:'Curanilahue',region:'Biobío'});
   var[selPersonas,setSelPersonas]=useState([]);
+  var[formatoSalida,setFormatoSalida]=useState('word'); // 'word' o 'pdf'
 
   function loadAnexos(){
     var qs=fPersona?'?persona_id='+fPersona:'';
@@ -7701,8 +7702,8 @@ function AnexosView(p){
     api('/anexos','POST',form,p.tok).then(function(r){
       alert('✅ Anexo creado');
       setShowForm(false);setForm(emptyForm);loadAnexos();
-      // Auto-generar el documento
-      if(r.creados&&r.creados.length)setTimeout(function(){generarAnexoDoc(r.creados[0],'word');},300);
+      // Auto-generar el documento en el formato seleccionado
+      if(r.creados&&r.creados.length)setTimeout(function(){generarAnexoDoc(r.creados[0],formatoSalida);},300);
     }).catch(function(e){alert('Error: '+e.message);});
   }
   function guardarMasivo(){
@@ -7719,15 +7720,15 @@ function AnexosView(p){
       observaciones:'Generación masiva — Faena: '+(faenas.find(function(f){return String(f.faena_id)===String(masivoForm.faena_id);})||{}).nombre
     };
     api('/anexos','POST',body,p.tok).then(function(r){
-      alert('✅ Se crearon '+r.total+' anexos. Generando documentos...');
+      alert('✅ Se crearon '+r.total+' anexos. Generando documentos en '+(formatoSalida==='pdf'?'PDF':'Word')+'...');
       setSelPersonas([]);loadAnexos();
-      // Generar todos los docs en cadena
+      // Generar todos los docs en cadena en el formato seleccionado
       if(r.creados&&r.creados.length){
         var i=0;
         function next(){
           if(i>=r.creados.length)return;
-          generarAnexoDoc(r.creados[i],'word');
-          i++;setTimeout(next,800);
+          generarAnexoDoc(r.creados[i],formatoSalida);
+          i++;setTimeout(next,formatoSalida==='pdf'?1500:800);
         }
         next();
       }
@@ -7810,9 +7811,16 @@ function AnexosView(p){
           );
         })
       ),
-      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8}},
-        h(Btn,{v:'g',onClick:function(){setForm(emptyForm);}},null,'Limpiar'),
-        h(Btn,{onClick:guardarIndividual},'💾 Crear anexo y generar documento')
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}},
+        h('div',{style:{display:'flex',alignItems:'center',gap:6}},
+          h('span',{style:{fontSize:11,fontWeight:600,color:'#475569'}},'Formato:'),
+          h('button',{onClick:function(){setFormatoSalida('word');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formatoSalida==='word'?'#1E40AF':'#CBD5E1'),background:formatoSalida==='word'?'#DBEAFE':'transparent',fontWeight:formatoSalida==='word'?700:400,fontSize:11,cursor:'pointer',color:formatoSalida==='word'?'#1E40AF':'#64748B'}},'📄 Word'),
+          h('button',{onClick:function(){setFormatoSalida('pdf');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formatoSalida==='pdf'?'#DC2626':'#CBD5E1'),background:formatoSalida==='pdf'?'#FEE2E2':'transparent',fontWeight:formatoSalida==='pdf'?700:400,fontSize:11,cursor:'pointer',color:formatoSalida==='pdf'?'#DC2626':'#64748B'}},'📑 PDF')
+        ),
+        h('div',{style:{display:'flex',gap:8}},
+          h(Btn,{v:'g',onClick:function(){setForm(emptyForm);}},null,'Limpiar'),
+          h(Btn,{onClick:guardarIndividual},'💾 Crear anexo y generar '+(formatoSalida==='pdf'?'PDF':'Word'))
+        )
       )
     ),
     // MASIVO
@@ -7865,8 +7873,14 @@ function AnexosView(p){
           })
         )
       ),
-      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8}},
-        h(Btn,{onClick:guardarMasivo,disabled:!selPersonas.length},'📦 Crear '+selPersonas.length+' anexo(s) y generar documentos')
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}},
+        h('div',{style:{display:'flex',alignItems:'center',gap:6}},
+          h('span',{style:{fontSize:11,fontWeight:600,color:'#475569'}},'Formato de salida:'),
+          h('button',{onClick:function(){setFormatoSalida('word');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formatoSalida==='word'?'#1E40AF':'#CBD5E1'),background:formatoSalida==='word'?'#DBEAFE':'transparent',fontWeight:formatoSalida==='word'?700:400,fontSize:11,cursor:'pointer',color:formatoSalida==='word'?'#1E40AF':'#64748B'}},'📄 Word'),
+          h('button',{onClick:function(){setFormatoSalida('pdf');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formatoSalida==='pdf'?'#DC2626':'#CBD5E1'),background:formatoSalida==='pdf'?'#FEE2E2':'transparent',fontWeight:formatoSalida==='pdf'?700:400,fontSize:11,cursor:'pointer',color:formatoSalida==='pdf'?'#DC2626':'#64748B'}},'📑 PDF'),
+          formatoSalida==='pdf'&&h('span',{style:{fontSize:10,color:'#92400E',marginLeft:6}},'⚠ Se abrirán '+selPersonas.length+' ventanas — autorice popups')
+        ),
+        h(Btn,{onClick:guardarMasivo,disabled:!selPersonas.length},'📦 Crear '+selPersonas.length+' anexo(s) en '+(formatoSalida==='pdf'?'PDF':'Word'))
       )
     ),
     // LISTAR
