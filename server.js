@@ -5162,7 +5162,7 @@ app.get('/api/contratos/:id', auth, async(req,res)=>{
       c.asig_colacion,c.asig_movilizacion,c.asig_viatico,c.tiene_alimentacion,c.alimentacion_detalle,
       c.otros_beneficios,c.observaciones,c.usuario,c.creado_en,
       p.nombre_completo,p.rut,p.cargo,p.fecha_nacimiento,p.direccion,p.comuna,
-      p.nacionalidad,p.estado_civil,p.region AS persona_region,
+      p.nacionalidad,p.estado_civil,p.afp,p.salud,p.region AS persona_region,
       e.razon_social AS empresa_nombre,e.rut AS empresa_rut,
       e.direccion AS empresa_direccion,e.comuna AS empresa_comuna,e.region AS empresa_region,
       e.representante_nombre,e.representante_rut,e.logo_base64,e.firma_representante,e.timbre_empresa
@@ -5301,6 +5301,15 @@ app.delete('/api/anexos/:id', auth, async(req,res)=>{
   try{await pool.query('DELETE FROM contrato_anexos WHERE anexo_id=$1',[req.params.id]);res.json({ok:true});}
   catch(e){res.status(400).json({error:e.message});}
 });
+// Eliminación masiva de anexos
+app.post('/api/anexos/eliminar-masivo', auth, async(req,res)=>{
+  try{
+    const ids=req.body.ids;
+    if(!Array.isArray(ids)||!ids.length)throw new Error('Debe indicar IDs a eliminar');
+    const r=await pool.query('DELETE FROM contrato_anexos WHERE anexo_id=ANY($1::int[]) RETURNING anexo_id',[ids]);
+    res.json({ok:true,eliminados:r.rows.length});
+  }catch(e){res.status(400).json({error:e.message});}
+});
 
 // ══════════════════════════════════════════════════════
 // FINIQUITOS
@@ -5347,6 +5356,7 @@ async function setupFiniquitos(q){
   )`);
   try{await q('ALTER TABLE finiquitos ADD COLUMN IF NOT EXISTS descuentos NUMERIC(14,2) DEFAULT 0');}catch(e){}
   try{await q('ALTER TABLE finiquitos ADD COLUMN IF NOT EXISTS saldo_afc_empleador NUMERIC(14,2) DEFAULT 0');}catch(e){}
+  try{await q('ALTER TABLE finiquitos ADD COLUMN IF NOT EXISTS bono_fijo NUMERIC(14,2) DEFAULT 0');}catch(e){}
   // Cartas de término de contrato
   await q(`CREATE TABLE IF NOT EXISTS cartas_termino (
     carta_id SERIAL PRIMARY KEY,
@@ -5409,9 +5419,9 @@ app.post('/api/finiquitos', auth, async(req,res)=>{
     await client.query('BEGIN');
     const b=req.body;
     if(!b.persona_id||!b.empresa_id||!b.fecha_inicio||!b.fecha_termino)throw new Error('Datos obligatorios faltantes');
-    const r=await client.query(`INSERT INTO finiquitos(persona_id,empresa_id,causal,fecha_inicio,fecha_termino,fecha_aviso,es_zona_extrema,tipo_sueldo,valor_sueldo_minimo,valor_uf,sueldo_base,gratificacion_mensual,asignacion_colacion,asignacion_movilizacion,haber_var_mes1,haber_var_mes2,haber_var_mes3,promedio_variable,dias_feriado_tomados,dias_inhabiles,remuneracion_pendiente,descuentos,saldo_afc_empleador,anios_servicio,dias_feriado_legal,dias_feriado_pendiente,total_haberes,indem_aviso_previo,indem_anios_servicio,indem_vacaciones,indem_tiempo_servido,total_finiquito,observaciones,usuario)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34) RETURNING finiquito_id`,
-      [b.persona_id,b.empresa_id,b.causal||null,b.fecha_inicio,b.fecha_termino,b.fecha_aviso||null,b.es_zona_extrema||false,b.tipo_sueldo||'Fijo',b.valor_sueldo_minimo||0,b.valor_uf||0,b.sueldo_base||0,b.gratificacion_mensual!==false,b.asignacion_colacion||0,b.asignacion_movilizacion||0,b.haber_var_mes1||0,b.haber_var_mes2||0,b.haber_var_mes3||0,b.promedio_variable||0,b.dias_feriado_tomados||0,b.dias_inhabiles||0,b.remuneracion_pendiente||0,b.descuentos||0,b.saldo_afc_empleador||0,b.anios_servicio||0,b.dias_feriado_legal||0,b.dias_feriado_pendiente||0,b.total_haberes||0,b.indem_aviso_previo||0,b.indem_anios_servicio||0,b.indem_vacaciones||0,b.indem_tiempo_servido||0,b.total_finiquito||0,b.observaciones||null,req.user.email]);
+    const r=await client.query(`INSERT INTO finiquitos(persona_id,empresa_id,causal,fecha_inicio,fecha_termino,fecha_aviso,es_zona_extrema,tipo_sueldo,valor_sueldo_minimo,valor_uf,sueldo_base,bono_fijo,gratificacion_mensual,asignacion_colacion,asignacion_movilizacion,haber_var_mes1,haber_var_mes2,haber_var_mes3,promedio_variable,dias_feriado_tomados,dias_inhabiles,remuneracion_pendiente,descuentos,saldo_afc_empleador,anios_servicio,dias_feriado_legal,dias_feriado_pendiente,total_haberes,indem_aviso_previo,indem_anios_servicio,indem_vacaciones,indem_tiempo_servido,total_finiquito,observaciones,usuario)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35) RETURNING finiquito_id`,
+      [b.persona_id,b.empresa_id,b.causal||null,b.fecha_inicio,b.fecha_termino,b.fecha_aviso||null,b.es_zona_extrema||false,b.tipo_sueldo||'Fijo',b.valor_sueldo_minimo||0,b.valor_uf||0,b.sueldo_base||0,b.bono_fijo||0,b.gratificacion_mensual!==false,b.asignacion_colacion||0,b.asignacion_movilizacion||0,b.haber_var_mes1||0,b.haber_var_mes2||0,b.haber_var_mes3||0,b.promedio_variable||0,b.dias_feriado_tomados||0,b.dias_inhabiles||0,b.remuneracion_pendiente||0,b.descuentos||0,b.saldo_afc_empleador||0,b.anios_servicio||0,b.dias_feriado_legal||0,b.dias_feriado_pendiente||0,b.total_haberes||0,b.indem_aviso_previo||0,b.indem_anios_servicio||0,b.indem_vacaciones||0,b.indem_tiempo_servido||0,b.total_finiquito||0,b.observaciones||null,req.user.email]);
     const finiquito_id=r.rows[0].finiquito_id;
     // Traspasar valores a la(s) carta(s) PENDIENTE del mismo trabajador y empresa
     const cartaUpd=await client.query(`UPDATE cartas_termino SET 
