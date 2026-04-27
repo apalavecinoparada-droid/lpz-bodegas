@@ -1056,15 +1056,15 @@ const empR=express.Router();
 empR.get('/', auth, async(req,res)=>{try{res.json((await pool.query('SELECT * FROM empresas ORDER BY empresa_id')).rows);}catch(e){res.status(500).json({error:e.message});}});
 empR.post('/', auth, async(req,res)=>{
   try{
-    const{rut,razon_social,direccion,ciudad,giro,telefono,email,representante_nombre,representante_rut,comuna,region}=req.body;
-    const r=await pool.query('INSERT INTO empresas(rut,razon_social,direccion,ciudad,giro,telefono,email,logo_base64,representante_nombre,representante_rut,comuna,region) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *',[rut,razon_social,direccion||null,ciudad||null,giro||null,telefono||null,email||null,req.body.logo_base64||null,representante_nombre||null,representante_rut||null,comuna||null,region||'VIII del Bio Bio']);
+    const{rut,razon_social,direccion,ciudad,giro,telefono,email,representante_nombre,representante_rut,comuna,region,firma_representante,timbre_empresa}=req.body;
+    const r=await pool.query('INSERT INTO empresas(rut,razon_social,direccion,ciudad,giro,telefono,email,logo_base64,representante_nombre,representante_rut,comuna,region,firma_representante,timbre_empresa) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *',[rut,razon_social,direccion||null,ciudad||null,giro||null,telefono||null,email||null,req.body.logo_base64||null,representante_nombre||null,representante_rut||null,comuna||null,region||'VIII del Bio Bio',firma_representante||null,timbre_empresa||null]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 empR.put('/:id', auth, async(req,res)=>{
   try{
-    const{rut,razon_social,direccion,ciudad,giro,telefono,email,representante_nombre,representante_rut,comuna,region}=req.body;
-    const r=await pool.query('UPDATE empresas SET rut=$1,razon_social=$2,direccion=$3,ciudad=$4,giro=$5,telefono=$6,email=$7,logo_base64=$8,representante_nombre=$9,representante_rut=$10,comuna=$11,region=$12,modificado_en=NOW() WHERE empresa_id=$13 RETURNING *',[rut,razon_social,direccion||null,ciudad||null,giro||null,telefono||null,email||null,req.body.logo_base64||null,representante_nombre||null,representante_rut||null,comuna||null,region||'VIII del Bio Bio',req.params.id]);
+    const{rut,razon_social,direccion,ciudad,giro,telefono,email,representante_nombre,representante_rut,comuna,region,firma_representante,timbre_empresa}=req.body;
+    const r=await pool.query('UPDATE empresas SET rut=$1,razon_social=$2,direccion=$3,ciudad=$4,giro=$5,telefono=$6,email=$7,logo_base64=$8,representante_nombre=$9,representante_rut=$10,comuna=$11,region=$12,firma_representante=$13,timbre_empresa=$14,modificado_en=NOW() WHERE empresa_id=$15 RETURNING *',[rut,razon_social,direccion||null,ciudad||null,giro||null,telefono||null,email||null,req.body.logo_base64||null,representante_nombre||null,representante_rut||null,comuna||null,region||'VIII del Bio Bio',firma_representante||null,timbre_empresa||null,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -4954,6 +4954,8 @@ async function setupContratos(q){
   try{await q("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS representante_rut VARCHAR(15)");}catch(e){}
   try{await q("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS region VARCHAR(60) DEFAULT 'VIII del Bio Bio'");}catch(e){}
   try{await q("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS comuna VARCHAR(100)");}catch(e){}
+  try{await q("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS firma_representante TEXT");}catch(e){}
+  try{await q("ALTER TABLE empresas ADD COLUMN IF NOT EXISTS timbre_empresa TEXT");}catch(e){}
 
   // Funciones estándar por cargo (catálogo editable)
   await q(`CREATE TABLE IF NOT EXISTS contrato_funciones (
@@ -5095,7 +5097,7 @@ app.get('/api/contratos/:id', auth, async(req,res)=>{
       p.nacionalidad,p.estado_civil,p.region AS persona_region,
       e.razon_social AS empresa_nombre,e.rut AS empresa_rut,
       e.direccion AS empresa_direccion,e.comuna AS empresa_comuna,e.region AS empresa_region,
-      e.representante_nombre,e.representante_rut,e.logo_base64
+      e.representante_nombre,e.representante_rut,e.logo_base64,e.firma_representante,e.timbre_empresa
       FROM contratos c
       JOIN personal p ON c.persona_id=p.persona_id
       JOIN empresas e ON c.empresa_id=e.empresa_id
@@ -5164,7 +5166,7 @@ app.get('/api/anexos', auth, async(req,res)=>{
       f.nombre AS faena_nombre,
       e.razon_social AS empresa_nombre,e.rut AS empresa_rut,e.direccion AS empresa_direccion,
       e.comuna AS empresa_comuna,e.region AS empresa_region,
-      e.representante_nombre,e.representante_rut,e.logo_base64
+      e.representante_nombre,e.representante_rut,e.logo_base64,e.firma_representante,e.timbre_empresa
       FROM contrato_anexos a
       JOIN personal p ON a.persona_id=p.persona_id
       LEFT JOIN faenas f ON p.faena_id=f.faena_id
@@ -5180,7 +5182,7 @@ app.get('/api/anexos/:id', auth, async(req,res)=>{
     const r=await pool.query(`SELECT a.*,p.nombre_completo,p.rut,p.cargo,
       e.razon_social AS empresa_nombre,e.rut AS empresa_rut,e.direccion AS empresa_direccion,
       e.comuna AS empresa_comuna,e.region AS empresa_region,
-      e.representante_nombre,e.representante_rut,e.logo_base64
+      e.representante_nombre,e.representante_rut,e.logo_base64,e.firma_representante,e.timbre_empresa
       FROM contrato_anexos a
       JOIN personal p ON a.persona_id=p.persona_id
       JOIN empresas e ON a.empresa_id=e.empresa_id
