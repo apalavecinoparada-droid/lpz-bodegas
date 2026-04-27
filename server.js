@@ -5209,12 +5209,12 @@ app.post('/api/anexos', auth, async(req,res)=>{
     }
     const creados=[];
     for(const pid of personas){
-      // Buscar último contrato del trabajador para fecha original
-      const ultC=await client.query('SELECT contrato_id,fecha_contrato FROM contratos WHERE persona_id=$1 AND empresa_id=$2 ORDER BY fecha_contrato DESC,contrato_id DESC LIMIT 1',[pid,b.empresa_id]);
+      // Buscar último contrato del trabajador (solo para vincular)
+      const ultC=await client.query('SELECT contrato_id FROM contratos WHERE persona_id=$1 AND empresa_id=$2 ORDER BY fecha_contrato DESC,contrato_id DESC LIMIT 1',[pid,b.empresa_id]);
       const cId=ultC.rows.length?ultC.rows[0].contrato_id:null;
-      const fOrig=ultC.rows.length?ultC.rows[0].fecha_contrato:null;
-      // Usar el cargo del trabajador (no la descripción de funciones)
-      const persR=await client.query('SELECT cargo FROM personal WHERE persona_id=$1',[pid]);
+      // Usar la fecha_ingreso del trabajador como fecha del contrato original
+      const persR=await client.query('SELECT cargo,fecha_ingreso FROM personal WHERE persona_id=$1',[pid]);
+      const fOrig=persR.rows.length?persR.rows[0].fecha_ingreso:null;
       const funOrig=persR.rows.length?persR.rows[0].cargo:(b.funcion_original||null);
       const r=await client.query(`INSERT INTO contrato_anexos(persona_id,empresa_id,contrato_id,fecha_anexo,fecha_contrato_original,funcion_original,lugar_firma,clausulas,observaciones,usuario)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10) RETURNING anexo_id`,
