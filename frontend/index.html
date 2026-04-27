@@ -8304,6 +8304,7 @@ function FiniquitosView(p){
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   var[modo,setModo]=useState('carta'); // carta | calcular | listar
   var[finiquitos,setFiniquitos]=useState([]);
+  var[feriados,setFeriados]=useState([]); // lista de fechas YYYY-MM-DD
   var hoy=new Date().toISOString().slice(0,10);
   var emptyForm={
     persona_id:'',empresa_id:'',causal:'Art. 161-1: Necesidades de la empresa',
@@ -8314,7 +8315,7 @@ function FiniquitosView(p){
     sueldo_base:0,gratificacion_mensual:true,asignacion_colacion:0,asignacion_movilizacion:0,
     haber_var_mes1:0,haber_var_mes2:0,haber_var_mes3:0,
     dias_feriado_tomados:0,dias_inhabiles:0,
-    remuneracion_pendiente:0,descuentos:0,observaciones:''
+    remuneracion_pendiente:0,descuentos:0,saldo_afc_empleador:0,observaciones:''
   };
   var[form,setForm]=useState(emptyForm);
   // Carta de término
@@ -8334,6 +8335,29 @@ function FiniquitosView(p){
     api('/cartas-termino','GET',null,p.tok).then(function(r){setCartas(Array.isArray(r)?r:[]);}).catch(function(){});
   }
   useEffect(function(){load();},[p.tok]);
+  // Auto-cargar UF y sueldo mínimo desde mindicador.cl al montar
+  useEffect(function(){
+    api('/indicadores-cl','GET',null,p.tok).then(function(r){
+      if(r.uf||r.sueldo_minimo){
+        setForm(function(f){
+          var nf=Object.assign({},f);
+          if(r.uf&&f.valor_uf===39267.07)nf.valor_uf=r.uf;
+          if(r.sueldo_minimo&&f.valor_sueldo_minimo===529000)nf.valor_sueldo_minimo=r.sueldo_minimo;
+          return nf;
+        });
+      }
+    }).catch(function(){});
+    // Cargar feriados del año actual y del próximo (por si el cálculo cruza años)
+    var year=new Date().getFullYear();
+    Promise.all([
+      api('/feriados-cl?year='+year,'GET',null,p.tok),
+      api('/feriados-cl?year='+(year+1),'GET',null,p.tok).catch(function(){return{feriados:[]};})
+    ]).then(function(rs){
+      var all=[];
+      rs.forEach(function(r){if(r&&r.feriados)all=all.concat(r.feriados.map(function(f){return f.fecha;}));});
+      setFeriados(all);
+    }).catch(function(){});
+  },[p.tok]);
 
   function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
   function updC(k,v){setCarta(function(f){return Object.assign({},f,{[k]:v});});}
@@ -8367,14 +8391,14 @@ function FiniquitosView(p){
     }
     if(mesesD<0){mesesD+=12;aniosD-=1;}
   }
-  // Años de servicio (con redondeo según tabla — años + 0.5 si tiene 6+ meses)
+  // Años de servicio según ley: por cada año + fracción superior a 6 meses se cuenta como año completo
   var aniosServicio=0;
   if(diasTrabajados>0){
     var aniosFrac=diasTrabajados/365;
-    // Tabla: si fracción > 0.5 (6 meses) sube medio año
     var entero=Math.floor(aniosFrac);
     var frac=aniosFrac-entero;
-    if(frac>=0.5)aniosServicio=entero+0.5;
+    // Fracción > 6 meses (0.5 año) → cuenta como año completo
+    if(frac>0.5)aniosServicio=entero+1;
     else aniosServicio=entero;
     if(aniosServicio>11)aniosServicio=11; // tope legal 11 años
   }
@@ -8411,9 +8435,31 @@ function FiniquitosView(p){
   }
   var diasPendientes=diasFeriadoLegal-(parseFloat(form.dias_feriado_tomados)||0);
   var totalDiasFeriado=diasPendientes+(parseFloat(form.dias_inhabiles)||0);
+  // Calcula días inhábiles (sábados, domingos y festivos) que caen en el rango
+  // al llevar los días pendientes hábiles a calendario desde la fecha siguiente al término
+  function calcularInhabiles(){
+    var pend=Math.ceil(diasPendientes);
+    if(pend<=0||!form.fecha_termino){alert('No hay días pendientes para calcular');return;}
+    var inicio=new Date(form.fecha_termino+'T00:00:00');
+    inicio.setDate(inicio.getDate()+1); // empieza el día siguiente al término
+    var feriadosSet={};feriados.forEach(function(f){feriadosSet[f]=true;});
+    var habilesContados=0,inhabiles=0,cur=new Date(inicio),fin=null;
+    var maxIter=pend*3+30; // tope de seguridad
+    while(habilesContados<pend&&maxIter-->0){
+      var dow=cur.getDay(); // 0=dom, 6=sab
+      var iso=cur.toISOString().slice(0,10);
+      var esFeriado=!!feriadosSet[iso];
+      if(dow===0||dow===6||esFeriado){inhabiles++;}
+      else{habilesContados++;fin=new Date(cur);}
+      cur.setDate(cur.getDate()+1);
+    }
+    upd('dias_inhabiles',inhabiles);
+    var finStr=fin?fin.toISOString().slice(0,10):'—';
+    alert('✅ Cálculo automático:\n\nDías hábiles pendientes: '+pend+'\nDías inhábiles encontrados: '+inhabiles+' (sábados, domingos y festivos)\nÚltimo día de vacaciones: '+finStr+'\n\nTotal días pendientes (hábiles + inhábiles): '+(pend+inhabiles));
+  }
   // Indemnizaciones
   var causalSel=CAUSALES_FINIQUITO.find(function(c){return c.k===form.causal;})||{};
-  // Aviso previo (solo Art. 161-1 y si fecha_aviso = fecha_termino o sin aviso)
+  // Aviso previo (Art. 161-1): 1 mes de remuneración (Total haberes base)
   var indemAviso=0;
   if(form.causal==='Art. 161-1: Necesidades de la empresa'){
     var diff=0;
@@ -8422,7 +8468,8 @@ function FiniquitosView(p){
       var ft=new Date(form.fecha_termino+'T00:00:00');
       diff=Math.floor((ft-fa)/(1000*3600*24));
     }
-    if(!form.fecha_aviso||(diff>=0&&diff<=29))indemAviso=totalHaberes/2; // 1 sueldo / 2 = mitad? No: planilla divide /2
+    // Si no se dio aviso o el aviso es menor a 30 días antes, corresponde el mes completo
+    if(!form.fecha_aviso||(diff>=0&&diff<=29))indemAviso=totalHaberes;
   }
   // Indem años de servicio (Art. 161-1 o 161-2)
   var indemAnios=0;
@@ -8450,7 +8497,8 @@ function FiniquitosView(p){
   }
   var remuPend=parseFloat(form.remuneracion_pendiente)||0;
   var descuentos=parseFloat(form.descuentos)||0;
-  var totalFiniquito=remuPend+indemAviso+indemAnios+indemVac+indemTiempoServ-descuentos;
+  var saldoAFC=parseFloat(form.saldo_afc_empleador)||0;
+  var totalFiniquito=remuPend+indemAviso+indemAnios+indemVac+indemTiempoServ-descuentos-saldoAFC;
 
   function guardar(){
     if(!form.persona_id||!form.empresa_id||!form.fecha_inicio||!form.fecha_termino){
@@ -8467,7 +8515,8 @@ function FiniquitosView(p){
       indem_vacaciones:indemVac,
       indem_tiempo_servido:indemTiempoServ,
       total_finiquito:totalFiniquito,
-      descuentos:descuentos
+      descuentos:descuentos,
+      saldo_afc_empleador:saldoAFC
     });
     api('/finiquitos','POST',body,p.tok).then(function(r){
       var msg='✅ Finiquito guardado.';
@@ -8636,7 +8685,17 @@ function FiniquitosView(p){
       ),
       // Remuneración
       h('div',{className:'card',style:{padding:14,marginBottom:12}},
-        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#1E3A2D'}},'II. Remuneración'),
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+          h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D'}},'II. Remuneración'),
+          h('button',{onClick:function(){
+            api('/indicadores-cl','GET',null,p.tok).then(function(r){
+              var msg='';
+              if(r.uf){upd('valor_uf',r.uf);msg+='UF: $'+new Intl.NumberFormat('es-CL').format(r.uf)+(r.uf_fecha?' ('+r.uf_fecha+')':'')+'\n';}
+              if(r.sueldo_minimo){upd('valor_sueldo_minimo',r.sueldo_minimo);msg+='Sueldo mínimo: $'+new Intl.NumberFormat('es-CL').format(r.sueldo_minimo)+(r.sueldo_minimo_fecha?' ('+r.sueldo_minimo_fecha+')':'');}
+              alert(msg?'✅ Indicadores actualizados desde mindicador.cl:\n\n'+msg:'No se pudieron obtener indicadores. Ingréselos manualmente.');
+            }).catch(function(e){alert('Error al consultar indicadores: '+e.message);});
+          },style:{padding:'5px 12px',fontSize:11,background:'#1E40AF',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontWeight:600}},'🔄 Actualizar UF y sueldo mínimo')
+        ),
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}},
           h('div',null,h('label',{style:lblS},'Sueldo mínimo $'),h('input',{type:'number',value:form.valor_sueldo_minimo,onChange:function(e){upd('valor_sueldo_minimo',e.target.value);},style:inpS})),
           h('div',null,h('label',{style:lblS},'Valor UF $'),h('input',{type:'number',step:'0.01',value:form.valor_uf,onChange:function(e){upd('valor_uf',e.target.value);},style:inpS})),
@@ -8650,7 +8709,7 @@ function FiniquitosView(p){
         ),
         // Variables (solo si tipo Variable)
         form.tipo_sueldo==='Variable'&&h('div',{style:{background:'#FEF3C7',border:'1px solid #FCD34D',borderRadius:6,padding:10,marginBottom:8}},
-          h('div',{style:{fontSize:11,fontWeight:700,color:'#92400E',marginBottom:6}},'⚠ Sueldo variable — Promedio últimos 3 meses (comisiones, semana corrida)'),
+          h('div',{style:{fontSize:11,fontWeight:700,color:'#92400E',marginBottom:6}},'⚠ Sueldo variable — Promedio últimos 3 meses (bono de producción, semana corrida)'),
           h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8}},
             h('div',null,h('label',{style:lblS},'Mes 1 (último) $'),h('input',{type:'number',value:form.haber_var_mes1,onChange:function(e){upd('haber_var_mes1',e.target.value);},style:inpS})),
             h('div',null,h('label',{style:lblS},'Mes 2 (penúlt.) $'),h('input',{type:'number',value:form.haber_var_mes2,onChange:function(e){upd('haber_var_mes2',e.target.value);},style:inpS})),
@@ -8671,7 +8730,11 @@ function FiniquitosView(p){
       ),
       // Feriado
       h('div',{className:'card',style:{padding:14,marginBottom:12}},
-        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#1E3A2D'}},'III. Feriado legal (vacaciones)'),
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+          h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D'}},'III. Feriado legal (vacaciones)'),
+          h('button',{onClick:calcularInhabiles,style:{padding:'5px 12px',fontSize:11,background:'#1E40AF',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontWeight:600},title:'Lleva los días pendientes a calendario desde el día siguiente al término y cuenta sábados, domingos y festivos'},'🔄 Calcular días inhábiles automático')
+        ),
+        h('div',{style:{fontSize:10,color:'#64748B',marginBottom:8}},'Los días inhábiles son los sábados, domingos y festivos que caen entre los días pendientes llevados a calendario (desde el día siguiente al término).'),
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10}},
           h('div',null,h('label',{style:lblS},'Días obtenidos'),h('input',{value:diasFeriadoLegal,readOnly:true,style:inpRO})),
           h('div',null,h('label',{style:lblS},'Días tomados'),h('input',{type:'number',step:'.01',value:form.dias_feriado_tomados,onChange:function(e){upd('dias_feriado_tomados',e.target.value);},style:inpS})),
@@ -8682,9 +8745,10 @@ function FiniquitosView(p){
       // Indemnizaciones (resultado final)
       h('div',{className:'card',style:{padding:14,marginBottom:12,background:'#FFFBEB',border:'2px solid #FDE68A'}},
         h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#92400E'}},'IV. Indemnizaciones por pagar'),
-        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:8}},
-          h('div',null,h('label',{style:lblS},'Remuneración pendiente $ (saldo último mes)'),h('input',{type:'number',value:form.remuneracion_pendiente,onChange:function(e){upd('remuneracion_pendiente',e.target.value);},style:inpS})),
-          h('div',null,h('label',{style:lblS},'Descuentos $ (anticipos, préstamos, etc.)'),h('input',{type:'number',value:form.descuentos,onChange:function(e){upd('descuentos',e.target.value);},style:inpS}))
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:8}},
+          h('div',null,h('label',{style:lblS},'Remuneración pendiente $'),h('input',{type:'number',value:form.remuneracion_pendiente,onChange:function(e){upd('remuneracion_pendiente',e.target.value);},style:inpS,placeholder:'Saldo último mes'})),
+          h('div',null,h('label',{style:lblS},'Descuentos $'),h('input',{type:'number',value:form.descuentos,onChange:function(e){upd('descuentos',e.target.value);},style:inpS,placeholder:'Anticipos, préstamos'})),
+          h('div',null,h('label',{style:Object.assign({},lblS,{color:'#9A3412'})},'Saldo AFC empleador $'),h('input',{type:'number',value:form.saldo_afc_empleador,onChange:function(e){upd('saldo_afc_empleador',e.target.value);},style:inpS,placeholder:'Imputable a indem. años serv.'}))
         ),
         h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12}},
           h('thead',null,h('tr',{style:{background:'#FDE68A'}},h('th',{style:{padding:'6px 10px',textAlign:'left',color:'#78350F'}},'Concepto'),h('th',{style:{padding:'6px 10px',textAlign:'right',color:'#78350F'}},'Monto'))),
@@ -8695,6 +8759,7 @@ function FiniquitosView(p){
             h('tr',null,h('td',{style:{padding:'6px 10px'}},'Indemnización vacaciones proporcionales'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:indemVac>0?'#15803D':'#94A3B8'}},indemVac>0?CLPF(indemVac):'No aplica')),
             h('tr',null,h('td',{style:{padding:'6px 10px'}},'Indemnización por tiempo servido (obra/faena)'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:indemTiempoServ>0?'#15803D':'#94A3B8'}},indemTiempoServ>0?CLPF(indemTiempoServ):'No aplica')),
             descuentos>0&&h('tr',null,h('td',{style:{padding:'6px 10px',color:'#DC2626'}},'(–) Descuentos'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:'#DC2626'}},'-'+CLPF(descuentos))),
+            saldoAFC>0&&h('tr',null,h('td',{style:{padding:'6px 10px',color:'#DC2626'}},'(–) Saldo AFC empleador'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:'#DC2626'}},'-'+CLPF(saldoAFC))),
             h('tr',{style:{background:'#FDE68A',fontWeight:700}},h('td',{style:{padding:'10px',fontSize:13}},'TOTAL FINIQUITO'),h('td',{style:{padding:'10px',textAlign:'right',fontFamily:'monospace',fontSize:16,color:'#15803D'}},CLPF(totalFiniquito)))
           )
         )
@@ -8818,6 +8883,7 @@ function buildFiniquitoHTML(f){
   if((f.indem_tiempo_servido||0)>0)filas.push(['Indemnización por tiempo servido (obra/faena)',f.indem_tiempo_servido]);
   if((f.remuneracion_pendiente||0)>0)filas.push(['Remuneración pendiente',f.remuneracion_pendiente]);
   if((f.descuentos||0)>0)filas.push(['Descuentos',f.descuentos]);
+  if((f.saldo_afc_empleador||0)>0)filas.push(['Saldo AFC Aporte Empleador',f.saldo_afc_empleador]);
   filas.push(['Total a Pagar',f.total_finiquito]);
   var rowsHtml=filas.map(function(r,i){
     var isTotal=i===filas.length-1;
