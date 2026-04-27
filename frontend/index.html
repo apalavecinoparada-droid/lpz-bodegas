@@ -1372,124 +1372,144 @@ function SolicitudesView(p){
 function generarComprobantePDF(reg, persona, empresas){
   var jsPDF=window.jspdf.jsPDF;
   var doc=new jsPDF({unit:'mm',format:'letter'});
-  var W=216; var H=279; var ML=25; var MR=25; var MT=25;
+  var W=216; var H=279;
+  var ML=15; var MR=15; // márgenes laterales reducidos
   var pw=W-ML-MR;
-  var y=MT;
   var fmtFecha=function(d){if(!d)return '';var s=(d+'').slice(0,10);return s.slice(8,10)+'/'+s.slice(5,7)+'/'+s.slice(0,4);};
 
   // Buscar empresa del trabajador
   var empresa=null;
   if(persona.empresa_id&&empresas){empresa=empresas.find(function(e){return e.empresa_id===persona.empresa_id||String(e.empresa_id)===String(persona.empresa_id);});}
 
-  // ── HEADER EMPRESA ──
-  doc.setFont('helvetica','normal');doc.setFontSize(11);
-  var valX=ML+30; // columna fija para valores
-  if(empresa){
-    doc.text('Razón Social:',ML,y);doc.text(empresa.razon_social||'',valX,y);y+=6;
-    doc.text('R.U.T.:',ML,y);doc.text(empresa.rut||'',valX,y);y+=6;
-    doc.text('Dirección:',ML,y);doc.text(empresa.direccion||'',valX,y);y+=6;
-    doc.text('Teléfono:',ML,y);doc.text(empresa.telefono||'',valX,y);
-  }else{
-    doc.text('Razón Social:',ML,y);doc.text('LEONIDAS POO ZENTENO Y CÍA. LTDA.',valX,y);y+=6;
-    doc.text('R.U.T.:',ML,y);doc.text('76.033.889-6',valX,y);y+=6;
-    doc.text('Dirección:',ML,y);doc.text('Los Ángeles',valX,y);y+=6;
-    doc.text('Teléfono:',ML,y);doc.text('',valX,y);
+  // Renderiza una copia del comprobante en la posición vertical indicada
+  // y0 = margen superior, hMax = altura disponible
+  function renderCopia(y0,etiqueta){
+    var y=y0;
+    // Etiqueta de copia (esquina superior derecha)
+    doc.setFont('helvetica','bold');doc.setFontSize(8);
+    doc.setTextColor(120);
+    doc.text(etiqueta,W-MR,y,{align:'right'});
+    doc.setTextColor(0);
+
+    // ── HEADER EMPRESA ──
+    doc.setFont('helvetica','normal');doc.setFontSize(9);
+    var valX=ML+24;
+    if(empresa){
+      doc.text('Razón Social:',ML,y);doc.text(empresa.razon_social||'',valX,y);y+=4;
+      doc.text('R.U.T.:',ML,y);doc.text(empresa.rut||'',valX,y);y+=4;
+      doc.text('Dirección:',ML,y);doc.text(empresa.direccion||'',valX,y);y+=4;
+      doc.text('Teléfono:',ML,y);doc.text(empresa.telefono||'',valX,y);
+    }else{
+      doc.text('Razón Social:',ML,y);doc.text('LEONIDAS POO ZENTENO Y CÍA. LTDA.',valX,y);y+=4;
+      doc.text('R.U.T.:',ML,y);doc.text('76.033.889-6',valX,y);y+=4;
+      doc.text('Dirección:',ML,y);doc.text('Los Ángeles',valX,y);y+=4;
+      doc.text('Teléfono:',ML,y);doc.text('',valX,y);
+    }
+    // Fecha emisión (derecha, debajo de la etiqueta)
+    var hoy=new Date();var fechaEmision=('0'+hoy.getDate()).slice(-2)+'/'+('0'+(hoy.getMonth()+1)).slice(-2)+'/'+hoy.getFullYear();
+    doc.setFontSize(9);doc.text('Fecha: '+fechaEmision,W-MR,y0+5,{align:'right'});
+    y+=8;
+
+    // ── TÍTULO ──
+    doc.setFont('helvetica','bold');doc.setFontSize(13);
+    doc.text('COMPROBANTE DE FERIADO',W/2,y,{align:'center'});
+    y+=8;
+
+    // ── PERÍODO CONTRACTUAL ──
+    doc.setFont('helvetica','bold');doc.setFontSize(9);
+    doc.text('Correspondiente al Período Contractual:',ML,y);
+    doc.setFont('helvetica','normal');
+    doc.text('Del  '+fmtFecha(reg.periodo_desde),ML+72,y);
+    doc.text('Al  '+fmtFecha(reg.periodo_hasta),ML+108,y);
+    y+=7;
+
+    // ── TEXTO LEGAL ──
+    doc.setFont('helvetica','normal');doc.setFontSize(9);
+    var textoLegal='En cumplimiento a las disposiciones legales vigentes se deja constancia que a contar de las fechas que se indican, el trabajador';
+    var lines=doc.splitTextToSize(textoLegal,pw);
+    doc.text(lines,ML,y);y+=lines.length*4+2;
+
+    // ── DATOS TRABAJADOR ──
+    doc.text('Don:',ML,y);doc.setFont('helvetica','bold');doc.text((persona.nombre_completo||'').toUpperCase(),ML+10,y);doc.setFont('helvetica','normal');y+=5;
+    doc.text('RUT:',ML,y);doc.text(persona.rut||'',ML+10,y);y+=6;
+
+    // ── USO TOTAL/PARCIAL ──
+    var diasCorr=parseInt(reg.dias_correspondientes)||15;
+    var diasProg=parseInt(reg.dias_progresivos)||0;
+    var totalDisp=diasCorr+diasProg;
+    var diasHab=parseInt(reg.dias_habiles)||0;
+    var tipoUso=diasHab>=totalDisp?'TOTAL':'PARCIAL';
+    var usoTexto='Hará uso   ';
+    doc.text(usoTexto,ML,y);
+    var usoX=ML+doc.getTextWidth(usoTexto);
+    doc.setFont('helvetica','bold');doc.text(tipoUso,usoX,y);
+    var afterTipo=usoX+doc.getTextWidth(tipoUso)+2;
+    doc.setFont('helvetica','normal');
+    var restTexto='de su feriado anual con remuneración íntegra de acuerdo al siguiente detalle:';
+    var restLines=doc.splitTextToSize(restTexto,pw-(afterTipo-ML));
+    doc.text(restLines[0],afterTipo,y);
+    if(restLines.length>1){y+=4;doc.text(restLines.slice(1).join(' '),ML,y);}
+    y+=6;
+
+    // ── FECHAS VACACIONES ──
+    doc.setFont('helvetica','bold');
+    doc.text('DESCANSO EFECTIVO ENTRE LAS FECHAS QUE SE INDICAN',ML,y);y+=5;
+    doc.text('DESDE EL  '+fmtFecha(reg.vacaciones_desde),ML,y);
+    doc.text('AL  '+fmtFecha(reg.vacaciones_hasta),ML+55,y);
+    y+=8;
+
+    // ── DETALLE DEL FERIADO + FIRMAS (lado a lado) ──
+    var colL=ML;var colR=ML+62;
+    var detY=y;
+    doc.setFont('helvetica','bold');doc.setFontSize(9);
+    doc.text('DETALLE DEL FERIADO',colL,detY);doc.text('DIAS',colR,detY,{align:'right'});detY+=5;
+    doc.setFont('helvetica','normal');
+    doc.text('DIAS HABILES',colL,detY);doc.text(String(diasHab),colR,detY,{align:'right'});detY+=4;
+    doc.text('VAC. PROGRESIVAS',colL,detY);doc.text(String(diasProg),colR,detY,{align:'right'});detY+=4;
+    doc.text('DOMINGOS E INHABILES',colL,detY);doc.text(String(parseInt(reg.dias_no_habiles)||0),colR,detY,{align:'right'});detY+=4;
+    doc.text('SALDO PENDIENTE',colL,detY);doc.text(String(parseInt(reg.saldo_pendiente)||0),colR,detY,{align:'right'});detY+=4;
+
+    // FIRMAS lado derecho
+    var firmaX=ML+105;var firmaW=55;
+    if(empresa&&empresa.firma_representante){
+      try{
+        var firmaImgW=32,firmaImgH=14;
+        doc.addImage(empresa.firma_representante,'PNG',firmaX+(firmaW-firmaImgW)/2,y-7,firmaImgW,firmaImgH);
+      }catch(e){}
+    }
+    doc.line(firmaX,y+7,firmaX+firmaW,y+7);
+    doc.setFontSize(7);doc.setFont('helvetica','bold');
+    doc.text('Firma Empleador o Rep. Legal',firmaX+(firmaW/2),y+10,{align:'center'});
+    if(empresa&&empresa.timbre_empresa){
+      try{
+        var timbreW=30,timbreH=12;
+        doc.addImage(empresa.timbre_empresa,'PNG',firmaX+(firmaW-timbreW)/2,y+12,timbreW,timbreH);
+      }catch(e){}
+    }
+    doc.line(firmaX,y+30,firmaX+firmaW,y+30);
+    doc.text('Firma del trabajador',firmaX+(firmaW/2),y+33,{align:'center'});
+
+    // ── NOTA AL PIE ──
+    var yNota=Math.max(detY,y+36)+3;
+    doc.setDrawColor(150);doc.setLineWidth(0.2);doc.line(ML,yNota,W-MR,yNota);yNota+=3;
+    doc.setFont('helvetica','normal');doc.setFontSize(6.5);
+    var nota='NOTA: Para el cálculo del feriado, se consideran los días hábiles de trabajo, con cancelación de los días domingos o festivos que incidan en dicho período de descanso. En las Empresas que han distribuido la jornada de trabajo en menos de 6 días hábiles, uno de ellos será considerado inhábil para los efectos de feriado. Uno de estos ejemplares queda en poder del trabajador y otro en poder del empleador.';
+    var notaLines=doc.splitTextToSize(nota,pw);
+    doc.text(notaLines,ML,yNota);
   }
-  // Fecha emisión (derecha)
-  var hoy=new Date();var fechaEmision=('0'+hoy.getDate()).slice(-2)+'/'+('0'+(hoy.getMonth()+1)).slice(-2)+'/'+hoy.getFullYear();
-  doc.text('Fecha: '+fechaEmision,W-MR,MT,{align:'right'});
-  y+=12;
 
-  // ── TÍTULO ──
-  doc.setFont('helvetica','bold');doc.setFontSize(16);
-  doc.text('COMPROBANTE DE FERIADO',W/2,y,{align:'center'});
-  y+=14;
-
-  // ── PERÍODO CONTRACTUAL ──
-  doc.setFont('helvetica','bold');doc.setFontSize(11);
-  doc.text('Correspondiente al Período Contractual:',ML,y);
-  doc.setFont('helvetica','normal');
-  doc.text('Del  '+fmtFecha(reg.periodo_desde),ML+80,y);
-  doc.text('Al  '+fmtFecha(reg.periodo_hasta),ML+118,y);
-  y+=12;
-
-  // ── TEXTO LEGAL ──
-  doc.setFont('helvetica','normal');doc.setFontSize(11);
-  var textoLegal='En cumplimiento a las disposiciones legales vigentes se deja constancia que a contar de las fechas que se indican, el trabajador';
-  var lines=doc.splitTextToSize(textoLegal,pw);
-  doc.text(lines,ML,y);y+=lines.length*5+4;
-
-  // ── DATOS TRABAJADOR ──
-  doc.text('Don:',ML,y);doc.text((persona.nombre_completo||'').toUpperCase(),ML+10,y);y+=7;
-  doc.text('RUT:',ML,y);doc.text(persona.rut||'',ML+10,y);y+=10;
-
-  // ── USO TOTAL/PARCIAL ──
-  var diasCorr=parseInt(reg.dias_correspondientes)||15;
-  var diasProg=parseInt(reg.dias_progresivos)||0;
-  var totalDisp=diasCorr+diasProg;
-  var diasHab=parseInt(reg.dias_habiles)||0;
-  var tipoUso=diasHab>=totalDisp?'TOTAL':'PARCIAL';
-  var usoTexto='Hará uso   ';
-  doc.text(usoTexto,ML,y);
-  var usoX=ML+doc.getTextWidth(usoTexto);
-  doc.setFont('helvetica','bold');doc.text(tipoUso,usoX,y);
-  var afterTipo=usoX+doc.getTextWidth(tipoUso)+2;
-  doc.setFont('helvetica','normal');
-  var restTexto='de su feriado anual con remuneración íntegra de acuerdo al siguiente detalle:';
-  var restLines=doc.splitTextToSize(restTexto,pw-(afterTipo-ML));
-  doc.text(restLines[0],afterTipo,y);
-  if(restLines.length>1){y+=5;doc.text(restLines.slice(1).join(' '),ML,y);}
-  y+=10;
-
-  // ── FECHAS VACACIONES ──
-  doc.text('DESCANSO EFECTIVO ENTRE LAS FECHAS QUE SE INDICAN',ML,y);y+=8;
-  doc.text('DESDE EL  '+fmtFecha(reg.vacaciones_desde),ML,y);
-  doc.text('AL  '+fmtFecha(reg.vacaciones_hasta),ML+60,y);
-  y+=14;
-
-  // ── DETALLE DEL FERIADO ──
-  var colL=ML;var colR=ML+75;
-  var detY=y;
-  doc.setFont('helvetica','bold');doc.setFontSize(11);
-  doc.text('DETALLE DEL FERIADO',colL,detY);doc.text('DIAS',colR,detY,{align:'right'});detY+=8;
-  doc.setFont('helvetica','normal');
-  doc.text('DIAS HABILES',colL,detY);doc.text(String(diasHab),colR,detY,{align:'right'});detY+=7;
-  doc.text('VAC. PROGRESIVAS',colL,detY);doc.text(String(diasProg),colR,detY,{align:'right'});detY+=7;
-  doc.text('DOMINGOS E INHABILES',colL,detY);doc.text(String(parseInt(reg.dias_no_habiles)||0),colR,detY,{align:'right'});detY+=7;
-  doc.text('SALDO PENDIENTE',colL,detY);doc.text(String(parseInt(reg.saldo_pendiente)||0),colR,detY,{align:'right'});detY+=6;
-
-  // ── FIRMAS (lado derecho, a la misma altura que detalle) ──
-  var firmaX=ML+110;var firmaW=60;
-  // Firma del empleador encima de la línea
-  if(empresa&&empresa.firma_representante){
-    try{
-      // Tamaño de imagen: 40mm ancho, máx 18mm alto (proporcional)
-      var firmaImgW=40,firmaImgH=18;
-      doc.addImage(empresa.firma_representante,'PNG',firmaX+(firmaW-firmaImgW)/2,y-10,firmaImgW,firmaImgH);
-    }catch(e){console.log('Error firma:',e);}
-  }
-  doc.line(firmaX,y+8,firmaX+firmaW,y+8);
-  doc.setFontSize(9);doc.setFont('helvetica','bold');
-  doc.text('Firma Empleador o Rep. Legal',firmaX+(firmaW/2),y+13,{align:'center'});
-
-  // Timbre debajo de los datos del empleador (centrado bajo la firma del empleador)
-  if(empresa&&empresa.timbre_empresa){
-    try{
-      var timbreW=38,timbreH=16;
-      doc.addImage(empresa.timbre_empresa,'PNG',firmaX+(firmaW-timbreW)/2,y+15,timbreW,timbreH);
-    }catch(e){console.log('Error timbre:',e);}
-  }
-
-  doc.line(firmaX,y+44,firmaX+firmaW,y+44);
-  doc.text('Firma del trabajador',firmaX+(firmaW/2),y+49,{align:'center'});
-
-  // ── NOTA AL PIE ──
-  y=Math.max(detY,y+54)+14;
-  doc.setDrawColor(150);doc.line(ML,y,W-MR,y);y+=5;
-  doc.setFont('helvetica','normal');doc.setFontSize(8);
-  var nota='NOTA: Para el cálculo del feriado, se consideran los días hábiles de trabajo, con cancelación de los días domingos o festivos que incidan en dicho período de descanso. En las Empresas que han distribuido la jornada de trabajo en menos de 6 días hábiles, uno de ellos será considerado inhábil para los efectos de feriado. Uno de estos ejemplares queda en poder del trabajador y otro en poder del empleador.';
-  var notaLines=doc.splitTextToSize(nota,pw);
-  doc.text(notaLines,ML,y);
+  // PRIMERA COPIA (mitad superior)
+  renderCopia(10,'COPIA EMPLEADOR');
+  // LÍNEA SEPARADORA al medio (punteada)
+  doc.setDrawColor(120);doc.setLineDashPattern([2,1.5],0);doc.setLineWidth(0.3);
+  doc.line(ML,H/2,W-MR,H/2);
+  doc.setLineDashPattern([],0);
+  // Texto "✂ Cortar por aquí" en el medio
+  doc.setFont('helvetica','italic');doc.setFontSize(7);doc.setTextColor(120);
+  doc.text('✂  cortar por aquí  ✂',W/2,H/2-1,{align:'center'});
+  doc.setTextColor(0);
+  // SEGUNDA COPIA (mitad inferior)
+  renderCopia(H/2+5,'COPIA TRABAJADOR');
 
   // ── DESCARGAR ──
   var nombreArchivo='Comprobante_Feriado_'+(persona.rut||'').replace(/\./g,'')+'_'+fmtFecha(reg.vacaciones_desde).replace(/\//g,'-')+'.pdf';
