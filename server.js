@@ -3987,29 +3987,97 @@ app.post('/api/import/personal', auth, async(req,res)=>{
 app.get('/api/feriados', auth, async(req,res)=>{
   try{res.json((await pool.query('SELECT * FROM feriados_chile ORDER BY fecha')).rows);}catch(e){res.status(500).json({error:e.message});}
 });
+// Caché compartido de feriados (usado por vacaciones y finiquitos)
+const feriadosCache={};
+// Filtro por Región del Biobío — excluye feriados regionales que no aplican
+function aplicaABiobio(f){
+  const txt=((f.nombre||'')+' '+(f.comentarios||'')+' '+(f.tipo||'')).toLowerCase();
+  if(txt.includes('biobío')||txt.includes('biobio')||txt.includes('bío bío')||txt.includes('bio bio'))return true;
+  const otrasRegiones=[
+    'arica y parinacota','arica','parinacota',
+    'tarapacá','tarapaca','iquique',
+    'antofagasta','calama',
+    'atacama','copiapó','copiapo',
+    'coquimbo','la serena','ovalle',
+    'valparaíso','valparaiso',
+    'metropolitana','santiago',
+    "o'higgins",'ohiggins','rancagua',
+    'maule','talca','curicó','curico',
+    'ñuble','nuble','chillán','chillan',
+    'la araucanía','araucanía','araucania','temuco',
+    'los ríos','los rios','valdivia',
+    'los lagos','puerto montt','osorno','chiloé','chiloe',
+    'aysén','aysen','coyhaique',
+    'magallanes','antártica','antartica','punta arenas'
+  ];
+  for(const r of otrasRegiones){if(txt.includes(r))return false;}
+  return true;
+}
+// Helper: obtiene feriados de Biobío para un año (con caché y fallback)
+async function obtenerFeriadosBiobio(year){
+  if(feriadosCache[year]&&Date.now()-feriadosCache[year].ts<86400000){
+    return feriadosCache[year].data.map(function(f){return f.fecha;});
+  }
+  let feriados=[];
+  // 1) API oficial gobierno
+  try{
+    const r=await fetch('https://apis.digital.gob.cl/fl/feriados/'+year,{headers:{'Accept':'application/json'}});
+    if(r.ok){
+      const data=await r.json();
+      if(Array.isArray(data)&&data.length){
+        data.forEach(function(d){
+          const item={fecha:d.fecha,nombre:d.nombre||d.titulo||'Feriado',comentarios:d.comentarios||'',tipo:d.tipo||''};
+          if(aplicaABiobio(item))feriados.push({fecha:item.fecha,nombre:item.nombre});
+        });
+      }
+    }
+  }catch(e){}
+  // 2) Fallback nager.at
+  if(feriados.length===0){
+    try{
+      const r=await fetch('https://date.nager.at/api/v3/PublicHolidays/'+year+'/CL');
+      if(r.ok){
+        const data=await r.json();
+        if(Array.isArray(data))feriados=data.map(function(d){return{fecha:d.date,nombre:d.localName||d.name};});
+      }
+    }catch(e){}
+  }
+  feriadosCache[year]={data:feriados,ts:Date.now()};
+  return feriados.map(function(f){return f.fecha;});
+}
+
 app.get('/api/vacaciones/calcular-dias', auth, async(req,res)=>{
   try{
     const{desde,hasta}=req.query;
     if(!desde||!hasta)return res.json({dias_habiles:0,dias_no_habiles:0,total_corridos:0});
-    const feriados=(await pool.query('SELECT fecha FROM feriados_chile')).rows.map(r=>r.fecha.toISOString().slice(0,10));
-    let d=new Date(desde);const h=new Date(hasta);let habiles=0,noHabiles=0;
+    // Cargar feriados de los años involucrados
+    const yIni=new Date(desde+'T00:00:00').getFullYear();
+    const yFin=new Date(hasta+'T00:00:00').getFullYear();
+    const sets=[];
+    for(let y=yIni;y<=yFin;y++)sets.push(await obtenerFeriadosBiobio(y));
+    const feriados=[].concat.apply([],sets);
+    let d=new Date(desde+'T00:00:00');const h=new Date(hasta+'T00:00:00');let habiles=0,noHabiles=0;
     while(d<=h){
       const dow=d.getDay();const iso=d.toISOString().slice(0,10);
-      if(dow===0||dow===6||feriados.includes(iso)){noHabiles++;}else{habiles++;}
+      if(dow===0||dow===6||feriados.indexOf(iso)>=0){noHabiles++;}else{habiles++;}
       d.setDate(d.getDate()+1);
     }
-    res.json({dias_habiles:habiles,dias_no_habiles:noHabiles,total_corridos:habiles+noHabiles});
+    res.json({dias_habiles:habiles,dias_no_habiles:noHabiles,total_corridos:habiles+noHabiles,fuente:'apis.digital.gob.cl (Biobío)'});
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.get('/api/vacaciones/fecha-termino', auth, async(req,res)=>{
   try{
     const{desde,dias_habiles}=req.query;
     if(!desde||!dias_habiles)return res.json({fecha_termino:null});
-    const feriados=(await pool.query('SELECT fecha FROM feriados_chile')).rows.map(r=>r.fecha.toISOString().slice(0,10));
-    let d=new Date(desde);let count=0;const target=parseInt(dias_habiles);
+    const yIni=new Date(desde+'T00:00:00').getFullYear();
+    // Cargar feriados de este año y los siguientes 2 (por si las vacaciones cruzan años)
+    const sets=[];
+    for(let y=yIni;y<=yIni+2;y++)sets.push(await obtenerFeriadosBiobio(y));
+    const feriados=[].concat.apply([],sets);
+    let d=new Date(desde+'T00:00:00');let count=0;const target=parseInt(dias_habiles);
     while(count<target){
       const dow=d.getDay();const iso=d.toISOString().slice(0,10);
-      if(dow!==0&&dow!==6&&!feriados.includes(iso)){count++;}
+      if(dow!==0&&dow!==6&&feriados.indexOf(iso)<0){count++;}
       if(count<target)d.setDate(d.getDate()+1);
     }
     res.json({fecha_termino:d.toISOString().slice(0,10)});
@@ -5262,6 +5330,7 @@ async function setupFiniquitos(q){
     dias_inhabiles NUMERIC(8,2) DEFAULT 0,
     remuneracion_pendiente NUMERIC(14,2) DEFAULT 0,
     descuentos NUMERIC(14,2) DEFAULT 0,
+    saldo_afc_empleador NUMERIC(14,2) DEFAULT 0,
     -- Resultados calculados
     anios_servicio NUMERIC(8,2),
     dias_feriado_legal NUMERIC(8,2),
@@ -5277,6 +5346,7 @@ async function setupFiniquitos(q){
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
   try{await q('ALTER TABLE finiquitos ADD COLUMN IF NOT EXISTS descuentos NUMERIC(14,2) DEFAULT 0');}catch(e){}
+  try{await q('ALTER TABLE finiquitos ADD COLUMN IF NOT EXISTS saldo_afc_empleador NUMERIC(14,2) DEFAULT 0');}catch(e){}
   // Cartas de término de contrato
   await q(`CREATE TABLE IF NOT EXISTS cartas_termino (
     carta_id SERIAL PRIMARY KEY,
@@ -5339,9 +5409,9 @@ app.post('/api/finiquitos', auth, async(req,res)=>{
     await client.query('BEGIN');
     const b=req.body;
     if(!b.persona_id||!b.empresa_id||!b.fecha_inicio||!b.fecha_termino)throw new Error('Datos obligatorios faltantes');
-    const r=await client.query(`INSERT INTO finiquitos(persona_id,empresa_id,causal,fecha_inicio,fecha_termino,fecha_aviso,es_zona_extrema,tipo_sueldo,valor_sueldo_minimo,valor_uf,sueldo_base,gratificacion_mensual,asignacion_colacion,asignacion_movilizacion,haber_var_mes1,haber_var_mes2,haber_var_mes3,promedio_variable,dias_feriado_tomados,dias_inhabiles,remuneracion_pendiente,descuentos,anios_servicio,dias_feriado_legal,dias_feriado_pendiente,total_haberes,indem_aviso_previo,indem_anios_servicio,indem_vacaciones,indem_tiempo_servido,total_finiquito,observaciones,usuario)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33) RETURNING finiquito_id`,
-      [b.persona_id,b.empresa_id,b.causal||null,b.fecha_inicio,b.fecha_termino,b.fecha_aviso||null,b.es_zona_extrema||false,b.tipo_sueldo||'Fijo',b.valor_sueldo_minimo||0,b.valor_uf||0,b.sueldo_base||0,b.gratificacion_mensual!==false,b.asignacion_colacion||0,b.asignacion_movilizacion||0,b.haber_var_mes1||0,b.haber_var_mes2||0,b.haber_var_mes3||0,b.promedio_variable||0,b.dias_feriado_tomados||0,b.dias_inhabiles||0,b.remuneracion_pendiente||0,b.descuentos||0,b.anios_servicio||0,b.dias_feriado_legal||0,b.dias_feriado_pendiente||0,b.total_haberes||0,b.indem_aviso_previo||0,b.indem_anios_servicio||0,b.indem_vacaciones||0,b.indem_tiempo_servido||0,b.total_finiquito||0,b.observaciones||null,req.user.email]);
+    const r=await client.query(`INSERT INTO finiquitos(persona_id,empresa_id,causal,fecha_inicio,fecha_termino,fecha_aviso,es_zona_extrema,tipo_sueldo,valor_sueldo_minimo,valor_uf,sueldo_base,gratificacion_mensual,asignacion_colacion,asignacion_movilizacion,haber_var_mes1,haber_var_mes2,haber_var_mes3,promedio_variable,dias_feriado_tomados,dias_inhabiles,remuneracion_pendiente,descuentos,saldo_afc_empleador,anios_servicio,dias_feriado_legal,dias_feriado_pendiente,total_haberes,indem_aviso_previo,indem_anios_servicio,indem_vacaciones,indem_tiempo_servido,total_finiquito,observaciones,usuario)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34) RETURNING finiquito_id`,
+      [b.persona_id,b.empresa_id,b.causal||null,b.fecha_inicio,b.fecha_termino,b.fecha_aviso||null,b.es_zona_extrema||false,b.tipo_sueldo||'Fijo',b.valor_sueldo_minimo||0,b.valor_uf||0,b.sueldo_base||0,b.gratificacion_mensual!==false,b.asignacion_colacion||0,b.asignacion_movilizacion||0,b.haber_var_mes1||0,b.haber_var_mes2||0,b.haber_var_mes3||0,b.promedio_variable||0,b.dias_feriado_tomados||0,b.dias_inhabiles||0,b.remuneracion_pendiente||0,b.descuentos||0,b.saldo_afc_empleador||0,b.anios_servicio||0,b.dias_feriado_legal||0,b.dias_feriado_pendiente||0,b.total_haberes||0,b.indem_aviso_previo||0,b.indem_anios_servicio||0,b.indem_vacaciones||0,b.indem_tiempo_servido||0,b.total_finiquito||0,b.observaciones||null,req.user.email]);
     const finiquito_id=r.rows[0].finiquito_id;
     // Traspasar valores a la(s) carta(s) PENDIENTE del mismo trabajador y empresa
     const cartaUpd=await client.query(`UPDATE cartas_termino SET 
@@ -5358,6 +5428,72 @@ app.post('/api/finiquitos', auth, async(req,res)=>{
     res.status(201).json({ok:true,finiquito_id:finiquito_id,cartas_actualizadas:cartaUpd.rows.length});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
+});
+
+// Indicadores económicos chilenos (UF y sueldo mínimo) — fuente: mindicador.cl
+app.get('/api/indicadores-cl', auth, async(req,res)=>{
+  try{
+    const results=await Promise.allSettled([
+      fetch('https://mindicador.cl/api/uf').then(r=>r.json()),
+      fetch('https://mindicador.cl/api/imo').then(r=>r.json())
+    ]);
+    const ufRes=results[0],imoRes=results[1];
+    let uf=null,uf_fecha=null,imo=null,imo_fecha=null;
+    if(ufRes.status==='fulfilled'&&ufRes.value&&ufRes.value.serie&&ufRes.value.serie.length){
+      uf=ufRes.value.serie[0].valor;
+      uf_fecha=(ufRes.value.serie[0].fecha||'').slice(0,10);
+    }
+    if(imoRes.status==='fulfilled'&&imoRes.value&&imoRes.value.serie&&imoRes.value.serie.length){
+      imo=imoRes.value.serie[0].valor;
+      imo_fecha=(imoRes.value.serie[0].fecha||'').slice(0,10);
+    }
+    res.json({uf:uf,uf_fecha:uf_fecha,sueldo_minimo:imo,sueldo_minimo_fecha:imo_fecha,fuente:'mindicador.cl'});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// Feriados de Chile — fuente oficial: apis.digital.gob.cl
+// (Helper aplicaABiobio() y feriadosCache definidos arriba en sección VACACIONES)
+app.get('/api/feriados-cl', auth, async(req,res)=>{
+  try{
+    const year=parseInt(req.query.year)||new Date().getFullYear();
+    if(feriadosCache[year]&&Date.now()-feriadosCache[year].ts<86400000){
+      return res.json({year:year,feriados:feriadosCache[year].data,cached:true});
+    }
+    let feriados=[],fuente='',excluidos=[];
+    // 1) Intentar API oficial del gobierno chileno
+    try{
+      const r=await fetch('https://apis.digital.gob.cl/fl/feriados/'+year,{
+        headers:{'Accept':'application/json'},
+        // 5s timeout vía AbortController
+      });
+      if(r.ok){
+        const data=await r.json();
+        if(Array.isArray(data)&&data.length){
+          data.forEach(function(d){
+            const item={fecha:d.fecha,nombre:d.nombre||d.titulo||'Feriado',comentarios:d.comentarios||'',tipo:d.tipo||''};
+            if(aplicaABiobio(item))feriados.push({fecha:item.fecha,nombre:item.nombre});
+            else excluidos.push({fecha:item.fecha,nombre:item.nombre,motivo:'No aplica a Biobío'});
+          });
+          fuente='apis.digital.gob.cl';
+        }
+      }
+    }catch(e){console.log('[feriados] API gov falló:',e.message);}
+    // 2) Fallback a date.nager.at si la API oficial no devuelve datos
+    if(feriados.length===0){
+      try{
+        const r=await fetch('https://date.nager.at/api/v3/PublicHolidays/'+year+'/CL');
+        if(r.ok){
+          const data=await r.json();
+          if(Array.isArray(data)){
+            feriados=data.map(function(d){return{fecha:d.date,nombre:d.localName||d.name};});
+            fuente='date.nager.at (fallback)';
+          }
+        }
+      }catch(e){console.log('[feriados] Nager falló:',e.message);}
+    }
+    feriadosCache[year]={data:feriados,ts:Date.now()};
+    res.json({year:year,feriados:feriados,excluidos:excluidos,fuente:fuente});
+  }catch(e){res.status(500).json({error:e.message});}
 });
 app.delete('/api/finiquitos/:id', auth, async(req,res)=>{
   try{await pool.query('DELETE FROM finiquitos WHERE finiquito_id=$1',[req.params.id]);res.json({ok:true});}
