@@ -5430,24 +5430,38 @@ app.post('/api/finiquitos', auth, async(req,res)=>{
   finally{client.release();}
 });
 
-// Indicadores económicos chilenos (UF y sueldo mínimo) — fuente: mindicador.cl
+// Indicadores económicos chilenos (UF y sueldo mínimo)
+// UF: mindicador.cl (Banco Central) — Sueldo Mínimo: tabla legal histórica (Ley 21.751 y anteriores)
+const SUELDO_MINIMO_HIST=[
+  {desde:'2026-01-01',valor:539000,ley:'Ley 21.751'},
+  {desde:'2025-05-01',valor:529000,ley:'Ley 21.751'},
+  {desde:'2025-01-01',valor:510000,ley:'Ley 21.578'},
+  {desde:'2024-07-01',valor:500000,ley:'Ley 21.578'},
+  {desde:'2023-09-01',valor:460000,ley:'Ley 21.578'},
+  {desde:'2023-05-01',valor:440000,ley:'Ley 21.578'},
+  {desde:'2022-08-01',valor:400000,ley:'Ley 21.456'},
+  {desde:'2022-05-01',valor:380000,ley:'Ley 21.456'}
+];
+function getSueldoMinimoVigente(){
+  const hoy=new Date().toISOString().slice(0,10);
+  for(const r of SUELDO_MINIMO_HIST){if(hoy>=r.desde)return r;}
+  return SUELDO_MINIMO_HIST[SUELDO_MINIMO_HIST.length-1];
+}
 app.get('/api/indicadores-cl', auth, async(req,res)=>{
   try{
-    const results=await Promise.allSettled([
-      fetch('https://mindicador.cl/api/uf').then(r=>r.json()),
-      fetch('https://mindicador.cl/api/imo').then(r=>r.json())
-    ]);
-    const ufRes=results[0],imoRes=results[1];
-    let uf=null,uf_fecha=null,imo=null,imo_fecha=null;
-    if(ufRes.status==='fulfilled'&&ufRes.value&&ufRes.value.serie&&ufRes.value.serie.length){
-      uf=ufRes.value.serie[0].valor;
-      uf_fecha=(ufRes.value.serie[0].fecha||'').slice(0,10);
-    }
-    if(imoRes.status==='fulfilled'&&imoRes.value&&imoRes.value.serie&&imoRes.value.serie.length){
-      imo=imoRes.value.serie[0].valor;
-      imo_fecha=(imoRes.value.serie[0].fecha||'').slice(0,10);
-    }
-    res.json({uf:uf,uf_fecha:uf_fecha,sueldo_minimo:imo,sueldo_minimo_fecha:imo_fecha,fuente:'mindicador.cl'});
+    let uf=null,uf_fecha=null;
+    try{
+      const r=await fetch('https://mindicador.cl/api/uf');
+      if(r.ok){
+        const d=await r.json();
+        if(d&&d.serie&&d.serie.length){uf=d.serie[0].valor;uf_fecha=(d.serie[0].fecha||'').slice(0,10);}
+      }
+    }catch(e){}
+    const sm=getSueldoMinimoVigente();
+    res.json({
+      uf:uf,uf_fecha:uf_fecha,uf_fuente:'mindicador.cl',
+      sueldo_minimo:sm.valor,sueldo_minimo_fecha:sm.desde,sueldo_minimo_ley:sm.ley,sueldo_minimo_fuente:'Tabla legal interna ('+sm.ley+')'
+    });
   }catch(e){res.status(500).json({error:e.message});}
 });
 
