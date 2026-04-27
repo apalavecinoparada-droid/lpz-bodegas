@@ -3876,6 +3876,20 @@ function EmpresaForm(p){
     r.onload=function(ev){p.onChange(Object.assign({},p.item,{logo_base64:ev.target.result}));};
     r.readAsDataURL(file);
   }
+  function onFirma(e){
+    const file=e.target.files&&e.target.files[0];if(!file)return;
+    if(file.size>600000){alert('La firma no debe superar 500KB');return;}
+    const r=new FileReader();
+    r.onload=function(ev){p.onChange(Object.assign({},p.item,{firma_representante:ev.target.result}));};
+    r.readAsDataURL(file);
+  }
+  function onTimbre(e){
+    const file=e.target.files&&e.target.files[0];if(!file)return;
+    if(file.size>600000){alert('El timbre no debe superar 500KB');return;}
+    const r=new FileReader();
+    r.onload=function(ev){p.onChange(Object.assign({},p.item,{timbre_empresa:ev.target.result}));};
+    r.readAsDataURL(file);
+  }
   return h('div',null,
     h('div',{className:'g2'},
       h(FI,{k:'rut',l:'RUT',req:true,item:p.item,onChange:p.onChange,ph:'76.543.210-1'}),
@@ -3896,6 +3910,20 @@ function EmpresaForm(p){
       p.item.logo_base64&&h('div',{style:{marginTop:6,display:'flex',alignItems:'center',gap:8}},
         h('img',{src:p.item.logo_base64,style:{maxHeight:55,maxWidth:180,border:'1px solid #E2E8F0',borderRadius:4},alt:'Logo'}),
         h('button',{type:'button',style:{fontSize:11,color:'#EF4444',background:'none',border:'none',cursor:'pointer'},onClick:function(){p.onChange(Object.assign({},p.item,{logo_base64:null}));}},null,'Quitar')
+      )
+    ),
+    h(FR,{label:'Firma del representante legal (PNG con fondo transparente, max 500KB)'},
+      h('input',{type:'file',accept:'image/*',onChange:onFirma,style:{padding:'4px 0',fontSize:12}}),
+      p.item.firma_representante&&h('div',{style:{marginTop:6,display:'flex',alignItems:'center',gap:8}},
+        h('img',{src:p.item.firma_representante,style:{maxHeight:80,maxWidth:200,border:'1px solid #E2E8F0',borderRadius:4,padding:4,background:'#fff'},alt:'Firma'}),
+        h('button',{type:'button',style:{fontSize:11,color:'#EF4444',background:'none',border:'none',cursor:'pointer'},onClick:function(){p.onChange(Object.assign({},p.item,{firma_representante:null}));}},null,'Quitar')
+      )
+    ),
+    h(FR,{label:'Timbre de la empresa (PNG con fondo transparente, max 500KB)'},
+      h('input',{type:'file',accept:'image/*',onChange:onTimbre,style:{padding:'4px 0',fontSize:12}}),
+      p.item.timbre_empresa&&h('div',{style:{marginTop:6,display:'flex',alignItems:'center',gap:8}},
+        h('img',{src:p.item.timbre_empresa,style:{maxHeight:80,maxWidth:200,border:'1px solid #E2E8F0',borderRadius:4,padding:4,background:'#fff'},alt:'Timbre'}),
+        h('button',{type:'button',style:{fontSize:11,color:'#EF4444',background:'none',border:'none',cursor:'pointer'},onClick:function(){p.onChange(Object.assign({},p.item,{timbre_empresa:null}));}},null,'Quitar')
       )
     )
   );
@@ -7446,7 +7474,9 @@ function ContratosView(p){
         region:c.empresa_region,
         representante_nombre:c.representante_nombre,
         representante_rut:c.representante_rut,
-        logo_base64:c.logo_base64
+        logo_base64:c.logo_base64,
+        firma_representante:c.firma_representante,
+        timbre_empresa:c.timbre_empresa
       };
       var persona={
         nombre_completo:c.nombre_completo,
@@ -7995,12 +8025,22 @@ function buildAnexoHTML(a){
     return '<p><strong>Cláusula '+(c.numero||'')+(c.titulo?' — '+c.titulo:'')+':</strong></p><p>'+(c.texto||'')+'</p>';
   }).join('');
   var logo=a.logo_base64?'<img src="'+a.logo_base64+'" style="max-height:80px;max-width:200px;margin-bottom:10px"/>':'';
+  // Firma + timbre del empleador
+  var firmaEmp='';
+  if(a.firma_representante||a.timbre_empresa){
+    firmaEmp='<div class="firma-img-wrap">';
+    if(a.firma_representante)firmaEmp+='<img src="'+a.firma_representante+'" class="firma-img" style="max-height:60px;max-width:150px"/>';
+    if(a.timbre_empresa)firmaEmp+='<img src="'+a.timbre_empresa+'" class="timbre-img" style="max-height:70px;max-width:140px;margin-left:8px"/>';
+    firmaEmp+='</div>';
+  }
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Anexo Contrato</title>'+
     '<style>body{font-family:Calibri,Arial,sans-serif;font-size:12pt;line-height:1.5;margin:2cm;color:#000}'+
     'h2{text-align:center;font-size:14pt;margin-bottom:20px}'+
     'p{text-align:justify;margin:8px 0}'+
-    '.firmas{margin-top:60px;width:100%;border-collapse:collapse}'+
-    '.firmas td{width:50%;text-align:center;padding:30px 10px 10px;border-top:1px solid #000;font-size:10pt;vertical-align:top}'+
+    '.firmas-wrap{margin-top:50px;display:table;width:100%;border-collapse:collapse}'+
+    '.firma-col{display:table-cell;width:50%;text-align:center;padding:0 10px;vertical-align:bottom}'+
+    '.firma-img-wrap{height:80px;display:flex;align-items:flex-end;justify-content:center;margin-bottom:4px}'+
+    '.firma-line{border-top:1px solid #000;padding-top:6px;font-size:10pt;line-height:1.3}'+
     '@media print{body{margin:1.5cm}}</style></head><body>'+
     logo+
     '<h2>ANEXO CONTRATO DE TRABAJO</h2>'+
@@ -8015,10 +8055,15 @@ function buildAnexoHTML(a){
     '<p><strong>TERCERO: Final</strong></p>'+
     '<p>En todo lo no modificado por el presente instrumento, seguirá rigiendo el Contrato de Trabajo.</p>'+
     '<p>El presente instrumento se firma en dos ejemplares del mismo tenor, quedando uno en poder de cada parte.</p>'+
-    '<table class="firmas"><tr>'+
-    '<td>'+(a.empresa_nombre||'')+'<br/>'+(a.empresa_rut||'')+(a.representante_nombre?'<br/>Representante Legal: '+(a.representante_rut||''):'')+'</td>'+
-    '<td>'+(a.nombre_completo||'')+'<br/>'+(a.rut||'')+'</td>'+
-    '</tr></table>'+
+    '<div class="firmas-wrap">'+
+      '<div class="firma-col">'+firmaEmp+
+        '<div class="firma-line">'+(a.empresa_nombre||'')+'<br/>RUT: '+(a.empresa_rut||'')+(a.representante_nombre?'<br/>Representante Legal: '+(a.representante_nombre)+(a.representante_rut?' — '+(a.representante_rut):''):'')+'</div>'+
+      '</div>'+
+      '<div class="firma-col">'+
+        '<div class="firma-img-wrap"></div>'+
+        '<div class="firma-line">'+(a.nombre_completo||'')+'<br/>RUT: '+(a.rut||'')+'</div>'+
+      '</div>'+
+    '</div>'+
     '</body></html>';
 }
 
@@ -8202,7 +8247,19 @@ function buildContratoHTML(c,empresa,persona){
     '<p><strong>'+numDur+'. DURACIÓN Y VIGENCIA.</strong> '+tipoTxt+' Se deja constancia que el Trabajador ingresó al servicio del Empleador con fecha '+fd(c.fecha_inicio)+'.</p>'+
     '<p><strong>'+numRegl+'. REGLAMENTO INTERNO.</strong> Las demás estipulaciones se encuentran contempladas en el Reglamento Interno de la Empresa, el que forma parte integrante del presente contrato.</p>'+
     '<p><strong>'+numFirma+'. FIRMA Y EJEMPLARES.</strong> El presente contrato se firma en dos ejemplares de igual tenor y fecha, quedando uno en poder del Empleador y otro en poder del Trabajador.</p>'+
-    '<table class="sig"><tr><td><div class="line"><strong>EL EMPLEADOR</strong><br>'+rep+'<br>'+(empresa.razon_social||'')+'</div></td><td><div class="line"><strong>EL TRABAJADOR</strong><br>'+(persona.nombre_completo||'')+'<br>RUT: '+(persona.rut||'')+'</div></td></tr></table>'+
+    '<table class="sig"><tr>'+
+      '<td>'+
+        '<div class="firma-imgs" style="height:80px;display:flex;align-items:flex-end;justify-content:center;gap:6px;margin-bottom:4px">'+
+          (empresa.firma_representante?'<img src="'+empresa.firma_representante+'" style="max-height:60px;max-width:140px"/>':'')+
+          (empresa.timbre_empresa?'<img src="'+empresa.timbre_empresa+'" style="max-height:70px;max-width:130px"/>':'')+
+        '</div>'+
+        '<div class="line"><strong>EL EMPLEADOR</strong><br>'+rep+'<br>'+(empresa.razon_social||'')+'</div>'+
+      '</td>'+
+      '<td>'+
+        '<div class="firma-imgs" style="height:80px"></div>'+
+        '<div class="line"><strong>EL TRABAJADOR</strong><br>'+(persona.nombre_completo||'')+'<br>RUT: '+(persona.rut||'')+'</div>'+
+      '</td>'+
+    '</tr></table>'+
     '</body></html>';
 }
 
@@ -8867,7 +8924,7 @@ function App(){
           view==='trans-planificacion'&&h(PlanificacionView,{tok,m}),
           view==='trans-tarifas'&&h(TransporteTarifas,{tok,m}),
           view==='contratos'&&h(ContratosView,{tok,m,onRefresh:onMov}),
-          view==='empresas'&&h(MasterV,{tok,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,activo:true},cols:[{lbl:'ID',k:'empresa_id',mono:true,w:50},{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
+          view==='empresas'&&h(MasterV,{tok,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,firma_representante:null,timbre_empresa:null,activo:true},cols:[{lbl:'ID',k:'empresa_id',mono:true,w:50},{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
           view==='bodegas'&&h(MasterV,{tok,titulo:'Bodega',ep:'bodegas',pk:'bodega_id',Form:BodegaForm,importKey:'bodegas',blank:{codigo:'',nombre:'',ubicacion:'',responsable:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Ubicacion',k:'ubicacion'},{lbl:'Responsable',k:'responsable'}]}),
           view==='productos'&&h(MasterV,{tok,titulo:'Producto',ep:'productos',pk:'producto_id',Form:ProdForm,importKey:'productos',blank:{codigo:'',nombre:'',descripcion:'',categoria_id:'',subcategoria_id:'',unidad_medida:'UN',stock_minimo:0,stock_maximo:'',costo_referencia:0,unidad_compra:'',factor_conversion:1,activo:true},extra:{cats:m.cats,subcats:m.subcats},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Subcategoria',k:'subcategoria_nombre'},{lbl:'UM',k:'unidad_medida'},{lbl:'Stk min',k:'stock_minimo'},{lbl:'Costo ref.',render:r=>CLP(r.costo_referencia)}]}),
           view==='categorias'&&h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}},
