@@ -5131,6 +5131,104 @@ app.delete('/api/contratos/:id', auth, async(req,res)=>{
 });
 
 // ══════════════════════════════════════════════════════
+// ANEXOS DE CONTRATO
+// ══════════════════════════════════════════════════════
+async function setupAnexos(q){
+  await q(`CREATE TABLE IF NOT EXISTS contrato_anexos (
+    anexo_id SERIAL PRIMARY KEY,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    empresa_id INT NOT NULL REFERENCES empresas(empresa_id),
+    contrato_id INT REFERENCES contratos(contrato_id),
+    fecha_anexo DATE NOT NULL,
+    fecha_contrato_original DATE,
+    funcion_original VARCHAR(255),
+    lugar_firma VARCHAR(120) DEFAULT 'Nacimiento',
+    clausulas JSONB NOT NULL DEFAULT '[]',
+    observaciones TEXT,
+    usuario VARCHAR(120),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+}
+setupAnexos(pool.query.bind(pool)).catch(function(e){console.log('[WARN] anexos:',e.message);});
+
+// Listar anexos
+app.get('/api/anexos', auth, async(req,res)=>{
+  try{
+    const{persona_id,empresa_id}=req.query;
+    let w=['1=1'],v=[];
+    if(persona_id){v.push(persona_id);w.push(`a.persona_id=$${v.length}`);}
+    if(empresa_id){v.push(empresa_id);w.push(`a.empresa_id=$${v.length}`);}
+    const r=await pool.query(`SELECT a.*,p.nombre_completo,p.rut,p.cargo,p.faena_id,
+      f.nombre AS faena_nombre,
+      e.razon_social AS empresa_nombre,e.rut AS empresa_rut,e.direccion AS empresa_direccion,
+      e.comuna AS empresa_comuna,e.region AS empresa_region,
+      e.representante_nombre,e.representante_rut,e.logo_base64
+      FROM contrato_anexos a
+      JOIN personal p ON a.persona_id=p.persona_id
+      LEFT JOIN faenas f ON p.faena_id=f.faena_id
+      JOIN empresas e ON a.empresa_id=e.empresa_id
+      WHERE ${w.join(' AND ')}
+      ORDER BY a.fecha_anexo DESC,a.anexo_id DESC`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// Obtener anexo individual
+app.get('/api/anexos/:id', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT a.*,p.nombre_completo,p.rut,p.cargo,
+      e.razon_social AS empresa_nombre,e.rut AS empresa_rut,e.direccion AS empresa_direccion,
+      e.comuna AS empresa_comuna,e.region AS empresa_region,
+      e.representante_nombre,e.representante_rut,e.logo_base64
+      FROM contrato_anexos a
+      JOIN personal p ON a.persona_id=p.persona_id
+      JOIN empresas e ON a.empresa_id=e.empresa_id
+      WHERE a.anexo_id=$1`,[req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Anexo no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// Crear anexo individual o masivo
+app.post('/api/anexos', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const b=req.body;
+    if(!b.empresa_id||!b.fecha_anexo||!Array.isArray(b.clausulas)||!b.clausulas.length){
+      throw new Error('Empresa, fecha y al menos una cláusula son obligatorios');
+    }
+    // Lista de personas: puede ser una sola (persona_id) o varias (persona_ids)
+    let personas=[];
+    if(Array.isArray(b.persona_ids)&&b.persona_ids.length){
+      personas=b.persona_ids;
+    }else if(b.persona_id){
+      personas=[b.persona_id];
+    }else{
+      throw new Error('Debe indicar persona_id o persona_ids');
+    }
+    const creados=[];
+    for(const pid of personas){
+      // Buscar último contrato del trabajador para fecha original y función
+      const ultC=await client.query('SELECT contrato_id,fecha_contrato,funcion_texto FROM contratos WHERE persona_id=$1 AND empresa_id=$2 ORDER BY fecha_contrato DESC,contrato_id DESC LIMIT 1',[pid,b.empresa_id]);
+      const cId=ultC.rows.length?ultC.rows[0].contrato_id:null;
+      const fOrig=ultC.rows.length?ultC.rows[0].fecha_contrato:null;
+      const funOrig=ultC.rows.length?ultC.rows[0].funcion_texto:(b.funcion_original||null);
+      const r=await client.query(`INSERT INTO contrato_anexos(persona_id,empresa_id,contrato_id,fecha_anexo,fecha_contrato_original,funcion_original,lugar_firma,clausulas,observaciones,usuario)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10) RETURNING anexo_id`,
+        [pid,b.empresa_id,cId,b.fecha_anexo,fOrig,funOrig,b.lugar_firma||'Nacimiento',JSON.stringify(b.clausulas),b.observaciones||null,req.user.email]);
+      creados.push(r.rows[0].anexo_id);
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ok:true,creados,total:creados.length});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+// Eliminar anexo
+app.delete('/api/anexos/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM contrato_anexos WHERE anexo_id=$1',[req.params.id]);res.json({ok:true});}
+  catch(e){res.status(400).json({error:e.message});}
+});
+
+// ══════════════════════════════════════════════════════
 // ADMIN — LIMPIEZA DE DATOS TRANSACCIONALES
 // ══════════════════════════════════════════════════════
 app.post('/api/admin/wipe-transacciones', auth, async(req,res)=>{
