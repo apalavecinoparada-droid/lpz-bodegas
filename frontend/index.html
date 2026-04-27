@@ -8310,7 +8310,7 @@ function FiniquitosView(p){
     persona_id:'',empresa_id:'',causal:'Art. 161-1: Necesidades de la empresa',
     fecha_inicio:'',fecha_termino:hoy,fecha_aviso:hoy,
     es_zona_extrema:false,
-    valor_sueldo_minimo:529000,valor_uf:39267.07,
+    valor_sueldo_minimo:539000,valor_uf:39267.07,
     tipo_sueldo:'Fijo',
     sueldo_base:0,gratificacion_mensual:true,asignacion_colacion:0,asignacion_movilizacion:0,
     haber_var_mes1:0,haber_var_mes2:0,haber_var_mes3:0,
@@ -8341,8 +8341,8 @@ function FiniquitosView(p){
       if(r.uf||r.sueldo_minimo){
         setForm(function(f){
           var nf=Object.assign({},f);
-          if(r.uf&&f.valor_uf===39267.07)nf.valor_uf=r.uf;
-          if(r.sueldo_minimo&&f.valor_sueldo_minimo===529000)nf.valor_sueldo_minimo=r.sueldo_minimo;
+          if(r.uf)nf.valor_uf=r.uf;
+          if(r.sueldo_minimo)nf.valor_sueldo_minimo=r.sueldo_minimo;
           return nf;
         });
       }
@@ -8440,22 +8440,31 @@ function FiniquitosView(p){
   function calcularInhabiles(){
     var pend=Math.ceil(diasPendientes);
     if(pend<=0||!form.fecha_termino){alert('No hay días pendientes para calcular');return;}
+    // Helper: formato YYYY-MM-DD en hora local (evita bug de timezone con toISOString)
+    function fmtLocal(d){
+      var y=d.getFullYear();
+      var m=d.getMonth()+1;
+      var dd=d.getDate();
+      return y+'-'+(m<10?'0':'')+m+'-'+(dd<10?'0':'')+dd;
+    }
     var inicio=new Date(form.fecha_termino+'T00:00:00');
     inicio.setDate(inicio.getDate()+1); // empieza el día siguiente al término
-    var feriadosSet={};feriados.forEach(function(f){feriadosSet[f]=true;});
+    var feriadosSet={};feriados.forEach(function(f){feriadosSet[(f+'').slice(0,10)]=true;});
     var habilesContados=0,inhabiles=0,cur=new Date(inicio),fin=null;
     var maxIter=pend*3+30; // tope de seguridad
     while(habilesContados<pend&&maxIter-->0){
       var dow=cur.getDay(); // 0=dom, 6=sab
-      var iso=cur.toISOString().slice(0,10);
+      var iso=fmtLocal(cur);
       var esFeriado=!!feriadosSet[iso];
       if(dow===0||dow===6||esFeriado){inhabiles++;}
       else{habilesContados++;fin=new Date(cur);}
       cur.setDate(cur.getDate()+1);
     }
     upd('dias_inhabiles',inhabiles);
-    var finStr=fin?fin.toISOString().slice(0,10):'—';
-    alert('✅ Cálculo automático:\n\nDías hábiles pendientes: '+pend+'\nDías inhábiles encontrados: '+inhabiles+' (sábados, domingos y festivos)\nÚltimo día de vacaciones: '+finStr+'\n\nTotal días pendientes (hábiles + inhábiles): '+(pend+inhabiles));
+    var finStr=fin?fmtLocal(fin):'—';
+    setTimeout(function(){
+      alert('✅ Cálculo automático:\n\nDesde: '+fmtLocal(inicio)+' (día siguiente al término)\nDías hábiles pendientes: '+pend+'\nDías inhábiles encontrados: '+inhabiles+' (sábados, domingos y festivos)\nÚltimo día de vacaciones: '+finStr+'\n\nTotal días pendientes (hábiles + inhábiles): '+(pend+inhabiles));
+    },50);
   }
   // Indemnizaciones
   var causalSel=CAUSALES_FINIQUITO.find(function(c){return c.k===form.causal;})||{};
@@ -8690,9 +8699,9 @@ function FiniquitosView(p){
           h('button',{onClick:function(){
             api('/indicadores-cl','GET',null,p.tok).then(function(r){
               var msg='';
-              if(r.uf){upd('valor_uf',r.uf);msg+='UF: $'+new Intl.NumberFormat('es-CL').format(r.uf)+(r.uf_fecha?' ('+r.uf_fecha+')':'')+'\n';}
-              if(r.sueldo_minimo){upd('valor_sueldo_minimo',r.sueldo_minimo);msg+='Sueldo mínimo: $'+new Intl.NumberFormat('es-CL').format(r.sueldo_minimo)+(r.sueldo_minimo_fecha?' ('+r.sueldo_minimo_fecha+')':'');}
-              alert(msg?'✅ Indicadores actualizados desde mindicador.cl:\n\n'+msg:'No se pudieron obtener indicadores. Ingréselos manualmente.');
+              if(r.uf){upd('valor_uf',r.uf);msg+='UF: $'+new Intl.NumberFormat('es-CL').format(r.uf)+(r.uf_fecha?' ('+r.uf_fecha+')':'')+'\n  → '+(r.uf_fuente||'')+'\n\n';}
+              if(r.sueldo_minimo){upd('valor_sueldo_minimo',r.sueldo_minimo);msg+='Sueldo mínimo: $'+new Intl.NumberFormat('es-CL').format(r.sueldo_minimo)+(r.sueldo_minimo_fecha?' (vigente desde '+r.sueldo_minimo_fecha+')':'')+'\n  → '+(r.sueldo_minimo_fuente||'');}
+              alert(msg?'✅ Indicadores actualizados:\n\n'+msg:'No se pudieron obtener indicadores. Ingréselos manualmente.');
             }).catch(function(e){alert('Error al consultar indicadores: '+e.message);});
           },style:{padding:'5px 12px',fontSize:11,background:'#1E40AF',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontWeight:600}},'🔄 Actualizar UF y sueldo mínimo')
         ),
