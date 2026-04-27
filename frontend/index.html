@@ -7520,6 +7520,8 @@ function ContratosView(p){
         comuna:c.comuna,
         nacionalidad:c.nacionalidad,
         estado_civil:c.estado_civil,
+        afp:c.afp,
+        salud:c.salud,
         region:c.persona_region
       };
       var html=buildContratoHTML(c,empresa,persona);
@@ -7861,6 +7863,19 @@ function AnexosView(p){
     if(!confirm('¿Eliminar este anexo?'))return;
     api('/anexos/'+id,'DELETE',null,p.tok).then(function(){loadAnexos();}).catch(function(e){alert(e.message);});
   }
+  // Selección múltiple para eliminación masiva
+  var[selAnexos,setSelAnexos]=useState([]);
+  function toggleSelAnexo(id){setSelAnexos(function(arr){return arr.indexOf(id)>=0?arr.filter(function(x){return x!==id;}):arr.concat([id]);});}
+  function selAllAnexos(){setSelAnexos(anexos.map(function(a){return a.anexo_id;}));}
+  function selNoneAnexos(){setSelAnexos([]);}
+  function eliminarMasivo(){
+    if(!selAnexos.length){alert('No hay anexos seleccionados');return;}
+    if(!confirm('⚠ ELIMINAR MASIVAMENTE\n\nSe eliminarán '+selAnexos.length+' anexo(s) seleccionado(s).\n\n¿Está seguro? Esta acción no se puede deshacer.'))return;
+    api('/anexos/eliminar-masivo','POST',{ids:selAnexos},p.tok).then(function(r){
+      alert('✅ Se eliminaron '+r.eliminados+' anexo(s)');
+      setSelAnexos([]);loadAnexos();
+    }).catch(function(e){alert(e.message);});
+  }
 
   function generarAnexoDoc(anexoId,formato){
     api('/anexos/'+anexoId,'GET',null,p.tok).then(function(a){
@@ -8013,13 +8028,25 @@ function AnexosView(p){
     ),
     // LISTAR
     modo==='listar'&&h('div',{className:'card'},
-      h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:10}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:10,alignItems:'center'}},
         h('div',{style:{fontSize:13,fontWeight:700}},'Anexos generados ('+anexos.length+')'),
         h('select',{value:fPersona,onChange:function(e){setFPersona(e.target.value);},style:Object.assign({},inpS,{maxWidth:300})},h('option',{value:''},'Todos los trabajadores'),p.personal.map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo);}))
+      ),
+      // Barra de selección múltiple
+      anexos.length>0&&h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',background:selAnexos.length>0?'#FEF3C7':'#F8FAFC',border:'1px solid '+(selAnexos.length>0?'#FCD34D':'#E2E8F0'),borderRadius:5,padding:'6px 12px',marginBottom:8}},
+        h('div',{style:{fontSize:11,fontWeight:600}},
+          selAnexos.length>0?h('span',{style:{color:'#92400E'}},'✓ '+selAnexos.length+' anexo(s) seleccionado(s)'):'Seleccionar anexos para acciones masivas'
+        ),
+        h('div',{style:{display:'flex',gap:6}},
+          h('button',{onClick:selAllAnexos,style:{padding:'4px 10px',fontSize:10,border:'1px solid #CBD5E1',background:'#fff',borderRadius:4,cursor:'pointer'}},'Seleccionar todos'),
+          h('button',{onClick:selNoneAnexos,style:{padding:'4px 10px',fontSize:10,border:'1px solid #CBD5E1',background:'#fff',borderRadius:4,cursor:'pointer'}},'Deseleccionar'),
+          selAnexos.length>0&&h('button',{onClick:eliminarMasivo,style:{padding:'4px 12px',fontSize:10,border:'none',background:'#DC2626',color:'#fff',borderRadius:4,cursor:'pointer',fontWeight:700}},'🗑 Eliminar '+selAnexos.length+' anexo(s)')
+        )
       ),
       anexos.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:20,textAlign:'center'}},'No hay anexos registrados'):
       h('table',{className:'tbl',style:{width:'100%',fontSize:11}},
         h('thead',null,h('tr',null,
+          h('th',{style:{width:30}},h('input',{type:'checkbox',checked:anexos.length>0&&selAnexos.length===anexos.length,onChange:function(e){e.target.checked?selAllAnexos():selNoneAnexos();}})),
           h('th',null,'Fecha'),
           h('th',null,'Trabajador'),
           h('th',null,'Empresa'),
@@ -8030,7 +8057,9 @@ function AnexosView(p){
         )),
         h('tbody',null,anexos.map(function(a){
           var cs=Array.isArray(a.clausulas)?a.clausulas:[];
-          return h('tr',{key:a.anexo_id},
+          var sel=selAnexos.indexOf(a.anexo_id)>=0;
+          return h('tr',{key:a.anexo_id,style:sel?{background:'#FEF3C7'}:null},
+            h('td',null,h('input',{type:'checkbox',checked:sel,onChange:function(){toggleSelAnexo(a.anexo_id);}})),
             h('td',null,fmtD(a.fecha_anexo)),
             h('td',null,h('div',{style:{fontWeight:600}},a.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},a.rut||'')),
             h('td',null,a.empresa_nombre),
@@ -8054,6 +8083,7 @@ function buildAnexoHTML(a){
   var cs=Array.isArray(a.clausulas)?a.clausulas:[];
   var fechaTxt=fmtFechaLarga(a.fecha_anexo);
   var nClausulas=cs.length===1?'la siguiente cláusula':'las siguientes cláusulas';
+  var verboMod=cs.length===1?'se modifica':'se modifican';
   var clausulasHTML=cs.map(function(c){
     return '<p><strong>Cláusula '+(c.numero||'')+(c.titulo?' — '+c.titulo:'')+':</strong></p><p>'+(c.texto||'')+'</p>';
   }).join('');
@@ -8079,7 +8109,7 @@ function buildAnexoHTML(a){
     '<p><strong>PRIMERO: Antecedentes</strong></p>'+
     '<p>Con fecha '+(a.fecha_contrato_original?fmtFechaLarga(a.fecha_contrato_original):fechaTxt)+' las partes celebraron un contrato de trabajo en virtud del cual don/a '+(a.nombre_completo||'')+' ha prestado sus servicios en calidad de '+((a.funcion_original||a.cargo||'').toUpperCase())+' para la Empresa, en adelante "el Contrato de Trabajo".</p>'+
     '<p><strong>SEGUNDO: Modificación al Contrato de Trabajo</strong></p>'+
-    '<p>Las partes acuerdan que a contar de esta fecha modificar '+nClausulas+':</p>'+
+    '<p>Las partes acuerdan que a contar de esta fecha '+verboMod+' '+nClausulas+':</p>'+
     clausulasHTML+
     '<p><strong>TERCERO: Final</strong></p>'+
     '<p>En todo lo no modificado por el presente instrumento, seguirá rigiendo el Contrato de Trabajo.</p>'+
@@ -8248,12 +8278,17 @@ function buildContratoHTML(c,empresa,persona){
   if(c.otros_beneficios)benefs.push(c.otros_beneficios);
 
   // Numeración dinámica de cláusulas
-  var n=4;var cNum=['CUARTA','QUINTA','SEXTA','SÉPTIMA','OCTAVA'];
+  var n=4;var cNum=['CUARTA','QUINTA','SEXTA','SÉPTIMA','OCTAVA','NOVENA','DÉCIMA'];
   var numRemu=cNum[0];n++;
   var numBen=benefs.length>0?cNum[n-4]:null;if(benefs.length>0)n++;
+  var numSegSoc=cNum[n-4];n++;
   var numDur=cNum[n-4];n++;
   var numRegl=cNum[n-4];n++;
   var numFirma=cNum[n-4];
+  // Texto de seguridad social
+  var afpTxt=(persona.afp||'').trim();
+  var saludTxt=(persona.salud||'FONASA').trim();
+  var segSocTxt='El Trabajador se encuentra afiliado al sistema previsional administrado por <strong>AFP '+(afpTxt||'____________')+'</strong> y al sistema de salud <strong>'+saludTxt+'</strong>. El Empleador se obliga a efectuar las cotizaciones previsionales y de salud correspondientes, descontándolas mensualmente de la remuneración del Trabajador y enterándolas en las instituciones respectivas dentro de los plazos legales.';
 
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Contrato de Trabajo</title>'+
     '<style>'+
@@ -8289,6 +8324,7 @@ function buildContratoHTML(c,empresa,persona){
     '<p>El Trabajador recibirá una gratificación legal anual, pagada mensualmente en la forma establecida en el artículo 50 del Código del Trabajo, equivalente a una doceava parte de 4,75 ingresos mínimos mensuales. El Empleador hace uso expreso de esta modalidad, no procediendo el pago de gratificación conforme al artículo 47 del mismo Código.</p>'+
     '<p>El Empleador podrá otorgar extraordinariamente premios o bonos ocasionales, los cuales no formarán parte del sueldo ni de la remuneración ordinaria. El Trabajador autoriza al Empleador a descontar de sus remuneraciones el tiempo no trabajado por atrasos, inasistencias o permisos. De las sumas pagadas se descontarán las cotizaciones de seguridad social e impuestos correspondientes.</p>'+
     (benefs.length>0?'<p><strong>'+numBen+'. BENEFICIOS.</strong> '+benefs.join(' ')+' Cualquier otra prestación o beneficio, ocasional o periódico, que el Empleador conceda al Trabajador distinto de los señalados en este contrato y sus ajustes legales o contractuales se entenderá conferido a título de mera liberalidad y podrá ser suspendido o modificado a su arbitrio.</p>':'')+
+    '<p><strong>'+numSegSoc+'. PREVISIÓN Y SALUD.</strong> '+segSocTxt+'</p>'+
     '<p><strong>'+numDur+'. DURACIÓN Y VIGENCIA.</strong> '+tipoTxt+' Se deja constancia que el Trabajador ingresó al servicio del Empleador con fecha '+fd(c.fecha_inicio)+'.</p>'+
     '<p><strong>'+numRegl+'. REGLAMENTO INTERNO.</strong> Las demás estipulaciones se encuentran contempladas en el Reglamento Interno de la Empresa, el que forma parte integrante del presente contrato.</p>'+
     '<p><strong>'+numFirma+'. FIRMA Y EJEMPLARES.</strong> El presente contrato se firma en dos ejemplares de igual tenor y fecha, quedando uno en poder del Empleador y otro en poder del Trabajador.</p>'+
@@ -8345,7 +8381,7 @@ function FiniquitosView(p){
     es_zona_extrema:false,
     valor_sueldo_minimo:539000,valor_uf:39267.07,
     tipo_sueldo:'Fijo',
-    sueldo_base:0,gratificacion_mensual:true,asignacion_colacion:0,asignacion_movilizacion:0,
+    sueldo_base:0,bono_fijo:0,gratificacion_mensual:true,asignacion_colacion:0,asignacion_movilizacion:0,
     haber_var_mes1:0,haber_var_mes2:0,haber_var_mes3:0,
     dias_feriado_tomados:0,dias_inhabiles:0,
     remuneracion_pendiente:0,descuentos:0,saldo_afc_empleador:0,observaciones:''
@@ -8402,6 +8438,11 @@ function FiniquitosView(p){
       if(per.empresa_id&&!form.empresa_id)upd('empresa_id',per.empresa_id);
       if(per.fecha_ingreso)upd('fecha_inicio',(per.fecha_ingreso+'').slice(0,10));
       if(per.sueldo_base&&!form.sueldo_base)upd('sueldo_base',parseFloat(per.sueldo_base)||0);
+      // Bono fijo: bono_responsabilidad + bono_produccion_fijo
+      var bonoFijo=(parseFloat(per.bono_responsabilidad)||0)+(parseFloat(per.bono_produccion_fijo)||0);
+      if(bonoFijo>0&&!form.bono_fijo)upd('bono_fijo',bonoFijo);
+      if(per.asig_colacion&&!form.asignacion_colacion)upd('asignacion_colacion',parseFloat(per.asig_colacion)||0);
+      if(per.asig_movilizacion&&!form.asignacion_movilizacion)upd('asignacion_movilizacion',parseFloat(per.asig_movilizacion)||0);
     }
   }
 
@@ -8441,19 +8482,20 @@ function FiniquitosView(p){
   var grat=0;
   var sueldoMin=parseFloat(form.valor_sueldo_minimo)||0;
   var topeGrat=(4.75*sueldoMin)/12;
+  var sb=parseFloat(form.sueldo_base)||0;
+  var bonoFijo=parseFloat(form.bono_fijo)||0;
   if(form.gratificacion_mensual){
-    var baseGrat=form.tipo_sueldo==='Fijo'?(parseFloat(form.sueldo_base)||0):((parseFloat(form.sueldo_base)||0)+promVar);
+    var baseGrat=form.tipo_sueldo==='Fijo'?(sb+bonoFijo):(sb+bonoFijo+promVar);
     grat=Math.min(baseGrat*0.25,topeGrat);
   }
   // Total haberes
   var totalHaberes=0;
-  var sb=parseFloat(form.sueldo_base)||0;
   var col=parseFloat(form.asignacion_colacion)||0;
   var mov=parseFloat(form.asignacion_movilizacion)||0;
   if(form.tipo_sueldo==='Fijo'){
-    totalHaberes=sb+grat+col+mov;
+    totalHaberes=sb+bonoFijo+grat+col+mov;
   }else{
-    totalHaberes=sb+promVar+grat+col+mov;
+    totalHaberes=sb+bonoFijo+promVar+grat+col+mov;
   }
   // Tope legal: 90 UF
   var uf=parseFloat(form.valor_uf)||0;
@@ -8517,7 +8559,7 @@ function FiniquitosView(p){
   var indemAnios=0;
   if(causalSel.pago&&aniosServicio>0)indemAnios=totalHaberes*aniosServicio;
   // Vacaciones proporcionales — feriado pendiente sin contar gratificación
-  var baseVac=form.tipo_sueldo==='Fijo'?sb:(sb+promVar);
+  var baseVac=form.tipo_sueldo==='Fijo'?(sb+bonoFijo):(sb+bonoFijo+promVar);
   var indemVac=(baseVac/30)*totalDiasFeriado;
   // Indem por tiempo servido (solo Art. 159-5 obra/faena, contratos posteriores a 01-01-2019, 2.5 días por mes + 1 si fracción >=15 días)
   var indemTiempoServ=0;
@@ -8745,9 +8787,12 @@ function FiniquitosView(p){
         ),
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10,marginBottom:8}},
           h('div',null,h('label',{style:lblS},'Sueldo base $ *'),h('input',{type:'number',value:form.sueldo_base,onChange:function(e){upd('sueldo_base',e.target.value);},style:inpS})),
-          h('div',{style:{display:'flex',alignItems:'flex-end'}},h('label',{style:{fontSize:11,fontWeight:600,display:'flex',alignItems:'center',gap:6,cursor:'pointer'}},h('input',{type:'checkbox',checked:form.gratificacion_mensual,onChange:function(e){upd('gratificacion_mensual',e.target.checked);}}),'Gratificación mensual')),
+          h('div',null,h('label',{style:lblS},'Bono fijo $'),h('input',{type:'number',value:form.bono_fijo,onChange:function(e){upd('bono_fijo',e.target.value);},style:inpS,placeholder:'Resp. + Prod. fijo'})),
           h('div',null,h('label',{style:lblS},'Asig. colación $'),h('input',{type:'number',value:form.asignacion_colacion,onChange:function(e){upd('asignacion_colacion',e.target.value);},style:inpS})),
           h('div',null,h('label',{style:lblS},'Asig. movilización $'),h('input',{type:'number',value:form.asignacion_movilizacion,onChange:function(e){upd('asignacion_movilizacion',e.target.value);},style:inpS}))
+        ),
+        h('div',{style:{display:'flex',alignItems:'center',gap:10,marginBottom:8}},
+          h('label',{style:{fontSize:11,fontWeight:600,display:'flex',alignItems:'center',gap:6,cursor:'pointer'}},h('input',{type:'checkbox',checked:form.gratificacion_mensual,onChange:function(e){upd('gratificacion_mensual',e.target.checked);}}),'Gratificación mensual')
         ),
         // Variables (solo si tipo Variable)
         form.tipo_sueldo==='Variable'&&h('div',{style:{background:'#FEF3C7',border:'1px solid #FCD34D',borderRadius:6,padding:10,marginBottom:8}},
