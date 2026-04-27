@@ -8268,6 +8268,654 @@ function buildContratoHTML(c,empresa,persona){
     '</body></html>';
 }
 
+// ══════════════════════════════════════════════
+// CÁLCULO DE FINIQUITOS
+// ══════════════════════════════════════════════
+var CAUSALES_FINIQUITO=[
+  {k:'Art. 159-1: Mutuo acuerdo',pago:false},
+  {k:'Art. 159-2: Renuncia del trabajador',pago:false},
+  {k:'Art. 159-3: Muerte del trabajador',pago:false},
+  {k:'Art. 159-4: Vencimiento plazo convenido (contratos plazo fijo)',pago:false},
+  {k:'Art. 159-5: Conclusión del trabajo que dio origen al contrato (obra o faena)',pago:false,its:true},
+  {k:'Art. 159-6: Caso fortuito o fuerza mayor',pago:false},
+  {k:'Art. 160-1: Falta probidad, vías de hecho, injurias o conducta grave',pago:false},
+  {k:'Art. 160-2: Negociaciones del trabajador dentro del giro del negocio',pago:false},
+  {k:'Art. 160-3: No concurrencia a labores sin causa justificada',pago:false},
+  {k:'Art. 160-4: Abandono del trabajo por parte del trabajador',pago:false},
+  {k:'Art. 160-5: Actos que afectan a la seguridad',pago:false},
+  {k:'Art. 160-6: Perjuicio material causado intencionalmente',pago:false},
+  {k:'Art. 160-7: Incumplimiento grave de las obligaciones',pago:false},
+  {k:'Art. 161-1: Necesidades de la empresa',pago:true},
+  {k:'Art. 161-2: Desahucio',pago:true}
+];
+
+function FiniquitosView(p){
+  var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#475569'};
+  var inpS={width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var inpRO={width:'100%',padding:'7px 10px',border:'1px solid #E2E8F0',borderRadius:5,fontSize:12,boxSizing:'border-box',background:'#F1F5F9',color:'#475569',fontWeight:600};
+  var personal=(p.m.personal||[]);
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var[modo,setModo]=useState('carta'); // carta | calcular | listar
+  var[finiquitos,setFiniquitos]=useState([]);
+  var hoy=new Date().toISOString().slice(0,10);
+  var emptyForm={
+    persona_id:'',empresa_id:'',causal:'Art. 161-1: Necesidades de la empresa',
+    fecha_inicio:'',fecha_termino:hoy,fecha_aviso:hoy,
+    es_zona_extrema:false,
+    valor_sueldo_minimo:529000,valor_uf:39267.07,
+    tipo_sueldo:'Fijo',
+    sueldo_base:0,gratificacion_mensual:true,asignacion_colacion:0,asignacion_movilizacion:0,
+    haber_var_mes1:0,haber_var_mes2:0,haber_var_mes3:0,
+    dias_feriado_tomados:0,dias_inhabiles:0,
+    remuneracion_pendiente:0,descuentos:0,observaciones:''
+  };
+  var[form,setForm]=useState(emptyForm);
+  // Carta de término
+  var emptyCarta={
+    persona_id:'',empresa_id:'',
+    fecha_carta:hoy,fecha_contrato:'',fecha_termino:hoy,
+    causal:'Art. 159-5: Conclusión del trabajo que dio origen al contrato (obra o faena)',
+    causal_hecho:'',cargo:'',
+    indem_anios_servicio:0,indem_vacaciones:0,indem_tiempo_servido:0,indem_aviso_previo:0,
+    observaciones:''
+  };
+  var[carta,setCarta]=useState(emptyCarta);
+  var[cartas,setCartas]=useState([]);
+
+  function load(){
+    api('/finiquitos','GET',null,p.tok).then(function(r){setFiniquitos(Array.isArray(r)?r:[]);}).catch(function(){});
+    api('/cartas-termino','GET',null,p.tok).then(function(r){setCartas(Array.isArray(r)?r:[]);}).catch(function(){});
+  }
+  useEffect(function(){load();},[p.tok]);
+
+  function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
+  function updC(k,v){setCarta(function(f){return Object.assign({},f,{[k]:v});});}
+  // Auto-llenar al seleccionar trabajador
+  function onPersonaChange(pid){
+    upd('persona_id',pid);
+    var per=personal.find(function(x){return String(x.persona_id)===String(pid);});
+    if(per){
+      if(per.empresa_id&&!form.empresa_id)upd('empresa_id',per.empresa_id);
+      if(per.fecha_ingreso)upd('fecha_inicio',(per.fecha_ingreso+'').slice(0,10));
+      if(per.sueldo_base&&!form.sueldo_base)upd('sueldo_base',parseFloat(per.sueldo_base)||0);
+    }
+  }
+
+  // ── CÁLCULOS (replican fórmulas Excel) ──
+  // Total días trabajados
+  var diasTrabajados=0;
+  var aniosD=0,mesesD=0,diasD=0;
+  if(form.fecha_inicio&&form.fecha_termino){
+    var d1=new Date(form.fecha_inicio+'T00:00:00');
+    var d2=new Date(form.fecha_termino+'T00:00:00');
+    diasTrabajados=Math.floor((d2-d1)/(1000*3600*24))+1;
+    // DATEDIF años, meses, días
+    aniosD=d2.getFullYear()-d1.getFullYear();
+    mesesD=d2.getMonth()-d1.getMonth();
+    diasD=d2.getDate()-d1.getDate()+1;
+    if(diasD<=0){
+      var prevMonth=new Date(d2.getFullYear(),d2.getMonth(),0);
+      diasD+=prevMonth.getDate();
+      mesesD-=1;
+    }
+    if(mesesD<0){mesesD+=12;aniosD-=1;}
+  }
+  // Años de servicio (con redondeo según tabla — años + 0.5 si tiene 6+ meses)
+  var aniosServicio=0;
+  if(diasTrabajados>0){
+    var aniosFrac=diasTrabajados/365;
+    // Tabla: si fracción > 0.5 (6 meses) sube medio año
+    var entero=Math.floor(aniosFrac);
+    var frac=aniosFrac-entero;
+    if(frac>=0.5)aniosServicio=entero+0.5;
+    else aniosServicio=entero;
+    if(aniosServicio>11)aniosServicio=11; // tope legal 11 años
+  }
+  // Promedio variable últimos 3 meses
+  var promVar=((parseFloat(form.haber_var_mes1)||0)+(parseFloat(form.haber_var_mes2)||0)+(parseFloat(form.haber_var_mes3)||0))/3;
+  // Gratificación
+  var grat=0;
+  var sueldoMin=parseFloat(form.valor_sueldo_minimo)||0;
+  var topeGrat=(4.75*sueldoMin)/12;
+  if(form.gratificacion_mensual){
+    var baseGrat=form.tipo_sueldo==='Fijo'?(parseFloat(form.sueldo_base)||0):((parseFloat(form.sueldo_base)||0)+promVar);
+    grat=Math.min(baseGrat*0.25,topeGrat);
+  }
+  // Total haberes
+  var totalHaberes=0;
+  var sb=parseFloat(form.sueldo_base)||0;
+  var col=parseFloat(form.asignacion_colacion)||0;
+  var mov=parseFloat(form.asignacion_movilizacion)||0;
+  if(form.tipo_sueldo==='Fijo'){
+    totalHaberes=sb+grat+col+mov;
+  }else{
+    totalHaberes=sb+promVar+grat+col+mov;
+  }
+  // Tope legal: 90 UF
+  var uf=parseFloat(form.valor_uf)||0;
+  var tope90UF=90*uf;
+  if(totalHaberes>tope90UF&&tope90UF>0)totalHaberes=tope90UF;
+  // Feriado legal — base: 15 días por año (zona normal) o 20 (extrema) + 1.25*meses + (1.25/30)*días
+  var diasBaseAnio=form.es_zona_extrema?20:15;
+  var diasFeriadoLegal=0;
+  if(diasTrabajados>0){
+    diasFeriadoLegal=Math.round((diasBaseAnio*Math.floor(aniosServicio)+1.25*mesesD+(1.25/30)*diasD)*1000)/1000;
+    if(diasFeriadoLegal<1)diasFeriadoLegal=0;
+  }
+  var diasPendientes=diasFeriadoLegal-(parseFloat(form.dias_feriado_tomados)||0);
+  var totalDiasFeriado=diasPendientes+(parseFloat(form.dias_inhabiles)||0);
+  // Indemnizaciones
+  var causalSel=CAUSALES_FINIQUITO.find(function(c){return c.k===form.causal;})||{};
+  // Aviso previo (solo Art. 161-1 y si fecha_aviso = fecha_termino o sin aviso)
+  var indemAviso=0;
+  if(form.causal==='Art. 161-1: Necesidades de la empresa'){
+    var diff=0;
+    if(form.fecha_aviso&&form.fecha_termino){
+      var fa=new Date(form.fecha_aviso+'T00:00:00');
+      var ft=new Date(form.fecha_termino+'T00:00:00');
+      diff=Math.floor((ft-fa)/(1000*3600*24));
+    }
+    if(!form.fecha_aviso||(diff>=0&&diff<=29))indemAviso=totalHaberes/2; // 1 sueldo / 2 = mitad? No: planilla divide /2
+  }
+  // Indem años de servicio (Art. 161-1 o 161-2)
+  var indemAnios=0;
+  if(causalSel.pago&&aniosServicio>0)indemAnios=totalHaberes*aniosServicio;
+  // Vacaciones proporcionales — feriado pendiente sin contar gratificación
+  var baseVac=form.tipo_sueldo==='Fijo'?sb:(sb+promVar);
+  var indemVac=(baseVac/30)*totalDiasFeriado;
+  // Indem por tiempo servido (solo Art. 159-5 obra/faena, contratos posteriores a 01-01-2019, 2.5 días por mes + 1 si fracción >=15 días)
+  var indemTiempoServ=0;
+  if(form.causal==='Art. 159-5: Conclusión del trabajo que dio origen al contrato (obra o faena)'){
+    var fechaTermino=new Date(form.fecha_termino+'T00:00:00');
+    var lim2019=new Date('2019-01-01T00:00:00');
+    var lim2020=new Date('2020-07-01T00:00:00');
+    var lim2021=new Date('2021-07-01T00:00:00');
+    var lim2022=new Date('2022-01-01T00:00:00');
+    var diasPorMes=0;
+    if(fechaTermino>=lim2022)diasPorMes=2.5;
+    else if(fechaTermino>=lim2021)diasPorMes=2;
+    else if(fechaTermino>=lim2020)diasPorMes=1.5;
+    else if(fechaTermino>=lim2019)diasPorMes=1;
+    if(diasPorMes>0&&diasTrabajados>0){
+      var totalMeses=aniosD*12+mesesD+(diasD>=15?1:0);
+      indemTiempoServ=(totalHaberes/30)*(totalMeses*diasPorMes);
+    }
+  }
+  var remuPend=parseFloat(form.remuneracion_pendiente)||0;
+  var descuentos=parseFloat(form.descuentos)||0;
+  var totalFiniquito=remuPend+indemAviso+indemAnios+indemVac+indemTiempoServ-descuentos;
+
+  function guardar(){
+    if(!form.persona_id||!form.empresa_id||!form.fecha_inicio||!form.fecha_termino){
+      alert('Complete trabajador, empresa, fecha inicio y fecha término');return;
+    }
+    var body=Object.assign({},form,{
+      promedio_variable:promVar,
+      anios_servicio:aniosServicio,
+      dias_feriado_legal:diasFeriadoLegal,
+      dias_feriado_pendiente:totalDiasFeriado,
+      total_haberes:totalHaberes,
+      indem_aviso_previo:indemAviso,
+      indem_anios_servicio:indemAnios,
+      indem_vacaciones:indemVac,
+      indem_tiempo_servido:indemTiempoServ,
+      total_finiquito:totalFiniquito,
+      descuentos:descuentos
+    });
+    api('/finiquitos','POST',body,p.tok).then(function(r){
+      alert('✅ Finiquito guardado. Generando documento...');
+      load();setForm(emptyForm);
+      if(r.finiquito_id)setTimeout(function(){generarFiniquitoDoc(r.finiquito_id,'pdf');},300);
+    }).catch(function(e){alert('Error: '+e.message);});
+  }
+  function eliminar(id){
+    if(!confirm('¿Eliminar este finiquito?'))return;
+    api('/finiquitos/'+id,'DELETE',null,p.tok).then(load).catch(function(e){alert(e.message);});
+  }
+  function eliminarCarta(id){
+    if(!confirm('¿Eliminar esta carta?'))return;
+    api('/cartas-termino/'+id,'DELETE',null,p.tok).then(load).catch(function(e){alert(e.message);});
+  }
+  function generarFiniquitoDoc(id,formato){
+    api('/finiquitos/'+id,'GET',null,p.tok).then(function(f){
+      var html=buildFiniquitoHTML(f);
+      var nombre=(f.nombre_completo||'finiquito').replace(/\s+/g,'_');
+      var fecha=(f.fecha_termino+'').slice(0,10).replace(/-/g,'');
+      if(formato==='pdf'){
+        var w=window.open('','_blank');
+        if(!w){alert('Permita popups');return;}
+        w.document.write(html);w.document.close();
+        w.document.title='Finiquito_'+nombre+'_'+fecha;
+        setTimeout(function(){w.focus();w.print();},500);
+      }else{
+        var blob=new Blob(['\ufeff'+html],{type:'application/msword;charset=utf-8'});
+        var url=URL.createObjectURL(blob);
+        var link=document.createElement('a');
+        link.href=url;link.download='Finiquito_'+nombre+'_'+fecha+'.doc';
+        document.body.appendChild(link);link.click();
+        setTimeout(function(){document.body.removeChild(link);URL.revokeObjectURL(url);},100);
+      }
+    }).catch(function(e){alert(e.message);});
+  }
+  function CLPF(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+
+  // ── CARTA DE TÉRMINO ──
+  function onPersonaCartaChange(pid){
+    updC('persona_id',pid);
+    var per=personal.find(function(x){return String(x.persona_id)===String(pid);});
+    if(per){
+      if(per.empresa_id&&!carta.empresa_id)updC('empresa_id',per.empresa_id);
+      if(per.fecha_ingreso)updC('fecha_contrato',(per.fecha_ingreso+'').slice(0,10));
+      if(per.cargo)updC('cargo',per.cargo);
+    }
+  }
+  function guardarCarta(){
+    if(!carta.persona_id||!carta.empresa_id||!carta.fecha_carta||!carta.fecha_termino){
+      alert('Complete trabajador, empresa, fecha carta y fecha término');return;
+    }
+    if(!carta.causal_hecho||!carta.causal_hecho.trim()){
+      alert('Debe redactar la causal de hecho que motiva el despido');return;
+    }
+    api('/cartas-termino','POST',carta,p.tok).then(function(r){
+      alert('✅ Carta guardada. Generando documento...');
+      load();setCarta(emptyCarta);
+      if(r.carta_id)setTimeout(function(){generarCartaDoc(r.carta_id,'pdf');},300);
+    }).catch(function(e){alert('Error: '+e.message);});
+  }
+  function generarCartaDoc(id,formato){
+    api('/cartas-termino/'+id,'GET',null,p.tok).then(function(c){
+      var html=buildCartaTerminoHTML(c);
+      var nombre=(c.nombre_completo||'carta').replace(/\s+/g,'_');
+      var fecha=(c.fecha_carta+'').slice(0,10).replace(/-/g,'');
+      if(formato==='pdf'){
+        var w=window.open('','_blank');
+        if(!w){alert('Permita popups');return;}
+        w.document.write(html);w.document.close();
+        w.document.title='CartaTermino_'+nombre+'_'+fecha;
+        setTimeout(function(){w.focus();w.print();},500);
+      }else{
+        var blob=new Blob(['\ufeff'+html],{type:'application/msword;charset=utf-8'});
+        var url=URL.createObjectURL(blob);
+        var link=document.createElement('a');
+        link.href=url;link.download='CartaTermino_'+nombre+'_'+fecha+'.doc';
+        document.body.appendChild(link);link.click();
+        setTimeout(function(){document.body.removeChild(link);URL.revokeObjectURL(url);},100);
+      }
+    }).catch(function(e){alert(e.message);});
+  }
+
+  return h('div',null,
+    // Tabs
+    h('div',{style:{display:'flex',gap:6,marginBottom:12}},
+      [{k:'carta',l:'📨 Carta de Término'},{k:'calcular',l:'🧮 Calcular Finiquito'},{k:'listar',l:'📋 Historial'}].map(function(t){
+        return h('button',{key:t.k,onClick:function(){setModo(t.k);},
+          style:{padding:'7px 16px',borderRadius:5,fontSize:12,cursor:'pointer',border:'1px solid #CBD5E1',background:modo===t.k?'#1E3A2D':'#F8FAFC',color:modo===t.k?'#fff':'#475569',fontWeight:600}},t.l);
+      })
+    ),
+    // CARTA DE TÉRMINO DE CONTRATO
+    modo==='carta'&&h('div',null,
+      h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:5,padding:'8px 12px',marginBottom:12,fontSize:11,color:'#1E40AF'}},
+        '💡 La carta de término es el primer paso del proceso de desvinculación. Notifica al trabajador que su contrato terminará en una fecha determinada. Posteriormente se genera el finiquito.'
+      ),
+      h('div',{className:'card',style:{padding:14,marginBottom:12}},
+        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#1E3A2D'}},'Datos de la carta'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
+          h('div',null,h('label',{style:lblS},'Empresa *'),h('select',{value:carta.empresa_id,onChange:function(e){updC('empresa_id',e.target.value);updC('persona_id','');},style:inpS},h('option',{value:''},'Seleccione...'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+          h('div',null,h('label',{style:lblS},'Trabajador *'),h('select',{value:carta.persona_id,onChange:function(e){onPersonaCartaChange(e.target.value);},style:inpS,disabled:!carta.empresa_id},h('option',{value:''},carta.empresa_id?'Seleccione...':'Primero seleccione empresa'),personal.filter(function(x){return !carta.empresa_id||String(x.empresa_id)===String(carta.empresa_id);}).map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo+(x.rut?' ('+x.rut+')':''));})))
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10,marginBottom:10}},
+          h('div',null,h('label',{style:lblS},'Fecha de la carta *'),h('input',{type:'date',value:carta.fecha_carta,onChange:function(e){updC('fecha_carta',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Fecha del contrato'),h('input',{type:'date',value:carta.fecha_contrato,onChange:function(e){updC('fecha_contrato',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Fecha término *'),h('input',{type:'date',value:carta.fecha_termino,onChange:function(e){updC('fecha_termino',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Cargo'),h('input',{value:carta.cargo,onChange:function(e){updC('cargo',e.target.value);},style:inpS,placeholder:'Auto desde ficha'}))
+        ),
+        h('div',{style:{marginBottom:10}},
+          h('label',{style:lblS},'Causal legal *'),
+          h('select',{value:carta.causal,onChange:function(e){updC('causal',e.target.value);},style:inpS},
+            CAUSALES_FINIQUITO.map(function(c){return h('option',{key:c.k,value:c.k},c.k);})
+          )
+        ),
+        h('div',{style:{marginBottom:10}},
+          h('label',{style:lblS},'Causal de hecho * (descripción de los hechos que motivan el despido)'),
+          h('textarea',{value:carta.causal_hecho,onChange:function(e){updC('causal_hecho',e.target.value);},rows:4,style:Object.assign({},inpS,{resize:'vertical'}),placeholder:'Ej: Con fecha 15 de marzo de 2026 ha concluido la obra forestal del Fundo Caballo de Palo, motivo por el cual no existen labores adicionales que asignarle al trabajador...'})
+        )
+      ),
+      // Indemnizaciones a informar
+      h('div',{className:'card',style:{padding:14,marginBottom:12,background:'#FFFBEB',border:'1px solid #FDE68A'}},
+        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#92400E'}},'Indemnizaciones a comunicar (opcional)'),
+        h('div',{style:{fontSize:10,color:'#78350F',marginBottom:8}},'Si ya calculó el finiquito, puede transcribir los montos. Si no, déjelos en 0.'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10}},
+          h('div',null,h('label',{style:lblS},'Indem. años de servicio $'),h('input',{type:'number',value:carta.indem_anios_servicio,onChange:function(e){updC('indem_anios_servicio',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Vacaciones proporcionales $'),h('input',{type:'number',value:carta.indem_vacaciones,onChange:function(e){updC('indem_vacaciones',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Indem. tiempo servido $'),h('input',{type:'number',value:carta.indem_tiempo_servido,onChange:function(e){updC('indem_tiempo_servido',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Indem. aviso previo $'),h('input',{type:'number',value:carta.indem_aviso_previo,onChange:function(e){updC('indem_aviso_previo',e.target.value);},style:inpS}))
+        )
+      ),
+      h('div',{className:'card',style:{padding:14}},
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8}},
+          h(Btn,{v:'g',onClick:function(){setCarta(emptyCarta);}},null,'Limpiar'),
+          h(Btn,{onClick:guardarCarta},'💾 Guardar y generar carta')
+        )
+      )
+    ),
+    // CALCULAR FINIQUITO
+    modo==='calcular'&&h('div',null,
+      // Datos básicos
+      h('div',{className:'card',style:{padding:14,marginBottom:12}},
+        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#1E3A2D'}},'Datos básicos'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
+          h('div',null,h('label',{style:lblS},'Empresa *'),h('select',{value:form.empresa_id,onChange:function(e){upd('empresa_id',e.target.value);upd('persona_id','');},style:inpS},h('option',{value:''},'Seleccione...'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+          h('div',null,h('label',{style:lblS},'Trabajador *'),h('select',{value:form.persona_id,onChange:function(e){onPersonaChange(e.target.value);},style:inpS,disabled:!form.empresa_id},h('option',{value:''},form.empresa_id?'Seleccione...':'Primero seleccione empresa'),personal.filter(function(x){return !form.empresa_id||String(x.empresa_id)===String(form.empresa_id);}).map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo+(x.rut?' ('+x.rut+')':''));})))
+        ),
+        h('div',null,h('label',{style:lblS},'Causal de término *'),h('select',{value:form.causal,onChange:function(e){upd('causal',e.target.value);},style:inpS},
+          CAUSALES_FINIQUITO.map(function(c){return h('option',{key:c.k,value:c.k},c.k);})
+        ))
+      ),
+      // Fechas y años de servicio
+      h('div',{className:'card',style:{padding:14,marginBottom:12,background:'#F8FAFC'}},
+        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#1E3A2D'}},'I. Período y años de servicio'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:8}},
+          h('div',null,h('label',{style:lblS},'Fecha inicio contrato *'),h('input',{type:'date',value:form.fecha_inicio,onChange:function(e){upd('fecha_inicio',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Fecha término *'),h('input',{type:'date',value:form.fecha_termino,onChange:function(e){upd('fecha_termino',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Fecha aviso despido'),h('input',{type:'date',value:form.fecha_aviso,onChange:function(e){upd('fecha_aviso',e.target.value);},style:inpS}))
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10,padding:'8px 12px',background:'#EFF6FF',borderRadius:5,border:'1px solid #BFDBFE'}},
+          h('div',null,h('label',{style:Object.assign({},lblS,{color:'#1E40AF'})},'Total días trabajados'),h('input',{value:diasTrabajados,readOnly:true,style:inpRO})),
+          h('div',null,h('label',{style:Object.assign({},lblS,{color:'#1E40AF'})},'Período (Y/M/D)'),h('input',{value:aniosD+' / '+mesesD+' / '+diasD,readOnly:true,style:inpRO})),
+          h('div',null,h('label',{style:Object.assign({},lblS,{color:'#1E40AF'})},'Años de servicio'),h('input',{value:aniosServicio,readOnly:true,style:inpRO})),
+          h('div',{style:{display:'flex',alignItems:'flex-end'}},h('label',{style:{fontSize:11,fontWeight:600,display:'flex',alignItems:'center',gap:6,cursor:'pointer'}},h('input',{type:'checkbox',checked:form.es_zona_extrema,onChange:function(e){upd('es_zona_extrema',e.target.checked);}}),'Es zona extrema (20 días)'))
+        )
+      ),
+      // Remuneración
+      h('div',{className:'card',style:{padding:14,marginBottom:12}},
+        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#1E3A2D'}},'II. Remuneración'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}},
+          h('div',null,h('label',{style:lblS},'Sueldo mínimo $'),h('input',{type:'number',value:form.valor_sueldo_minimo,onChange:function(e){upd('valor_sueldo_minimo',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Valor UF $'),h('input',{type:'number',step:'0.01',value:form.valor_uf,onChange:function(e){upd('valor_uf',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Tipo de sueldo *'),h('select',{value:form.tipo_sueldo,onChange:function(e){upd('tipo_sueldo',e.target.value);},style:inpS},h('option',{value:'Fijo'},'Fijo'),h('option',{value:'Variable'},'Variable')))
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10,marginBottom:8}},
+          h('div',null,h('label',{style:lblS},'Sueldo base $ *'),h('input',{type:'number',value:form.sueldo_base,onChange:function(e){upd('sueldo_base',e.target.value);},style:inpS})),
+          h('div',{style:{display:'flex',alignItems:'flex-end'}},h('label',{style:{fontSize:11,fontWeight:600,display:'flex',alignItems:'center',gap:6,cursor:'pointer'}},h('input',{type:'checkbox',checked:form.gratificacion_mensual,onChange:function(e){upd('gratificacion_mensual',e.target.checked);}}),'Gratificación mensual')),
+          h('div',null,h('label',{style:lblS},'Asig. colación $'),h('input',{type:'number',value:form.asignacion_colacion,onChange:function(e){upd('asignacion_colacion',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Asig. movilización $'),h('input',{type:'number',value:form.asignacion_movilizacion,onChange:function(e){upd('asignacion_movilizacion',e.target.value);},style:inpS}))
+        ),
+        // Variables (solo si tipo Variable)
+        form.tipo_sueldo==='Variable'&&h('div',{style:{background:'#FEF3C7',border:'1px solid #FCD34D',borderRadius:6,padding:10,marginBottom:8}},
+          h('div',{style:{fontSize:11,fontWeight:700,color:'#92400E',marginBottom:6}},'⚠ Sueldo variable — Promedio últimos 3 meses (comisiones, semana corrida)'),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8}},
+            h('div',null,h('label',{style:lblS},'Mes 1 (último) $'),h('input',{type:'number',value:form.haber_var_mes1,onChange:function(e){upd('haber_var_mes1',e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Mes 2 (penúlt.) $'),h('input',{type:'number',value:form.haber_var_mes2,onChange:function(e){upd('haber_var_mes2',e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Mes 3 (antepen.) $'),h('input',{type:'number',value:form.haber_var_mes3,onChange:function(e){upd('haber_var_mes3',e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Promedio'),h('input',{value:CLPF(promVar),readOnly:true,style:inpRO}))
+          )
+        ),
+        h('div',{style:{padding:'8px 12px',background:'#F0FDF4',borderRadius:5,border:'1px solid #BBF7D0',display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}},
+          h('div',null,
+            h('div',{style:{fontSize:10,color:'#166534',fontWeight:600,textTransform:'uppercase'}},'Gratificación calculada'),
+            h('div',{style:{fontSize:14,fontWeight:700,color:'#15803D',fontFamily:'monospace'}},CLPF(grat))
+          ),
+          h('div',null,
+            h('div',{style:{fontSize:10,color:'#166534',fontWeight:600,textTransform:'uppercase'}},'Total haberes (base de cálculo)'),
+            h('div',{style:{fontSize:14,fontWeight:700,color:'#15803D',fontFamily:'monospace'}},CLPF(totalHaberes),totalHaberes>=tope90UF&&tope90UF>0?h('span',{style:{fontSize:9,color:'#DC2626',marginLeft:6}},'TOPE 90 UF'):null)
+          )
+        )
+      ),
+      // Feriado
+      h('div',{className:'card',style:{padding:14,marginBottom:12}},
+        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#1E3A2D'}},'III. Feriado legal (vacaciones)'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10}},
+          h('div',null,h('label',{style:lblS},'Días obtenidos'),h('input',{value:diasFeriadoLegal,readOnly:true,style:inpRO})),
+          h('div',null,h('label',{style:lblS},'Días tomados'),h('input',{type:'number',step:'.01',value:form.dias_feriado_tomados,onChange:function(e){upd('dias_feriado_tomados',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Días inhábiles (sumar)'),h('input',{type:'number',step:'.01',value:form.dias_inhabiles,onChange:function(e){upd('dias_inhabiles',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Total días pendientes'),h('input',{value:totalDiasFeriado.toFixed(2),readOnly:true,style:Object.assign({},inpRO,{fontWeight:700,color:'#15803D'})}))
+        )
+      ),
+      // Indemnizaciones (resultado final)
+      h('div',{className:'card',style:{padding:14,marginBottom:12,background:'#FFFBEB',border:'2px solid #FDE68A'}},
+        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#92400E'}},'IV. Indemnizaciones por pagar'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:8}},
+          h('div',null,h('label',{style:lblS},'Remuneración pendiente $ (saldo último mes)'),h('input',{type:'number',value:form.remuneracion_pendiente,onChange:function(e){upd('remuneracion_pendiente',e.target.value);},style:inpS})),
+          h('div',null,h('label',{style:lblS},'Descuentos $ (anticipos, préstamos, etc.)'),h('input',{type:'number',value:form.descuentos,onChange:function(e){upd('descuentos',e.target.value);},style:inpS}))
+        ),
+        h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12}},
+          h('thead',null,h('tr',{style:{background:'#FDE68A'}},h('th',{style:{padding:'6px 10px',textAlign:'left',color:'#78350F'}},'Concepto'),h('th',{style:{padding:'6px 10px',textAlign:'right',color:'#78350F'}},'Monto'))),
+          h('tbody',null,
+            h('tr',null,h('td',{style:{padding:'6px 10px'}},'Remuneración pendiente'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace'}},CLPF(remuPend))),
+            h('tr',null,h('td',{style:{padding:'6px 10px'}},'Indemnización aviso previo'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:indemAviso>0?'#15803D':'#94A3B8'}},indemAviso>0?CLPF(indemAviso):'No aplica')),
+            h('tr',null,h('td',{style:{padding:'6px 10px'}},'Indemnización años de servicio'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:indemAnios>0?'#15803D':'#94A3B8'}},indemAnios>0?CLPF(indemAnios):'No aplica')),
+            h('tr',null,h('td',{style:{padding:'6px 10px'}},'Indemnización vacaciones proporcionales'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:indemVac>0?'#15803D':'#94A3B8'}},indemVac>0?CLPF(indemVac):'No aplica')),
+            h('tr',null,h('td',{style:{padding:'6px 10px'}},'Indemnización por tiempo servido (obra/faena)'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:indemTiempoServ>0?'#15803D':'#94A3B8'}},indemTiempoServ>0?CLPF(indemTiempoServ):'No aplica')),
+            descuentos>0&&h('tr',null,h('td',{style:{padding:'6px 10px',color:'#DC2626'}},'(–) Descuentos'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:'#DC2626'}},'-'+CLPF(descuentos))),
+            h('tr',{style:{background:'#FDE68A',fontWeight:700}},h('td',{style:{padding:'10px',fontSize:13}},'TOTAL FINIQUITO'),h('td',{style:{padding:'10px',textAlign:'right',fontFamily:'monospace',fontSize:16,color:'#15803D'}},CLPF(totalFiniquito)))
+          )
+        )
+      ),
+      // Observaciones y guardar
+      h('div',{className:'card',style:{padding:14}},
+        h('div',{style:{marginBottom:10}},
+          h('label',{style:lblS},'Observaciones'),
+          h('textarea',{value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},rows:2,style:Object.assign({},inpS,{resize:'vertical'})})
+        ),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8}},
+          h(Btn,{v:'g',onClick:function(){setForm(emptyForm);}},null,'Limpiar'),
+          h(Btn,{onClick:guardar},'💾 Guardar y generar finiquito')
+        )
+      )
+    ),
+    // LISTAR
+    modo==='listar'&&h('div',null,
+      // Cartas de término
+      h('div',{className:'card',style:{marginBottom:14}},
+        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10}},'📨 Cartas de término ('+cartas.length+')'),
+        cartas.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:14,textAlign:'center'}},'No hay cartas registradas'):
+        h('table',{className:'tbl',style:{width:'100%',fontSize:11}},
+          h('thead',null,h('tr',null,
+            h('th',null,'Fecha carta'),
+            h('th',null,'Trabajador'),
+            h('th',null,'Empresa'),
+            h('th',null,'Causal'),
+            h('th',null,'Fecha término'),
+            h('th',null,'')
+          )),
+          h('tbody',null,cartas.map(function(c){
+            return h('tr',{key:c.carta_id},
+              h('td',null,fmtD(c.fecha_carta)),
+              h('td',null,h('div',{style:{fontWeight:600}},c.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},c.rut||'')),
+              h('td',null,c.empresa_nombre),
+              h('td',null,h('span',{style:{fontSize:10}},(c.causal||'').replace(/^Art\. /,''))),
+              h('td',null,fmtD(c.fecha_termino)),
+              h('td',null,h('div',{style:{display:'flex',gap:3}},
+                h(Btn,{v:'a',sm:true,onClick:function(){generarCartaDoc(c.carta_id,'pdf');}},null,'📑 PDF'),
+                h(Btn,{v:'a',sm:true,onClick:function(){generarCartaDoc(c.carta_id,'word');}},null,'📄 Word'),
+                h(Btn,{v:'r',sm:true,onClick:function(){eliminarCarta(c.carta_id);}},null,'🗑')
+              ))
+            );
+          }))
+        )
+      ),
+      // Finiquitos
+      h('div',{className:'card'},
+        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10}},'🧾 Finiquitos ('+finiquitos.length+')'),
+        finiquitos.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:14,textAlign:'center'}},'No hay finiquitos registrados'):
+        h('table',{className:'tbl',style:{width:'100%',fontSize:11}},
+          h('thead',null,h('tr',null,
+            h('th',null,'Fecha'),
+            h('th',null,'Trabajador'),
+            h('th',null,'Empresa'),
+            h('th',null,'Causal'),
+            h('th',null,'Años'),
+            h('th',null,'Total finiquito'),
+            h('th',null,'')
+          )),
+          h('tbody',null,finiquitos.map(function(f){
+            return h('tr',{key:f.finiquito_id},
+              h('td',null,fmtD(f.fecha_termino)),
+              h('td',null,h('div',{style:{fontWeight:600}},f.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},f.rut||'')),
+              h('td',null,f.empresa_nombre),
+              h('td',null,h('span',{style:{fontSize:10}},(f.causal||'').replace(/^Art\. /,''))),
+              h('td',null,f.anios_servicio||0),
+              h('td',null,h('span',{style:{fontFamily:'monospace',fontWeight:700,color:'#15803D'}},CLPF(f.total_finiquito))),
+              h('td',null,h('div',{style:{display:'flex',gap:3}},
+                h(Btn,{v:'a',sm:true,onClick:function(){generarFiniquitoDoc(f.finiquito_id,'pdf');}},null,'📑 PDF'),
+                h(Btn,{v:'a',sm:true,onClick:function(){generarFiniquitoDoc(f.finiquito_id,'word');}},null,'📄 Word'),
+                h(Btn,{v:'r',sm:true,onClick:function(){eliminar(f.finiquito_id);}},null,'🗑')
+              ))
+            );
+          }))
+        )
+      )
+    )
+  );
+}
+
+// Builder HTML del finiquito (formato oficial)
+function buildFiniquitoHTML(f){
+  function CLPF(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+  var fechaTxt=fmtFechaLarga(f.fecha_termino);
+  var fechaInicio=fmtFechaLarga(f.fecha_inicio);
+  var logo=f.logo_base64?'<img src="'+f.logo_base64+'" style="max-height:80px;max-width:200px;margin-bottom:10px"/>':'';
+  var firmaEmp=f.firma_representante?'<img src="'+f.firma_representante+'" style="max-height:70px;max-width:160px;display:block;margin:0 auto 4px"/>':'';
+  var timbreEmp=f.timbre_empresa?'<div style="margin-top:6px;text-align:center"><img src="'+f.timbre_empresa+'" style="max-height:60px;max-width:140px"/></div>':'';
+  // Mapeo causal a texto natural
+  function causalTxt(c){
+    if(!c)return'';
+    var m={
+      'Art. 159-1: Mutuo acuerdo':'Mutuo acuerdo de las partes',
+      'Art. 159-2: Renuncia del trabajador':'Renuncia del trabajador',
+      'Art. 159-3: Muerte del trabajador':'Muerte del trabajador',
+      'Art. 159-4: Vencimiento plazo convenido (contratos plazo fijo)':'Vencimiento del plazo convenido',
+      'Art. 159-5: Conclusión del trabajo que dio origen al contrato (obra o faena)':'Conclusión del trabajo o servicio que dio origen al contrato',
+      'Art. 159-6: Caso fortuito o fuerza mayor':'Caso fortuito o fuerza mayor',
+      'Art. 161-1: Necesidades de la empresa':'Necesidades de la empresa',
+      'Art. 161-2: Desahucio':'Desahucio'
+    };
+    return m[c]||c;
+  }
+  function articuloTxt(c){
+    if(!c)return'';
+    var m=c.match(/Art\.\s*(\d+)-(\d+)/);
+    return m?'Articulo '+m[1]+' No '+m[2]:c;
+  }
+  // Filas de liquidación
+  var filas=[];
+  if((f.indem_vacaciones||0)>0)filas.push(['Vacaciones proporcionales',f.indem_vacaciones]);
+  if((f.indem_aviso_previo||0)>0)filas.push(['Indemnización sustitutiva aviso previo',f.indem_aviso_previo]);
+  else filas.push(['Indemnización sustitutiva aviso previo',0]);
+  if((f.indem_anios_servicio||0)>0)filas.push(['Indemnización Años de Servicio',f.indem_anios_servicio]);
+  else filas.push(['Indemnización Años de Servicio',0]);
+  if((f.indem_tiempo_servido||0)>0)filas.push(['Indemnización por tiempo servido (obra/faena)',f.indem_tiempo_servido]);
+  if((f.remuneracion_pendiente||0)>0)filas.push(['Remuneración pendiente',f.remuneracion_pendiente]);
+  if((f.descuentos||0)>0)filas.push(['Descuentos',f.descuentos]);
+  filas.push(['Total a Pagar',f.total_finiquito]);
+  var rowsHtml=filas.map(function(r,i){
+    var isTotal=i===filas.length-1;
+    return '<tr'+(isTotal?' style="font-weight:700;background:#F0FDF4"':'')+'><td style="padding:6px 10px;border:1px solid #94A3B8">'+r[0]+'</td><td style="padding:6px 10px;border:1px solid #94A3B8;text-align:right;font-family:monospace">'+CLPF(r[1])+'</td></tr>';
+  }).join('');
+
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Finiquito</title>'+
+    '<style>body{font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.5;margin:2cm;color:#000}'+
+    'h2{text-align:center;font-size:14pt;margin:8px 0 18px}'+
+    'p{text-align:justify;margin:8px 0}'+
+    'table.liq{width:100%;border-collapse:collapse;margin:10px 0}'+
+    '.firmas-tbl{margin-top:50px;width:100%;border-collapse:collapse}'+
+    '.firmas-tbl td{width:50%;vertical-align:top;padding:0 5px;text-align:center}'+
+    '.firma-line{border-top:1px solid #000;padding-top:6px;font-size:10pt;line-height:1.4}'+
+    '.ministro{margin-top:50px;text-align:center;width:60%;margin-left:auto;margin-right:auto}'+
+    '.ministro .firma-line{border-top:1px solid #000;padding-top:6px;font-size:10pt}'+
+    '@media print{body{margin:1.5cm}}</style></head><body>'+
+    logo+
+    '<h2>Finiquito de Contrato de Trabajo</h2>'+
+    '<p>En <strong>Nacimiento</strong>, a <strong>'+fechaTxt+'</strong>, entre <strong>'+(f.empresa_nombre||'')+'</strong>, R.U.T <strong>'+(f.empresa_rut||'')+'</strong>, en adelante, empleador, representado por '+
+    (f.representante_nombre?'Don <strong>'+f.representante_nombre+'</strong> R.U.T. <strong>'+(f.representante_rut||'')+'</strong> ':'')+
+    'ambos domiciliados en Avda. Julio Hemmelmann N° 127, comuna de Nacimiento, ciudad de Nacimiento, por una parte; y la otra, Don/Doña <strong>'+(f.nombre_completo||'')+'</strong>, R.U.T <strong>'+(f.rut||'')+'</strong>, domiciliado en '+(f.persona_direccion||'')+', comuna de '+(f.persona_comuna||'')+', en adelante, también, se deja testimonio y se ha acordado el finiquito que consta de las siguientes cláusulas:</p>'+
+    '<p><strong>PRIMERO:</strong> El trabajador prestó servicios al empleador, en el cargo de <strong>'+(f.cargo||'')+'</strong>, desde el <strong>'+fechaInicio+'</strong>, hasta el <strong>'+fechaTxt+'</strong>, fecha esta última en que su contrato de trabajo ha terminado por, <strong>'+causalTxt(f.causal)+'</strong>, la causal señalada en el Código del Trabajo, <strong>'+articuloTxt(f.causal)+'</strong>.</p>'+
+    '<p><strong>SEGUNDO:</strong> Don/Doña <strong>'+(f.nombre_completo||'')+'</strong> declara recibir en este acto, a su entera satisfacción, de parte de '+(f.empresa_nombre||'')+' la suma de <strong>'+CLPF(f.total_finiquito)+'</strong>, según la liquidación que se señala a continuación:</p>'+
+    '<table class="liq">'+rowsHtml+'</table>'+
+    '<p>Don/Doña <strong>'+(f.nombre_completo||'')+'</strong> declara haber analizado y estudiado detenidamente dicha liquidación, aceptándola en todas sus partes, sin tener observación alguna que formularle.</p>'+
+    '<p><strong>TERCERO:</strong> En consecuencia, el empleador paga a Don/Doña <strong>'+(f.nombre_completo||'')+'</strong> en dinero efectivo que el trabajador declara recibir en este acto a su entera satisfacción. Las partes dejan constancia que la referida suma cubre el total de haberes especificados en la liquidación señalada en el numerando SEGUNDO del presente finiquito.</p>'+
+    '<p><strong>CUARTO:</strong> Don/Doña <strong>'+(f.nombre_completo||'')+'</strong> deja constancia que durante el tiempo que prestó servicios a '+(f.empresa_nombre||'')+', recibió oportunamente el total de las remuneraciones, beneficios y demás prestaciones convenidas de acuerdo a su contrato de trabajo, clase de trabajo ejecutado y disposiciones legales pertinentes, y que en tal virtud el empleador nada le adeuda por tales conceptos, ni por horas extraordinarias, asignación familiar, feriado, indemnización por años de servicios, imposiciones previsionales, así como por ningún otro concepto, ya sea legal o contractual, derivado de la prestación de sus servicios, de su contrato de trabajo o de la terminación del mismo. En consecuencia, Don/Doña '+(f.nombre_completo||'')+' declara que no tiene reclamo alguno que formular en contra de '+(f.empresa_nombre||'')+', renunciando a todas las acciones que pudieran emanar del contrato que los vinculó.</p>'+
+    '<p><strong>QUINTO:</strong> En virtud de lo anteriormente expuesto, Don/Doña <strong>'+(f.nombre_completo||'')+'</strong>, manifiesta expresamente que '+(f.empresa_nombre||'')+' nada le adeuda en relación con los servicios prestados, con el contrato de trabajo o con motivo de la terminación del mismo, por lo que libre y espontáneamente, y con el pleno y cabal conocimiento de sus derechos, otorga a su empleador, el más amplio, completo, total y definitivo finiquito por los servicios prestados o la terminación de ellos, ya diga relación con remuneraciones, cotizaciones previsionales, de seguridad social o de salud, subsidios, beneficios contractuales adicionales a las remuneraciones, indemnizaciones, compensaciones, o con cualquiera causa o concepto.</p>'+
+    '<p><strong>SEXTO:</strong> Asimismo, declara el trabajador que, en todo caso, y a todo evento, renuncia expresamente a cualquier derecho, acción o reclamo que eventualmente tuviere o pudiere corresponderle en contra del empleador, en relación directa o indirecta con su contrato de trabajo, con los servicios prestados, con la terminación del referido contrato o dichos servicios, sepa que esos derechos o acciones correspondan a remuneraciones, cotizaciones previsionales, de seguridad social o de salud, subsidios, beneficios contractuales adicionales a las remuneraciones, indemnizaciones compensaciones, o con cualquier otra causa o concepto.</p>'+
+    '<p><strong>SÉPTIMO:</strong> De conformidad con lo dispuesto en el Artículo 13 del texto refundido de la Ley Nº14.908 sobre Abandono de Familia Pago de Pensiones Alimenticias, el empleador declara que a la fecha de término de la relación laboral, no ha sido notificado de resolución judicial que le exija retener y pagar pensión de alimentos con cargo a la remuneración del trabajador ni de las indemnizaciones que puedan corresponderle de conformidad a los artículos 161, 162 y 164 del Código del Trabajo.</p>'+
+    '<p>Y en el caso de existir la obligación de retención, el empleador se hace responsable de ésta. En comprobante, se adjuntan las 3 últimas liquidaciones de sueldo del trabajador.</p>'+
+    '<p>Para constancia, las partes firman el presente finiquito en tres ejemplares, quedando uno en poder de cada una de ellas, y en cumplimiento de la legislación vigente, Don/Doña <strong>'+(f.nombre_completo||'')+'</strong> lo lee, firma y lo ratifica.</p>'+
+    '<table class="firmas-tbl"><tr>'+
+      '<td>'+
+        '<div style="height:75px"></div>'+
+        '<div class="firma-line"><strong>TRABAJADOR</strong><br/>'+(f.nombre_completo||'')+'<br/>RUT: '+(f.rut||'')+'</div>'+
+      '</td>'+
+      '<td>'+
+        '<div style="height:75px">'+firmaEmp+'</div>'+
+        '<div class="firma-line"><strong>EMPLEADOR</strong><br/>'+(f.empresa_nombre||'')+'<br/>RUT: '+(f.empresa_rut||'')+(f.representante_rut?'<br/>Representante: '+f.representante_rut:'')+'</div>'+
+        timbreEmp+
+      '</td>'+
+    '</tr></table>'+
+    '<div class="ministro">'+
+      '<div style="height:60px"></div>'+
+      '<div class="firma-line"><strong>MINISTRO DE FE</strong><br/>RUT: ____________________</div>'+
+    '</div>'+
+    '</body></html>';
+}
+
+// Builder HTML de carta de término
+function buildCartaTerminoHTML(c){
+  function CLPF(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+  var fechaCarta=fmtFechaLarga(c.fecha_carta);
+  var ciudadFirma='NACIMIENTO';
+  var fechaContratoStr=c.fecha_contrato?(new Date(c.fecha_contrato+'T00:00:00').toLocaleDateString('es-CL').replace(/\//g,'-')):'';
+  var fechaTerminoStr=c.fecha_termino?(new Date(c.fecha_termino+'T00:00:00').toLocaleDateString('es-CL').replace(/\//g,'-')):'';
+  var logo=c.logo_base64?'<img src="'+c.logo_base64+'" style="max-height:80px;max-width:200px;margin-bottom:14px"/>':'';
+  var firmaEmp=c.firma_representante?'<img src="'+c.firma_representante+'" style="max-height:70px;max-width:160px;display:block;margin:0 0 0 0"/>':'';
+  var timbreEmp=c.timbre_empresa?'<div style="margin-top:6px"><img src="'+c.timbre_empresa+'" style="max-height:60px;max-width:140px"/></div>':'';
+  // Convertir causal en texto formal
+  var causalUpper=(c.causal||'').toUpperCase().replace(/^ART\.\s*/,'ART. ');
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Carta de Término</title>'+
+    '<style>body{font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.6;margin:2cm;color:#000}'+
+    'p{text-align:justify;margin:10px 0}'+
+    '.indem-table{margin:14px 0;width:100%;border-collapse:collapse;font-size:11pt}'+
+    '.indem-table td{padding:4px 8px}'+
+    '.indem-table td:first-child{padding-left:25px}'+
+    '.indem-table td:last-child{text-align:right;font-weight:700;padding-right:30px}'+
+    '.firmas-tbl{margin-top:50px;width:100%;border-collapse:collapse}'+
+    '.firmas-tbl td{width:50%;vertical-align:top;padding:0 8px;text-align:center;font-size:10pt;border:1px solid #94A3B8}'+
+    '.firma-line{border-top:1px solid #000;padding-top:6px;line-height:1.4;margin-top:8px}'+
+    '@media print{body{margin:1.5cm}}</style></head><body>'+
+    logo+
+    '<p>'+ciudadFirma+', '+fechaCarta+'.</p>'+
+    '<p>Señor</p>'+
+    '<p><strong>'+(c.nombre_completo||'').toUpperCase()+'</strong><br/>'+
+    (c.persona_direccion||'')+'<br/>'+
+    (c.persona_comuna||'').toUpperCase()+'<br/>'+
+    'Presente.</p>'+
+    '<p>De nuestra consideración,</p>'+
+    '<p>Nos referimos a su contrato de trabajo de fecha <strong>'+fechaContratoStr+'</strong>, que lo vincula con nuestra empresa y conforme al cual usted se desempeña, actualmente, como <strong>'+(c.cargo||'').toUpperCase()+'</strong>.</p>'+
+    '<p>Por medio de la presente y de acuerdo a lo conversado con usted, cumplimos con formalizar y comunicar por escrito la decisión de la empresa en orden a poner término al contrato de trabajo antes indicado, a contar del <strong>'+fechaTerminoStr+'</strong>.</p>'+
+    '<p>Lo anterior se funda en que, '+(c.causal_hecho||'')+'. De ese modo, se configura la causal de término de contrato establecida en el <strong>'+causalUpper+'</strong> del Código del Trabajo.</p>'+
+    '<p>Hacemos presente que, sin perjuicio de los demás haberes y descuentos pertinentes, corresponden a usted las siguientes indemnizaciones:</p>'+
+    '<table class="indem-table">'+
+      '<tr><td>• Indemnización años de Servicio</td><td>'+CLPF(c.indem_anios_servicio)+'</td></tr>'+
+      '<tr><td>• Vacaciones Proporcionales</td><td>'+CLPF(c.indem_vacaciones)+'</td></tr>'+
+      '<tr><td>• Indemnización por tiempo servido</td><td>'+CLPF(c.indem_tiempo_servido)+'</td></tr>'+
+      '<tr><td>• Indemnización sustitutiva del aviso previo</td><td>'+CLPF(c.indem_aviso_previo)+'</td></tr>'+
+    '</table>'+
+    '<p>Por otro lado, y de conformidad a la ley, le hacemos saber que sus cotizaciones previsionales quedaron totalmente declaradas y pagadas hasta esta fecha. Adjuntamos a la presente, certificado de cotizaciones previsionales pagadas, que dan cuenta de lo señalado precedentemente.</p>'+
+    '<p>Sin otro particular,</p>'+
+    '<p>Saluda atentamente a usted, y agradeciendo su colaboración.</p>'+
+    '<table class="firmas-tbl"><tr>'+
+      '<td>'+
+        '<div style="height:80px;text-align:left">'+firmaEmp+'</div>'+
+        '<div class="firma-line">'+(c.empresa_nombre||'').toUpperCase()+'<br/>'+(c.empresa_rut||'')+(c.representante_rut?'<br/>Representante Legal: '+c.representante_rut:'')+'</div>'+
+        timbreEmp+
+      '</td>'+
+      '<td>'+
+        '<div style="height:80px"></div>'+
+        '<div class="firma-line">Recibí copia de la presente carta<br/><br/>'+(c.nombre_completo||'').toUpperCase()+'<br/>'+(c.rut||'')+'</div>'+
+      '</td>'+
+    '</tr></table>'+
+    '</body></html>';
+}
+
 // ══ MOBILE HOME — INTERFAZ SIMPLIFICADA PARA CELULAR ══
 function MobileHome(p){
   var ACCIONES=[
@@ -8716,7 +9364,7 @@ function MobileTerreno(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','oc-guias':'Guías de Despacho'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho'};
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
@@ -8861,7 +9509,8 @@ function App(){
         grp.pers&&h('div',null,
           navI('personal','👥','Maestro Personal',true),
           navI('vacaciones','🏖','Control de Vacaciones',true),
-          navI('contratos','📄','Contratos de Trabajo',true)
+          navI('contratos','📄','Contratos de Trabajo',true),
+          navI('finiquitos','🧾','Cálculo de Finiquitos',true)
         ),
         h('div',{className:'sb-sep'}),
         canSee('mantenedores')&&grpHdr('man','MANTENEDORES'),
@@ -8929,6 +9578,7 @@ function App(){
           view==='trans-planificacion'&&h(PlanificacionView,{tok,m}),
           view==='trans-tarifas'&&h(TransporteTarifas,{tok,m}),
           view==='contratos'&&h(ContratosView,{tok,m,onRefresh:onMov}),
+          view==='finiquitos'&&h(FiniquitosView,{tok,m}),
           view==='empresas'&&h(MasterV,{tok,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,firma_representante:null,timbre_empresa:null,activo:true},cols:[{lbl:'ID',k:'empresa_id',mono:true,w:50},{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
           view==='bodegas'&&h(MasterV,{tok,titulo:'Bodega',ep:'bodegas',pk:'bodega_id',Form:BodegaForm,importKey:'bodegas',blank:{codigo:'',nombre:'',ubicacion:'',responsable:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Ubicacion',k:'ubicacion'},{lbl:'Responsable',k:'responsable'}]}),
           view==='productos'&&h(MasterV,{tok,titulo:'Producto',ep:'productos',pk:'producto_id',Form:ProdForm,importKey:'productos',blank:{codigo:'',nombre:'',descripcion:'',categoria_id:'',subcategoria_id:'',unidad_medida:'UN',stock_minimo:0,stock_maximo:'',costo_referencia:0,unidad_compra:'',factor_conversion:1,activo:true},extra:{cats:m.cats,subcats:m.subcats},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Subcategoria',k:'subcategoria_nombre'},{lbl:'UM',k:'unidad_medida'},{lbl:'Stk min',k:'stock_minimo'},{lbl:'Costo ref.',render:r=>CLP(r.costo_referencia)}]}),
