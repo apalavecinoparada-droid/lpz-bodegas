@@ -8074,7 +8074,14 @@ function buildAnexoHTML(a){
 
 function fmtFechaLarga(f){
   if(!f)return'';
-  var d=new Date(f+(f.indexOf('T')<0?'T00:00:00':''));
+  if(f instanceof Date){
+    if(isNaN(f.getTime()))return '';
+    var meses0=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+    return f.getDate()+' de '+meses0[f.getMonth()]+' de '+f.getFullYear();
+  }
+  var s=String(f).slice(0,10); // toma solo YYYY-MM-DD aunque venga timestamp
+  var d=new Date(s+'T00:00:00');
+  if(isNaN(d.getTime()))return '';
   var meses=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
   return d.getDate()+' de '+meses[d.getMonth()]+' de '+d.getFullYear();
 }
@@ -8463,7 +8470,10 @@ function FiniquitosView(p){
       descuentos:descuentos
     });
     api('/finiquitos','POST',body,p.tok).then(function(r){
-      alert('✅ Finiquito guardado. Generando documento...');
+      var msg='✅ Finiquito guardado.';
+      if(r.cartas_actualizadas>0)msg+=' Se actualizó '+r.cartas_actualizadas+' carta(s) de término con los valores calculados.';
+      msg+=' Generando documento...';
+      alert(msg);
       load();setForm(emptyForm);
       if(r.finiquito_id)setTimeout(function(){generarFiniquitoDoc(r.finiquito_id,'pdf');},300);
     }).catch(function(e){alert('Error: '+e.message);});
@@ -8517,9 +8527,9 @@ function FiniquitosView(p){
       alert('Debe redactar la causal de hecho que motiva el despido');return;
     }
     api('/cartas-termino','POST',carta,p.tok).then(function(r){
-      alert('✅ Carta guardada. Generando documento...');
+      var msg='✅ Carta guardada en estado PENDIENTE.\n\nLas indemnizaciones se completarán automáticamente al generar el finiquito del trabajador. Después de eso, podrá descargar la carta con todos los valores.';
+      alert(msg);
       load();setCarta(emptyCarta);
-      if(r.carta_id)setTimeout(function(){generarCartaDoc(r.carta_id,'pdf');},300);
     }).catch(function(e){alert('Error: '+e.message);});
   }
   function generarCartaDoc(id,formato){
@@ -8554,9 +8564,6 @@ function FiniquitosView(p){
     ),
     // CARTA DE TÉRMINO DE CONTRATO
     modo==='carta'&&h('div',null,
-      h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:5,padding:'8px 12px',marginBottom:12,fontSize:11,color:'#1E40AF'}},
-        '💡 La carta de término es el primer paso del proceso de desvinculación. Notifica al trabajador que su contrato terminará en una fecha determinada. Posteriormente se genera el finiquito.'
-      ),
       h('div',{className:'card',style:{padding:14,marginBottom:12}},
         h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#1E3A2D'}},'Datos de la carta'),
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
@@ -8580,21 +8587,22 @@ function FiniquitosView(p){
           h('textarea',{value:carta.causal_hecho,onChange:function(e){updC('causal_hecho',e.target.value);},rows:4,style:Object.assign({},inpS,{resize:'vertical'}),placeholder:'Ej: Con fecha 15 de marzo de 2026 ha concluido la obra forestal del Fundo Caballo de Palo, motivo por el cual no existen labores adicionales que asignarle al trabajador...'})
         )
       ),
-      // Indemnizaciones a informar
-      h('div',{className:'card',style:{padding:14,marginBottom:12,background:'#FFFBEB',border:'1px solid #FDE68A'}},
-        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#92400E'}},'Indemnizaciones a comunicar (opcional)'),
-        h('div',{style:{fontSize:10,color:'#78350F',marginBottom:8}},'Si ya calculó el finiquito, puede transcribir los montos. Si no, déjelos en 0.'),
-        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10}},
-          h('div',null,h('label',{style:lblS},'Indem. años de servicio $'),h('input',{type:'number',value:carta.indem_anios_servicio,onChange:function(e){updC('indem_anios_servicio',e.target.value);},style:inpS})),
-          h('div',null,h('label',{style:lblS},'Vacaciones proporcionales $'),h('input',{type:'number',value:carta.indem_vacaciones,onChange:function(e){updC('indem_vacaciones',e.target.value);},style:inpS})),
-          h('div',null,h('label',{style:lblS},'Indem. tiempo servido $'),h('input',{type:'number',value:carta.indem_tiempo_servido,onChange:function(e){updC('indem_tiempo_servido',e.target.value);},style:inpS})),
-          h('div',null,h('label',{style:lblS},'Indem. aviso previo $'),h('input',{type:'number',value:carta.indem_aviso_previo,onChange:function(e){updC('indem_aviso_previo',e.target.value);},style:inpS}))
+      // Aviso sobre flujo
+      h('div',{className:'card',style:{padding:14,marginBottom:12,background:'#FFF7ED',border:'1px solid #FED7AA'}},
+        h('div',{style:{fontSize:12,color:'#9A3412',display:'flex',gap:10,alignItems:'flex-start'}},
+          h('span',{style:{fontSize:18}},'⚠'),
+          h('div',null,
+            h('div',{style:{fontWeight:700,marginBottom:4}},'Flujo del proceso de desvinculación:'),
+            h('div',null,'1. Crear la carta en estado PENDIENTE (los montos quedan en $0).'),
+            h('div',null,'2. Calcular el finiquito del trabajador en la pestaña "🧮 Calcular Finiquito".'),
+            h('div',null,'3. Al guardar el finiquito, la carta se actualiza automáticamente con los valores y queda COMPLETADA, lista para descargar en PDF/Word.')
+          )
         )
       ),
       h('div',{className:'card',style:{padding:14}},
         h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8}},
           h(Btn,{v:'g',onClick:function(){setCarta(emptyCarta);}},null,'Limpiar'),
-          h(Btn,{onClick:guardarCarta},'💾 Guardar y generar carta')
+          h(Btn,{onClick:guardarCarta},'💾 Crear carta (estado pendiente)')
         )
       )
     ),
@@ -8716,18 +8724,21 @@ function FiniquitosView(p){
             h('th',null,'Empresa'),
             h('th',null,'Causal'),
             h('th',null,'Fecha término'),
+            h('th',null,'Estado'),
             h('th',null,'')
           )),
           h('tbody',null,cartas.map(function(c){
+            var pendiente=(c.estado||'PENDIENTE')==='PENDIENTE';
             return h('tr',{key:c.carta_id},
               h('td',null,fmtD(c.fecha_carta)),
               h('td',null,h('div',{style:{fontWeight:600}},c.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},c.rut||'')),
               h('td',null,c.empresa_nombre),
               h('td',null,h('span',{style:{fontSize:10}},(c.causal||'').replace(/^Art\. /,''))),
               h('td',null,fmtD(c.fecha_termino)),
+              h('td',null,h('span',{style:{display:'inline-block',padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:pendiente?'#FEF3C7':'#DCFCE7',color:pendiente?'#92400E':'#15803D'}},pendiente?'⏳ PENDIENTE':'✓ COMPLETADA')),
               h('td',null,h('div',{style:{display:'flex',gap:3}},
-                h(Btn,{v:'a',sm:true,onClick:function(){generarCartaDoc(c.carta_id,'pdf');}},null,'📑 PDF'),
-                h(Btn,{v:'a',sm:true,onClick:function(){generarCartaDoc(c.carta_id,'word');}},null,'📄 Word'),
+                pendiente?h('span',{style:{fontSize:9,color:'#92400E',fontStyle:'italic',padding:'4px 6px'}},'Generar finiquito primero'):h(Btn,{v:'a',sm:true,onClick:function(){generarCartaDoc(c.carta_id,'pdf');}},null,'📑 PDF'),
+                !pendiente&&h(Btn,{v:'a',sm:true,onClick:function(){generarCartaDoc(c.carta_id,'word');}},null,'📄 Word'),
                 h(Btn,{v:'r',sm:true,onClick:function(){eliminarCarta(c.carta_id);}},null,'🗑')
               ))
             );
@@ -8861,26 +8872,38 @@ function buildFiniquitoHTML(f){
 // Builder HTML de carta de término
 function buildCartaTerminoHTML(c){
   function CLPF(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
-  var fechaCarta=fmtFechaLarga(c.fecha_carta);
+  function safeDate(d){
+    if(!d)return null;
+    var s=String(d).slice(0,10); // toma YYYY-MM-DD aunque venga con timestamp
+    var dd=new Date(s+'T00:00:00');
+    return isNaN(dd.getTime())?null:dd;
+  }
+  function fmtCorto(d){
+    var dd=safeDate(d);
+    if(!dd)return '________';
+    var p=function(n){return n<10?'0'+n:''+n;};
+    return p(dd.getDate())+'-'+p(dd.getMonth()+1)+'-'+dd.getFullYear();
+  }
+  var fechaCarta=fmtFechaLarga(safeDate(c.fecha_carta)||c.fecha_carta);
   var ciudadFirma='NACIMIENTO';
-  var fechaContratoStr=c.fecha_contrato?(new Date(c.fecha_contrato+'T00:00:00').toLocaleDateString('es-CL').replace(/\//g,'-')):'';
-  var fechaTerminoStr=c.fecha_termino?(new Date(c.fecha_termino+'T00:00:00').toLocaleDateString('es-CL').replace(/\//g,'-')):'';
-  var logo=c.logo_base64?'<img src="'+c.logo_base64+'" style="max-height:80px;max-width:200px;margin-bottom:14px"/>':'';
-  var firmaEmp=c.firma_representante?'<img src="'+c.firma_representante+'" style="max-height:70px;max-width:160px;display:block;margin:0 0 0 0"/>':'';
-  var timbreEmp=c.timbre_empresa?'<div style="margin-top:6px"><img src="'+c.timbre_empresa+'" style="max-height:60px;max-width:140px"/></div>':'';
+  var fechaContratoStr=fmtCorto(c.fecha_contrato);
+  var fechaTerminoStr=fmtCorto(c.fecha_termino);
+  var logo=c.logo_base64?'<img src="'+c.logo_base64+'" style="max-height:65px;max-width:180px;margin-bottom:8px"/>':'';
+  var firmaEmp=c.firma_representante?'<img src="'+c.firma_representante+'" style="max-height:90px;max-width:200px;display:block;margin:0 auto"/>':'';
+  var timbreEmp=c.timbre_empresa?'<div style="margin-top:4px"><img src="'+c.timbre_empresa+'" style="max-height:55px;max-width:140px"/></div>':'';
   // Convertir causal en texto formal
   var causalUpper=(c.causal||'').toUpperCase().replace(/^ART\.\s*/,'ART. ');
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Carta de Término</title>'+
-    '<style>body{font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.6;margin:2cm;color:#000}'+
-    'p{text-align:justify;margin:10px 0}'+
-    '.indem-table{margin:14px 0;width:100%;border-collapse:collapse;font-size:11pt}'+
-    '.indem-table td{padding:4px 8px}'+
+    '<style>body{font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.35;margin:1.6cm 2cm;color:#000}'+
+    'p{text-align:justify;margin:6px 0}'+
+    '.indem-table{margin:8px 0;width:100%;border-collapse:collapse;font-size:11pt}'+
+    '.indem-table td{padding:2px 8px}'+
     '.indem-table td:first-child{padding-left:25px}'+
     '.indem-table td:last-child{text-align:right;font-weight:700;padding-right:30px}'+
-    '.firmas-tbl{margin-top:50px;width:100%;border-collapse:collapse}'+
-    '.firmas-tbl td{width:50%;vertical-align:top;padding:0 8px;text-align:center;font-size:10pt;border:1px solid #94A3B8}'+
-    '.firma-line{border-top:1px solid #000;padding-top:6px;line-height:1.4;margin-top:8px}'+
-    '@media print{body{margin:1.5cm}}</style></head><body>'+
+    '.firmas-tbl{margin-top:14px;width:100%;border-collapse:collapse}'+
+    '.firmas-tbl td{width:50%;vertical-align:top;padding:6px 8px;text-align:center;font-size:10pt;border:1px solid #94A3B8}'+
+    '.firma-line{padding-top:4px;line-height:1.3;margin-top:4px}'+
+    '@media print{body{margin:1.4cm 1.8cm}}</style></head><body>'+
     logo+
     '<p>'+ciudadFirma+', '+fechaCarta+'.</p>'+
     '<p>Señor</p>'+
@@ -8904,12 +8927,12 @@ function buildCartaTerminoHTML(c){
     '<p>Saluda atentamente a usted, y agradeciendo su colaboración.</p>'+
     '<table class="firmas-tbl"><tr>'+
       '<td>'+
-        '<div style="height:80px;text-align:left">'+firmaEmp+'</div>'+
+        '<div style="height:96px;text-align:center">'+firmaEmp+'</div>'+
         '<div class="firma-line">'+(c.empresa_nombre||'').toUpperCase()+'<br/>'+(c.empresa_rut||'')+(c.representante_rut?'<br/>Representante Legal: '+c.representante_rut:'')+'</div>'+
         timbreEmp+
       '</td>'+
       '<td>'+
-        '<div style="height:80px"></div>'+
+        '<div style="height:96px"></div>'+
         '<div class="firma-line">Recibí copia de la presente carta<br/><br/>'+(c.nombre_completo||'').toUpperCase()+'<br/>'+(c.rut||'')+'</div>'+
       '</td>'+
     '</tr></table>'+
