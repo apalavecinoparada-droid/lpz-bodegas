@@ -5277,7 +5277,22 @@ app.post('/api/contratos', auth, async(req,res)=>{
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.delete('/api/contratos/:id', auth, async(req,res)=>{
-  try{await pool.query('DELETE FROM contratos WHERE contrato_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    // Borrar anexos asociados primero (FK contrato_anexos.contrato_id)
+    const anx=await client.query('DELETE FROM contrato_anexos WHERE contrato_id=$1 RETURNING anexo_id',[req.params.id]);
+    // Luego borrar el contrato
+    const con=await client.query('DELETE FROM contratos WHERE contrato_id=$1 RETURNING contrato_id',[req.params.id]);
+    if(!con.rows.length){await client.query('ROLLBACK');return res.status(404).json({error:'Contrato no encontrado'});}
+    await client.query('COMMIT');
+    res.json({ok:true,anexos_eliminados:anx.rows.length});
+  }catch(e){
+    await client.query('ROLLBACK');
+    res.status(400).json({error:e.message});
+  }finally{
+    client.release();
+  }
 });
 
 // ══════════════════════════════════════════════════════
