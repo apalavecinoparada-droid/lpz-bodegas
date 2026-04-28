@@ -170,6 +170,16 @@ const {useState,useEffect,useMemo,useCallback,useRef,Component}=React;
 const h=React.createElement;
 const CLP=n=>new Intl.NumberFormat('es-CL',{style:'currency',currency:'CLP',maximumFractionDigits:0}).format(n||0);
 function fmtD(s){if(!s)return '—';var d=(s+'').substring(0,10);var p=d.split('-');return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:d;}
+// Convierte "APELLIDO_P APELLIDO_M NOMBRES" (formato maestro) → "NOMBRES APELLIDO_P APELLIDO_M" (formato legal/documentos)
+// Heurística: los primeros 2 tokens son los apellidos. Si hay menos de 3 tokens, devuelve igual.
+function nombresPrimero(nc){
+  if(!nc)return '';
+  var parts=(nc+'').trim().split(/\s+/);
+  if(parts.length<3)return nc;
+  var apellidos=parts.slice(0,2).join(' ');
+  var nombres=parts.slice(2).join(' ');
+  return nombres+' '+apellidos;
+}
 const N=(n,d=2)=>new Intl.NumberFormat('es-CL',{maximumFractionDigits:d}).format(n||0);
 const TODAY=new Date().toISOString().split('T')[0];
 const str=v=>v===null||v===undefined?'':String(v);
@@ -1549,7 +1559,7 @@ function generarComprobantePDF(reg, persona, empresas){
     doc.text(lines,ML,y);y+=lines.length*4+2;
 
     // ── DATOS TRABAJADOR ──
-    doc.text('Don:',ML,y);doc.setFont('helvetica','bold');doc.text((persona.nombre_completo||'').toUpperCase(),ML+10,y);doc.setFont('helvetica','normal');y+=5;
+    doc.text('Don:',ML,y);doc.setFont('helvetica','bold');doc.text(nombresPrimero(persona.nombre_completo).toUpperCase(),ML+10,y);doc.setFont('helvetica','normal');y+=5;
     doc.text('RUT:',ML,y);doc.text(persona.rut||'',ML+10,y);y+=6;
 
     // ── USO TOTAL/PARCIAL ──
@@ -7325,6 +7335,8 @@ function Personal(p){
   const[buscar,setBuscar]=useState('');
   const[showImport,setShowImport]=useState(false);
   const[importResult,setImportResult]=useState(null);
+  const[invPreview,setInvPreview]=useState(null);
+  const[invLoading,setInvLoading]=useState(false);
   const empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   const faenas=p.m.faenas||[];
   const CATEGORIAS=[{v:'operador',l:'Operador'},{v:'mantencion',l:'Mantención'},{v:'jefe_faena',l:'Jefe de Faena'},{v:'supervisor',l:'Supervisor'},{v:'administracion',l:'Administración'},{v:'otros_faena',l:'Otros Faena'}];
@@ -7345,6 +7357,20 @@ function Personal(p){
   function eliminarPersona(row){
     if(!confirm('¿Eliminar permanentemente a '+row.nombre_completo+'?\n\nEsta acción no se puede deshacer. Si tiene registros asociados, se le indicará el error.'))return;
     api('/personal/'+row.persona_id,'DELETE',null,p.tok).then(function(){load();setMsg('✓ Trabajador eliminado');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function previewInvertirNombres(){
+    setInvLoading(true);setMsg('');
+    api('/personal/preview-invertir-nombres','GET',null,p.tok).then(function(r){
+      setInvPreview(r);setInvLoading(false);
+    }).catch(function(e){setMsg('Error: '+e.message);setInvLoading(false);});
+  }
+  function aplicarInversionNombres(){
+    setInvLoading(true);
+    api('/personal/invertir-nombres','POST',{confirmar:'INVERTIR_NOMBRES'},p.tok).then(function(r){
+      setInvPreview(null);setInvLoading(false);
+      setMsg('✓ Se invirtieron '+r.cambiados+' nombres de '+r.total+' registros');
+      load();
+    }).catch(function(e){setMsg('Error: '+e.message);setInvLoading(false);});
   }
   function handleImportJSON(e){
     var file=e.target.files[0];if(!file)return;
@@ -7406,6 +7432,7 @@ function Personal(p){
         h('span',{style:{fontSize:11,color:'#64748B'}},rows.length+'/'+personas.length+' registros')
       ),
       h('div',{style:{display:'flex',gap:6}},
+        h('button',{onClick:previewInvertirNombres,disabled:invLoading,style:{padding:'5px 10px',borderRadius:4,fontSize:11,cursor:invLoading?'wait':'pointer',border:'1px solid #8B5CF6',background:'#F5F3FF',color:'#5B21B6',fontWeight:600}},invLoading?'⏳...':'🔄 Invertir nombres'),
         h('label',{style:{padding:'5px 10px',borderRadius:4,fontSize:11,cursor:'pointer',border:'1px solid #F59E0B',background:'#FFFBEB',color:'#92400E',display:'inline-flex',alignItems:'center',gap:4}},
           '📥 Importar JSON',
           h('input',{type:'file',accept:'.json',onChange:handleImportJSON,style:{display:'none'}})
@@ -7547,6 +7574,59 @@ function Personal(p){
           h(Btn,{v:'r',sm:true,onClick:function(){eliminarPersona(r);}},null,'🗑')
         );}}
       ],rows:rows,empty:'Sin personal'})
+    ),
+    // Modal de preview de inversión de nombres
+    invPreview&&h('div',{style:{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20}},
+      h('div',{style:{background:'#fff',borderRadius:8,padding:0,maxWidth:900,width:'100%',maxHeight:'90vh',display:'flex',flexDirection:'column'}},
+        // Header
+        h('div',{style:{padding:'14px 18px',borderBottom:'1px solid #E2E8F0',display:'flex',justifyContent:'space-between',alignItems:'center'}},
+          h('div',null,
+            h('div',{style:{fontSize:15,fontWeight:700,color:'#1E3A2D'}},'🔄 Invertir nombres del maestro de Personal'),
+            h('div',{style:{fontSize:11,color:'#64748B',marginTop:2}},'Pasa de "Nombres + Apellidos" a "Apellidos + Nombres" tomando los últimos 2 tokens como apellidos')
+          ),
+          h('button',{onClick:function(){setInvPreview(null);},style:{fontSize:18,cursor:'pointer',background:'none',border:'none',color:'#94A3B8'}},'✕')
+        ),
+        // Resumen
+        h('div',{style:{padding:'10px 18px',background:'#F8FAFC',borderBottom:'1px solid #E2E8F0',display:'flex',gap:18,fontSize:12}},
+          h('div',null,'Total registros: ',h('strong',null,invPreview.total)),
+          h('div',{style:{color:'#059669'}},'A invertir: ',h('strong',null,invPreview.a_cambiar)),
+          h('div',{style:{color:'#94A3B8'}},'Omitidos: ',h('strong',null,invPreview.omitidos))
+        ),
+        // Tabla de cambios (scrolleable)
+        h('div',{style:{flex:1,overflow:'auto',padding:'10px 18px'}},
+          invPreview.cambios.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#94A3B8',fontSize:13}},'No hay cambios que aplicar'):
+          h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+            h('thead',null,h('tr',{style:{background:'#F1F5F9'}},
+              h('th',{style:{padding:'6px 8px',textAlign:'left',borderBottom:'1px solid #CBD5E1'}},'#'),
+              h('th',{style:{padding:'6px 8px',textAlign:'left',borderBottom:'1px solid #CBD5E1'}},'Actual'),
+              h('th',{style:{padding:'6px 8px',textAlign:'center',borderBottom:'1px solid #CBD5E1',width:30}},'→'),
+              h('th',{style:{padding:'6px 8px',textAlign:'left',borderBottom:'1px solid #CBD5E1',color:'#059669'}},'Nuevo')
+            )),
+            h('tbody',null,invPreview.cambios.map(function(c,i){
+              return h('tr',{key:c.persona_id,style:{borderBottom:'1px dotted #E2E8F0'}},
+                h('td',{style:{padding:'5px 8px',color:'#64748B'}},i+1),
+                h('td',{style:{padding:'5px 8px'}},c.actual),
+                h('td',{style:{padding:'5px 8px',textAlign:'center',color:'#94A3B8'}},'→'),
+                h('td',{style:{padding:'5px 8px',color:'#059669',fontWeight:600}},c.nuevo)
+              );
+            }))
+          ),
+          invPreview.omitidos>0&&h('details',{style:{marginTop:14}},
+            h('summary',{style:{cursor:'pointer',fontSize:11,color:'#94A3B8',marginBottom:6}},'Ver '+invPreview.omitidos+' registros omitidos'),
+            h('ul',{style:{fontSize:11,color:'#64748B',paddingLeft:20}},invPreview.omitidos_lista.map(function(o){
+              return h('li',{key:o.persona_id},o.actual,h('span',{style:{color:'#94A3B8',marginLeft:6}},'('+o.motivo+')'));
+            }))
+          )
+        ),
+        // Footer
+        h('div',{style:{padding:'12px 18px',borderTop:'1px solid #E2E8F0',display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,background:'#FFFBEB'}},
+          h('div',{style:{fontSize:11,color:'#92400E'}},'⚠️ Esta acción modifica permanentemente los nombres en la base de datos. Asegúrate de revisar la lista antes de aplicar.'),
+          h('div',{style:{display:'flex',gap:8}},
+            h('button',{onClick:function(){setInvPreview(null);},style:{padding:'7px 14px',background:'#E2E8F0',color:'#475569',border:'none',borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:600}},'Cancelar'),
+            h('button',{onClick:aplicarInversionNombres,disabled:invLoading||invPreview.a_cambiar===0,style:{padding:'7px 14px',background:invPreview.a_cambiar>0?'#5B21B6':'#94A3B8',color:'#fff',border:'none',borderRadius:5,cursor:invLoading||invPreview.a_cambiar===0?'not-allowed':'pointer',fontSize:12,fontWeight:600}},invLoading?'⏳ Aplicando...':'✓ Aplicar inversión a '+invPreview.a_cambiar+' registros')
+          )
+        )
+      )
     )
   );
 }
@@ -8286,7 +8366,7 @@ function imprimirLiquidacion(d){
   if(d.descCesantia>0)rowsDesc.push('<tr><td>Cesantía (0,60%)</td><td class="r">-'+fmt(d.descCesantia)+'</td></tr>');
   if(d.impUnico>0)rowsDesc.push('<tr><td>Impuesto único 2da Cat. ('+d.tramoTxt+')</td><td class="r">-'+fmt(d.impUnico)+'</td></tr>');
 
-  var html='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Liquidación '+(per.nombre_completo||'')+' - '+d.mesNom+' '+d.anio+'</title>'+
+  var html='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Liquidación '+nombresPrimero(per.nombre_completo)+' - '+d.mesNom+' '+d.anio+'</title>'+
   '<style>body{font-family:Arial,sans-serif;font-size:11pt;max-width:800px;margin:20px auto;color:#1F2937}'+
   '.hdr{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #1E3A2D;padding-bottom:10px;margin-bottom:14px}'+
   '.hdr h1{margin:0;font-size:18pt;color:#1E3A2D}.hdr .sub{font-size:10pt;color:#64748B}'+
@@ -8309,7 +8389,7 @@ function imprimirLiquidacion(d){
     '</div>'+
   '</div>'+
   '<div class="box">'+
-    '<table><tr><td><strong>Trabajador:</strong> '+(per.nombre_completo||'—')+'</td>'+
+    '<table><tr><td><strong>Trabajador:</strong> '+(nombresPrimero(per.nombre_completo)||'—')+'</td>'+
     '<td><strong>RUT:</strong> '+(per.rut||'—')+'</td></tr>'+
     '<tr><td><strong>Cargo:</strong> '+(per.cargo||'—')+'</td>'+
     '<td><strong>Tipo contrato:</strong> '+d.tipoContrato+'</td></tr></table>'+
@@ -8325,7 +8405,7 @@ function imprimirLiquidacion(d){
   '<div class="liq"><span>LÍQUIDO A PAGAR</span><span>'+fmt(d.liquido)+'</span></div>'+
   '<div class="firmas">'+
     '<div><div class="l">EL EMPLEADOR<br>'+(emp.razon_social||'')+'</div></div>'+
-    '<div><div class="l">EL TRABAJADOR<br>'+(per.nombre_completo||'')+'<br>RUT: '+(per.rut||'')+'</div></div>'+
+    '<div><div class="l">EL TRABAJADOR<br>'+nombresPrimero(per.nombre_completo)+'<br>RUT: '+(per.rut||'')+'</div></div>'+
   '</div>'+
   '<div style="margin-top:30px;font-size:8pt;color:#94A3B8;text-align:center">Documento generado por Empresas Poo · Cálculo referencial</div>'+
   '</body></html>';
@@ -8713,9 +8793,9 @@ function buildAnexoHTML(a){
     '<h2>ANEXO CONTRATO DE TRABAJO</h2>'+
     '<p>En <strong>'+(a.lugar_firma||'Nacimiento')+'</strong>, a <strong>'+fechaTxt+'</strong>, entre <strong>'+(a.empresa_nombre||'')+'</strong>, RUT <strong>'+(a.empresa_rut||'')+'</strong>'+
     (a.representante_nombre?', representada legalmente por don/a <strong>'+a.representante_nombre+'</strong>'+(a.representante_rut?', Cédula Nacional de Identidad <strong>'+a.representante_rut+'</strong>':''):'')+
-    ', en adelante "el Empleador" o "la Empresa", y don/a <strong>'+(a.nombre_completo||'')+'</strong>, Cédula Nacional de Identidad <strong>'+(a.rut||'')+'</strong>, en adelante indistintamente el "trabajador", se acuerda lo siguiente:</p>'+
+    ', en adelante "el Empleador" o "la Empresa", y don/a <strong>'+nombresPrimero(a.nombre_completo)+'</strong>, Cédula Nacional de Identidad <strong>'+(a.rut||'')+'</strong>, en adelante indistintamente el "trabajador", se acuerda lo siguiente:</p>'+
     '<p><strong>PRIMERO: Antecedentes</strong></p>'+
-    '<p>Con fecha '+(a.fecha_contrato_original?fmtFechaLarga(a.fecha_contrato_original):fechaTxt)+' las partes celebraron un contrato de trabajo en virtud del cual don/a '+(a.nombre_completo||'')+' ha prestado sus servicios en calidad de '+((a.funcion_original||a.cargo||'').toUpperCase())+' para la Empresa, en adelante "el Contrato de Trabajo".</p>'+
+    '<p>Con fecha '+(a.fecha_contrato_original?fmtFechaLarga(a.fecha_contrato_original):fechaTxt)+' las partes celebraron un contrato de trabajo en virtud del cual don/a '+nombresPrimero(a.nombre_completo)+' ha prestado sus servicios en calidad de '+((a.funcion_original||a.cargo||'').toUpperCase())+' para la Empresa, en adelante "el Contrato de Trabajo".</p>'+
     '<p><strong>SEGUNDO: Modificación al Contrato de Trabajo</strong></p>'+
     '<p>Las partes acuerdan que a contar de esta fecha '+verboMod+' '+nClausulas+':</p>'+
     clausulasHTML+
@@ -8735,7 +8815,7 @@ function buildAnexoHTML(a){
       '<td>'+
         '<div class="firma-img-area"></div>'+
         '<div class="firma-line">'+
-          (a.nombre_completo||'')+'<br/>'+
+          nombresPrimero(a.nombre_completo)+'<br/>'+
           'RUT: '+(a.rut||'')+
         '</div>'+
       '</td>'+
@@ -8922,7 +9002,7 @@ function buildContratoHTML(c,empresa,persona){
       '<div class="hdr-title"><h1>CONTRATO DE TRABAJO</h1>'+(c.es_actualizacion?'<div class="sub">ACTUALIZACIÓN DE CONTRATO</div>':'')+'</div>'+
       '<div class="hdr-right"></div>'+
     '</div>'+
-    '<p>En '+(c.lugar_firma||'Nacimiento')+', a '+fd(c.fecha_contrato)+', entre la empresa <strong>'+(empresa.razon_social||'')+'</strong>, Rol Único Tributario N° '+(empresa.rut||'')+', representada por don <strong>'+rep+'</strong>, cédula nacional de identidad N° '+repRut+', con domicilio en '+empDir+', comuna de '+empComuna+', Región de '+empRegion+', en adelante «el Empleador»; y don/doña <strong>'+(persona.nombre_completo||'')+'</strong>, de nacionalidad '+(persona.nacionalidad||'Chileno(a)')+', cédula nacional de identidad N° '+(persona.rut||'')+', de estado civil '+(persona.estado_civil||'')+', fecha de nacimiento '+fc(persona.fecha_nacimiento)+', domiciliado en '+(persona.direccion||'')+', comuna de '+(persona.comuna||'')+', Región '+(persona.region||'VIII del Bio Bio')+', en adelante «el Trabajador»; capaces de celebrar contrato de trabajo, han convenido lo siguiente:</p>'+
+    '<p>En '+(c.lugar_firma||'Nacimiento')+', a '+fd(c.fecha_contrato)+', entre la empresa <strong>'+(empresa.razon_social||'')+'</strong>, Rol Único Tributario N° '+(empresa.rut||'')+', representada por don <strong>'+rep+'</strong>, cédula nacional de identidad N° '+repRut+', con domicilio en '+empDir+', comuna de '+empComuna+', Región de '+empRegion+', en adelante «el Empleador»; y don/doña <strong>'+nombresPrimero(persona.nombre_completo)+'</strong>, de nacionalidad '+(persona.nacionalidad||'Chileno(a)')+', cédula nacional de identidad N° '+(persona.rut||'')+', de estado civil '+(persona.estado_civil||'')+', fecha de nacimiento '+fc(persona.fecha_nacimiento)+', domiciliado en '+(persona.direccion||'')+', comuna de '+(persona.comuna||'')+', Región '+(persona.region||'VIII del Bio Bio')+(persona.telefono?', teléfono '+persona.telefono:'')+(persona.correo?', correo electrónico '+persona.correo:'')+', en adelante «el Trabajador»; capaces de celebrar contrato de trabajo, han convenido lo siguiente:</p>'+
     '<p><strong>PRIMERA. FUNCIÓN O LABOR.</strong> El Trabajador se compromete a desempeñar el cargo de <strong>'+(persona.cargo||'')+'</strong>. El Trabajador deberá ejecutar la labor de '+(c.funcion_texto||'').replace(/\.$/,'')+'. Se eleva a la calidad de esencial del presente contrato la condición de que el Trabajador sea considerado una persona íntegra e intachable, de modo tal que cualquier falta de honestidad o probidad se considerará falta gravísima y causal de terminación inmediata del contrato.</p>'+
     '<p><strong>SEGUNDA. LUGAR DE PRESTACIÓN DE SERVICIOS.</strong> El Trabajador prestará sus servicios en '+lugarPrestacion+'.</p>'+
     '<p><strong>TERCERA. JORNADA DE TRABAJO.</strong> '+jornadaTxt+'</p>'+
@@ -8948,7 +9028,7 @@ function buildContratoHTML(c,empresa,persona){
       '</td>'+
       '<td>'+
         '<div style="height:110px"></div>'+
-        '<div class="line"><strong>EL TRABAJADOR</strong><br>'+(persona.nombre_completo||'')+'<br>RUT: '+(persona.rut||'')+'</div>'+
+        '<div class="line"><strong>EL TRABAJADOR</strong><br>'+nombresPrimero(persona.nombre_completo)+'<br>RUT: '+(persona.rut||'')+'</div>'+
       '</td>'+
     '</tr></table>'+
     '</body></html>';
@@ -9602,22 +9682,22 @@ function buildFiniquitoHTML(f){
     '<h2>Finiquito de Contrato de Trabajo</h2>'+
     '<p>En <strong>Nacimiento</strong>, a <strong>'+fechaTxt+'</strong>, entre <strong>'+(f.empresa_nombre||'')+'</strong>, R.U.T <strong>'+(f.empresa_rut||'')+'</strong>, en adelante, empleador, representado por '+
     (f.representante_nombre?'Don <strong>'+f.representante_nombre+'</strong> R.U.T. <strong>'+(f.representante_rut||'')+'</strong> ':'')+
-    'ambos domiciliados en Avda. Julio Hemmelmann N° 127, comuna de Nacimiento, ciudad de Nacimiento, por una parte; y la otra, Don/Doña <strong>'+(f.nombre_completo||'')+'</strong>, R.U.T <strong>'+(f.rut||'')+'</strong>, domiciliado en '+(f.persona_direccion||'')+', comuna de '+(f.persona_comuna||'')+', en adelante, también, se deja testimonio y se ha acordado el finiquito que consta de las siguientes cláusulas:</p>'+
+    'ambos domiciliados en Avda. Julio Hemmelmann N° 127, comuna de Nacimiento, ciudad de Nacimiento, por una parte; y la otra, Don/Doña <strong>'+nombresPrimero(f.nombre_completo)+'</strong>, R.U.T <strong>'+(f.rut||'')+'</strong>, domiciliado en '+(f.persona_direccion||'')+', comuna de '+(f.persona_comuna||'')+', en adelante, también, se deja testimonio y se ha acordado el finiquito que consta de las siguientes cláusulas:</p>'+
     '<p><strong>PRIMERO:</strong> El trabajador prestó servicios al empleador, en el cargo de <strong>'+(f.cargo||'')+'</strong>, desde el <strong>'+fechaInicio+'</strong>, hasta el <strong>'+fechaTxt+'</strong>, fecha esta última en que su contrato de trabajo ha terminado por, <strong>'+causalTxt(f.causal)+'</strong>, la causal señalada en el Código del Trabajo, <strong>'+articuloTxt(f.causal)+'</strong>.</p>'+
-    '<p><strong>SEGUNDO:</strong> Don/Doña <strong>'+(f.nombre_completo||'')+'</strong> declara recibir en este acto, a su entera satisfacción, de parte de '+(f.empresa_nombre||'')+' la suma de <strong>'+CLPF(f.total_finiquito)+'</strong>, según la liquidación que se señala a continuación:</p>'+
+    '<p><strong>SEGUNDO:</strong> Don/Doña <strong>'+nombresPrimero(f.nombre_completo)+'</strong> declara recibir en este acto, a su entera satisfacción, de parte de '+(f.empresa_nombre||'')+' la suma de <strong>'+CLPF(f.total_finiquito)+'</strong>, según la liquidación que se señala a continuación:</p>'+
     '<table class="liq">'+rowsHtml+'</table>'+
-    '<p>Don/Doña <strong>'+(f.nombre_completo||'')+'</strong> declara haber analizado y estudiado detenidamente dicha liquidación, aceptándola en todas sus partes, sin tener observación alguna que formularle.</p>'+
-    '<p><strong>TERCERO:</strong> En consecuencia, el empleador paga a Don/Doña <strong>'+(f.nombre_completo||'')+'</strong> en dinero efectivo que el trabajador declara recibir en este acto a su entera satisfacción. Las partes dejan constancia que la referida suma cubre el total de haberes especificados en la liquidación señalada en el numerando SEGUNDO del presente finiquito.</p>'+
-    '<p><strong>CUARTO:</strong> Don/Doña <strong>'+(f.nombre_completo||'')+'</strong> deja constancia que durante el tiempo que prestó servicios a '+(f.empresa_nombre||'')+', recibió oportunamente el total de las remuneraciones, beneficios y demás prestaciones convenidas de acuerdo a su contrato de trabajo, clase de trabajo ejecutado y disposiciones legales pertinentes, y que en tal virtud el empleador nada le adeuda por tales conceptos, ni por horas extraordinarias, asignación familiar, feriado, indemnización por años de servicios, imposiciones previsionales, así como por ningún otro concepto, ya sea legal o contractual, derivado de la prestación de sus servicios, de su contrato de trabajo o de la terminación del mismo. En consecuencia, Don/Doña '+(f.nombre_completo||'')+' declara que no tiene reclamo alguno que formular en contra de '+(f.empresa_nombre||'')+', renunciando a todas las acciones que pudieran emanar del contrato que los vinculó.</p>'+
-    '<p><strong>QUINTO:</strong> En virtud de lo anteriormente expuesto, Don/Doña <strong>'+(f.nombre_completo||'')+'</strong>, manifiesta expresamente que '+(f.empresa_nombre||'')+' nada le adeuda en relación con los servicios prestados, con el contrato de trabajo o con motivo de la terminación del mismo, por lo que libre y espontáneamente, y con el pleno y cabal conocimiento de sus derechos, otorga a su empleador, el más amplio, completo, total y definitivo finiquito por los servicios prestados o la terminación de ellos, ya diga relación con remuneraciones, cotizaciones previsionales, de seguridad social o de salud, subsidios, beneficios contractuales adicionales a las remuneraciones, indemnizaciones, compensaciones, o con cualquiera causa o concepto.</p>'+
+    '<p>Don/Doña <strong>'+nombresPrimero(f.nombre_completo)+'</strong> declara haber analizado y estudiado detenidamente dicha liquidación, aceptándola en todas sus partes, sin tener observación alguna que formularle.</p>'+
+    '<p><strong>TERCERO:</strong> En consecuencia, el empleador paga a Don/Doña <strong>'+nombresPrimero(f.nombre_completo)+'</strong> en dinero efectivo que el trabajador declara recibir en este acto a su entera satisfacción. Las partes dejan constancia que la referida suma cubre el total de haberes especificados en la liquidación señalada en el numerando SEGUNDO del presente finiquito.</p>'+
+    '<p><strong>CUARTO:</strong> Don/Doña <strong>'+nombresPrimero(f.nombre_completo)+'</strong> deja constancia que durante el tiempo que prestó servicios a '+(f.empresa_nombre||'')+', recibió oportunamente el total de las remuneraciones, beneficios y demás prestaciones convenidas de acuerdo a su contrato de trabajo, clase de trabajo ejecutado y disposiciones legales pertinentes, y que en tal virtud el empleador nada le adeuda por tales conceptos, ni por horas extraordinarias, asignación familiar, feriado, indemnización por años de servicios, imposiciones previsionales, así como por ningún otro concepto, ya sea legal o contractual, derivado de la prestación de sus servicios, de su contrato de trabajo o de la terminación del mismo. En consecuencia, Don/Doña '+nombresPrimero(f.nombre_completo)+' declara que no tiene reclamo alguno que formular en contra de '+(f.empresa_nombre||'')+', renunciando a todas las acciones que pudieran emanar del contrato que los vinculó.</p>'+
+    '<p><strong>QUINTO:</strong> En virtud de lo anteriormente expuesto, Don/Doña <strong>'+nombresPrimero(f.nombre_completo)+'</strong>, manifiesta expresamente que '+(f.empresa_nombre||'')+' nada le adeuda en relación con los servicios prestados, con el contrato de trabajo o con motivo de la terminación del mismo, por lo que libre y espontáneamente, y con el pleno y cabal conocimiento de sus derechos, otorga a su empleador, el más amplio, completo, total y definitivo finiquito por los servicios prestados o la terminación de ellos, ya diga relación con remuneraciones, cotizaciones previsionales, de seguridad social o de salud, subsidios, beneficios contractuales adicionales a las remuneraciones, indemnizaciones, compensaciones, o con cualquiera causa o concepto.</p>'+
     '<p><strong>SEXTO:</strong> Asimismo, declara el trabajador que, en todo caso, y a todo evento, renuncia expresamente a cualquier derecho, acción o reclamo que eventualmente tuviere o pudiere corresponderle en contra del empleador, en relación directa o indirecta con su contrato de trabajo, con los servicios prestados, con la terminación del referido contrato o dichos servicios, sepa que esos derechos o acciones correspondan a remuneraciones, cotizaciones previsionales, de seguridad social o de salud, subsidios, beneficios contractuales adicionales a las remuneraciones, indemnizaciones compensaciones, o con cualquier otra causa o concepto.</p>'+
     '<p><strong>SÉPTIMO:</strong> De conformidad con lo dispuesto en el Artículo 13 del texto refundido de la Ley Nº14.908 sobre Abandono de Familia Pago de Pensiones Alimenticias, el empleador declara que a la fecha de término de la relación laboral, no ha sido notificado de resolución judicial que le exija retener y pagar pensión de alimentos con cargo a la remuneración del trabajador ni de las indemnizaciones que puedan corresponderle de conformidad a los artículos 161, 162 y 164 del Código del Trabajo.</p>'+
     '<p>Y en el caso de existir la obligación de retención, el empleador se hace responsable de ésta. En comprobante, se adjuntan las 3 últimas liquidaciones de sueldo del trabajador.</p>'+
-    '<p>Para constancia, las partes firman el presente finiquito en tres ejemplares, quedando uno en poder de cada una de ellas, y en cumplimiento de la legislación vigente, Don/Doña <strong>'+(f.nombre_completo||'')+'</strong> lo lee, firma y lo ratifica.</p>'+
+    '<p>Para constancia, las partes firman el presente finiquito en tres ejemplares, quedando uno en poder de cada una de ellas, y en cumplimiento de la legislación vigente, Don/Doña <strong>'+nombresPrimero(f.nombre_completo)+'</strong> lo lee, firma y lo ratifica.</p>'+
     '<table class="firmas-tbl"><tr>'+
       '<td>'+
         '<div style="height:75px"></div>'+
-        '<div class="firma-line"><strong>TRABAJADOR</strong><br/>'+(f.nombre_completo||'')+'<br/>RUT: '+(f.rut||'')+'</div>'+
+        '<div class="firma-line"><strong>TRABAJADOR</strong><br/>'+nombresPrimero(f.nombre_completo)+'<br/>RUT: '+(f.rut||'')+'</div>'+
       '</td>'+
       '<td>'+
         '<div style="height:75px">'+firmaEmp+'</div>'+
