@@ -5294,6 +5294,7 @@ app.get('/api/contratos/:id', auth, async(req,res)=>{
       c.otros_beneficios,c.observaciones,c.usuario,c.creado_en,
       p.nombre_completo,p.rut,p.cargo,p.fecha_nacimiento,p.direccion,p.comuna,
       p.nacionalidad,p.estado_civil,p.afp,p.salud,p.region AS persona_region,
+      p.telefono,p.correo,
       e.razon_social AS empresa_nombre,e.rut AS empresa_rut,
       e.direccion AS empresa_direccion,e.comuna AS empresa_comuna,e.region AS empresa_region,
       e.representante_nombre,e.representante_rut,e.logo_base64,e.firma_representante,e.timbre_empresa
