@@ -543,6 +543,128 @@ function SalidaView(p){
   );
 }
 
+// ── TRASPASO ENTRE BODEGAS ──
+function TraspasoView(p){
+  const bodegas=p.m&&Array.isArray(p.m.bodegas)?p.m.bodegas.filter(function(b){return b.activo!==false;}):[];
+  const prods=p.m&&Array.isArray(p.m.prods)?p.m.prods.filter(function(x){return x.activo!==false;}):[];
+  const[movs,setMovs]=useState([]);const[stock,setStock]=useState({});
+  const[modal,setModal]=useState(false);
+  const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
+  const[anularId,setAnularId]=useState(null);
+  const blank={fecha:TODAY,bodega_origen_id:'',bodega_destino_id:'',re:'',rr:'',obs:'',lineas:[{prod_id:'',qty:'1'}]};
+  const[form,setForm]=useState(blank);
+  function load(){
+    api('/movimientos?tipo=TRASPASO_SALIDA','GET',null,p.tok).then(function(r){setMovs(Array.isArray(r)?r:[]);}).catch(function(){});
+    api('/stock','GET',null,p.tok).then(function(rows){var m={};(rows||[]).forEach(function(r){m[r.producto_id+'_'+r.bodega_id]={q:parseFloat(r.cantidad_disponible),cpp:parseFloat(r.costo_promedio_actual)};});setStock(m);}).catch(function(){});
+  }
+  useEffect(function(){load();},[p.tok]);
+  function sf(k,v){setForm(function(f){var x=Object.assign({},f);x[k]=v;return x;});}
+  function addL(){setForm(function(f){return Object.assign({},f,{lineas:f.lineas.concat([{prod_id:'',qty:'1'}])});});}
+  function remL(i){setForm(function(f){return Object.assign({},f,{lineas:f.lineas.filter(function(_,j){return j!==i;})});});}
+  function updL(i,k,v){setForm(function(f){return Object.assign({},f,{lineas:f.lineas.map(function(l,j){return j===i?Object.assign({},l,{[k]:v}):l;})});});}
+  function getDisp(pid,bid){if(!pid||!bid)return null;var e=stock[pid+'_'+bid];return e?e.q:null;}
+  function getCpp(pid,bid){if(!pid||!bid)return 0;var e=stock[pid+'_'+bid];return e?e.cpp:0;}
+  // Productos disponibles en la bodega de origen (con stock>0)
+  function prodsDisponibles(){
+    if(!form.bodega_origen_id)return prods;
+    return prods.filter(function(pr){
+      var st=stock[pr.producto_id+'_'+form.bodega_origen_id];
+      return st&&st.q>0;
+    });
+  }
+  function save(){
+    setErr('');
+    if(!form.fecha||!form.bodega_origen_id||!form.bodega_destino_id){setErr('Fecha, bodega origen y destino son obligatorios');return;}
+    if(String(form.bodega_origen_id)===String(form.bodega_destino_id)){setErr('La bodega de origen y destino no pueden ser la misma');return;}
+    for(var i=0;i<form.lineas.length;i++){
+      var l=form.lineas[i];
+      if(!l.prod_id||!parseFloat(l.qty)){setErr('Complete todas las líneas');return;}
+      var d=getDisp(l.prod_id,form.bodega_origen_id);
+      if(d===null||parseFloat(l.qty)>d){
+        var pn=((prods.find(function(q){return String(q.producto_id)===l.prod_id;}))||{}).nombre||'';
+        setErr('Stock insuficiente en bodega origen: "'+pn+'" disponible: '+(d||0));return;
+      }
+    }
+    setSaving(true);
+    api('/movimientos/traspaso','POST',{
+      fecha:form.fecha,
+      bodega_origen_id:parseInt(form.bodega_origen_id),
+      bodega_destino_id:parseInt(form.bodega_destino_id),
+      observaciones:form.obs||null,
+      responsable_entrega:form.re||null,
+      responsable_recepcion:form.rr||null,
+      lineas:form.lineas.map(function(l){return{producto_id:parseInt(l.prod_id),cantidad:parseFloat(l.qty)};})
+    },p.tok).then(function(){
+      setModal(false);setForm(blank);load();p.onMov&&p.onMov();
+    }).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
+  }
+  return h('div',null,
+    h('div',{className:'tb'},
+      h(Btn,{onClick:function(){setErr('');setForm(blank);setModal(true);}},'+ Nuevo Traspaso'),
+      h(Btn,{v:'g',onClick:function(){exportXLSX(movs,[{header:'N°',value:r=>r.movimiento_id},{header:'Fecha',value:r=>r.fecha},{header:'Bodega Origen',value:r=>r.bodega_nombre},{header:'Total CPP',value:r=>r.total},{header:'Estado',value:r=>r.estado}],'traspasos');}},null,'Exportar Excel')
+    ),
+    h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:5,padding:'8px 12px',marginBottom:10,fontSize:11,color:'#1E40AF'}},
+      '💡 El traspaso entre bodegas registra automáticamente una salida en la bodega de origen y un ingreso equivalente en la bodega destino, manteniendo el costo promedio del producto.'
+    ),
+    h('div',{className:'card'},h(TBL,{cols:[
+      {lbl:'N°',k:'movimiento_id',w:50},
+      {lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},
+      {lbl:'Bodega Origen',k:'bodega_nombre'},
+      {lbl:'Subcategoría',render:function(r){return h('span',{style:{fontSize:11}},r.subcategorias||'—');}},
+      {lbl:'Detalle',render:function(r){return h('span',{style:{fontSize:11,color:'#475569',maxWidth:280,display:'inline-block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},title:r.detalle_productos||''},r.detalle_productos||'—');}},
+      {lbl:'Total CPP',r:true,render:r=>CLP(r.total||0)},
+      {lbl:'Estado',render:r=>h(Bg,{c:r.estado==='ACTIVO'?'g':'r'},r.estado)},
+      {lbl:'',c:true,render:r=>r.estado==='ACTIVO'&&h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular')}
+    ],rows:movs,empty:'Sin traspasos registrados'})),
+    anularId&&h(AnularMovModal,{tok:p.tok,movId:anularId,onClose:function(){setAnularId(null);},onDone:function(){load();p.onMov&&p.onMov();}}),
+    modal&&h(Modal,{title:'Registrar Traspaso entre Bodegas',onClose:function(){setModal(false);},lg:true},
+      h('div',{style:{padding:14}},
+        err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}},
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha *'),h('input',{type:'date',value:form.fecha,onChange:function(e){sf('fecha',e.target.value);},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Bodega ORIGEN *'),h('select',{value:form.bodega_origen_id,onChange:function(e){sf('bodega_origen_id',e.target.value);sf('lineas',[{prod_id:'',qty:'1'}]);},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}},h('option',{value:''},'Seleccione...'),bodegas.map(function(b){return h('option',{key:b.bodega_id,value:b.bodega_id},b.codigo+' — '+b.nombre);}))),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Bodega DESTINO *'),h('select',{value:form.bodega_destino_id,onChange:function(e){sf('bodega_destino_id',e.target.value);},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}},h('option',{value:''},'Seleccione...'),bodegas.filter(function(b){return String(b.bodega_id)!==String(form.bodega_origen_id);}).map(function(b){return h('option',{key:b.bodega_id,value:b.bodega_id},b.codigo+' — '+b.nombre);})))
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Responsable entrega'),h('input',{type:'text',value:form.re,onChange:function(e){sf('re',e.target.value);},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'},placeholder:'Quien entrega'})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Responsable recepción'),h('input',{type:'text',value:form.rr,onChange:function(e){sf('rr',e.target.value);},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'},placeholder:'Quien recibe'}))
+        ),
+        h('div',{style:{marginBottom:10}},
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observaciones'),
+          h('input',{type:'text',value:form.obs,onChange:function(e){sf('obs',e.target.value);},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'},placeholder:'Opcional'})
+        ),
+        h('div',{style:{fontSize:12,fontWeight:700,marginBottom:6,color:'#1E3A2D'}},'Productos a traspasar'),
+        !form.bodega_origen_id?h('div',{style:{color:'#94A3B8',fontSize:11,padding:14,textAlign:'center',background:'#F8FAFC',borderRadius:5}},'Seleccione primero la bodega de origen'):
+        h('table',{className:'tbl',style:{width:'100%',fontSize:11,marginBottom:8}},
+          h('thead',null,h('tr',null,h('th',null,'Producto'),h('th',{style:{width:90}},'Disponible'),h('th',{style:{width:120}},'Cantidad'),h('th',{style:{width:100}},'CPP'),h('th',{style:{width:100}},'Total'),h('th',{style:{width:30}},''))),
+          h('tbody',null,form.lineas.map(function(l,i){
+            var disp=getDisp(l.prod_id,form.bodega_origen_id);
+            var cpp=getCpp(l.prod_id,form.bodega_origen_id);
+            var total=parseFloat(l.qty||0)*cpp;
+            var excede=disp!==null&&parseFloat(l.qty||0)>disp;
+            return h('tr',{key:i},
+              h('td',null,h('select',{value:l.prod_id,onChange:function(e){updL(i,'prod_id',e.target.value);},style:{width:'100%',padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:11}},h('option',{value:''},'Seleccione...'),prodsDisponibles().map(function(pr){return h('option',{key:pr.producto_id,value:pr.producto_id},pr.codigo+' — '+pr.nombre);}))),
+              h('td',{style:{textAlign:'right'}},disp!==null?h('span',{style:{fontFamily:'monospace',color:disp<=0?'#DC2626':'#15803D'}},disp):'—'),
+              h('td',null,h('input',{type:'number',value:l.qty,onChange:function(e){updL(i,'qty',e.target.value);},style:{width:'100%',padding:'5px 8px',border:'1px solid '+(excede?'#DC2626':'#CBD5E1'),borderRadius:4,fontSize:11,textAlign:'right'},min:0,step:0.01})),
+              h('td',{style:{textAlign:'right',fontFamily:'monospace',fontSize:10}},CLP(cpp)),
+              h('td',{style:{textAlign:'right',fontFamily:'monospace',fontWeight:600}},CLP(total)),
+              h('td',null,form.lineas.length>1&&h('button',{onClick:function(){remL(i);},style:{padding:'2px 6px',background:'#DC2626',color:'#fff',border:'none',borderRadius:4,cursor:'pointer',fontSize:10}},'×'))
+            );
+          }))
+        ),
+        form.bodega_origen_id&&h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
+          h(Btn,{v:'a',sm:true,onClick:addL},'+ Agregar línea'),
+          h('div',{style:{fontSize:13,fontWeight:700}},'TOTAL: ',CLP(form.lineas.reduce(function(s,l){return s+parseFloat(l.qty||0)*getCpp(l.prod_id,form.bodega_origen_id);},0)))
+        ),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8,marginTop:10}},
+          h(Btn,{v:'g',onClick:function(){setModal(false);}},null,'Cancelar'),
+          h(Btn,{onClick:save,disabled:saving},saving?'Guardando...':'💾 Registrar traspaso')
+        )
+      )
+    )
+  );
+}
+
 // ── STOCK VIEW ──
 function StockView(p){
   const cats=p.m&&Array.isArray(p.m.cats)?p.m.cats:[];
@@ -4362,7 +4484,7 @@ function CombMovForm(p){
         p.campos.includes('precio')&&h(FI,{k:'precio_unitario',l:'Precio x litro $',req:true,type:'number',item:form,onChange:setForm}),
         p.campos.includes('precio')&&h('div',{className:'al al-i',style:{fontSize:12}},'Total: '+CLP(Math.round(total()))),
         p.campos.includes('faena')&&h(FS,{k:'faena_id',l:'Faena',item:form,onChange:setForm,opts:faenasFilt.map(function(f){return{v:f.faena_id,l:f.nombre};})}),
-        p.campos.includes('equipo')&&h(FS,{k:'equipo_id',l:'Equipo/Vehiculo',req:true,item:form,onChange:setForm,opts:equiposFilt.sort(function(a,b){return a.nombre.localeCompare(b.nombre);}).map(function(e){var lbl=e.nombre;if(e.placa_patente)lbl+=' ['+e.placa_patente+']';if(e.num_chasis)lbl+=' ('+e.num_chasis+')';return{v:e.equipo_id,l:lbl};})}),
+        p.campos.includes('equipo')&&h(FS,{k:'equipo_id',l:'Equipo/Vehiculo',req:true,item:form,onChange:setForm,opts:equiposFilt.sort(function(a,b){return a.nombre.localeCompare(b.nombre);}).map(function(e){return{v:e.equipo_id,l:e.nombre};})}),
         p.campos.includes('horometro')&&h(FI,{k:'horometro',l:'Horometro (hrs)',type:'number',item:form,onChange:setForm,ph:'ej: 1250.5'}),
         p.campos.includes('kilometraje')&&h(FI,{k:'kilometraje',l:'Kilometraje (km)',type:'number',item:form,onChange:setForm,ph:'ej: 45230'}),
         p.campos.includes('responsable')&&h(FI,{k:'responsable',l:'Responsable entrega',item:form,onChange:setForm}),
@@ -5967,7 +6089,7 @@ function TransporteView(p){
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
   var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3};
   var ESTADOS=[{v:'pendiente',l:'Pendiente',c:'y'},{v:'en_curso',l:'En curso',c:'b'},{v:'finalizado',l:'Finalizado',c:'g'},{v:'anulado',l:'Anulado',c:'r'}];
-  var eqTransp=equipos.filter(function(e){return !e.es_transporte;});
+  var eqTransp=equipos.filter(function(e){return !e.es_transporte&&e.tipo_cargo==='maquinaria';});
 
   // ── PANEL ──
   function renderPanel(){
@@ -9144,7 +9266,7 @@ function MobileHome(p){
 function MobileTransporte(p){
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   var faenas=p.m.faenas||[];
-  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo&&!e.es_transporte;});
+  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo&&!e.es_transporte&&e.tipo_cargo==='maquinaria';});
   var estanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
   var[camiones,setCamiones]=useState([]);
   var[choferes,setChoferes]=useState([]);
@@ -9560,7 +9682,7 @@ function MobileTerreno(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho'};
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
@@ -9655,7 +9777,6 @@ function App(){
           navI('comb-traspasos','⇄','Traspasos Estanques',true),
           navI('comb-distribuciones','↑','Distribuciones',true),
           navI('comb-reportes','◈','Reportes',true),
-          navI('comb-cierre','⚖','Cierre Copec',true),
           navI('comb-kardex','≡','Kardex Estanque',true)
         ),
         canSee('combustibles')&&h('div',{className:'sb-sep'}),
@@ -9664,6 +9785,7 @@ function App(){
           navI('dashboard','◉','Panel de control',true),
           navI('ingresos','↓','Ingresos',true),
           navI('salidas','↑','Salidas',true),
+          navI('traspasos','⇄','Traspasos entre bodegas',true),
           navI('stock','■','Stock actual',true),
           navI('kardex','≡','Kardex',true),
           navI('reportes','◈','Reportes',true)
@@ -9739,7 +9861,6 @@ function App(){
       h('div',{className:'content'},
         h(EB,null,
           view==='comb-tipos'&&h(CombTiposAdmin,{tok,m}),
-          view==='comb-cierre'&&h(CombCierreQuincenal,{tok,m}),
           view==='comb-kardex'&&h(CombKardex,{tok,m}),
           view==='comb-panel'&&h(CombPanel,{tok,m}),
           view==='comb-ingresos'&&h(CombIngresosStock,{tok,m}),
@@ -9760,6 +9881,7 @@ function App(){
           view==='dashboard'&&h(Dashboard,{tok,alerts,setView}),
           view==='ingresos'&&h(IngresoView,{tok,m,onMov}),
           view==='salidas'&&h(SalidaView,{tok,m,onMov}),
+          view==='traspasos'&&h(TraspasoView,{tok,m,onMov}),
           view==='stock'&&h(StockView,{tok,m}),
           view==='kardex'&&h(KardexView,{tok,m}),
           view==='reportes'&&h(ReportesView,{tok,m}),
