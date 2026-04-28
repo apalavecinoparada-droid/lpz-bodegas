@@ -3914,7 +3914,7 @@ function ProveedoresViewW(p){
   var[showXmlImport,setShowXmlImport]=useState(false);
   var[refreshKey,setRefreshKey]=useState(0);
   return h('div',{key:refreshKey},
-    h(MasterV,{tok:p.tok,titulo:'Proveedor',ep:'proveedores',pk:'proveedor_id',Form:ProvForm,importKey:'proveedores',blank:{rut:'',nombre:'',giro:'',direccion:'',contacto:'',telefono:'',email:'',activo:true},
+    h(MasterV,{tok:p.tok,onMov:p.onMov,titulo:'Proveedor',ep:'proveedores',pk:'proveedor_id',Form:ProvForm,importKey:'proveedores',blank:{rut:'',nombre:'',giro:'',direccion:'',contacto:'',telefono:'',email:'',activo:true},
       extraBtns:function(){return h(Btn,{v:'a',sm:true,onClick:function(){setShowXmlImport(true);}},'📦 Importar desde XML');},
       onExport:function(){api('/proveedores','GET',null,p.tok).then(function(rows){exportXLSX(rows,[{header:'RUT',value:function(r){return r.rut;}},{header:'Nombre',value:function(r){return r.nombre;}},{header:'Giro',value:function(r){return r.giro;}},{header:'Direccion',value:function(r){return r.direccion;}},{header:'Contacto',value:function(r){return r.contacto;}},{header:'Telefono',value:function(r){return r.telefono;}},{header:'Email',value:function(r){return r.email;}},{header:'Activo',value:function(r){return r.activo?'SI':'NO';}}],'proveedores');}).catch(function(ex){alert(ex.message);});},
       cols:[{lbl:'RUT',k:'rut',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Giro',k:'giro'},{lbl:'Contacto',k:'contacto'},{lbl:'Telefono',k:'telefono'}]}),
@@ -3931,13 +3931,13 @@ function MasterV(p){
     setErr('');
     const method=item[p.pk]?'PUT':'POST';
     const path='/'+p.ep+(item[p.pk]?'/'+item[p.pk]:'');
-    api(path,method,item,p.tok).then(function(){setModal(null);load();}).catch(function(ex){setErr(ex.message);});
+    api(path,method,item,p.tok).then(function(){setModal(null);load();p.onMov&&p.onMov();}).catch(function(ex){setErr(ex.message);});
   }
-  function tog(id){api('/'+p.ep+'/'+id+'/activo','PATCH',{},p.tok).then(function(){load();}).catch(function(){});}
+  function tog(id){api('/'+p.ep+'/'+id+'/activo','PATCH',{},p.tok).then(function(){load();p.onMov&&p.onMov();}).catch(function(){});}
   function del(id){
     if(!window.confirm('Eliminar este registro? Esta accion no se puede deshacer.'))return;
     setDelErr('');
-    api('/'+p.ep+'/'+id,'DELETE',null,p.tok).then(function(){load();}).catch(function(ex){setDelErr(ex.message);});
+    api('/'+p.ep+'/'+id,'DELETE',null,p.tok).then(function(){load();p.onMov&&p.onMov();}).catch(function(ex){setDelErr(ex.message);});
   }
   return h('div',null,
     h('div',{style:{display:'flex',gap:8,marginBottom:10}},
@@ -3963,7 +3963,7 @@ function MasterV(p){
                   '❌ Errores: '+(rs.errores||0)+'\n'+
                   '⚠ Sin empresa: '+(rs.sin_empresa||0)+'\n'+
                   '⚠ Sin faena: '+(rs.sin_faena||0));
-                load();
+                load();p.onMov&&p.onMov();
               }).catch(function(err){alert('Error: '+err.message);});
             }catch(err){alert('Archivo inválido: '+err.message);}
             e.target.value='';
@@ -7282,7 +7282,7 @@ function ModelosAdmin(p){
   function save(){
     if(!form.marca||!form.modelo){setMsg('Marca y modelo requeridos');return;}
     var m=form.modelo_id?'PUT':'POST';var url='/modelos-equipo'+(form.modelo_id?'/'+form.modelo_id:'');
-    api(url,m,form,p.tok).then(function(){load();setForm(null);setMsg('Guardado');}).catch(function(e){setMsg('Error: '+e.message);});
+    api(url,m,form,p.tok).then(function(){load();setForm(null);setMsg('Guardado');p.onMov&&p.onMov();}).catch(function(e){setMsg('Error: '+e.message);});
   }
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
   return h('div',null,
@@ -7352,11 +7352,11 @@ function Personal(p){
     if(form.participa_mantencion&&!form.valor_hora_hombre){setMsg('Valor hora hombre obligatorio para personal de mantención');return;}
     var url=sel?'/personal/'+sel.persona_id:'/personal';
     var method=sel?'PUT':'POST';
-    api(url,method,form,p.tok).then(function(){load();setShowForm(false);setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});
+    api(url,method,form,p.tok).then(function(){load();setShowForm(false);setMsg('');p.onMov&&p.onMov();}).catch(function(e){setMsg('Error: '+e.message);});
   }
   function eliminarPersona(row){
     if(!confirm('¿Eliminar permanentemente a '+row.nombre_completo+'?\n\nEsta acción no se puede deshacer. Si tiene registros asociados, se le indicará el error.'))return;
-    api('/personal/'+row.persona_id,'DELETE',null,p.tok).then(function(){load();setMsg('✓ Trabajador eliminado');}).catch(function(e){setMsg('Error: '+e.message);});
+    api('/personal/'+row.persona_id,'DELETE',null,p.tok).then(function(){load();setMsg('✓ Trabajador eliminado');p.onMov&&p.onMov();}).catch(function(e){setMsg('Error: '+e.message);});
   }
   function previewInvertirNombres(){
     setInvLoading(true);setMsg('');
@@ -7369,7 +7369,7 @@ function Personal(p){
     api('/personal/invertir-nombres','POST',{confirmar:'INVERTIR_NOMBRES'},p.tok).then(function(r){
       setInvPreview(null);setInvLoading(false);
       setMsg('✓ Se invirtieron '+r.cambiados+' nombres de '+r.total+' registros');
-      load();
+      load();p.onMov&&p.onMov();
     }).catch(function(e){setMsg('Error: '+e.message);setInvLoading(false);});
   }
   function handleImportJSON(e){
@@ -7395,7 +7395,7 @@ function Personal(p){
           var sinFaena=(r.resumen&&r.resumen.sin_faena)||0;
           setImportResult({total:res.length,ok:ok,actualizados:upd,nuevos:nuevo,errores:err,conFaena:conFaena,sinFaena:sinFaena,detalles:res});
           setMsg('✓ Importación completada: '+nuevo+' nuevos, '+upd+' actualizados, '+conFaena+' con faena asignada'+(err>0?', '+err+' errores':''));
-          load();
+          load();p.onMov&&p.onMov();
         }).catch(function(e){setMsg('Error: '+e.message);});
       }catch(ex){setMsg('Error al parsear JSON: '+ex.message);}
     };
@@ -10253,7 +10253,7 @@ function App(){
   const[view,setView]=useState('ordenes');
   const[m,setM]=useState({bodegas:[],cats:[],subcats:[],prods:[],faenas:[],equipos:[],provs:[],tdocs:[],motivos:[],empresas:[],conds:[]});
   const[alerts,setAlerts]=useState(0);const[refresh,setRefresh]=useState(0);
-  const[grp,setGrp]=useState({oc:true,comb:false,inv:false,mant:true,man:false,sys:false,sol:false,fin:false,terr:false,rend:false,pers:false});
+  const[grp,setGrp]=useState({oc:false,comb:false,inv:false,mant:false,man:false,sys:false,sol:false,fin:false,terr:false,rend:false,pers:false,trans:false});
   // Mobile detection
   const[isMobile]=useState(window.innerWidth<=768);
   const[mobileMode,setMobileMode]=useState(window.innerWidth<=768);
@@ -10438,7 +10438,7 @@ function App(){
           view==='mant-sistemas'&&h(MantSistemasAdmin,{tok,m}),
           view==='mant-tareas-std'&&h(MantTareasStdAdmin,{tok,m}),
           view==='mant-prog'&&h(MantProgView,{tok,m}),
-          view==='personal'&&h(Personal,{tok,m}),
+          view==='personal'&&h(Personal,{tok,m,onMov}),
           view==='dashboard'&&h(Dashboard,{tok,alerts,setView}),
           view==='ingresos'&&h(IngresoView,{tok,m,onMov}),
           view==='salidas'&&h(SalidaView,{tok,m,onMov}),
@@ -10458,11 +10458,11 @@ function App(){
           view==='trans-tarifas'&&h(TransporteTarifas,{tok,m}),
           view==='contratos'&&h(ContratosView,{tok,m,onRefresh:onMov}),
           view==='finiquitos'&&h(FiniquitosView,{tok,m}),
-          view==='empresas'&&h(MasterV,{tok,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,firma_representante:null,timbre_empresa:null,activo:true},cols:[{lbl:'ID',k:'empresa_id',mono:true,w:50},{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
-          view==='bodegas'&&h(MasterV,{tok,titulo:'Bodega',ep:'bodegas',pk:'bodega_id',Form:BodegaForm,importKey:'bodegas',blank:{codigo:'',nombre:'',ubicacion:'',responsable:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Ubicacion',k:'ubicacion'},{lbl:'Responsable',k:'responsable'}]}),
-          view==='productos'&&h(MasterV,{tok,titulo:'Producto',ep:'productos',pk:'producto_id',Form:ProdForm,importKey:'productos',blank:{codigo:'',nombre:'',descripcion:'',categoria_id:'',subcategoria_id:'',unidad_medida:'UN',stock_minimo:0,stock_maximo:'',costo_referencia:0,unidad_compra:'',factor_conversion:1,activo:true},extra:{cats:m.cats,subcats:m.subcats},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Subcategoria',k:'subcategoria_nombre'},{lbl:'UM',k:'unidad_medida'},{lbl:'Stk min',k:'stock_minimo'},{lbl:'Costo ref.',render:r=>CLP(r.costo_referencia)}]}),
+          view==='empresas'&&h(MasterV,{tok,onMov,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,firma_representante:null,timbre_empresa:null,activo:true},cols:[{lbl:'ID',k:'empresa_id',mono:true,w:50},{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
+          view==='bodegas'&&h(MasterV,{tok,onMov,titulo:'Bodega',ep:'bodegas',pk:'bodega_id',Form:BodegaForm,importKey:'bodegas',blank:{codigo:'',nombre:'',ubicacion:'',responsable:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Ubicacion',k:'ubicacion'},{lbl:'Responsable',k:'responsable'}]}),
+          view==='productos'&&h(MasterV,{tok,onMov,titulo:'Producto',ep:'productos',pk:'producto_id',Form:ProdForm,importKey:'productos',blank:{codigo:'',nombre:'',descripcion:'',categoria_id:'',subcategoria_id:'',unidad_medida:'UN',stock_minimo:0,stock_maximo:'',costo_referencia:0,unidad_compra:'',factor_conversion:1,activo:true},extra:{cats:m.cats,subcats:m.subcats},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Subcategoria',k:'subcategoria_nombre'},{lbl:'UM',k:'unidad_medida'},{lbl:'Stk min',k:'stock_minimo'},{lbl:'Costo ref.',render:r=>CLP(r.costo_referencia)}]}),
           view==='categorias'&&h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:16}},
-            h('div',null,h('h3',{style:{marginBottom:8,fontWeight:700}},'Categorias'),h(MasterV,{tok,titulo:'Categoria',ep:'categorias',pk:'categoria_id',Form:CatForm,blank:{nombre:'',descripcion:'',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]})),
+            h('div',null,h('h3',{style:{marginBottom:8,fontWeight:700}},'Categorias'),h(MasterV,{tok,onMov,titulo:'Categoria',ep:'categorias',pk:'categoria_id',Form:CatForm,blank:{nombre:'',descripcion:'',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]})),
             h('div',null,
               h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
                 h('h3',{style:{fontWeight:700}},'Subcategorias'),
@@ -10488,16 +10488,16 @@ function App(){
                   }})
                 )
               ),
-              h(MasterV,{tok,titulo:'Subcategoria',ep:'subcategorias',pk:'subcategoria_id',Form:SubcatForm,blank:{nombre:'',categoria_id:'',activo:true},extra:{cats:m.cats},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Categoria',render:r=>(m.cats.find(c=>c.categoria_id===r.categoria_id)||{}).nombre||'—'}]})
+              h(MasterV,{tok,onMov,titulo:'Subcategoria',ep:'subcategorias',pk:'subcategoria_id',Form:SubcatForm,blank:{nombre:'',categoria_id:'',activo:true},extra:{cats:m.cats},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Categoria',render:r=>(m.cats.find(c=>c.categoria_id===r.categoria_id)||{}).nombre||'—'}]})
             )
           ),
-          view==='faenas'&&h(MasterV,{tok,titulo:'Faena',ep:'faenas',pk:'faena_id',Form:FaenaForm,blank:{codigo:'',nombre:'',descripcion:'',empresa_id:'',activo:true},extra:{empresas:m.empresas},importKey:'faenas',cols:[{lbl:'Empresa',render:function(r){return (m.empresas.find(function(e){return e.empresa_id===parseInt(r.empresa_id||0);})||{}).razon_social||'—';}},{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
-          view==='equipos'&&h(MasterV,{tok,titulo:'Cargo / Centro de costo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',importBulkJSON:'/api/import/equipos',blank:{empresa_id:'',tipo_cargo:'maquinaria',codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',modelo_id:'',anio:'',placa_patente:'',chasis:'',contacto_terreno:'',horas_productivas_dia:'12',patente_serie:'',activo:true},extra:{faenas:m.faenas,empresas:m.empresas,modelos:m.modelos||[]},cols:[{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Tipo',render:function(r){var tc=r.tipo_cargo||'maquinaria';var colors={maquinaria:'b',camioneta:'teal',camion:'p',camion_estanque:'y',camion_cama_baja:'y',camion_mantencion:'p',furgon:'teal',estanque:'y',faena:'g',taller:'gray',equipos_taller:'gray',administracion:'b'};return h(Bg,{c:colors[tc]||'gray'},tc.replace(/_/g,' '));}},{lbl:'Código',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Modelo',render:function(r){return r.modelo_marca?(r.modelo_marca+' '+r.modelo_nombre):(r.marca?(r.marca+' '+(r.modelo||'')):'—');}},{lbl:'Faena',k:'faena_nombre'}]}),
-          view==='modelos'&&h(ModelosAdmin,{tok,m}),
-          view==='proveedores'&&h(ProveedoresViewW,{tok}),
-          view==='condpago'&&h(MasterV,{tok,titulo:'Condicion de Pago',ep:'condiciones-pago',pk:'condicion_id',Form:CondPagoForm,importKey:'condpago',blank:{nombre:'',descripcion:'',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
-          view==='tdocs'&&h(MasterV,{tok,titulo:'Tipo de Documento',ep:'tipos-documento',pk:'tipo_doc_id',Form:p=>h('div',{className:'g2'},h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange,ph:'FAC,GD...'}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange})),blank:{codigo:'',nombre:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'}]}),
-          view==='motivos'&&h(MasterV,{tok,titulo:'Motivo',ep:'motivos',pk:'motivo_id',Form:p=>h('div',{className:'g2'},h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FS,{k:'tipo',l:'Tipo',req:true,item:p.item,onChange:p.onChange,opts:[{v:'SALIDA',l:'SALIDA'},{v:'INGRESO',l:'INGRESO'},{v:'AJUSTE',l:'AJUSTE'}]})),blank:{nombre:'',tipo:'SALIDA',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Tipo',k:'tipo'}]}),
+          view==='faenas'&&h(MasterV,{tok,onMov,titulo:'Faena',ep:'faenas',pk:'faena_id',Form:FaenaForm,blank:{codigo:'',nombre:'',descripcion:'',empresa_id:'',activo:true},extra:{empresas:m.empresas},importKey:'faenas',cols:[{lbl:'Empresa',render:function(r){return (m.empresas.find(function(e){return e.empresa_id===parseInt(r.empresa_id||0);})||{}).razon_social||'—';}},{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
+          view==='equipos'&&h(MasterV,{tok,onMov,titulo:'Cargo / Centro de costo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',importBulkJSON:'/api/import/equipos',blank:{empresa_id:'',tipo_cargo:'maquinaria',codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',modelo_id:'',anio:'',placa_patente:'',chasis:'',contacto_terreno:'',horas_productivas_dia:'12',patente_serie:'',activo:true},extra:{faenas:m.faenas,empresas:m.empresas,modelos:m.modelos||[]},cols:[{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Tipo',render:function(r){var tc=r.tipo_cargo||'maquinaria';var colors={maquinaria:'b',camioneta:'teal',camion:'p',camion_estanque:'y',camion_cama_baja:'y',camion_mantencion:'p',furgon:'teal',estanque:'y',faena:'g',taller:'gray',equipos_taller:'gray',administracion:'b'};return h(Bg,{c:colors[tc]||'gray'},tc.replace(/_/g,' '));}},{lbl:'Código',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Modelo',render:function(r){return r.modelo_marca?(r.modelo_marca+' '+r.modelo_nombre):(r.marca?(r.marca+' '+(r.modelo||'')):'—');}},{lbl:'Faena',k:'faena_nombre'}]}),
+          view==='modelos'&&h(ModelosAdmin,{tok,m,onMov}),
+          view==='proveedores'&&h(ProveedoresViewW,{tok,onMov}),
+          view==='condpago'&&h(MasterV,{tok,onMov,titulo:'Condicion de Pago',ep:'condiciones-pago',pk:'condicion_id',Form:CondPagoForm,importKey:'condpago',blank:{nombre:'',descripcion:'',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
+          view==='tdocs'&&h(MasterV,{tok,onMov,titulo:'Tipo de Documento',ep:'tipos-documento',pk:'tipo_doc_id',Form:p=>h('div',{className:'g2'},h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange,ph:'FAC,GD...'}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange})),blank:{codigo:'',nombre:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'}]}),
+          view==='motivos'&&h(MasterV,{tok,onMov,titulo:'Motivo',ep:'motivos',pk:'motivo_id',Form:p=>h('div',{className:'g2'},h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FS,{k:'tipo',l:'Tipo',req:true,item:p.item,onChange:p.onChange,opts:[{v:'SALIDA',l:'SALIDA'},{v:'INGRESO',l:'INGRESO'},{v:'AJUSTE',l:'AJUSTE'}]})),blank:{nombre:'',tipo:'SALIDA',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Tipo',k:'tipo'}]}),
           view==='usuarios'&&h(UsuariosView,{tok,m}),
         )
       )
