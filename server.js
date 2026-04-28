@@ -5554,7 +5554,7 @@ function getSueldoMinimoVigente(){
 }
 app.get('/api/indicadores-cl', auth, async(req,res)=>{
   try{
-    let uf=null,uf_fecha=null;
+    let uf=null,uf_fecha=null,utm=null,utm_fecha=null;
     try{
       const r=await fetch('https://mindicador.cl/api/uf');
       if(r.ok){
@@ -5562,9 +5562,17 @@ app.get('/api/indicadores-cl', auth, async(req,res)=>{
         if(d&&d.serie&&d.serie.length){uf=d.serie[0].valor;uf_fecha=(d.serie[0].fecha||'').slice(0,10);}
       }
     }catch(e){}
+    try{
+      const r=await fetch('https://mindicador.cl/api/utm');
+      if(r.ok){
+        const d=await r.json();
+        if(d&&d.serie&&d.serie.length){utm=d.serie[0].valor;utm_fecha=(d.serie[0].fecha||'').slice(0,10);}
+      }
+    }catch(e){}
     const sm=getSueldoMinimoVigente();
     res.json({
       uf:uf,uf_fecha:uf_fecha,uf_fuente:'mindicador.cl',
+      utm:utm,utm_fecha:utm_fecha,utm_fuente:'mindicador.cl',
       sueldo_minimo:sm.valor,sueldo_minimo_fecha:sm.desde,sueldo_minimo_ley:sm.ley,sueldo_minimo_fuente:'Tabla legal interna ('+sm.ley+')'
     });
   }catch(e){res.status(500).json({error:e.message});}
