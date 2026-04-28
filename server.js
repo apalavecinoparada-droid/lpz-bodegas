@@ -3473,7 +3473,7 @@ app.post('/api/personal/invertir-nombres', auth, async(req,res)=>{
     for(const row of r.rows){
       const inv=_invertirNombrePersona(row.nombre_completo);
       if(inv&&inv!==row.nombre_completo){
-        await client.query('UPDATE personal SET nombre_completo=$1,modificado_en=NOW() WHERE persona_id=$2',[inv,row.persona_id]);
+        await client.query('UPDATE personal SET nombre_completo=$1 WHERE persona_id=$2',[inv,row.persona_id]);
         cambiados++;
       }
     }
