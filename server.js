@@ -3437,6 +3437,57 @@ app.delete('/api/personal/:id', auth, async(req,res)=>{
 });
 
 // ══════════════════════════════════════════════════════
+// INVERSIÓN DE NOMBRES (migración one-shot)
+// "NOMBRE APELLIDO_P APELLIDO_M" → "APELLIDO_P APELLIDO_M NOMBRE"
+// ══════════════════════════════════════════════════════
+function _invertirNombrePersona(nc){
+  if(!nc)return null;
+  const parts=(nc+'').trim().split(/\s+/);
+  if(parts.length<3)return null; // muy corto, no se puede invertir con seguridad
+  const apellidos=parts.slice(-2).join(' ');
+  const nombres=parts.slice(0,-2).join(' ');
+  return apellidos+' '+nombres;
+}
+// Preview: lista qué cambios se aplicarían sin tocar la BD
+app.get('/api/personal/preview-invertir-nombres', auth, async(req,res)=>{
+  try{
+    const r=await pool.query("SELECT persona_id,nombre_completo FROM personal ORDER BY nombre_completo");
+    const cambios=[];
+    const omitidos=[];
+    r.rows.forEach(function(row){
+      const inv=_invertirNombrePersona(row.nombre_completo);
+      if(inv&&inv!==row.nombre_completo)cambios.push({persona_id:row.persona_id,actual:row.nombre_completo,nuevo:inv});
+      else omitidos.push({persona_id:row.persona_id,actual:row.nombre_completo,motivo:inv?'ya parece invertido':'menos de 3 palabras'});
+    });
+    res.json({total:r.rows.length,a_cambiar:cambios.length,omitidos:omitidos.length,cambios:cambios,omitidos_lista:omitidos});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// Aplicar: requiere body.confirmar==='INVERTIR_NOMBRES'
+app.post('/api/personal/invertir-nombres', auth, async(req,res)=>{
+  if(req.body.confirmar!=='INVERTIR_NOMBRES')return res.status(400).json({error:"Debe enviar { confirmar: 'INVERTIR_NOMBRES' }"});
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const r=await client.query("SELECT persona_id,nombre_completo FROM personal");
+    let cambiados=0;
+    for(const row of r.rows){
+      const inv=_invertirNombrePersona(row.nombre_completo);
+      if(inv&&inv!==row.nombre_completo){
+        await client.query('UPDATE personal SET nombre_completo=$1,modificado_en=NOW() WHERE persona_id=$2',[inv,row.persona_id]);
+        cambiados++;
+      }
+    }
+    await client.query('COMMIT');
+    res.json({ok:true,cambiados:cambiados,total:r.rows.length});
+  }catch(e){
+    await client.query('ROLLBACK');
+    res.status(400).json({error:e.message});
+  }finally{
+    client.release();
+  }
+});
+
+// ══════════════════════════════════════════════════════
 // OT SISTEMAS (muchos a muchos)
 // ══════════════════════════════════════════════════════
 app.get('/api/mant/ot/:id/sistemas', auth, async(req,res)=>{
