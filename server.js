@@ -4312,6 +4312,7 @@ async function setupTransporte(q){
   await q('CREATE INDEX IF NOT EXISTS idx_trans_camion ON trans_traslados(camion_id)');
   try{await q('ALTER TABLE trans_traslados ADD COLUMN IF NOT EXISTS litros_combustible NUMERIC(10,2) DEFAULT 0');}catch(e){}
   try{await q('ALTER TABLE trans_traslados ADD COLUMN IF NOT EXISTS estanque_id INT REFERENCES comb_estanques(estanque_id)');}catch(e){}
+  try{await q('ALTER TABLE trans_traslados ADD COLUMN IF NOT EXISTS origen_combustible_externo VARCHAR(20)');}catch(e){}
   try{await q('ALTER TABLE trans_traslados ADD COLUMN IF NOT EXISTS planificacion_id INT');}catch(e){}
 
   // Tabla planificación (referencia para el chofer)
@@ -4434,10 +4435,16 @@ app.post('/api/trans/traslados', auth, async(req,res)=>{
     if(odometro_inicio&&odometro_fin&&parseInt(odometro_fin)<parseInt(odometro_inicio))return res.status(400).json({error:'Odómetro final debe ser mayor al inicial'});
     const lts=parseFloat(litros_combustible)||0;
     if(lts<0)return res.status(400).json({error:'Litros no pueden ser negativos'});
+    // Distinguir entre estanque interno (entero) y proveedor externo (string EXT-*)
+    let estIntId=null,extCod=null;
+    if(estanque_id){
+      const s=String(estanque_id);
+      if(s.startsWith('EXT-'))extCod=s;
+      else estIntId=parseInt(s)||null;
+    }
     const costos=await calcularCostoTraslado(empresa_id,fecha||new Date().toISOString().slice(0,10),kc,kv);
-    const r=await pool.query(`INSERT INTO trans_traslados(fecha,empresa_id,camion_id,chofer_id,faena_id,equipo_id,origen,destino,km_cargado,km_vacio,odometro_inicio,odometro_fin,tarifa_id,costo_km_cargado,costo_km_vacio,costo_fijo,costo_recargo,costo_total,estado,observaciones,litros_combustible,estanque_id,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23) RETURNING *`,
-      [fecha||new Date().toISOString().slice(0,10),empresa_id,camion_id,chofer_id,faena_id||null,equipo_id||null,origen,destino,kc,kv,odometro_inicio?parseInt(odometro_inicio):null,odometro_fin?parseInt(odometro_fin):null,costos.tarifa_id,costos.costo_km_cargado,costos.costo_km_vacio,costos.costo_fijo,costos.costo_recargo,costos.costo_total,estado||'finalizado',observaciones||null,lts,estanque_id||null,req.user.email]);
-    // Actualizar odómetro del camión
+    const r=await pool.query(`INSERT INTO trans_traslados(fecha,empresa_id,camion_id,chofer_id,faena_id,equipo_id,origen,destino,km_cargado,km_vacio,odometro_inicio,odometro_fin,tarifa_id,costo_km_cargado,costo_km_vacio,costo_fijo,costo_recargo,costo_total,estado,observaciones,litros_combustible,estanque_id,origen_combustible_externo,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING *`,
+      [fecha||new Date().toISOString().slice(0,10),empresa_id,camion_id,chofer_id,faena_id||null,equipo_id||null,origen,destino,kc,kv,odometro_inicio?parseInt(odometro_inicio):null,odometro_fin?parseInt(odometro_fin):null,costos.tarifa_id,costos.costo_km_cargado,costos.costo_km_vacio,costos.costo_fijo,costos.costo_recargo,costos.costo_total,estado||'finalizado',observaciones||null,lts,estIntId,extCod,req.user.email]);
     if(odometro_fin)await pool.query('UPDATE equipos SET kilometraje_actual=GREATEST(COALESCE(kilometraje_actual,0),$1) WHERE equipo_id=$2',[parseInt(odometro_fin),camion_id]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
@@ -4449,9 +4456,15 @@ app.put('/api/trans/traslados/:id', auth, async(req,res)=>{
     const kc=parseFloat(km_cargado)||0;const kv=parseFloat(km_vacio)||0;
     if(kc<0||kv<0)return res.status(400).json({error:'Kilómetros no pueden ser negativos'});
     const lts=parseFloat(litros_combustible)||0;
+    let estIntId=null,extCod=null;
+    if(estanque_id){
+      const s=String(estanque_id);
+      if(s.startsWith('EXT-'))extCod=s;
+      else estIntId=parseInt(s)||null;
+    }
     const costos=await calcularCostoTraslado(empresa_id,fecha,kc,kv);
-    const r=await pool.query(`UPDATE trans_traslados SET fecha=$1,empresa_id=$2,camion_id=$3,chofer_id=$4,faena_id=$5,equipo_id=$6,origen=$7,destino=$8,km_cargado=$9,km_vacio=$10,odometro_inicio=$11,odometro_fin=$12,tarifa_id=$13,costo_km_cargado=$14,costo_km_vacio=$15,costo_fijo=$16,costo_recargo=$17,costo_total=$18,estado=$19,observaciones=$20,litros_combustible=$21,estanque_id=$22,modificado_en=NOW() WHERE traslado_id=$23 RETURNING *`,
-      [fecha,empresa_id,camion_id,chofer_id,faena_id||null,equipo_id||null,origen,destino,kc,kv,odometro_inicio?parseInt(odometro_inicio):null,odometro_fin?parseInt(odometro_fin):null,costos.tarifa_id,costos.costo_km_cargado,costos.costo_km_vacio,costos.costo_fijo,costos.costo_recargo,costos.costo_total,estado||'finalizado',observaciones||null,lts,estanque_id||null,req.params.id]);
+    const r=await pool.query(`UPDATE trans_traslados SET fecha=$1,empresa_id=$2,camion_id=$3,chofer_id=$4,faena_id=$5,equipo_id=$6,origen=$7,destino=$8,km_cargado=$9,km_vacio=$10,odometro_inicio=$11,odometro_fin=$12,tarifa_id=$13,costo_km_cargado=$14,costo_km_vacio=$15,costo_fijo=$16,costo_recargo=$17,costo_total=$18,estado=$19,observaciones=$20,litros_combustible=$21,estanque_id=$22,origen_combustible_externo=$23,modificado_en=NOW() WHERE traslado_id=$24 RETURNING *`,
+      [fecha,empresa_id,camion_id,chofer_id,faena_id||null,equipo_id||null,origen,destino,kc,kv,odometro_inicio?parseInt(odometro_inicio):null,odometro_fin?parseInt(odometro_fin):null,costos.tarifa_id,costos.costo_km_cargado,costos.costo_km_vacio,costos.costo_fijo,costos.costo_recargo,costos.costo_total,estado||'finalizado',observaciones||null,lts,estIntId,extCod,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
