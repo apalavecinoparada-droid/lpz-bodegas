@@ -7686,7 +7686,7 @@ function ContratosView(p){
   return h('div',null,
     // Tabs
     h('div',{style:{display:'flex',gap:6,marginBottom:12}},
-      [{k:'generar',l:'📝 Generar Contrato'},{k:'historial',l:'📋 Historial'},{k:'anexos',l:'📎 Anexos'},{k:'funciones',l:'⚙ Funciones por Cargo'}].map(function(t){
+      [{k:'generar',l:'📝 Generar Contrato'},{k:'calculadora',l:'🧮 Calculadora Liquidación'},{k:'historial',l:'📋 Historial'},{k:'anexos',l:'📎 Anexos'},{k:'funciones',l:'⚙ Funciones por Cargo'}].map(function(t){
         return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'7px 14px',borderRadius:5,fontSize:12,cursor:'pointer',border:'1px solid #CBD5E1',background:tab===t.k?'#1E3A2D':'#F8FAFC',color:tab===t.k?'#D4C5A9':'#475569',fontWeight:600}},t.l);
       })
     ),
@@ -7859,9 +7859,437 @@ function ContratosView(p){
     // TAB ANEXOS
     tab==='anexos'&&h(AnexosView,{tok:p.tok,m:p.m,empresas:empresas,personal:personal}),
 
+    // TAB CALCULADORA DE LIQUIDACIÓN
+    tab==='calculadora'&&h(CalcLiquidacionView,{tok:p.tok,m:p.m,empresas:empresas,personal:personal}),
+
     // TAB FUNCIONES
     tab==='funciones'&&h(FuncionesView,{tok:p.tok,funciones:funciones,reload:loadFunciones})
   );
+}
+
+// ══════════════════════════════════════════════
+// CALCULADORA DE LIQUIDACIÓN DE SUELDO
+// ══════════════════════════════════════════════
+function CalcLiquidacionView(p){
+  var empresas=p.empresas||[],personal=p.personal||[];
+  var MESES_ES=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  var hoy=new Date();
+  // ── Estado ──
+  var[empresaId,setEmpresaId]=useState('');
+  var[personaId,setPersonaId]=useState('');
+  var[mes,setMes]=useState(hoy.getMonth()+1);
+  var[anio,setAnio]=useState(hoy.getFullYear());
+  var[tipoContrato,setTipoContrato]=useState('indefinido');
+  // Haberes imponibles
+  var[sueldoBase,setSueldoBase]=useState('');
+  var[bonoResp,setBonoResp]=useState('0');
+  var[bonoFijo,setBonoFijo]=useState('0');
+  var[bonoVarOn,setBonoVarOn]=useState(false);
+  var[tarifaM3,setTarifaM3]=useState('0');
+  var[m3Producidos,setM3Producidos]=useState('0');
+  var[semCorridaOn,setSemCorridaOn]=useState(false);
+  var[diasTrab,setDiasTrab]=useState('26');
+  var[diasDomFest,setDiasDomFest]=useState('4');
+  var[gratifOn,setGratifOn]=useState(true);
+  // Haberes no imponibles
+  var[colacion,setColacion]=useState('0');
+  var[movilizacion,setMovilizacion]=useState('0');
+  var[viatico,setViatico]=useState('0');
+  // Descuentos
+  var[afp,setAfp]=useState('habitat');
+  var[saludTipo,setSaludTipo]=useState('fonasa'); // fonasa | isapre
+  var[isapreExtra,setIsapreExtra]=useState('0'); // adicional sobre 7%
+  var[cesantiaOn,setCesantiaOn]=useState(true);
+  var[calcImpOn,setCalcImpOn]=useState(true);
+  // Indicadores
+  var[sueldoMin,setSueldoMin]=useState(539000);
+  var[valorUTM,setValorUTM]=useState(69889);
+  var[valorUF,setValorUF]=useState(39250);
+  var[topeUFAfp,setTopeUFAfp]=useState(89.2);
+  var[topeUFAfc,setTopeUFAfc]=useState(132.0);
+  var[indFecha,setIndFecha]=useState({uf:'',utm:'',sm:''});
+  var[msg,setMsg]=useState('');
+
+  useEffect(function(){
+    api('/indicadores-cl','GET',null,p.tok).then(function(r){
+      if(r.uf){setValorUF(r.uf);setIndFecha(function(f){return Object.assign({},f,{uf:r.uf_fecha||''});});}
+      if(r.utm){setValorUTM(r.utm);setIndFecha(function(f){return Object.assign({},f,{utm:r.utm_fecha||''});});}
+      if(r.sueldo_minimo){setSueldoMin(r.sueldo_minimo);setIndFecha(function(f){return Object.assign({},f,{sm:r.sueldo_minimo_fecha||''});});}
+    }).catch(function(){});
+  },[p.tok]);
+
+  // Auto-cargar último contrato del trabajador seleccionado
+  function cargarUltimoContrato(){
+    if(!personaId){setMsg('Error: Seleccione un trabajador primero');return;}
+    api('/contratos?persona_id='+personaId,'GET',null,p.tok).then(function(r){
+      if(!r||!r.length){setMsg('Error: No hay contratos para este trabajador');return;}
+      var c=r[0]; // el primero es el más reciente (orden DESC)
+      setSueldoBase(c.sueldo_base||'');
+      setBonoResp(c.bono_responsabilidad||'0');
+      setBonoFijo(c.bono_produccion_fijo||'0');
+      setBonoVarOn(!!c.bono_produccion_variable);
+      setTarifaM3(c.bono_produccion_tarifa||'0');
+      setSemCorridaOn(!!c.semana_corrida);
+      setColacion(c.asig_colacion||'0');
+      setMovilizacion(c.asig_movilizacion||'0');
+      setViatico(c.asig_viatico||'0');
+      setTipoContrato(c.tipo_contrato||'indefinido');
+      if(c.empresa_id)setEmpresaId(c.empresa_id);
+      setMsg('Datos cargados desde contrato del '+(c.fecha_contrato||'').slice(0,10));
+      setTimeout(function(){setMsg('');},4000);
+    }).catch(function(e){setMsg('Error: '+e.message);});
+  }
+
+  // ── AFP 2026 (cotización trabajador = 10% obligatorio + comisión) ──
+  var AFPS=[
+    {k:'uno',n:'AFP UNO',com:0.46},
+    {k:'modelo',n:'AFP MODELO',com:0.58},
+    {k:'planvital',n:'AFP PLANVITAL',com:1.16},
+    {k:'habitat',n:'AFP HABITAT',com:1.27},
+    {k:'capital',n:'AFP CAPITAL',com:1.44},
+    {k:'cuprum',n:'AFP CUPRUM',com:1.44},
+    {k:'provida',n:'AFP PROVIDA',com:1.45}
+  ];
+  var afpInfo=AFPS.find(function(a){return a.k===afp;})||AFPS[3];
+  var tasaAFP=10+afpInfo.com; // %
+
+  // ── Tabla Impuesto Único 2da Cat. — Art. 43 N°1 LIR (tramos en UTM) ──
+  // [límite_inf_UTM, límite_sup_UTM, factor, rebaja_UTM]
+  var TABLA_IMP=[
+    [0,13.5,0,0],
+    [13.5,30,0.04,0.54],
+    [30,50,0.08,1.74],
+    [50,70,0.135,4.49],
+    [70,90,0.23,11.14],
+    [90,120,0.304,17.80],
+    [120,310,0.35,23.32],
+    [310,9999999,0.40,38.82]
+  ];
+
+  // ══ CÁLCULOS ══
+  var sb=parseFloat(sueldoBase)||0;
+  var br=parseFloat(bonoResp)||0;
+  var bf=parseFloat(bonoFijo)||0;
+  var bvar=bonoVarOn?Math.round((parseFloat(tarifaM3)||0)*(parseFloat(m3Producidos)||0)):0;
+
+  var dt=parseInt(diasTrab)||0;
+  var ddf=parseInt(diasDomFest)||0;
+  // Semana corrida: promedio diario var × días dom/fest (Art. 45 CT)
+  var semCorrida=(semCorridaOn&&dt>0&&bvar>0)?Math.round((bvar/dt)*ddf):0;
+
+  // Gratificación legal Art. 50: 4,75 IMM / 12 mensualizado
+  var topGratif=Math.round((4.75*sueldoMin)/12);
+  var gratif=gratifOn?topGratif:0;
+
+  var totalImponible=sb+br+bf+bvar+semCorrida+gratif;
+
+  var col=parseFloat(colacion)||0;
+  var mov=parseFloat(movilizacion)||0;
+  var via=parseFloat(viatico)||0;
+  var totalNoImp=col+mov+via;
+  var totalHaberes=totalImponible+totalNoImp;
+
+  // Topes imponibles
+  var topeImpAFP=Math.round((parseFloat(topeUFAfp)||89.2)*valorUF);
+  var topeImpAFC=Math.round((parseFloat(topeUFAfc)||132)*valorUF);
+  var baseAFP=Math.min(totalImponible,topeImpAFP);
+  var baseAFC=Math.min(totalImponible,topeImpAFC);
+
+  // Descuentos previsionales
+  var descAFP=Math.round(baseAFP*tasaAFP/100);
+  var pctSalud=7+(parseFloat(isapreExtra)||0);
+  var descSalud=Math.round(baseAFP*pctSalud/100);
+  var descCesantia=(cesantiaOn&&tipoContrato==='indefinido')?Math.round(baseAFC*0.006):0;
+  var totalPrev=descAFP+descSalud+descCesantia;
+
+  // Base tributable y impuesto único
+  var baseTributable=totalImponible-totalPrev;
+  var impUnico=0,tramoTxt='Exento',baseUTM=0;
+  if(calcImpOn&&valorUTM>0&&baseTributable>0){
+    baseUTM=baseTributable/valorUTM;
+    for(var i=0;i<TABLA_IMP.length;i++){
+      var t=TABLA_IMP[i];
+      if(baseUTM>t[0]&&baseUTM<=t[1]){
+        impUnico=Math.round(baseTributable*t[2]-t[3]*valorUTM);
+        if(impUnico<0)impUnico=0;
+        tramoTxt=t[0]+' a '+(t[1]>=9999999?'∞':t[1])+' UTM ('+(t[2]*100).toFixed(1)+'%)';
+        break;
+      }
+    }
+  }
+  var totalDesc=totalPrev+impUnico;
+  var liquido=totalHaberes-totalDesc;
+
+  // ══ ESTILOS ══
+  var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3};
+  var fmtCL=function(v){return '$'+(Math.round(v||0)).toLocaleString('es-CL');};
+  var rowL={display:'grid',gridTemplateColumns:'1fr auto',padding:'4px 0',fontSize:12,borderBottom:'1px dotted #E2E8F0'};
+  var rowT={display:'grid',gridTemplateColumns:'1fr auto',padding:'8px 0 4px',fontSize:13,fontWeight:700,borderTop:'2px solid #1E3A2D',marginTop:6};
+
+  var personalFiltrado=empresaId?personal.filter(function(x){return String(x.empresa_id)===String(empresaId);}):personal;
+
+  return h('div',{className:'card'},
+    h('div',{style:{display:'flex',alignItems:'center',gap:10,marginBottom:14}},
+      h('div',{style:{fontSize:15,fontWeight:700,color:'#1E3A2D'}},'🧮 Calculadora de Liquidación de Sueldo'),
+      h('div',{style:{fontSize:11,color:'#64748B'}},'Período: '+MESES_ES[mes-1]+' '+anio)
+    ),
+    msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:10}},msg),
+
+    // ── Selector trabajador y período ──
+    h('div',{style:{background:'#F0F9FF',border:'1px solid #BAE6FD',borderRadius:6,padding:10,marginBottom:12}},
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 100px 100px auto',gap:10,alignItems:'end'}},
+        h('div',null,h('label',{style:lblS},'Empresa'),h('select',{value:empresaId,onChange:function(e){setEmpresaId(e.target.value);setPersonaId('');},style:inpS},
+          h('option',{value:''},'— Todas —'),
+          empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})
+        )),
+        h('div',null,h('label',{style:lblS},'Trabajador'),h('select',{value:personaId,onChange:function(e){setPersonaId(e.target.value);},style:inpS},
+          h('option',{value:''},'— Manual / sin precarga —'),
+          personalFiltrado.map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo);})
+        )),
+        h('div',null,h('label',{style:lblS},'Mes'),h('select',{value:mes,onChange:function(e){setMes(parseInt(e.target.value));},style:inpS},
+          MESES_ES.map(function(m,i){return h('option',{key:i+1,value:i+1},m);})
+        )),
+        h('div',null,h('label',{style:lblS},'Año'),h('input',{type:'number',value:anio,onChange:function(e){setAnio(parseInt(e.target.value)||hoy.getFullYear());},style:inpS})),
+        h('button',{onClick:cargarUltimoContrato,disabled:!personaId,style:{padding:'8px 12px',background:personaId?'#1E3A2D':'#94A3B8',color:'#fff',border:'none',borderRadius:5,cursor:personaId?'pointer':'not-allowed',fontSize:11,fontWeight:600,whiteSpace:'nowrap'}},'📥 Cargar último contrato')
+      )
+    ),
+
+    // ── Indicadores ──
+    h('div',{style:{background:'#FEFCE8',border:'1px solid #FDE68A',borderRadius:6,padding:8,marginBottom:12,fontSize:11,color:'#713F12'}},
+      h('strong',null,'Indicadores: '),
+      'UF $'+(valorUF||0).toLocaleString('es-CL',{maximumFractionDigits:2})+(indFecha.uf?' ('+indFecha.uf+')':''),' · ',
+      'UTM $'+(valorUTM||0).toLocaleString('es-CL')+(indFecha.utm?' ('+indFecha.utm+')':''),' · ',
+      'IMM $'+(sueldoMin||0).toLocaleString('es-CL'),
+      h('span',{style:{marginLeft:8,fontSize:10,color:'#92400E'}},'(editables abajo si necesitas ajustar)')
+    ),
+
+    // ─────── GRID PRINCIPAL: Inputs (izquierda) | Resultado (derecha) ───────
+    h('div',{style:{display:'grid',gridTemplateColumns:'1.2fr 1fr',gap:14}},
+
+      // ═══ COLUMNA IZQUIERDA: INPUTS ═══
+      h('div',null,
+
+        // Haberes imponibles
+        h('div',{style:{background:'#FFF7ED',border:'1px solid #FED7AA',borderRadius:6,padding:10,marginBottom:10}},
+          h('div',{style:{fontSize:12,fontWeight:700,color:'#9A3412',marginBottom:8}},'💰 HABERES IMPONIBLES'),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:8}},
+            h('div',null,h('label',{style:lblS},'Sueldo base ($)'),h('input',{type:'number',value:sueldoBase,onChange:function(e){setSueldoBase(e.target.value);},style:Object.assign({},inpS,{fontWeight:700})})),
+            h('div',null,h('label',{style:lblS},'Bono responsabilidad'),h('input',{type:'number',value:bonoResp,onChange:function(e){setBonoResp(e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Bono producción fijo'),h('input',{type:'number',value:bonoFijo,onChange:function(e){setBonoFijo(e.target.value);},style:inpS}))
+          ),
+          // Bono variable
+          h('label',{style:{display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,marginBottom:6,marginTop:4}},
+            h('input',{type:'checkbox',checked:bonoVarOn,onChange:function(e){setBonoVarOn(e.target.checked);}}),'Bono producción variable (tarifa × m³)'
+          ),
+          bonoVarOn&&h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:8,paddingLeft:20,borderLeft:'2px solid #FDBA74'}},
+            h('div',null,h('label',{style:lblS},'Tarifa por m³ ($)'),h('input',{type:'number',value:tarifaM3,onChange:function(e){setTarifaM3(e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Producción mensual (m³)'),h('input',{type:'number',value:m3Producidos,onChange:function(e){setM3Producidos(e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'= Total variable'),h('div',{style:Object.assign({},inpS,{background:'#FEF3C7',fontWeight:700,textAlign:'right'})},fmtCL(bvar)))
+          ),
+          // Semana corrida
+          h('label',{style:{display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,marginBottom:6}},
+            h('input',{type:'checkbox',checked:semCorridaOn,onChange:function(e){setSemCorridaOn(e.target.checked);}}),'Semana corrida (Art. 45 CT — sólo aplica con remuneración variable)'
+          ),
+          semCorridaOn&&h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:8,paddingLeft:20,borderLeft:'2px solid #FDBA74'}},
+            h('div',null,h('label',{style:lblS},'Días trabajados'),h('input',{type:'number',value:diasTrab,onChange:function(e){setDiasTrab(e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Domingos y festivos'),h('input',{type:'number',value:diasDomFest,onChange:function(e){setDiasDomFest(e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'= Pago s. corrida'),h('div',{style:Object.assign({},inpS,{background:'#FEF3C7',fontWeight:700,textAlign:'right'})},fmtCL(semCorrida)))
+          ),
+          // Gratificación
+          h('label',{style:{display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600,marginBottom:4}},
+            h('input',{type:'checkbox',checked:gratifOn,onChange:function(e){setGratifOn(e.target.checked);}}),'Gratificación legal Art. 50 (1/12 de 4,75 IMM)'
+          ),
+          gratifOn&&h('div',{style:{paddingLeft:20,fontSize:11,color:'#78350F'}},
+            'IMM: '+fmtCL(sueldoMin)+'  →  4,75 × IMM ÷ 12 = ',h('strong',null,fmtCL(gratif))
+          )
+        ),
+
+        // Haberes no imponibles
+        h('div',{style:{background:'#F0FDF4',border:'1px solid #86EFAC',borderRadius:6,padding:10,marginBottom:10}},
+          h('div',{style:{fontSize:12,fontWeight:700,color:'#166534',marginBottom:8}},'🎁 HABERES NO IMPONIBLES'),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}},
+            h('div',null,h('label',{style:lblS},'Colación'),h('input',{type:'number',value:colacion,onChange:function(e){setColacion(e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Movilización'),h('input',{type:'number',value:movilizacion,onChange:function(e){setMovilizacion(e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Viático/asignación'),h('input',{type:'number',value:viatico,onChange:function(e){setViatico(e.target.value);},style:inpS}))
+          )
+        ),
+
+        // Descuentos previsionales
+        h('div',{style:{background:'#FEF2F2',border:'1px solid #FECACA',borderRadius:6,padding:10,marginBottom:10}},
+          h('div',{style:{fontSize:12,fontWeight:700,color:'#991B1B',marginBottom:8}},'📉 DESCUENTOS PREVISIONALES Y TRIBUTARIOS'),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1.4fr 1fr 1fr',gap:8,marginBottom:8}},
+            h('div',null,h('label',{style:lblS},'AFP'),h('select',{value:afp,onChange:function(e){setAfp(e.target.value);},style:inpS},
+              AFPS.map(function(a){return h('option',{key:a.k,value:a.k},a.n+' — '+(10+a.com).toFixed(2)+'%');})
+            )),
+            h('div',null,h('label',{style:lblS},'Salud'),h('select',{value:saludTipo,onChange:function(e){setSaludTipo(e.target.value);if(e.target.value==='fonasa')setIsapreExtra('0');},style:inpS},
+              h('option',{value:'fonasa'},'FONASA (7%)'),
+              h('option',{value:'isapre'},'Isapre (7% + adicional)')
+            )),
+            saludTipo==='isapre'?h('div',null,h('label',{style:lblS},'% adicional Isapre'),h('input',{type:'number',step:'0.01',value:isapreExtra,onChange:function(e){setIsapreExtra(e.target.value);},style:inpS,placeholder:'Ej: 0.5'})):h('div',null,h('label',{style:lblS},'Total salud'),h('div',{style:Object.assign({},inpS,{background:'#F1F5F9'})},'7,00%'))
+          ),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}},
+            h('div',null,h('label',{style:lblS},'Tipo de contrato (afecta cesantía)'),h('select',{value:tipoContrato,onChange:function(e){setTipoContrato(e.target.value);},style:inpS},
+              h('option',{value:'indefinido'},'Indefinido (cesantía 0,6%)'),
+              h('option',{value:'plazo_fijo'},'Plazo fijo (sin cesantía trabajador)'),
+              h('option',{value:'obra_servicio'},'Obra o faena (sin cesantía trabajador)')
+            )),
+            h('div',{style:{display:'flex',flexDirection:'column',gap:4,paddingTop:18}},
+              h('label',{style:{display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600}},
+                h('input',{type:'checkbox',checked:cesantiaOn&&tipoContrato==='indefinido',disabled:tipoContrato!=='indefinido',onChange:function(e){setCesantiaOn(e.target.checked);}}),'Aplicar cesantía 0,6%'
+              ),
+              h('label',{style:{display:'flex',alignItems:'center',gap:6,fontSize:12,fontWeight:600}},
+                h('input',{type:'checkbox',checked:calcImpOn,onChange:function(e){setCalcImpOn(e.target.checked);}}),'Calcular impuesto único 2da categoría'
+              )
+            )
+          ),
+          // Topes imponibles editables
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:8,marginTop:6,paddingTop:8,borderTop:'1px dotted #FECACA'}},
+            h('div',null,h('label',{style:lblS},'Tope AFP/Salud (UF)'),h('input',{type:'number',step:'0.1',value:topeUFAfp,onChange:function(e){setTopeUFAfp(e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Tope AFC (UF)'),h('input',{type:'number',step:'0.1',value:topeUFAfc,onChange:function(e){setTopeUFAfc(e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Valor UF actual'),h('input',{type:'number',step:'0.01',value:valorUF,onChange:function(e){setValorUF(parseFloat(e.target.value)||0);},style:inpS})),
+            h('div',null,h('label',{style:lblS},'Valor UTM'),h('input',{type:'number',value:valorUTM,onChange:function(e){setValorUTM(parseFloat(e.target.value)||0);},style:inpS}))
+          )
+        )
+      ),
+
+      // ═══ COLUMNA DERECHA: RESULTADO (Liquidación) ═══
+      h('div',{style:{background:'#fff',border:'2px solid #1E3A2D',borderRadius:8,padding:14,position:'sticky',top:10,alignSelf:'flex-start'}},
+        h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D',marginBottom:4,textAlign:'center',borderBottom:'2px solid #1E3A2D',paddingBottom:6}},'LIQUIDACIÓN DE SUELDO'),
+        h('div',{style:{fontSize:10,color:'#64748B',textAlign:'center',marginBottom:10}},MESES_ES[mes-1]+' '+anio),
+
+        // Imponibles
+        h('div',{style:{fontSize:10,fontWeight:700,color:'#9A3412',marginBottom:4,marginTop:4}},'HABERES IMPONIBLES'),
+        h('div',{style:rowL},h('span',null,'Sueldo base'),h('span',null,fmtCL(sb))),
+        br>0&&h('div',{style:rowL},h('span',null,'Bono responsabilidad'),h('span',null,fmtCL(br))),
+        bf>0&&h('div',{style:rowL},h('span',null,'Bono producción fijo'),h('span',null,fmtCL(bf))),
+        bvar>0&&h('div',{style:rowL},h('span',null,'Bono producción variable'),h('span',null,fmtCL(bvar))),
+        semCorrida>0&&h('div',{style:rowL},h('span',null,'Semana corrida'),h('span',null,fmtCL(semCorrida))),
+        gratif>0&&h('div',{style:rowL},h('span',null,'Gratificación legal'),h('span',null,fmtCL(gratif))),
+        h('div',{style:Object.assign({},rowT,{color:'#9A3412'})},h('span',null,'TOTAL IMPONIBLE'),h('span',null,fmtCL(totalImponible))),
+
+        // No imponibles
+        totalNoImp>0&&h('div',{style:{fontSize:10,fontWeight:700,color:'#166534',marginTop:10,marginBottom:4}},'HABERES NO IMPONIBLES'),
+        col>0&&h('div',{style:rowL},h('span',null,'Colación'),h('span',null,fmtCL(col))),
+        mov>0&&h('div',{style:rowL},h('span',null,'Movilización'),h('span',null,fmtCL(mov))),
+        via>0&&h('div',{style:rowL},h('span',null,'Viático/asignación'),h('span',null,fmtCL(via))),
+        totalNoImp>0&&h('div',{style:Object.assign({},rowT,{color:'#166534'})},h('span',null,'TOTAL NO IMPONIBLE'),h('span',null,fmtCL(totalNoImp))),
+
+        // Total haberes
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr auto',padding:'8px 0',marginTop:6,fontSize:13,fontWeight:700,background:'#F1F5F9',padding:'8px 8px',borderRadius:4}},h('span',null,'TOTAL HABERES'),h('span',null,fmtCL(totalHaberes))),
+
+        // Descuentos previsionales
+        h('div',{style:{fontSize:10,fontWeight:700,color:'#991B1B',marginTop:12,marginBottom:4}},'DESCUENTOS PREVISIONALES'),
+        h('div',{style:rowL},h('span',null,afpInfo.n+' ('+tasaAFP.toFixed(2)+'%)'),h('span',null,'-'+fmtCL(descAFP))),
+        h('div',{style:rowL},h('span',null,(saludTipo==='isapre'?'Isapre ':'FONASA ')+'('+pctSalud.toFixed(2)+'%)'),h('span',null,'-'+fmtCL(descSalud))),
+        descCesantia>0&&h('div',{style:rowL},h('span',null,'Cesantía (0,60%)'),h('span',null,'-'+fmtCL(descCesantia))),
+        h('div',{style:Object.assign({},rowT,{color:'#991B1B',fontSize:12})},h('span',null,'Subtotal previsional'),h('span',null,'-'+fmtCL(totalPrev))),
+
+        // Base tributable e impuesto
+        calcImpOn&&h('div',{style:{marginTop:8,padding:8,background:'#FEF3C7',borderRadius:4,fontSize:10,color:'#78350F'}},
+          h('div',null,h('strong',null,'Base tributable: '),fmtCL(baseTributable)+' = '+baseUTM.toFixed(2)+' UTM'),
+          h('div',null,h('strong',null,'Tramo: '),tramoTxt)
+        ),
+        calcImpOn&&impUnico>0&&h('div',{style:rowL},h('span',null,'Impuesto único 2da Cat.'),h('span',null,'-'+fmtCL(impUnico))),
+
+        // Total descuentos
+        h('div',{style:Object.assign({},rowT,{color:'#991B1B'})},h('span',null,'TOTAL DESCUENTOS'),h('span',null,'-'+fmtCL(totalDesc))),
+
+        // LÍQUIDO
+        h('div',{style:{marginTop:14,padding:'14px 12px',background:'#1E3A2D',color:'#D4C5A9',borderRadius:6,display:'grid',gridTemplateColumns:'1fr auto',alignItems:'center'}},
+          h('span',{style:{fontSize:13,fontWeight:700}},'LÍQUIDO A PAGAR'),
+          h('span',{style:{fontSize:18,fontWeight:800}},fmtCL(liquido))
+        ),
+
+        // Botón imprimir
+        h('div',{style:{marginTop:10,textAlign:'center'}},
+          h('button',{onClick:function(){
+            var p2=personaId?personal.find(function(x){return String(x.persona_id)===String(personaId);}):null;
+            var e2=empresaId?empresas.find(function(x){return String(x.empresa_id)===String(empresaId);}):null;
+            imprimirLiquidacion({
+              empresa:e2,persona:p2,mes:mes,anio:anio,mesNom:MESES_ES[mes-1],
+              sb:sb,br:br,bf:bf,bvar:bvar,semCorrida:semCorrida,gratif:gratif,totalImponible:totalImponible,
+              col:col,mov:mov,via:via,totalNoImp:totalNoImp,totalHaberes:totalHaberes,
+              afpNom:afpInfo.n,tasaAFP:tasaAFP,descAFP:descAFP,
+              saludNom:(saludTipo==='isapre'?'Isapre':'FONASA'),pctSalud:pctSalud,descSalud:descSalud,
+              descCesantia:descCesantia,impUnico:impUnico,totalDesc:totalDesc,liquido:liquido,
+              tarifaM3:parseFloat(tarifaM3)||0,m3:parseFloat(m3Producidos)||0,
+              diasTrab:dt,diasDomFest:ddf,sueldoMin:sueldoMin,valorUTM:valorUTM,baseTributable:baseTributable,tramoTxt:tramoTxt,baseUTM:baseUTM,
+              tipoContrato:tipoContrato
+            });
+          },style:{padding:'8px 20px',background:'#1E3A2D',color:'#D4C5A9',border:'none',borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:600}},'🖨️ Imprimir liquidación')
+        )
+      )
+    )
+  );
+}
+
+// Imprimir liquidación de sueldo en ventana nueva
+function imprimirLiquidacion(d){
+  var fmt=function(v){return '$'+(Math.round(v||0)).toLocaleString('es-CL');};
+  var emp=d.empresa||{};
+  var per=d.persona||{};
+  var rows=[];
+  rows.push('<tr><td>Sueldo base</td><td class="r">'+fmt(d.sb)+'</td></tr>');
+  if(d.br>0)rows.push('<tr><td>Bono responsabilidad</td><td class="r">'+fmt(d.br)+'</td></tr>');
+  if(d.bf>0)rows.push('<tr><td>Bono producción fijo</td><td class="r">'+fmt(d.bf)+'</td></tr>');
+  if(d.bvar>0)rows.push('<tr><td>Bono producción variable ('+d.m3+' m³ × '+fmt(d.tarifaM3)+')</td><td class="r">'+fmt(d.bvar)+'</td></tr>');
+  if(d.semCorrida>0)rows.push('<tr><td>Semana corrida ('+d.diasDomFest+' dom./fest.)</td><td class="r">'+fmt(d.semCorrida)+'</td></tr>');
+  if(d.gratif>0)rows.push('<tr><td>Gratificación legal Art. 50</td><td class="r">'+fmt(d.gratif)+'</td></tr>');
+  var rowsNoImp=[];
+  if(d.col>0)rowsNoImp.push('<tr><td>Colación</td><td class="r">'+fmt(d.col)+'</td></tr>');
+  if(d.mov>0)rowsNoImp.push('<tr><td>Movilización</td><td class="r">'+fmt(d.mov)+'</td></tr>');
+  if(d.via>0)rowsNoImp.push('<tr><td>Viático/asignación</td><td class="r">'+fmt(d.via)+'</td></tr>');
+  var rowsDesc=[];
+  rowsDesc.push('<tr><td>'+d.afpNom+' ('+d.tasaAFP.toFixed(2)+'%)</td><td class="r">-'+fmt(d.descAFP)+'</td></tr>');
+  rowsDesc.push('<tr><td>'+d.saludNom+' ('+d.pctSalud.toFixed(2)+'%)</td><td class="r">-'+fmt(d.descSalud)+'</td></tr>');
+  if(d.descCesantia>0)rowsDesc.push('<tr><td>Cesantía (0,60%)</td><td class="r">-'+fmt(d.descCesantia)+'</td></tr>');
+  if(d.impUnico>0)rowsDesc.push('<tr><td>Impuesto único 2da Cat. ('+d.tramoTxt+')</td><td class="r">-'+fmt(d.impUnico)+'</td></tr>');
+
+  var html='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Liquidación '+(per.nombre_completo||'')+' - '+d.mesNom+' '+d.anio+'</title>'+
+  '<style>body{font-family:Arial,sans-serif;font-size:11pt;max-width:800px;margin:20px auto;color:#1F2937}'+
+  '.hdr{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #1E3A2D;padding-bottom:10px;margin-bottom:14px}'+
+  '.hdr h1{margin:0;font-size:18pt;color:#1E3A2D}.hdr .sub{font-size:10pt;color:#64748B}'+
+  '.box{border:1px solid #CBD5E1;border-radius:6px;padding:10px;margin-bottom:10px}'+
+  '.box h3{margin:0 0 6px;font-size:11pt;color:#1E3A2D;border-bottom:1px solid #E2E8F0;padding-bottom:4px}'+
+  'table{width:100%;border-collapse:collapse;font-size:10pt}'+
+  'table td{padding:3px 6px;border-bottom:1px dotted #E2E8F0}'+
+  'table td.r{text-align:right;font-weight:600;width:140px}'+
+  '.tot{font-weight:700;border-top:2px solid #1E3A2D !important;padding-top:6px !important}'+
+  '.liq{margin-top:14px;padding:12px;background:#1E3A2D;color:#D4C5A9;border-radius:6px;display:flex;justify-content:space-between;align-items:center;font-size:14pt;font-weight:700}'+
+  '.firmas{margin-top:50px;display:flex;justify-content:space-between}'+
+  '.firmas div{text-align:center;width:45%}.firmas .l{border-top:1px solid #000;padding-top:4px;font-size:10pt}'+
+  '@media print{body{margin:10mm}}'+
+  '</style></head><body>'+
+  '<div class="hdr">'+
+    '<div><h1>LIQUIDACIÓN DE SUELDO</h1><div class="sub">'+d.mesNom+' '+d.anio+'</div></div>'+
+    '<div style="text-align:right"><strong>'+(emp.razon_social||'—')+'</strong><br>'+
+    'RUT: '+(emp.rut||'—')+'<br>'+
+    (emp.direccion||'')+(emp.comuna?', '+emp.comuna:'')+
+    '</div>'+
+  '</div>'+
+  '<div class="box">'+
+    '<table><tr><td><strong>Trabajador:</strong> '+(per.nombre_completo||'—')+'</td>'+
+    '<td><strong>RUT:</strong> '+(per.rut||'—')+'</td></tr>'+
+    '<tr><td><strong>Cargo:</strong> '+(per.cargo||'—')+'</td>'+
+    '<td><strong>Tipo contrato:</strong> '+d.tipoContrato+'</td></tr></table>'+
+  '</div>'+
+  '<div class="box"><h3>HABERES IMPONIBLES</h3><table>'+rows.join('')+
+    '<tr><td class="tot">TOTAL IMPONIBLE</td><td class="r tot">'+fmt(d.totalImponible)+'</td></tr></table></div>'+
+  (rowsNoImp.length?'<div class="box"><h3>HABERES NO IMPONIBLES</h3><table>'+rowsNoImp.join('')+
+    '<tr><td class="tot">TOTAL NO IMPONIBLE</td><td class="r tot">'+fmt(d.totalNoImp)+'</td></tr></table></div>':'')+
+  '<div class="box" style="background:#F1F5F9"><table><tr><td><strong>TOTAL HABERES (BRUTO)</strong></td>'+
+    '<td class="r"><strong>'+fmt(d.totalHaberes)+'</strong></td></tr></table></div>'+
+  '<div class="box"><h3>DESCUENTOS</h3><table>'+rowsDesc.join('')+
+    '<tr><td class="tot">TOTAL DESCUENTOS</td><td class="r tot">-'+fmt(d.totalDesc)+'</td></tr></table></div>'+
+  '<div class="liq"><span>LÍQUIDO A PAGAR</span><span>'+fmt(d.liquido)+'</span></div>'+
+  '<div class="firmas">'+
+    '<div><div class="l">EL EMPLEADOR<br>'+(emp.razon_social||'')+'</div></div>'+
+    '<div><div class="l">EL TRABAJADOR<br>'+(per.nombre_completo||'')+'<br>RUT: '+(per.rut||'')+'</div></div>'+
+  '</div>'+
+  '<div style="margin-top:30px;font-size:8pt;color:#94A3B8;text-align:center">Documento generado por Empresas Poo · Cálculo referencial</div>'+
+  '</body></html>';
+  var w=window.open('','_blank');w.document.write(html);w.document.close();setTimeout(function(){w.print();},400);
 }
 
 // ── Catálogo de Regiones y Comunas de Chile ──
