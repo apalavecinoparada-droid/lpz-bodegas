@@ -1330,26 +1330,93 @@ mvR.patch('/:id/anular', auth, async(req,res)=>{
     await client.query('BEGIN');
     const{motivo_anulacion}=req.body;
     const mr=await client.query("SELECT * FROM movimiento_encabezado WHERE movimiento_id=$1 AND estado='ACTIVO'",[req.params.id]);
-    if(!mr.rows.length) return res.status(400).json({error:'Movimiento no encontrado o ya anulado'});
+    if(!mr.rows.length){await client.query('ROLLBACK');return res.status(400).json({error:'Movimiento no encontrado o ya anulado'});}
     const mov=mr.rows[0];
-    const dets=await client.query('SELECT * FROM movimiento_detalle WHERE movimiento_id=$1',[req.params.id]);
-    for(const d of dets.rows){
-      const sr=await client.query('SELECT cantidad_disponible,costo_promedio_actual FROM stock_actual WHERE producto_id=$1 AND bodega_id=$2',[d.producto_id,mov.bodega_id]);
-      const cur=sr.rows[0]||{cantidad_disponible:0,costo_promedio_actual:0};
-      const curQ=parseFloat(cur.cantidad_disponible),curCpp=parseFloat(cur.costo_promedio_actual);
-      const qty=parseFloat(d.cantidad),cu=parseFloat(d.costo_unitario);
-      let newQ=curQ,newCpp=curCpp;
-      if(mov.tipo_movimiento==='INGRESO'){newQ=Math.max(0,curQ-qty);newCpp=newQ>0&&curQ>0?Math.max(0,(curQ*curCpp-qty*cu)/newQ):0;}
-      else if(mov.tipo_movimiento==='SALIDA'){newQ=curQ+qty;newCpp=curCpp;}
-      await client.query('UPDATE stock_actual SET cantidad_disponible=$1,costo_promedio_actual=$2,ultima_actualizacion=NOW() WHERE producto_id=$3 AND bodega_id=$4',[Math.max(0,newQ),Math.max(0,newCpp),d.producto_id,mov.bodega_id]);
+    // Si es traspaso, identificar y procesar ambos lados (SALIDA + INGRESO enlazado)
+    let movsAProcesar=[mov];
+    if((mov.tipo_movimiento==='TRASPASO_SALIDA'||mov.tipo_movimiento==='TRASPASO_INGRESO')&&mov.referencia_transfer_id){
+      const otroR=await client.query("SELECT * FROM movimiento_encabezado WHERE movimiento_id=$1 AND estado='ACTIVO'",[mov.referencia_transfer_id]);
+      if(otroR.rows.length)movsAProcesar.push(otroR.rows[0]);
     }
-    await client.query("UPDATE movimiento_encabezado SET estado='ANULADO',anulado_en=NOW(),anulado_por=$1,motivo_anulacion=$2 WHERE movimiento_id=$3",[req.user.email,motivo_anulacion||'Anulado por usuario',req.params.id]);
+    for(const m of movsAProcesar){
+      const dets=await client.query('SELECT * FROM movimiento_detalle WHERE movimiento_id=$1',[m.movimiento_id]);
+      for(const d of dets.rows){
+        const sr=await client.query('SELECT cantidad_disponible,costo_promedio_actual FROM stock_actual WHERE producto_id=$1 AND bodega_id=$2',[d.producto_id,m.bodega_id]);
+        const cur=sr.rows[0]||{cantidad_disponible:0,costo_promedio_actual:0};
+        const curQ=parseFloat(cur.cantidad_disponible),curCpp=parseFloat(cur.costo_promedio_actual);
+        const qty=parseFloat(d.cantidad),cu=parseFloat(d.costo_unitario);
+        let newQ=curQ,newCpp=curCpp;
+        if(m.tipo_movimiento==='INGRESO'||m.tipo_movimiento==='TRASPASO_INGRESO'){
+          newQ=Math.max(0,curQ-qty);
+          newCpp=newQ>0&&curQ>0?Math.max(0,(curQ*curCpp-qty*cu)/newQ):0;
+        }else if(m.tipo_movimiento==='SALIDA'||m.tipo_movimiento==='TRASPASO_SALIDA'){
+          newQ=curQ+qty;newCpp=curCpp;
+        }
+        await client.query('UPDATE stock_actual SET cantidad_disponible=$1,costo_promedio_actual=$2,ultima_actualizacion=NOW() WHERE producto_id=$3 AND bodega_id=$4',[Math.max(0,newQ),Math.max(0,newCpp),d.producto_id,m.bodega_id]);
+      }
+      await client.query("UPDATE movimiento_encabezado SET estado='ANULADO',anulado_en=NOW(),anulado_por=$1,motivo_anulacion=$2 WHERE movimiento_id=$3",[req.user.email,motivo_anulacion||'Anulado por usuario',m.movimiento_id]);
+    }
     await client.query('COMMIT');
-    res.json({ok:true});
+    res.json({ok:true,movimientos_anulados:movsAProcesar.length});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
 app.use('/api/movimientos', mvR);
+
+// TRASPASO ENTRE BODEGAS — crea SALIDA en bodega origen + INGRESO en bodega destino enlazados
+app.post('/api/movimientos/traspaso', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const{fecha,bodega_origen_id,bodega_destino_id,observaciones,responsable_entrega,responsable_recepcion,lineas}=req.body;
+    if(!fecha||!bodega_origen_id||!bodega_destino_id)throw new Error('Fecha, bodega origen y destino son obligatorios');
+    if(parseInt(bodega_origen_id)===parseInt(bodega_destino_id))throw new Error('La bodega de origen y destino no pueden ser la misma');
+    if(!lineas||!lineas.length)throw new Error('Debe incluir al menos una línea');
+    // Validar stock disponible en la bodega origen
+    for(const l of lineas){
+      const sr=await client.query('SELECT cantidad_disponible FROM stock_actual WHERE producto_id=$1 AND bodega_id=$2',[l.producto_id,bodega_origen_id]);
+      const disp=parseFloat(sr.rows[0]?.cantidad_disponible||0);
+      if(parseFloat(l.cantidad)>disp){
+        const pn=(await client.query('SELECT nombre FROM productos WHERE producto_id=$1',[l.producto_id])).rows[0]?.nombre||l.producto_id;
+        throw new Error(`Stock insuficiente en bodega origen: "${pn}" disponible: ${disp}`);
+      }
+    }
+    // 1) SALIDA en bodega origen
+    const salR=await client.query('INSERT INTO movimiento_encabezado(tipo_movimiento,fecha,bodega_id,bodega_destino_id,observaciones,responsable_entrega,responsable_recepcion,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING movimiento_id',
+      ['TRASPASO_SALIDA',fecha,bodega_origen_id,bodega_destino_id,observaciones||null,responsable_entrega||null,responsable_recepcion||null,req.user.email]);
+    const salId=salR.rows[0].movimiento_id;
+    // Procesar SALIDA línea por línea (descuenta stock origen, captura costo promedio actual)
+    const lineasConCosto=[];
+    for(const l of lineas){
+      const pid=parseInt(l.producto_id),qty=parseFloat(l.cantidad);
+      const sr=await client.query('SELECT cantidad_disponible,costo_promedio_actual FROM stock_actual WHERE producto_id=$1 AND bodega_id=$2',[pid,bodega_origen_id]);
+      const cur=sr.rows[0]||{cantidad_disponible:0,costo_promedio_actual:0};
+      const curQ=parseFloat(cur.cantidad_disponible),curCpp=parseFloat(cur.costo_promedio_actual);
+      const newQ=Math.max(0,curQ-qty);
+      await client.query('INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) VALUES($1,$2,$3,$4)',[salId,pid,qty,curCpp]);
+      await client.query('UPDATE stock_actual SET cantidad_disponible=$1,ultima_actualizacion=NOW() WHERE producto_id=$2 AND bodega_id=$3',[newQ,pid,bodega_origen_id]);
+      lineasConCosto.push({producto_id:pid,cantidad:qty,costo_unitario:curCpp});
+    }
+    // 2) INGRESO en bodega destino enlazado al SALIDA por referencia_transfer_id
+    const ingR=await client.query('INSERT INTO movimiento_encabezado(tipo_movimiento,fecha,bodega_id,observaciones,responsable_entrega,responsable_recepcion,referencia_transfer_id,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING movimiento_id',
+      ['TRASPASO_INGRESO',fecha,bodega_destino_id,observaciones||null,responsable_entrega||null,responsable_recepcion||null,salId,req.user.email]);
+    const ingId=ingR.rows[0].movimiento_id;
+    await client.query('UPDATE movimiento_encabezado SET referencia_transfer_id=$1 WHERE movimiento_id=$2',[ingId,salId]);
+    // Procesar INGRESO (suma stock destino y recalcula CPP con costo de origen)
+    for(const l of lineasConCosto){
+      const sr=await client.query('SELECT cantidad_disponible,costo_promedio_actual FROM stock_actual WHERE producto_id=$1 AND bodega_id=$2',[l.producto_id,bodega_destino_id]);
+      const cur=sr.rows[0]||{cantidad_disponible:0,costo_promedio_actual:0};
+      const curQ=parseFloat(cur.cantidad_disponible),curCpp=parseFloat(cur.costo_promedio_actual);
+      const newQ=curQ+l.cantidad;
+      const newCpp=newQ>0?(curQ*curCpp+l.cantidad*l.costo_unitario)/newQ:l.costo_unitario;
+      await client.query('INSERT INTO movimiento_detalle(movimiento_id,producto_id,cantidad,costo_unitario) VALUES($1,$2,$3,$4)',[ingId,l.producto_id,l.cantidad,l.costo_unitario]);
+      await client.query('INSERT INTO stock_actual(producto_id,bodega_id,cantidad_disponible,costo_promedio_actual,ultima_actualizacion) VALUES($1,$2,$3,$4,NOW()) ON CONFLICT(producto_id,bodega_id) DO UPDATE SET cantidad_disponible=$3,costo_promedio_actual=$4,ultima_actualizacion=NOW()',[l.producto_id,bodega_destino_id,newQ,newCpp]);
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ok:true,salida_id:salId,ingreso_id:ingId});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
 
 // STOCK
 app.get('/api/stock', auth, async(req,res)=>{
