@@ -7329,8 +7329,7 @@ function Personal(p){
   const[showForm,setShowForm]=useState(false);
   const[sel,setSel]=useState(null);
   const[msg,setMsg]=useState('');
-  const[filtMant,setFiltMant]=useState('');
-  const[filtCat,setFiltCat]=useState('');
+  const[filtFaena,setFiltFaena]=useState('');
   const[filtEmpresa,setFiltEmpresa]=useState('');
   const[buscar,setBuscar]=useState('');
   const[showImport,setShowImport]=useState(false);
@@ -7405,11 +7404,15 @@ function Personal(p){
   var inp={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
   var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3};
   var rows=personas.filter(function(x){
-    if(filtMant==='si'&&!x.participa_mantencion) return false;
-    if(filtMant==='no'&&x.participa_mantencion) return false;
-    if(filtCat&&x.categoria!==filtCat) return false;
     if(filtEmpresa&&String(x.empresa_id)!==String(filtEmpresa)) return false;
-    if(buscar){var q=buscar.toLowerCase();return (x.nombre_completo||'').toLowerCase().indexOf(q)>=0||(x.rut||'').toLowerCase().indexOf(q)>=0||(x.cargo||'').toLowerCase().indexOf(q)>=0||(x.centro_costo||'').toLowerCase().indexOf(q)>=0||(x.faena_nombre||'').toLowerCase().indexOf(q)>=0;}
+    if(filtFaena&&String(x.faena_id)!==String(filtFaena)) return false;
+    if(buscar){
+      var q=buscar.toLowerCase().trim();
+      // Búsqueda por palabras: cada palabra del input debe aparecer en alguno de los campos
+      var palabras=q.split(/\s+/).filter(function(w){return w;});
+      var campos=((x.nombre_completo||'')+' '+(x.rut||'')+' '+(x.cargo||'')+' '+(x.faena_nombre||'')).toLowerCase();
+      return palabras.every(function(p){return campos.indexOf(p)>=0;});
+    }
     return true;
   });
   var catLabel=function(c){var found=CATEGORIAS.find(function(x){return x.v===c;});return found?found.l:(c||'—');};
@@ -7417,18 +7420,15 @@ function Personal(p){
   return h('div',null,
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:6}},
       h('div',{style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}},
-        h('select',{value:filtEmpresa,onChange:function(e){setFiltEmpresa(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,fontWeight:filtEmpresa?600:400}},
+        h('select',{value:filtEmpresa,onChange:function(e){setFiltEmpresa(e.target.value);setFiltFaena('');},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,fontWeight:filtEmpresa?600:400}},
           h('option',{value:''},'Todas las empresas'),
           empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})
         ),
-        h('input',{type:'text',placeholder:'Buscar nombre, RUT, cargo...',value:buscar,onChange:function(e){setBuscar(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:170}}),
-        h('select',{value:filtCat,onChange:function(e){setFiltCat(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
-          h('option',{value:''},'Todas las categorías'),
-          CATEGORIAS.map(function(c){return h('option',{key:c.v,value:c.v},c.l);})
+        h('select',{value:filtFaena,onChange:function(e){setFiltFaena(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,fontWeight:filtFaena?600:400}},
+          h('option',{value:''},'Todas las faenas'),
+          (p.m.faenas||[]).filter(function(f){return f.activo&&(!filtEmpresa||String(f.empresa_id)===String(filtEmpresa));}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})
         ),
-        h('select',{value:filtMant,onChange:function(e){setFiltMant(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
-          h('option',{value:''},'Todos'),h('option',{value:'si'},'Solo mantención'),h('option',{value:'no'},'Sin mantención')
-        ),
+        h('input',{type:'text',placeholder:'Buscar nombre, apellido, RUT, cargo...',value:buscar,onChange:function(e){setBuscar(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:230}}),
         h('span',{style:{fontSize:11,color:'#64748B'}},rows.length+'/'+personas.length+' registros')
       ),
       h('div',{style:{display:'flex',gap:6}},
