@@ -4321,6 +4321,30 @@ app.get('/api/terreno/ultimo-horometro/:equipo_id', auth, async(req,res)=>{
 });
 
 // ══ SOLICITUDES ══
+// Endpoint ligero para obtener resumen de pendientes dirigidas al usuario actual
+// Usado por la alerta del dashboard
+app.get('/api/solicitudes/pendientes-resumen', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`
+      SELECT s.solicitud_id, s.detalle, s.cantidad, s.prioridad, s.creado_en,
+             sol.nombre AS solicitante_nombre,
+             emp.razon_social AS empresa_nombre,
+             f.nombre AS faena_nombre,
+             eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre
+      FROM solicitudes s
+      JOIN usuarios sol ON s.solicitante_id = sol.usuario_id
+      LEFT JOIN empresas emp ON s.empresa_id = emp.empresa_id
+      LEFT JOIN faenas f ON s.faena_id = f.faena_id
+      LEFT JOIN equipos eq ON s.equipo_id = eq.equipo_id
+      WHERE s.dirigida_a_id = $1 AND s.estado = 'pendiente'
+      ORDER BY
+        CASE s.prioridad WHEN 'urgente' THEN 1 WHEN 'alta' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
+        s.creado_en DESC
+    `,[req.user.id]);
+    res.json({total:r.rows.length, items:r.rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 app.get('/api/solicitudes', auth, async(req,res)=>{
   try{
     const{estado,dirigida_a_id,solicitante_id}=req.query;
