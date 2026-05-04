@@ -3417,7 +3417,26 @@ function OCFormModal(p){
         err&&h('div',{className:'al al-e'},err),
         h('div',{className:'g3'},
           h(FR,{label:'Empresa'},h(Sel,{value:form.empresa_id,onChange:v=>sf('empresa_id',v)},h('option',{value:''},'Sin empresa...'),empresas.filter(e=>e.activo).map(e=>h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social)))),
-          h(FR,{label:'Proveedor',req:true},h(Sel,{value:form.proveedor_id,onChange:v=>sf('proveedor_id',v)},h('option',{value:''},'Seleccione...'),allProvs.filter(q=>q.activo).map(q=>h('option',{key:q.proveedor_id,value:q.proveedor_id},q.nombre)))),
+          h(FR,{label:'Proveedor',req:true},h(Sel,{value:form.proveedor_id,onChange:v=>sf('proveedor_id',v)},
+            h('option',{value:''},'Seleccione...'),
+            (function(){
+              var actv=allProvs.filter(function(q){return q.activo;});
+              var favs=actv.filter(function(q){return q.favorito;});
+              var rest=actv.filter(function(q){return !q.favorito;});
+              var nodes=[];
+              if(favs.length){
+                nodes.push(h('optgroup',{key:'fav',label:'⭐ Favoritos / Recurrentes'},
+                  favs.map(function(q){return h('option',{key:q.proveedor_id,value:q.proveedor_id},q.nombre);})
+                ));
+              }
+              if(rest.length){
+                nodes.push(h('optgroup',{key:'otr',label:favs.length?'Otros proveedores':'Proveedores'},
+                  rest.map(function(q){return h('option',{key:q.proveedor_id,value:q.proveedor_id},q.nombre);})
+                ));
+              }
+              return nodes;
+            })()
+          )),
           importProvData&&!form.proveedor_id&&h('div',{style:{gridColumn:'1/-1',padding:'10px 12px',background:'#FEF3C7',border:'1px solid #F59E0B',borderRadius:6,marginBottom:4}},
             h('div',{style:{fontWeight:700,fontSize:12,color:'#92400E',marginBottom:4}},'⚠ Proveedor no registrado en el sistema'),
             h('div',{style:{fontSize:11,color:'#78350F',marginBottom:6}},
@@ -3448,8 +3467,8 @@ function OCFormModal(p){
         h('div',{style:{overflowX:'auto'}},
           h('table',{style:{minWidth:900}},
             h('thead',null,h('tr',null,
-              h('th',{style:{width:'22%'}},'Detalle libre'),h('th',{style:{width:'14%'}},'Tipo de Producto'),h('th',{style:{width:'10%'}},'Faena'),h('th',{style:{width:'10%'}},'Equipo'),
-              h('th',{style:{width:'8%'}},'Cant.'),h('th',{style:{width:'10%'}},preciosIVA?'P. c/IVA':'Precio unit.'),h('th',{style:{width:'5%'},className:'tc'},'Exenta'),h('th',{className:'tr',style:{width:'9%'}},preciosIVA?'Neto':'Total'),
+              h('th',{style:{width:'18%'}},'Detalle libre'),h('th',{style:{width:'12%'}},'Tipo de Producto'),h('th',{style:{width:'14%'}},'Faena'),h('th',{style:{width:'14%'}},'Equipo'),
+              h('th',{style:{width:'7%'}},'Cant.'),h('th',{style:{width:'9%'}},preciosIVA?'P. c/IVA':'Precio unit.'),h('th',{style:{width:'5%'},className:'tc'},'Exenta'),h('th',{className:'tr',style:{width:'8%'}},preciosIVA?'Neto':'Total'),
               h('th',{style:{width:'5%'},className:'tc'},'A bodega'),h('th',{style:{width:'4%'}})
             )),
             h('tbody',null,...form.lineas.map(function(l,i){
@@ -3916,6 +3935,7 @@ function ProveedoresViewW(p){
   var[refreshKey,setRefreshKey]=useState(0);
   return h('div',{key:refreshKey},
     h(MasterV,{tok:p.tok,onMov:p.onMov,titulo:'Proveedor',ep:'proveedores',pk:'proveedor_id',Form:ProvForm,importKey:'proveedores',blank:{rut:'',nombre:'',giro:'',direccion:'',contacto:'',telefono:'',email:'',activo:true},
+      showFavorito:true,
       extraBtns:function(){return h(Btn,{v:'a',sm:true,onClick:function(){setShowXmlImport(true);}},'📦 Importar desde XML');},
       onExport:function(){api('/proveedores','GET',null,p.tok).then(function(rows){exportXLSX(rows,[{header:'RUT',value:function(r){return r.rut;}},{header:'Nombre',value:function(r){return r.nombre;}},{header:'Giro',value:function(r){return r.giro;}},{header:'Direccion',value:function(r){return r.direccion;}},{header:'Contacto',value:function(r){return r.contacto;}},{header:'Telefono',value:function(r){return r.telefono;}},{header:'Email',value:function(r){return r.email;}},{header:'Activo',value:function(r){return r.activo?'SI':'NO';}}],'proveedores');}).catch(function(ex){alert(ex.message);});},
       cols:[{lbl:'RUT',k:'rut',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Giro',k:'giro'},{lbl:'Contacto',k:'contacto'},{lbl:'Telefono',k:'telefono'}]}),
@@ -3935,6 +3955,7 @@ function MasterV(p){
     api(path,method,item,p.tok).then(function(){setModal(null);load();p.onMov&&p.onMov();}).catch(function(ex){setErr(ex.message);});
   }
   function tog(id){api('/'+p.ep+'/'+id+'/activo','PATCH',{},p.tok).then(function(){load();p.onMov&&p.onMov();}).catch(function(){});}
+  function togFav(id){api('/'+p.ep+'/'+id+'/favorito','PATCH',{},p.tok).then(function(){load();p.onMov&&p.onMov();}).catch(function(){});}
   function del(id){
     if(!window.confirm('Eliminar este registro? Esta accion no se puede deshacer.'))return;
     setDelErr('');
@@ -3975,7 +3996,9 @@ function MasterV(p){
       p.onExport&&h(Btn,{v:'teal',onClick:p.onExport},null,'Excel')
     ),
     delErr&&h('div',{className:'al al-e',style:{marginBottom:8}},delErr),
-    h('div',{className:'card'},h(TBL,{cols:p.cols.concat([
+    h('div',{className:'card'},h(TBL,{cols:(p.showFavorito?[
+      {lbl:'★',w:'40px',c:true,render:function(r){return h('button',{onClick:function(){togFav(r[p.pk]);},title:r.favorito?'Quitar de favoritos':'Marcar como favorito',style:{cursor:'pointer',background:'transparent',border:'none',fontSize:18,padding:'0 4px',color:r.favorito?'#F59E0B':'#CBD5E1',lineHeight:1}},r.favorito?'★':'☆');}}
+    ]:[]).concat(p.cols).concat([
       {lbl:'Estado',render:r=>h(Bg,{c:r.activo?'g':'gray'},r.activo?'Activo':'Inactivo')},
       {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:3}},
         h(Btn,{v:'g',sm:true,onClick:function(){setErr('');setModal(Object.assign({},r));}},'✏'),
