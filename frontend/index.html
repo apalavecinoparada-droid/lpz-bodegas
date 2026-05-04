@@ -374,26 +374,130 @@ function AlertaSolicitudes(p){
 }
 
 function Dashboard(p){
-  const[stats,setStats]=useState(null);const[movs,setMovs]=useState([]);const[load,setLoad]=useState(true);
+  const[stats,setStats]=useState(null);
+  const[movs,setMovs]=useState([]);
+  const[topValor,setTopValor]=useState([]);
+  const[topAlerta,setTopAlerta]=useState([]);
+  const[load,setLoad]=useState(true);
   useEffect(function(){
     Promise.all([api('/stock/consolidado','GET',null,p.tok),api('/movimientos','GET',null,p.tok)]).then(function(res){
       const rows=res[0]||[],ms=res[1]||[];
-      setStats({total:rows.reduce(function(s,r){return s+parseFloat(r.valor_total||0);},0),prods:rows.length});
+      // Estadísticas básicas
+      var total=rows.reduce(function(s,r){return s+parseFloat(r.valor_total||0);},0);
+      // Conteo de movimientos por tipo (últimos 30 días)
+      var hoy=new Date();var hace30=new Date(hoy.getTime()-30*24*60*60*1000);
+      var mes=ms.filter(function(m){return new Date(m.fecha)>=hace30&&m.estado==='ACTIVO';});
+      var ingresos=mes.filter(function(m){return m.tipo_movimiento==='INGRESO';}).length;
+      var salidas=mes.filter(function(m){return m.tipo_movimiento==='SALIDA';}).length;
+      var traspasos=mes.filter(function(m){return (m.tipo_movimiento||'').indexOf('TRASPASO')>=0;}).length;
+      setStats({total:total,prods:rows.length,ingresos:ingresos,salidas:salidas,traspasos:traspasos});
+      // Top 5 productos por valor en stock
+      var ordenadosValor=rows.slice().sort(function(a,b){return parseFloat(b.valor_total||0)-parseFloat(a.valor_total||0);}).slice(0,5);
+      setTopValor(ordenadosValor);
+      // Top productos bajo mínimo (alertas)
+      var conAlerta=rows.filter(function(r){return r.stock_minimo>0&&parseFloat(r.cantidad_total||0)<parseFloat(r.stock_minimo);}).sort(function(a,b){
+        // Más urgentes primero (mayor faltante porcentual)
+        var ra=(parseFloat(a.cantidad_total||0)/parseFloat(a.stock_minimo||1));
+        var rb=(parseFloat(b.cantidad_total||0)/parseFloat(b.stock_minimo||1));
+        return ra-rb;
+      }).slice(0,5);
+      setTopAlerta(conAlerta);
       setMovs(ms);
     }).catch(function(){}).finally(function(){setLoad(false);});
   },[p.tok]);
   if(load)return h('div',{className:'spin'},'Cargando...');
+  var movsActivos=movs.filter(function(m){return m.estado==='ACTIVO';});
   return h('div',null,
     h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.setView('solicitudes');}}),
+    // ── KPIs principales ──
     h('div',{className:'kpis'},
       h('div',{className:'kpi kpi-b'},h('div',{className:'kpi-lbl'},'Valor total stock'),h('div',{className:'kpi-val'},CLP(stats&&stats.total||0)),h('div',{className:'kpi-sub'},'Costo promedio ponderado')),
-      h('div',{className:'kpi kpi-'+(p.alerts>0?'a':'g'),style:{cursor:'pointer'},onClick:function(){p.setView('stock');}},h('div',{className:'kpi-lbl'},'Alertas stock'),h('div',{className:'kpi-val'},p.alerts),h('div',{className:'kpi-sub'},'Bajo minimo')),
+      h('div',{className:'kpi kpi-'+(p.alerts>0?'a':'g'),style:{cursor:'pointer'},onClick:function(){p.setView('stock');}},h('div',{className:'kpi-lbl'},'Alertas stock'),h('div',{className:'kpi-val'},p.alerts),h('div',{className:'kpi-sub'},'Bajo mínimo')),
       h('div',{className:'kpi kpi-g'},h('div',{className:'kpi-lbl'},'Productos en stock'),h('div',{className:'kpi-val'},stats&&stats.prods||0),h('div',{className:'kpi-sub'},'Con existencias')),
-      h('div',{className:'kpi kpi-b'},h('div',{className:'kpi-lbl'},'Movimientos'),h('div',{className:'kpi-val'},movs.length),h('div',{className:'kpi-sub'},'Registrados'))
+      h('div',{className:'kpi kpi-b'},h('div',{className:'kpi-lbl'},'Movimientos'),h('div',{className:'kpi-val'},movsActivos.length),h('div',{className:'kpi-sub'},'Total registrados'))
     ),
-    p.alerts>0&&h('div',{className:'al al-w',onClick:function(){p.setView('stock');}},null,'⚠ '+p.alerts+' producto(s) bajo el minimo — click para ver →'),
+
+    // ── Resumen de movimientos del mes ──
+    h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:14}},
+      h('div',{style:{background:'#ECFDF5',border:'1px solid #6EE7B7',borderRadius:8,padding:12,cursor:'pointer'},onClick:function(){p.setView('ingresos');}},
+        h('div',{style:{fontSize:11,color:'#065F46',fontWeight:600,textTransform:'uppercase'}},'⬇ Ingresos último mes'),
+        h('div',{style:{fontSize:24,fontWeight:700,color:'#047857'}},stats&&stats.ingresos||0),
+        h('div',{style:{fontSize:10,color:'#065F46'}},'Compras y reposiciones')
+      ),
+      h('div',{style:{background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:8,padding:12,cursor:'pointer'},onClick:function(){p.setView('salidas');}},
+        h('div',{style:{fontSize:11,color:'#991B1B',fontWeight:600,textTransform:'uppercase'}},'⬆ Salidas último mes'),
+        h('div',{style:{fontSize:24,fontWeight:700,color:'#B91C1C'}},stats&&stats.salidas||0),
+        h('div',{style:{fontSize:10,color:'#991B1B'}},'Consumos a faenas/equipos')
+      ),
+      h('div',{style:{background:'#EFF6FF',border:'1px solid #93C5FD',borderRadius:8,padding:12,cursor:'pointer'},onClick:function(){p.setView('traspasos');}},
+        h('div',{style:{fontSize:11,color:'#1E40AF',fontWeight:600,textTransform:'uppercase'}},'🔄 Traspasos último mes'),
+        h('div',{style:{fontSize:24,fontWeight:700,color:'#1D4ED8'}},stats&&stats.traspasos||0),
+        h('div',{style:{fontSize:10,color:'#1E40AF'}},'Entre bodegas')
+      )
+    ),
+
+    // ── Banner de alertas si existen ──
+    p.alerts>0&&h('div',{className:'al al-w',onClick:function(){p.setView('stock');},style:{cursor:'pointer'}},null,'⚠ '+p.alerts+' producto(s) bajo el mínimo — click para ver →'),
+
+    // ── Grid: productos top + alertas ──
+    h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14,marginBottom:14}},
+      // Top 5 productos por valor
+      h('div',{className:'card'},
+        h('div',{className:'card-h'},h('h3',null,'💎 Top 5 productos por valor en stock')),
+        topValor.length===0?h('div',{style:{padding:14,textAlign:'center',color:'#94A3B8',fontSize:11}},'Sin productos'):
+        h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+          h('thead',null,h('tr',{style:{background:'#F1F5F9'}},
+            h('th',{style:{padding:'8px 6px',textAlign:'left',color:'#1E3A2D'}},'Producto'),
+            h('th',{style:{padding:'8px 6px',textAlign:'right',color:'#1E3A2D'}},'Stock'),
+            h('th',{style:{padding:'8px 6px',textAlign:'right',color:'#1E3A2D'}},'Valor')
+          )),
+          h('tbody',null,topValor.map(function(r,i){
+            return h('tr',{key:r.producto_id,style:{borderBottom:'1px solid #E2E8F0',background:i%2===0?'#fff':'#FAFBFC',cursor:'pointer'},onClick:function(){p.setView('stock');}},
+              h('td',{style:{padding:'8px 6px'}},
+                h('div',{style:{fontWeight:600}},r.producto_nombre||r.codigo),
+                h('div',{style:{fontSize:10,color:'#64748B'}},r.codigo)
+              ),
+              h('td',{style:{padding:'8px 6px',textAlign:'right'}},N(r.cantidad_total||0)+' '+(r.unidad_medida||'')),
+              h('td',{style:{padding:'8px 6px',textAlign:'right',fontWeight:700,color:'#1E40AF'}},CLP(r.valor_total||0))
+            );
+          }))
+        )
+      ),
+      // Top productos con alerta
+      h('div',{className:'card'},
+        h('div',{className:'card-h'},h('h3',{style:{color:topAlerta.length>0?'#B45309':'#166534'}},topAlerta.length>0?'⚠ Productos críticos (bajo mínimo)':'✓ Sin productos críticos')),
+        topAlerta.length===0?h('div',{style:{padding:14,textAlign:'center',color:'#16A34A',fontSize:11}},'Todos los productos están sobre su stock mínimo'):
+        h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+          h('thead',null,h('tr',{style:{background:'#FEF3C7'}},
+            h('th',{style:{padding:'8px 6px',textAlign:'left',color:'#92400E'}},'Producto'),
+            h('th',{style:{padding:'8px 6px',textAlign:'right',color:'#92400E'}},'Stock'),
+            h('th',{style:{padding:'8px 6px',textAlign:'right',color:'#92400E'}},'Mín.'),
+            h('th',{style:{padding:'8px 6px',textAlign:'center',color:'#92400E'}},'Estado')
+          )),
+          h('tbody',null,topAlerta.map(function(r,i){
+            var actual=parseFloat(r.cantidad_total||0);
+            var min=parseFloat(r.stock_minimo||0);
+            var pct=min>0?(actual/min)*100:0;
+            var color=pct<50?'#DC2626':pct<80?'#EA580C':'#D97706';
+            return h('tr',{key:r.producto_id,style:{borderBottom:'1px solid #E2E8F0',background:i%2===0?'#fff':'#FFFBEB',cursor:'pointer'},onClick:function(){p.setView('stock');}},
+              h('td',{style:{padding:'8px 6px'}},
+                h('div',{style:{fontWeight:600}},r.producto_nombre||r.codigo),
+                h('div',{style:{fontSize:10,color:'#64748B'}},r.codigo)
+              ),
+              h('td',{style:{padding:'8px 6px',textAlign:'right',fontWeight:700,color:color}},N(actual)),
+              h('td',{style:{padding:'8px 6px',textAlign:'right',color:'#64748B'}},N(min)),
+              h('td',{style:{padding:'8px 6px',textAlign:'center'}},
+                h('span',{style:{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:color,color:'#fff'}},pct.toFixed(0)+'%')
+              )
+            );
+          }))
+        )
+      )
+    ),
+
+    // ── Tabla últimos movimientos ──
     h('div',{className:'card'},
-      h('div',{className:'card-h'},h('h3',null,'Ultimos movimientos')),
+      h('div',{className:'card-h'},h('h3',null,'📋 Últimos movimientos')),
       h(TBL,{cols:[
         {lbl:'N°',k:'movimiento_id',w:60},{lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},{lbl:'Tipo',render:r=>h(Bg,{c:r.tipo_movimiento==='INGRESO'?'g':r.tipo_movimiento==='SALIDA'?'r':'gray'},r.tipo_movimiento)},
         {lbl:'Bodega',k:'bodega_nombre'},{lbl:'Faena',k:'faena_nombre'},{lbl:'Equipo',k:'equipo_nombre'},
@@ -794,6 +898,19 @@ function KardexView(p){
   const prods=p.m&&Array.isArray(p.m.prods)?p.m.prods:[];
   const bodegas=p.m&&Array.isArray(p.m.bodegas)?p.m.bodegas:[];
   const[pid,setPid]=useState('');const[bid,setBid]=useState('');const[rows,setRows]=useState([]);const[load,setLoad]=useState(false);
+  // Stock consolidado: lista de productos que tienen existencias para mostrar al entrar
+  const[stockList,setStockList]=useState([]);
+  const[loadStock,setLoadStock]=useState(true);
+  const[buscar,setBuscar]=useState('');
+  const[ordenStock,setOrdenStock]=useState({col:'nombre',dir:'asc'});
+  // Cargar lista de productos con stock al entrar
+  useEffect(function(){
+    setLoadStock(true);
+    api('/stock/consolidado','GET',null,p.tok).then(function(r){
+      setStockList(Array.isArray(r)?r:[]);
+    }).catch(function(){}).finally(function(){setLoadStock(false);});
+  },[p.tok]);
+  // Cargar kardex detallado cuando se elige un producto
   useEffect(function(){
     if(!pid)return;
     setLoad(true);
@@ -810,12 +927,91 @@ function KardexView(p){
   },[pid,bid]);
   const prod=prods.find(function(q){return String(q.producto_id)===pid;});
   const last=rows.length?rows[rows.length-1]:null;
+  // Toggle de ordenamiento del catálogo
+  function toggleOrd(col){
+    setOrdenStock(function(o){
+      if(o.col===col)return{col:col,dir:o.dir==='asc'?'desc':'asc'};
+      return{col:col,dir:'asc'};
+    });
+  }
+  // Productos filtrados y ordenados
+  var stockFiltrado=stockList.slice().filter(function(r){
+    if(!buscar)return parseFloat(r.cantidad_total||0)>0;
+    var q=buscar.toLowerCase().trim();
+    var palabras=q.split(/\s+/);
+    var campos=((r.codigo||'')+' '+(r.producto_nombre||'')+' '+(r.subcategoria_nombre||'')+' '+(r.categoria_nombre||'')).toLowerCase();
+    return palabras.every(function(p){return campos.indexOf(p)>=0;});
+  });
+  stockFiltrado.sort(function(a,b){
+    var va,vb;
+    switch(ordenStock.col){
+      case 'codigo': va=(a.codigo||'').toLowerCase();vb=(b.codigo||'').toLowerCase();break;
+      case 'cantidad': va=parseFloat(a.cantidad_total)||0;vb=parseFloat(b.cantidad_total)||0;break;
+      case 'cpp': va=parseFloat(a.costo_promedio)||0;vb=parseFloat(b.costo_promedio)||0;break;
+      case 'valor': va=parseFloat(a.valor_total)||0;vb=parseFloat(b.valor_total)||0;break;
+      default: va=(a.producto_nombre||'').toLowerCase();vb=(b.producto_nombre||'').toLowerCase();
+    }
+    if(va<vb)return ordenStock.dir==='asc'?-1:1;
+    if(va>vb)return ordenStock.dir==='asc'?1:-1;
+    return 0;
+  });
+  var arrOrd=function(c){if(ordenStock.col!==c)return h('span',{style:{color:'#CBD5E1',marginLeft:4,fontSize:9}},'⇅');return h('span',{style:{color:'#1E3A2D',marginLeft:4,fontSize:9,fontWeight:700}},ordenStock.dir==='asc'?'▲':'▼');};
+  var thKarS={padding:'10px 8px',background:'#F1F5F9',color:'#1E3A2D',fontSize:11,fontWeight:700,textAlign:'left',borderBottom:'2px solid #CBD5E1',cursor:'pointer',userSelect:'none',whiteSpace:'nowrap'};
+  var thKarR=Object.assign({},thKarS,{textAlign:'right'});
   return h('div',null,
     h('div',{className:'tb'},
-      h('select',{value:pid,onChange:e=>setPid(e.target.value),style:{minWidth:320}},h('option',{value:''},'Seleccione un producto...'),prods.filter(q=>q.activo).map(q=>h('option',{key:q.producto_id,value:q.producto_id},q.codigo+' - '+q.nombre))),
+      h('select',{value:pid,onChange:e=>setPid(e.target.value),style:{minWidth:320}},h('option',{value:''},'— Ver catálogo de productos con stock —'),prods.filter(q=>q.activo).map(q=>h('option',{key:q.producto_id,value:q.producto_id},q.codigo+' - '+q.nombre))),
       h('select',{value:bid,onChange:e=>setBid(e.target.value),style:{minWidth:180}},h('option',{value:''},'Todas las bodegas'),bodegas.map(b=>h('option',{key:b.bodega_id,value:b.bodega_id},b.nombre))),
+      pid&&h(Btn,{v:'a',sm:true,onClick:function(){setPid('');setRows([]);}},'← Volver al catálogo'),
       pid&&h(Btn,{v:'g',onClick:function(){exportXLSX(rows,[{header:'N° Mov',value:r=>r.movimiento_id},{header:'Tipo',value:r=>r.tipo_movimiento},{header:'Fecha',value:r=>r.fecha},{header:'Bodega',value:r=>r.bodega_nombre},{header:'Faena',value:r=>r.faena_nombre},{header:'Equipo',value:r=>r.equipo_nombre},{header:'Entrada',value:r=>r.entrada||''},{header:'Salida',value:r=>r.salida||''},{header:'Saldo',value:r=>r.saldo},{header:'CPP',value:r=>r.cpp_calc}],'kardex_'+(prod&&prod.codigo||pid));}},null,'Excel')
     ),
+
+    // ── VISTA INICIAL: catálogo de productos con stock ──
+    !pid&&(loadStock?h('div',{className:'spin'},'Cargando productos...'):
+      h('div',null,
+        h('div',{style:{display:'flex',gap:10,alignItems:'center',marginBottom:10,flexWrap:'wrap'}},
+          h('input',{type:'text',value:buscar,onChange:function(e){setBuscar(e.target.value);},placeholder:'Buscar por código, nombre, categoría...',style:{padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:280,flex:1}}),
+          h('span',{style:{fontSize:11,color:'#64748B'}},stockFiltrado.length+' producto(s) con stock')
+        ),
+        h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6,padding:'8px 12px',marginBottom:10,fontSize:11,color:'#1E40AF'}},
+          '💡 Click en cualquier producto para ver su kardex completo (todos los movimientos con saldo y costo).'
+        ),
+        h('div',{className:'card',style:{padding:0,overflowX:'auto'}},
+          stockFiltrado.length===0?h('div',{style:{padding:30,textAlign:'center',color:'#94A3B8',fontSize:12}},buscar?'No hay productos que coincidan con "'+buscar+'"':'No hay productos con stock'):
+          h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+            h('thead',null,h('tr',null,
+              h('th',{style:thKarS,onClick:function(){toggleOrd('codigo');}},'CÓDIGO',arrOrd('codigo')),
+              h('th',{style:thKarS,onClick:function(){toggleOrd('nombre');}},'PRODUCTO',arrOrd('nombre')),
+              h('th',{style:thKarR,onClick:function(){toggleOrd('cantidad');}},'STOCK',arrOrd('cantidad')),
+              h('th',{style:thKarR,onClick:function(){toggleOrd('cpp');}},'CPP',arrOrd('cpp')),
+              h('th',{style:thKarR,onClick:function(){toggleOrd('valor');}},'VALOR TOTAL',arrOrd('valor')),
+              h('th',{style:Object.assign({},thKarS,{cursor:'default',width:100,textAlign:'center'})},'')
+            )),
+            h('tbody',null,stockFiltrado.map(function(r,i){
+              var stockBajo=r.stock_minimo>0&&parseFloat(r.cantidad_total||0)<parseFloat(r.stock_minimo);
+              return h('tr',{key:r.producto_id,style:{borderBottom:'1px solid #E2E8F0',background:stockBajo?'#FEF3C7':(i%2===0?'#fff':'#FAFBFC'),cursor:'pointer',transition:'background 0.15s'},onClick:function(){setPid(String(r.producto_id));}},
+                h('td',{style:{padding:'8px 6px',fontFamily:'Courier New, monospace',fontWeight:600,fontSize:11}},r.codigo||'—'),
+                h('td',{style:{padding:'8px 6px'}},
+                  h('div',{style:{fontWeight:600}},r.producto_nombre||'(sin nombre)'),
+                  r.subcategoria_nombre&&h('div',{style:{fontSize:10,color:'#64748B'}},r.subcategoria_nombre)
+                ),
+                h('td',{style:{padding:'8px 6px',textAlign:'right',fontWeight:700,color:stockBajo?'#B45309':'#1E3A2D'}},
+                  N(r.cantidad_total||0)+' '+(r.unidad_medida||''),
+                  stockBajo&&h('div',{style:{fontSize:9,color:'#B45309'}},'⚠ bajo mín. '+N(r.stock_minimo))
+                ),
+                h('td',{style:{padding:'8px 6px',textAlign:'right',color:'#64748B'}},CLP(r.costo_promedio||0)),
+                h('td',{style:{padding:'8px 6px',textAlign:'right',fontWeight:700,color:'#1E40AF'}},CLP(r.valor_total||0)),
+                h('td',{style:{padding:'8px 6px',textAlign:'center'}},
+                  h('button',{onClick:function(e){e.stopPropagation();setPid(String(r.producto_id));},style:{padding:'4px 10px',background:'#0EA5E9',color:'#fff',border:'none',borderRadius:4,cursor:'pointer',fontSize:10,fontWeight:600,whiteSpace:'nowrap'}},'Ver kardex →')
+                )
+              );
+            }))
+          )
+        )
+      )
+    ),
+
+    // ── VISTA DETALLE: kardex del producto seleccionado ──
     pid&&prod&&h('div',{style:{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap'}},
       h('span',{style:{background:'#DBEAFE',borderRadius:7,padding:'5px 12px',fontSize:13,color:'#1D4ED8'}},h('strong',null,'Producto: '),prod.nombre),
       last&&h('span',{style:{background:'#DCFCE7',borderRadius:7,padding:'5px 12px',fontSize:13,color:'#166534'}},h('strong',null,'Saldo: '),N(last.saldo)+' '+str(prod.unidad_medida)+' @ '+CLP(last.cpp_calc))
