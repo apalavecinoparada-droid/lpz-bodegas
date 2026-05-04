@@ -14,6 +14,7 @@
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 @keyframes loginZoom{0%{transform:scale(1)}100%{transform:scale(1.15)}}
+@keyframes fadeIn{0%{opacity:0;transform:translateY(-8px)}100%{opacity:1;transform:translateY(0)}}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;font-size:14px;background:#F1F4F9;color:#1E293B;height:100vh;overflow:hidden}
 input,select,textarea{font-family:inherit;font-size:13px;padding:7px 10px;border:1px solid #CBD5E1;border-radius:6px;width:100%;background:#fff;outline:none;transition:border .15s}
 input:focus,select:focus{border-color:#2563EB;box-shadow:0 0 0 3px rgba(37,99,235,.12)}
@@ -290,6 +291,88 @@ function LoginPage(p){
 }
 
 // ── DASHBOARD ──
+// ══ ALERTA DE SOLICITUDES PENDIENTES (reutilizable: Desktop + Mobile) ══
+function AlertaSolicitudes(p){
+  var[data,setData]=useState(null);
+  var[cerrada,setCerrada]=useState(false);
+  var[expandida,setExpandida]=useState(false);
+  useEffect(function(){
+    if(!p.tok)return;
+    api('/solicitudes/pendientes-resumen','GET',null,p.tok).then(function(r){setData(r);}).catch(function(){});
+    // Refrescar cada 60 segundos para captar nuevas solicitudes que lleguen mientras está logueado
+    var iv=setInterval(function(){
+      api('/solicitudes/pendientes-resumen','GET',null,p.tok).then(function(r){setData(r);}).catch(function(){});
+    },60000);
+    return function(){clearInterval(iv);};
+  },[p.tok]);
+  if(!data||data.total===0||cerrada)return null;
+  var items=data.items||[];
+  var urgentes=items.filter(function(x){return x.prioridad==='urgente';}).length;
+  var altas=items.filter(function(x){return x.prioridad==='alta';}).length;
+  var fmtFechaCorta=function(s){if(!s)return '';var d=new Date(s);var ahora=new Date();var diff=Math.floor((ahora-d)/(1000*60*60));if(diff<1)return 'hace minutos';if(diff<24)return 'hace '+diff+'h';var dias=Math.floor(diff/24);return 'hace '+dias+(dias===1?' día':' días');};
+  var prioColor=function(pr){return pr==='urgente'?'#DC2626':pr==='alta'?'#EA580C':pr==='normal'?'#0891B2':'#64748B';};
+  var prioLabel=function(pr){return pr==='urgente'?'URGENTE':pr==='alta'?'ALTA':pr==='normal'?'NORMAL':'BAJA';};
+  var mostrar=expandida?items:items.slice(0,3);
+  return h('div',{style:{
+    background:'linear-gradient(135deg, #FEF3C7 0%, #FDE68A 100%)',
+    border:'2px solid #F59E0B',
+    borderRadius:10,
+    padding:14,
+    marginBottom:16,
+    boxShadow:'0 4px 12px rgba(245,158,11,0.20)',
+    position:'relative',
+    animation:'fadeIn 0.4s ease-in'
+  }},
+    // Header
+    h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:items.length?10:0}},
+      h('div',{style:{display:'flex',alignItems:'center',gap:10}},
+        h('div',{style:{fontSize:28}},'🔔'),
+        h('div',null,
+          h('div',{style:{fontSize:15,fontWeight:700,color:'#92400E'}},
+            'Tienes '+data.total+' solicitud'+(data.total>1?'es':'')+' pendiente'+(data.total>1?'s':'')+' por revisar'
+          ),
+          h('div',{style:{fontSize:11,color:'#78350F',marginTop:2}},
+            urgentes>0?h('span',{style:{color:'#DC2626',fontWeight:700,marginRight:8}},'⚡ '+urgentes+' urgente'+(urgentes>1?'s':'')):null,
+            altas>0?h('span',{style:{color:'#EA580C',fontWeight:600,marginRight:8}},'↑ '+altas+' alta'+(altas>1?'s':'')):null,
+            'Como destinatario debes revisar y aprobar/rechazar.'
+          )
+        )
+      ),
+      h('div',{style:{display:'flex',gap:6}},
+        h('button',{onClick:function(){if(p.onIr)p.onIr();},title:'Ir al módulo de solicitudes',style:{padding:'6px 12px',background:'#1E3A2D',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontSize:11,fontWeight:600}},'Ver todas →'),
+        h('button',{onClick:function(){setCerrada(true);},title:'Cerrar alerta (volverá a aparecer al recargar)',style:{padding:'6px 10px',background:'transparent',color:'#92400E',border:'1px solid #92400E',borderRadius:5,cursor:'pointer',fontSize:14,fontWeight:700,lineHeight:1}},'✕')
+      )
+    ),
+    // Lista resumen (top 3)
+    items.length>0&&h('div',{style:{background:'rgba(255,255,255,0.55)',borderRadius:6,padding:8,marginTop:6}},
+      mostrar.map(function(s,i){
+        return h('div',{key:s.solicitud_id,style:{padding:'7px 8px',borderBottom:i<mostrar.length-1?'1px solid rgba(217,119,6,0.20)':'none',display:'flex',alignItems:'center',gap:10}},
+          h('span',{style:{
+            fontSize:9,fontWeight:700,padding:'2px 7px',borderRadius:10,
+            background:prioColor(s.prioridad),color:'#fff',whiteSpace:'nowrap',minWidth:60,textAlign:'center'
+          }},prioLabel(s.prioridad)),
+          h('div',{style:{flex:1,minWidth:0}},
+            h('div',{style:{fontSize:12,color:'#1E293B',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},
+              (s.cantidad>1?s.cantidad+' × ':'')+s.detalle
+            ),
+            h('div',{style:{fontSize:10,color:'#64748B',marginTop:2}},
+              'De: '+s.solicitante_nombre,
+              s.faena_nombre?h('span',null,' · 📍 '+s.faena_nombre):null,
+              s.equipo_codigo?h('span',null,' · 🚜 '+s.equipo_codigo):null
+            )
+          ),
+          h('span',{style:{fontSize:10,color:'#94A3B8',whiteSpace:'nowrap'}},fmtFechaCorta(s.creado_en))
+        );
+      }),
+      items.length>3&&h('div',{style:{textAlign:'center',marginTop:6}},
+        h('button',{onClick:function(){setExpandida(!expandida);},style:{background:'transparent',border:'none',color:'#92400E',fontSize:11,fontWeight:600,cursor:'pointer',padding:'4px 8px'}},
+          expandida?'▲ Mostrar menos':'▼ Ver '+(items.length-3)+' más'
+        )
+      )
+    )
+  );
+}
+
 function Dashboard(p){
   const[stats,setStats]=useState(null);const[movs,setMovs]=useState([]);const[load,setLoad]=useState(true);
   useEffect(function(){
@@ -301,6 +384,7 @@ function Dashboard(p){
   },[p.tok]);
   if(load)return h('div',{className:'spin'},'Cargando...');
   return h('div',null,
+    h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.setView('solicitudes');}}),
     h('div',{className:'kpis'},
       h('div',{className:'kpi kpi-b'},h('div',{className:'kpi-lbl'},'Valor total stock'),h('div',{className:'kpi-val'},CLP(stats&&stats.total||0)),h('div',{className:'kpi-sub'},'Costo promedio ponderado')),
       h('div',{className:'kpi kpi-'+(p.alerts>0?'a':'g'),style:{cursor:'pointer'},onClick:function(){p.setView('stock');}},h('div',{className:'kpi-lbl'},'Alertas stock'),h('div',{className:'kpi-val'},p.alerts),h('div',{className:'kpi-sub'},'Bajo minimo')),
@@ -9860,6 +9944,9 @@ function MobileHome(p){
     h('div',{className:'mob-header'},
       h('h2',null,'Empresas Poo'),
       h('p',null,'Hola, '+(p.user?p.user.nombre:''))),
+    h('div',{style:{padding:'0 10px'}},
+      h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.onNav('solicitudes');}})
+    ),
     h('div',{className:'mob-grid'},
       accesibles.map(function(a){
         return h('button',{key:a.id,className:'mob-btn',onClick:function(){p.onNav(a.id);}},
