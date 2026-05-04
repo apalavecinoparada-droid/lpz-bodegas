@@ -1025,6 +1025,13 @@ function TerrenoView(p){
   var[filtEquipo,setFiltEquipo]=useState('');var[filtMes,setFiltMes]=useState(new Date().toISOString().slice(0,7));
   var[rendimiento,setRendimiento]=useState(null);
   var[showTOB,setShowTOB]=useState(false);
+  // Ordenamiento por columna
+  var[sortBy,setSortBy]=useState('fecha');
+  var[sortDir,setSortDir]=useState('desc');
+  function toggleSort(col){
+    if(sortBy===col){setSortDir(sortDir==='asc'?'desc':'asc');}
+    else{setSortBy(col);setSortDir('asc');}
+  }
   var emptyForm={fecha:new Date().toISOString().slice(0,10),faena_id:'',equipo_id:'',horometro_inicial:'',horometro_final:'',horas_perdidas:0,litros_combustible:0,estanque_id:'',observaciones:'',tob_detalle:[]};
   var[form,setForm]=useState(emptyForm);
   function loadCats(){api('/terreno/tob-categorias','GET',null,p.tok).then(function(r){setTobCats(Array.isArray(r)?r:[]);}).catch(function(){});}
@@ -1126,22 +1133,78 @@ function TerrenoView(p){
       )
     ),
     h('div',{style:{fontSize:12,color:'#64748B',marginBottom:6}},registros.length+' registros'),
-    h('div',{className:'card'},h(TBL,{cols:[
-      {lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},
-      {lbl:'Equipo',render:function(r){return h('div',null,h('strong',{style:{fontSize:11}},r.equipo_codigo),h('div',{style:{fontSize:10,color:'#64748B'}},r.equipo_nombre));}},
-      {lbl:'Faena',render:function(r){return h('span',{style:{fontSize:11}},r.faena_nombre);}},
-      {lbl:'Hor. ini.',r:true,render:function(r){return parseFloat(r.horometro_inicial).toFixed(1);}},
-      {lbl:'Hor. fin',r:true,render:function(r){return parseFloat(r.horometro_final).toFixed(1);}},
-      {lbl:'H. Trab.',r:true,render:function(r){return h('strong',{style:{color:'#166534'}},parseFloat(r.horas_trabajadas).toFixed(1));}},
-      {lbl:'H. Perd.',r:true,render:function(r){var v=parseFloat(r.horas_perdidas)||0;return v>0?h('strong',{style:{color:'#F59E0B'}},v.toFixed(1)):'\u2014';}},
-      {lbl:'Litros',r:true,render:function(r){return parseFloat(r.litros_combustible).toFixed(1);}},
-      {lbl:'Estanque',render:function(r){return r.estanque_codigo?h('span',{style:{fontSize:11}},r.estanque_codigo):'\u2014';}},
-      {lbl:'Rend.',r:true,render:function(r){var h1=parseFloat(r.horas_trabajadas)||0;var l=parseFloat(r.litros_combustible)||0;return h1>0?(l/h1).toFixed(2)+' L/h':'\u2014';}},
-      {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:3}},
-        h('button',{onClick:function(){openEdit(r);},style:{fontSize:10,padding:'2px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'\u270f'),
-        h('button',{onClick:function(){eliminar(r.registro_id);},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'\ud83d\uddd1')
-      );}}
-    ],rows:registros,empty:'Sin registros para el per\u00edodo seleccionado'}))
+    (function(){
+      // Función de ordenamiento
+      var rowsOrd=registros.slice().sort(function(a,b){
+        var va,vb;
+        switch(sortBy){
+          case 'fecha': va=a.fecha||'';vb=b.fecha||'';break;
+          case 'equipo': va=(a.equipo_codigo||'').toLowerCase();vb=(b.equipo_codigo||'').toLowerCase();break;
+          case 'faena': va=(a.faena_nombre||'').toLowerCase();vb=(b.faena_nombre||'').toLowerCase();break;
+          case 'horIni': va=parseFloat(a.horometro_inicial)||0;vb=parseFloat(b.horometro_inicial)||0;break;
+          case 'horFin': va=parseFloat(a.horometro_final)||0;vb=parseFloat(b.horometro_final)||0;break;
+          case 'hTrab': va=parseFloat(a.horas_trabajadas)||0;vb=parseFloat(b.horas_trabajadas)||0;break;
+          case 'hPerd': va=parseFloat(a.horas_perdidas)||0;vb=parseFloat(b.horas_perdidas)||0;break;
+          case 'litros': va=parseFloat(a.litros_combustible)||0;vb=parseFloat(b.litros_combustible)||0;break;
+          case 'estanque': va=(a.estanque_codigo||'').toLowerCase();vb=(b.estanque_codigo||'').toLowerCase();break;
+          case 'rend': var ha=parseFloat(a.horas_trabajadas)||0,la=parseFloat(a.litros_combustible)||0;va=ha>0?la/ha:0;
+                       var hb=parseFloat(b.horas_trabajadas)||0,lb=parseFloat(b.litros_combustible)||0;vb=hb>0?lb/hb:0;break;
+          default: return 0;
+        }
+        if(va<vb)return sortDir==='asc'?-1:1;
+        if(va>vb)return sortDir==='asc'?1:-1;
+        return 0;
+      });
+      // Helper para header clickeable
+      var arrow=function(col){
+        if(sortBy!==col)return h('span',{style:{color:'#CBD5E1',marginLeft:4,fontSize:10}},'⇅');
+        return h('span',{style:{color:'#1E3A2D',marginLeft:4,fontSize:10,fontWeight:700}},sortDir==='asc'?'▲':'▼');
+      };
+      var thS={padding:'10px 8px',background:'#F1F5F9',color:'#1E3A2D',fontSize:11,fontWeight:700,textAlign:'left',borderBottom:'2px solid #CBD5E1',cursor:'pointer',userSelect:'none',whiteSpace:'nowrap'};
+      var thR=Object.assign({},thS,{textAlign:'right'});
+      var thNoSort=Object.assign({},thS,{cursor:'default',background:'#F1F5F9'});
+      var tdS={padding:'8px 6px',borderBottom:'1px solid #E2E8F0',fontSize:11};
+      var tdR=Object.assign({},tdS,{textAlign:'right'});
+      var headerHover={transition:'background 0.15s'};
+      return h('div',{className:'card',style:{padding:0,overflowX:'auto'}},
+        h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+          h('thead',null,h('tr',null,
+            h('th',{style:thS,onClick:function(){toggleSort('fecha');},title:'Click para ordenar por fecha'},'FECHA',arrow('fecha')),
+            h('th',{style:thS,onClick:function(){toggleSort('equipo');},title:'Click para ordenar por equipo'},'EQUIPO',arrow('equipo')),
+            h('th',{style:thS,onClick:function(){toggleSort('faena');},title:'Click para ordenar por faena'},'FAENA',arrow('faena')),
+            h('th',{style:thR,onClick:function(){toggleSort('horIni');},title:'Click para ordenar por horómetro inicial'},'HOR. INI.',arrow('horIni')),
+            h('th',{style:thR,onClick:function(){toggleSort('horFin');},title:'Click para ordenar por horómetro final'},'HOR. FIN',arrow('horFin')),
+            h('th',{style:thR,onClick:function(){toggleSort('hTrab');},title:'Click para ordenar por horas trabajadas'},'H. TRAB.',arrow('hTrab')),
+            h('th',{style:thR,onClick:function(){toggleSort('hPerd');},title:'Click para ordenar por horas perdidas'},'H. PERD.',arrow('hPerd')),
+            h('th',{style:thR,onClick:function(){toggleSort('litros');},title:'Click para ordenar por litros'},'LITROS',arrow('litros')),
+            h('th',{style:thS,onClick:function(){toggleSort('estanque');},title:'Click para ordenar por estanque'},'ESTANQUE',arrow('estanque')),
+            h('th',{style:thR,onClick:function(){toggleSort('rend');},title:'Click para ordenar por rendimiento'},'REND.',arrow('rend')),
+            h('th',{style:thNoSort,width:80},'')
+          )),
+          h('tbody',null,
+            rowsOrd.length===0?h('tr',null,h('td',{colSpan:11,style:{padding:20,textAlign:'center',color:'#94A3B8',fontSize:11}},'Sin registros para el período seleccionado')):
+            rowsOrd.map(function(r,i){
+              return h('tr',{key:r.registro_id||i,style:{background:i%2===0?'#fff':'#FAFBFC'}},
+                h('td',{style:tdS},fmtD(r.fecha)),
+                h('td',{style:tdS},h('div',null,h('strong',{style:{fontSize:11}},r.equipo_codigo),h('div',{style:{fontSize:10,color:'#64748B'}},r.equipo_nombre))),
+                h('td',{style:tdS},h('span',{style:{fontSize:11}},r.faena_nombre)),
+                h('td',{style:tdR},parseFloat(r.horometro_inicial).toFixed(1)),
+                h('td',{style:tdR},parseFloat(r.horometro_final).toFixed(1)),
+                h('td',{style:tdR},h('strong',{style:{color:'#166534'}},parseFloat(r.horas_trabajadas).toFixed(1))),
+                h('td',{style:tdR},(function(){var v=parseFloat(r.horas_perdidas)||0;return v>0?h('strong',{style:{color:'#F59E0B'}},v.toFixed(1)):'\u2014';})()),
+                h('td',{style:tdR},parseFloat(r.litros_combustible).toFixed(1)),
+                h('td',{style:tdS},r.estanque_codigo?h('span',{style:{fontSize:11}},r.estanque_codigo):'\u2014'),
+                h('td',{style:tdR},(function(){var h1=parseFloat(r.horas_trabajadas)||0;var l=parseFloat(r.litros_combustible)||0;return h1>0?(l/h1).toFixed(2)+' L/h':'\u2014';})()),
+                h('td',{style:tdS},h('div',{style:{display:'flex',gap:3}},
+                  h('button',{onClick:function(){openEdit(r);},style:{fontSize:10,padding:'2px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'\u270f'),
+                  h('button',{onClick:function(){eliminar(r.registro_id);},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'\ud83d\uddd1')
+                ))
+              );
+            })
+          )
+        )
+      );
+    })()
   );
 }
 
