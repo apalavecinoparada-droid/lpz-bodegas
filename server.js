@@ -366,6 +366,7 @@ async function autoSetup() {
   await q(`CREATE TABLE IF NOT EXISTS proveedores (proveedor_id SERIAL PRIMARY KEY, rut VARCHAR(12) NOT NULL UNIQUE, nombre VARCHAR(150) NOT NULL, contacto VARCHAR(100), telefono VARCHAR(30), email VARCHAR(100), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
   await q(`ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS direccion VARCHAR(200)`);
   await q(`ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS giro VARCHAR(200)`);
+  await q(`ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS favorito BOOLEAN NOT NULL DEFAULT false`);
   await q(`CREATE TABLE IF NOT EXISTS productos (producto_id SERIAL PRIMARY KEY, codigo VARCHAR(30) NOT NULL UNIQUE, codigo_alternativo VARCHAR(50), nombre VARCHAR(150) NOT NULL, descripcion TEXT, subcategoria_id INT NOT NULL REFERENCES subcategorias(subcategoria_id), unidad_medida VARCHAR(20) NOT NULL DEFAULT 'UN', stock_minimo NUMERIC(12,3) DEFAULT 0, stock_maximo NUMERIC(12,3), costo_referencia NUMERIC(14,2) DEFAULT 0, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW(), modificado_en TIMESTAMP DEFAULT NOW())`);
   await q(`CREATE TABLE IF NOT EXISTS faenas (faena_id SERIAL PRIMARY KEY, codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, descripcion TEXT, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
   await q(`CREATE TABLE IF NOT EXISTS equipos (equipo_id SERIAL PRIMARY KEY, codigo VARCHAR(30) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo VARCHAR(50), faena_id INT REFERENCES faenas(faena_id), patente_serie VARCHAR(50), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
@@ -1209,7 +1210,7 @@ app.post('/api/import/equipos', auth, async(req,res)=>{
 
 // PROVEEDORES con nuevos campos
 const prvR=express.Router();
-prvR.get('/', auth, async(req,res)=>{try{res.json((await pool.query('SELECT * FROM proveedores ORDER BY nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
+prvR.get('/', auth, async(req,res)=>{try{res.json((await pool.query('SELECT * FROM proveedores ORDER BY favorito DESC, nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
 prvR.post('/', auth, async(req,res)=>{
   try{
     const{rut,nombre,contacto,telefono,email,direccion,giro}=req.body;
@@ -1225,6 +1226,7 @@ prvR.put('/:id', auth, async(req,res)=>{
   }catch(e){res.status(400).json({error:e.message});}
 });
 prvR.patch('/:id/activo', auth, async(req,res)=>{try{res.json((await pool.query('UPDATE proveedores SET activo=NOT activo WHERE proveedor_id=$1 RETURNING *',[req.params.id])).rows[0]);}catch(e){res.status(400).json({error:e.message});}});
+prvR.patch('/:id/favorito', auth, async(req,res)=>{try{res.json((await pool.query('UPDATE proveedores SET favorito=NOT favorito WHERE proveedor_id=$1 RETURNING *',[req.params.id])).rows[0]);}catch(e){res.status(400).json({error:e.message});}});
 prvR.delete('/:id', auth, async(req,res)=>{
   try{
     await pool.query('DELETE FROM proveedores WHERE proveedor_id=$1',[req.params.id]);
