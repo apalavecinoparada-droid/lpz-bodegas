@@ -14,6 +14,13 @@ catch(e){console.log('[WARN] pdf-parse no disponible:',e.message);}
 // Usa la API HTTPS de Gmail vía nodemailer
 // Variables requeridas: GMAIL_USER (cuenta gmail), GMAIL_APP_PASSWORD (contraseña de aplicación de 16 chars)
 // Variable opcional: MAIL_FROM_NAME (nombre del remitente, por defecto "Empresas Poo")
+
+// DIAGNÓSTICO: imprimir qué variables Gmail llegan al proceso
+console.log('[DIAG] GMAIL_USER presente:', !!process.env.GMAIL_USER, '| longitud:', (process.env.GMAIL_USER||'').length);
+console.log('[DIAG] GMAIL_APP_PASSWORD presente:', !!process.env.GMAIL_APP_PASSWORD, '| longitud:', (process.env.GMAIL_APP_PASSWORD||'').length);
+console.log('[DIAG] MAIL_FROM_NAME presente:', !!process.env.MAIL_FROM_NAME);
+console.log('[DIAG] Total variables env disponibles:', Object.keys(process.env).filter(function(k){return k.startsWith('GMAIL')||k.startsWith('MAIL_')||k.startsWith('SMTP_')||k==='RESEND_API_KEY';}).join(','));
+
 let mailEnabled=false;
 let mailTransporter=null;
 try{
