@@ -10,40 +10,46 @@ let pdfParse=null;
 try{pdfParse=require('pdf-parse');console.log('[OK] pdf-parse cargado');}
 catch(e){console.log('[WARN] pdf-parse no disponible:',e.message);}
 
-// ── Sistema de envío de correos ──
-// Usa Resend API HTTPS (https://resend.com) — más confiable que SMTP en hostings cloud
-// Variables requeridas: RESEND_API_KEY (api key de resend.com)
-// Variable opcional: MAIL_FROM (remitente, por defecto onboarding@resend.dev)
+// ── Sistema de envío de correos via Gmail SMTP ──
+// Usa la API HTTPS de Gmail vía nodemailer
+// Variables requeridas: GMAIL_USER (cuenta gmail), GMAIL_APP_PASSWORD (contraseña de aplicación de 16 chars)
+// Variable opcional: MAIL_FROM_NAME (nombre del remitente, por defecto "Empresas Poo")
 let mailEnabled=false;
-if(process.env.RESEND_API_KEY){
-  mailEnabled=true;
-  console.log('[OK] Resend API configurada — los correos se enviarán via HTTPS');
-}else{
-  console.log('[INFO] Correos deshabilitados: falta variable RESEND_API_KEY');
-}
-
-// Función helper: envía correo via API HTTPS de Resend
-async function sendMailResend(to,subject,html,text){
-  if(!mailEnabled)return null;
-  const fetch=globalThis.fetch||require('node:https'); // Node 18+ tiene fetch global
-  try{
-    const resp=await globalThis.fetch('https://api.resend.com/emails',{
-      method:'POST',
-      headers:{
-        'Authorization':'Bearer '+process.env.RESEND_API_KEY,
-        'Content-Type':'application/json'
-      },
-      body:JSON.stringify({
-        from:process.env.MAIL_FROM||'Empresas Poo <onboarding@resend.dev>',
-        to:[to],
-        subject:subject,
-        html:html,
-        text:text||subject
-      })
+let mailTransporter=null;
+try{
+  const nodemailer=require('nodemailer');
+  if(process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD){
+    mailTransporter=nodemailer.createTransport({
+      service:'gmail',
+      auth:{
+        user:process.env.GMAIL_USER,
+        pass:process.env.GMAIL_APP_PASSWORD.replace(/\s+/g,'') // remover espacios por si el usuario los pegó
+      }
     });
-    const data=await resp.json();
-    if(!resp.ok)throw new Error(data.message||data.name||('HTTP '+resp.status));
-    return data;
+    mailEnabled=true;
+    // Verificación en background (no bloquea el arranque)
+    mailTransporter.verify(function(err){
+      if(err)console.log('[WARN] Gmail SMTP no responde:',err.message);
+      else console.log('[OK] Gmail SMTP listo — enviando como',process.env.GMAIL_USER);
+    });
+  }else{
+    console.log('[INFO] Correos deshabilitados: faltan variables GMAIL_USER y GMAIL_APP_PASSWORD');
+  }
+}catch(e){console.log('[WARN] nodemailer no disponible:',e.message);}
+
+// Función helper: envía correo via Gmail SMTP
+async function sendMailResend(to,subject,html,text){
+  if(!mailEnabled||!mailTransporter)return null;
+  const fromName=process.env.MAIL_FROM_NAME||'Empresas Poo';
+  try{
+    const info=await mailTransporter.sendMail({
+      from:'"'+fromName+'" <'+process.env.GMAIL_USER+'>',
+      to:to,
+      subject:subject,
+      html:html,
+      text:text||subject
+    });
+    return {id:info.messageId};
   }catch(e){throw e;}
 }
 
