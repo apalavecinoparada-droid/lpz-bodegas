@@ -2316,6 +2316,103 @@ app.patch('/api/comb/movimientos/:id/anular', auth, async(req,res)=>{
   finally{client.release();}
 });
 
+// PUT: Editar un movimiento de combustible
+// Estrategia: revertir stock viejo, aplicar nuevos valores, ajustar stock nuevo
+app.put('/api/comb/movimientos/:id', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const m=await client.query('SELECT * FROM comb_movimientos WHERE mov_id=$1',[req.params.id]);
+    if(!m.rows.length) throw new Error('Movimiento no encontrado');
+    const old=m.rows[0];
+    if(old.estado==='ANULADO') throw new Error('No se puede editar un movimiento anulado');
+    const b=req.body;
+    // Valores nuevos (mantener los viejos si no vienen)
+    const nuevo={
+      empresa_id:b.empresa_id||old.empresa_id,
+      fecha:b.fecha||old.fecha,
+      tipo_id:b.tipo_id||old.tipo_id,
+      estanque_origen_id:b.estanque_origen_id!==undefined?b.estanque_origen_id:old.estanque_origen_id,
+      estanque_destino_id:b.estanque_destino_id!==undefined?b.estanque_destino_id:old.estanque_destino_id,
+      equipo_id:b.equipo_id!==undefined?b.equipo_id:old.equipo_id,
+      faena_id:b.faena_id!==undefined?b.faena_id:old.faena_id,
+      proveedor_id:b.proveedor_id!==undefined?b.proveedor_id:old.proveedor_id,
+      litros:parseFloat(b.litros)||old.litros,
+      precio_unitario:parseFloat(b.precio_unitario)||old.precio_unitario,
+      horometro:b.horometro!==undefined?b.horometro:old.horometro,
+      kilometraje:b.kilometraje!==undefined?b.kilometraje:old.kilometraje,
+      responsable:b.responsable!==undefined?b.responsable:old.responsable,
+      numero_documento:b.numero_documento!==undefined?b.numero_documento:old.numero_documento,
+      observaciones:b.observaciones!==undefined?b.observaciones:old.observaciones
+    };
+    nuevo.costo_total=parseFloat((nuevo.litros*nuevo.precio_unitario).toFixed(2));
+    // 1) Revertir stock con valores VIEJOS
+    if(old.tipo_mov==='INGRESO_STOCK'){
+      await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles-$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[old.litros,old.estanque_destino_id,old.tipo_id]);
+    }else if(old.tipo_mov==='DISTRIBUCION'){
+      await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles+$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[old.litros,old.estanque_origen_id,old.tipo_id]);
+    }else if(old.tipo_mov==='TRASPASO'){
+      await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles+$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[old.litros,old.estanque_origen_id,old.tipo_id]);
+      await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles-$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[old.litros,old.estanque_destino_id,old.tipo_id]);
+    }
+    // 2) Aplicar stock con valores NUEVOS
+    if(old.tipo_mov==='INGRESO_STOCK'){
+      // Asegurar que existe la fila de stock
+      await client.query('INSERT INTO comb_stock(estanque_id,tipo_id,litros_disponibles,costo_promedio,ultima_actualizacion) VALUES($1,$2,0,0,NOW()) ON CONFLICT(estanque_id,tipo_id) DO NOTHING',[nuevo.estanque_destino_id,nuevo.tipo_id]);
+      await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles+$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[nuevo.litros,nuevo.estanque_destino_id,nuevo.tipo_id]);
+    }else if(old.tipo_mov==='DISTRIBUCION'){
+      const stk=await client.query('SELECT litros_disponibles FROM comb_stock WHERE estanque_id=$1 AND tipo_id=$2',[nuevo.estanque_origen_id,nuevo.tipo_id]);
+      if(!stk.rows.length||parseFloat(stk.rows[0].litros_disponibles)<nuevo.litros)throw new Error('Stock insuficiente en estanque origen para los nuevos litros');
+      await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles-$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[nuevo.litros,nuevo.estanque_origen_id,nuevo.tipo_id]);
+    }else if(old.tipo_mov==='TRASPASO'){
+      const stk=await client.query('SELECT litros_disponibles FROM comb_stock WHERE estanque_id=$1 AND tipo_id=$2',[nuevo.estanque_origen_id,nuevo.tipo_id]);
+      if(!stk.rows.length||parseFloat(stk.rows[0].litros_disponibles)<nuevo.litros)throw new Error('Stock insuficiente en estanque origen para los nuevos litros');
+      await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles-$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[nuevo.litros,nuevo.estanque_origen_id,nuevo.tipo_id]);
+      await client.query('INSERT INTO comb_stock(estanque_id,tipo_id,litros_disponibles,costo_promedio,ultima_actualizacion) VALUES($1,$2,0,0,NOW()) ON CONFLICT(estanque_id,tipo_id) DO NOTHING',[nuevo.estanque_destino_id,nuevo.tipo_id]);
+      await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles+$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[nuevo.litros,nuevo.estanque_destino_id,nuevo.tipo_id]);
+    }
+    // 3) Actualizar el movimiento
+    const upd=await client.query(`UPDATE comb_movimientos SET
+      empresa_id=$1,fecha=$2,tipo_id=$3,estanque_origen_id=$4,estanque_destino_id=$5,
+      equipo_id=$6,faena_id=$7,proveedor_id=$8,litros=$9,precio_unitario=$10,costo_total=$11,
+      horometro=$12,kilometraje=$13,responsable=$14,numero_documento=$15,observaciones=$16
+      WHERE mov_id=$17 RETURNING *`,
+      [nuevo.empresa_id,nuevo.fecha,nuevo.tipo_id,nuevo.estanque_origen_id,nuevo.estanque_destino_id,
+       nuevo.equipo_id,nuevo.faena_id,nuevo.proveedor_id,nuevo.litros,nuevo.precio_unitario,nuevo.costo_total,
+       nuevo.horometro,nuevo.kilometraje,nuevo.responsable,nuevo.numero_documento,nuevo.observaciones,req.params.id]);
+    await client.query('COMMIT');
+    res.json(upd.rows[0]);
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// DELETE: Eliminar permanentemente un movimiento (solo si no genera inconsistencias)
+// Estrategia segura: revertir stock y borrar la fila físicamente
+app.delete('/api/comb/movimientos/:id', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const m=await client.query('SELECT * FROM comb_movimientos WHERE mov_id=$1',[req.params.id]);
+    if(!m.rows.length) throw new Error('Movimiento no encontrado');
+    const mov=m.rows[0];
+    // Revertir stock si está activo
+    if(mov.estado==='ACTIVO'){
+      if(mov.tipo_mov==='INGRESO_STOCK'){
+        await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles-$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[mov.litros,mov.estanque_destino_id,mov.tipo_id]);
+      }else if(mov.tipo_mov==='DISTRIBUCION'){
+        await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles+$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[mov.litros,mov.estanque_origen_id,mov.tipo_id]);
+      }else if(mov.tipo_mov==='TRASPASO'){
+        await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles+$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[mov.litros,mov.estanque_origen_id,mov.tipo_id]);
+        await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles-$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[mov.litros,mov.estanque_destino_id,mov.tipo_id]);
+      }
+    }
+    await client.query('DELETE FROM comb_movimientos WHERE mov_id=$1',[req.params.id]);
+    await client.query('COMMIT');
+    res.json({ok:true,deleted:req.params.id});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
 // Reporte kardex por estanque
 app.get('/api/comb/kardex', auth, async(req,res)=>{
   try{
