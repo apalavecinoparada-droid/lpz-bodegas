@@ -5445,7 +5445,9 @@ function CombMovForm(p){
   function total(){return (parseFloat(form.litros)||0)*(parseFloat(form.precio_unitario)||0);}
   function save(){
     setErr('');setSaving(true);
-    api('/comb/'+p.endpoint,'POST',form,p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
+    var url=p.editId?('/comb/movimientos/'+p.editId):('/comb/'+p.endpoint);
+    var method=p.editId?'PUT':'POST';
+    api(url,method,form,p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
   }
   const estFiltOrigen=form.empresa_id?estanques.filter(function(e){return !e.empresa_id||String(e.empresa_id)===String(form.empresa_id);}):estanques;
   const faenasFilt=form.empresa_id?faenas.filter(function(f){return String(f.empresa_id)===String(form.empresa_id);}):faenas;
@@ -5489,6 +5491,7 @@ function CombMovView(p){
   // Generic list view for any comb movement type
   const[movs,setMovs]=useState([]);const[load,setLoad]=useState(true);
   const[modal,setModal]=useState(false);const[anularId,setAnularId]=useState(null);const[motivo,setMotivo]=useState('');
+  const[editing,setEditing]=useState(null);
   const[filtDesde,setFiltDesde]=useState('');const[filtHasta,setFiltHasta]=useState('');
   const[filtEmp,setFiltEmp]=useState('');const[filtTipo,setFiltTipo]=useState('');
   const empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
@@ -5505,9 +5508,27 @@ function CombMovView(p){
   function confirmAnular(){
     api('/comb/movimientos/'+anularId+'/anular','PATCH',{motivo:motivo||'Sin motivo'},p.tok).then(function(){setAnularId(null);load2();}).catch(function(ex){alert(ex.message);});
   }
+  function eliminar(id){
+    if(!confirm('¿Eliminar este registro permanentemente? Se reversará el stock automáticamente. Esta acción NO se puede deshacer.'))return;
+    api('/comb/movimientos/'+id,'DELETE',null,p.tok).then(function(){load2();}).catch(function(ex){alert('Error: '+ex.message);});
+  }
+  function editar(row){
+    // Formatear fecha para input date (YYYY-MM-DD)
+    var defaults=Object.assign({},row);
+    if(defaults.fecha)defaults.fecha=String(defaults.fecha).substring(0,10);
+    setEditing(defaults);
+  }
   function exportar(){
     exportXLSX(movs,p.exCols||[{header:'Fecha',value:function(r){return fmtD(r.fecha);}},{header:'Combustible',value:function(r){return r.tipo_nombre;}},{header:'Litros',value:function(r){return r.litros;}},{header:'Empresa',value:function(r){return r.empresa_nombre;}},{header:'Proveedor',value:function(r){return r.proveedor_nombre;}},{header:'Equipo',value:function(r){return r.equipo_nombre;}},{header:'Faena',value:function(r){return r.faena_nombre;}},{header:'N° Doc',value:function(r){return r.numero_documento;}},{header:'Precio Unit',value:function(r){return r.precio_unitario;}},{header:'Total',value:function(r){return r.costo_total;}},{header:'Horómetro',value:function(r){return r.horometro;}},{header:'Kilometraje',value:function(r){return r.kilometraje;}},{header:'Responsable',value:function(r){return r.responsable;}},{header:'Usuario',value:function(r){return r.usuario;}}],p.exFile||'combustibles');
   }
+  // Agregar columna de acciones a las columnas que vienen como prop
+  var colsConAcciones=(p.cols||[]).concat([{lbl:'Acciones',render:function(r){
+    if(r.estado==='ANULADO')return h('span',{style:{fontSize:10,color:'#94A3B8'}},'anulado');
+    return h('div',{style:{display:'flex',gap:4}},
+      h('button',{onClick:function(){editar(r);},title:'Editar',style:{padding:'4px 8px',fontSize:11,background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:4,cursor:'pointer',color:'#1E40AF'}},'✏'),
+      h('button',{onClick:function(){eliminar(r.mov_id);},title:'Eliminar',style:{padding:'4px 8px',fontSize:11,background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:4,cursor:'pointer',color:'#DC2626'}},'🗑')
+    );
+  }}]);
   return h('div',null,
     h('div',{style:{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap',alignItems:'center'}},
       h(Btn,{onClick:function(){setModal(true);}},p.btnLabel||'+ Nuevo'),
@@ -5519,9 +5540,12 @@ function CombMovView(p){
       h('div',{style:{fontSize:12,color:'#64748B',marginLeft:'auto'}},movs.length+' registro(s)')
     ),
     load?h('div',{className:'spin'},'Cargando...'):
-    h('div',{className:'card'},h(TBL,{cols:p.cols,rows:movs,empty:'Sin registros'})),
+    h('div',{className:'card'},h(TBL,{cols:colsConAcciones,rows:movs,empty:'Sin registros'})),
     modal&&h(Modal,{title:p.modalTitle||'Nuevo Registro',onClose:function(){setModal(false);},lg:true},
       h(CombMovForm,{m:p.m,tok:p.tok,endpoint:p.endpoint,campos:p.campos,onClose:function(){setModal(false);},onSave:function(){setModal(false);load2();}})
+    ),
+    editing&&h(Modal,{title:'Editar Movimiento',onClose:function(){setEditing(null);},lg:true},
+      h(CombMovForm,{m:p.m,tok:p.tok,endpoint:p.endpoint,campos:p.campos,defaults:editing,editId:editing.mov_id,onClose:function(){setEditing(null);},onSave:function(){setEditing(null);load2();}})
     ),
     anularId&&h(Modal,{title:'Anular Movimiento',onClose:function(){setAnularId(null);}},
       h(EB,null,
