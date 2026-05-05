@@ -12,14 +12,9 @@ catch(e){console.log('[WARN] pdf-parse no disponible:',e.message);}
 
 // ── Sistema de envío de correos via Brevo API HTTPS ──
 // Brevo (ex Sendinblue) permite enviar 300 mails/día gratis a cualquier destinatario
-// vía API HTTPS (puerto 443) — no bloquead@ por Railway
+// vía API HTTPS (puerto 443) — no bloqueado por Railway
 // Variables requeridas: BREVO_API_KEY, MAIL_FROM_EMAIL (debe ser un sender verificado en Brevo)
 // Variable opcional: MAIL_FROM_NAME (nombre, por defecto "Empresas Poo")
-
-// DIAGNÓSTICO opcional
-console.log('[DIAG] BREVO_API_KEY presente:', !!process.env.BREVO_API_KEY, '| longitud:', (process.env.BREVO_API_KEY||'').length);
-console.log('[DIAG] MAIL_FROM_EMAIL presente:', !!process.env.MAIL_FROM_EMAIL);
-console.log('[DIAG] MAIL_FROM_NAME presente:', !!process.env.MAIL_FROM_NAME);
 
 let mailEnabled=false;
 if(process.env.BREVO_API_KEY && process.env.MAIL_FROM_EMAIL){
