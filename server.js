@@ -112,7 +112,7 @@ async function enviarMailSolicitudCreada(solicitudId){
 </body></html>`;
 
     const info=await mailTransporter.sendMail({
-      from:'"Empresas Poo" <'+process.env.SMTP_USER+'>',
+      from:process.env.MAIL_FROM||'"Empresas Poo" <onboarding@resend.dev>',
       to:s.dest_email,
       subject:`[${prioLabel}] Nueva solicitud: ${(s.detalle||'').substring(0,60)}`,
       html:html,
