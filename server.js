@@ -10,32 +10,47 @@ let pdfParse=null;
 try{pdfParse=require('pdf-parse');console.log('[OK] pdf-parse cargado');}
 catch(e){console.log('[WARN] pdf-parse no disponible:',e.message);}
 
-// ── Sistema de envío de correos (SMTP) ──
-let nodemailer=null;let mailTransporter=null;
-try{
-  nodemailer=require('nodemailer');
-  if(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS){
-    mailTransporter=nodemailer.createTransport({
-      host:process.env.SMTP_HOST,
-      port:parseInt(process.env.SMTP_PORT)||465,
-      secure:(parseInt(process.env.SMTP_PORT)||465)===465, // true para 465 (SSL), false para 587 (STARTTLS)
-      auth:{user:process.env.SMTP_USER,pass:process.env.SMTP_PASS},
-      tls:{rejectUnauthorized:false} // tolera certs auto-firmados de hosting compartido
+// ── Sistema de envío de correos ──
+// Usa Resend API HTTPS (https://resend.com) — más confiable que SMTP en hostings cloud
+// Variables requeridas: RESEND_API_KEY (api key de resend.com)
+// Variable opcional: MAIL_FROM (remitente, por defecto onboarding@resend.dev)
+let mailEnabled=false;
+if(process.env.RESEND_API_KEY){
+  mailEnabled=true;
+  console.log('[OK] Resend API configurada — los correos se enviarán via HTTPS');
+}else{
+  console.log('[INFO] Correos deshabilitados: falta variable RESEND_API_KEY');
+}
+
+// Función helper: envía correo via API HTTPS de Resend
+async function sendMailResend(to,subject,html,text){
+  if(!mailEnabled)return null;
+  const fetch=globalThis.fetch||require('node:https'); // Node 18+ tiene fetch global
+  try{
+    const resp=await globalThis.fetch('https://api.resend.com/emails',{
+      method:'POST',
+      headers:{
+        'Authorization':'Bearer '+process.env.RESEND_API_KEY,
+        'Content-Type':'application/json'
+      },
+      body:JSON.stringify({
+        from:process.env.MAIL_FROM||'Empresas Poo <onboarding@resend.dev>',
+        to:[to],
+        subject:subject,
+        html:html,
+        text:text||subject
+      })
     });
-    // Verificación opcional al iniciar (no bloquea el arranque del servidor si falla)
-    mailTransporter.verify(function(err){
-      if(err)console.log('[WARN] SMTP no responde:',err.message);
-      else console.log('[OK] SMTP listo para enviar correos via',process.env.SMTP_HOST);
-    });
-  }else{
-    console.log('[INFO] SMTP deshabilitado: faltan variables SMTP_HOST/SMTP_USER/SMTP_PASS');
-  }
-}catch(e){console.log('[WARN] nodemailer no disponible:',e.message);}
+    const data=await resp.json();
+    if(!resp.ok)throw new Error(data.message||data.name||('HTTP '+resp.status));
+    return data;
+  }catch(e){throw e;}
+}
 
 // Función helper: envía correo de notificación de nueva solicitud
-// Si SMTP no está configurado o falla, no bloquea la creación de la solicitud
+// Si Resend no está configurado o falla, no bloquea la creación de la solicitud
 async function enviarMailSolicitudCreada(solicitudId){
-  if(!mailTransporter){return;} // SMTP no configurado: salir silenciosamente
+  if(!mailEnabled){return;} // Resend no configurado: salir silenciosamente
   try{
     // Traer datos completos de la solicitud + destinatario + solicitante + faena/equipo
     const r=await pool.query(`
@@ -111,14 +126,13 @@ async function enviarMailSolicitudCreada(solicitudId){
   </div>
 </body></html>`;
 
-    const info=await mailTransporter.sendMail({
-      from:process.env.MAIL_FROM||'"Empresas Poo" <onboarding@resend.dev>',
-      to:s.dest_email,
-      subject:`[${prioLabel}] Nueva solicitud: ${(s.detalle||'').substring(0,60)}`,
-      html:html,
-      text:`Nueva solicitud de ${s.sol_nombre}: ${s.detalle}\nPrioridad: ${prioLabel}\nVer en: ${linkSolicitud}`
-    });
-    console.log('[OK] Mail enviado a',s.dest_email,'(solicitud #'+s.solicitud_id+', msgId:',info.messageId+')');
+    const info=await sendMailResend(
+      s.dest_email,
+      `[${prioLabel}] Nueva solicitud: ${(s.detalle||'').substring(0,60)}`,
+      html,
+      `Nueva solicitud de ${s.sol_nombre}: ${s.detalle}\nPrioridad: ${prioLabel}\nVer en: ${linkSolicitud}`
+    );
+    console.log('[OK] Mail enviado a',s.dest_email,'(solicitud #'+s.solicitud_id+', id:',(info&&info.id)+')');
   }catch(e){
     console.log('[WARN] Error enviando mail solicitud',solicitudId+':',e.message);
     // NO se propaga el error: la solicitud ya se creó, el mail es secundario
