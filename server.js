@@ -10,53 +10,49 @@ let pdfParse=null;
 try{pdfParse=require('pdf-parse');console.log('[OK] pdf-parse cargado');}
 catch(e){console.log('[WARN] pdf-parse no disponible:',e.message);}
 
-// ── Sistema de envío de correos via Gmail SMTP ──
-// Usa la API HTTPS de Gmail vía nodemailer
-// Variables requeridas: GMAIL_USER (cuenta gmail), GMAIL_APP_PASSWORD (contraseña de aplicación de 16 chars)
-// Variable opcional: MAIL_FROM_NAME (nombre del remitente, por defecto "Empresas Poo")
+// ── Sistema de envío de correos via Brevo API HTTPS ──
+// Brevo (ex Sendinblue) permite enviar 300 mails/día gratis a cualquier destinatario
+// vía API HTTPS (puerto 443) — no bloquead@ por Railway
+// Variables requeridas: BREVO_API_KEY, MAIL_FROM_EMAIL (debe ser un sender verificado en Brevo)
+// Variable opcional: MAIL_FROM_NAME (nombre, por defecto "Empresas Poo")
 
-// DIAGNÓSTICO: imprimir qué variables Gmail llegan al proceso
-console.log('[DIAG] GMAIL_USER presente:', !!process.env.GMAIL_USER, '| longitud:', (process.env.GMAIL_USER||'').length);
-console.log('[DIAG] GMAIL_APP_PASSWORD presente:', !!process.env.GMAIL_APP_PASSWORD, '| longitud:', (process.env.GMAIL_APP_PASSWORD||'').length);
+// DIAGNÓSTICO opcional
+console.log('[DIAG] BREVO_API_KEY presente:', !!process.env.BREVO_API_KEY, '| longitud:', (process.env.BREVO_API_KEY||'').length);
+console.log('[DIAG] MAIL_FROM_EMAIL presente:', !!process.env.MAIL_FROM_EMAIL);
 console.log('[DIAG] MAIL_FROM_NAME presente:', !!process.env.MAIL_FROM_NAME);
-console.log('[DIAG] Total variables env disponibles:', Object.keys(process.env).filter(function(k){return k.startsWith('GMAIL')||k.startsWith('MAIL_')||k.startsWith('SMTP_')||k==='RESEND_API_KEY';}).join(','));
 
 let mailEnabled=false;
-let mailTransporter=null;
-try{
-  const nodemailer=require('nodemailer');
-  if(process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD){
-    mailTransporter=nodemailer.createTransport({
-      service:'gmail',
-      auth:{
-        user:process.env.GMAIL_USER,
-        pass:process.env.GMAIL_APP_PASSWORD.replace(/\s+/g,'') // remover espacios por si el usuario los pegó
-      }
-    });
-    mailEnabled=true;
-    // Verificación en background (no bloquea el arranque)
-    mailTransporter.verify(function(err){
-      if(err)console.log('[WARN] Gmail SMTP no responde:',err.message);
-      else console.log('[OK] Gmail SMTP listo — enviando como',process.env.GMAIL_USER);
-    });
-  }else{
-    console.log('[INFO] Correos deshabilitados: faltan variables GMAIL_USER y GMAIL_APP_PASSWORD');
-  }
-}catch(e){console.log('[WARN] nodemailer no disponible:',e.message);}
+if(process.env.BREVO_API_KEY && process.env.MAIL_FROM_EMAIL){
+  mailEnabled=true;
+  console.log('[OK] Brevo API configurada — enviando como',process.env.MAIL_FROM_EMAIL);
+}else{
+  console.log('[INFO] Correos deshabilitados: faltan variables BREVO_API_KEY y/o MAIL_FROM_EMAIL');
+}
 
-// Función helper: envía correo via Gmail SMTP
+// Función helper: envía correo via API HTTPS de Brevo
 async function sendMailResend(to,subject,html,text){
-  if(!mailEnabled||!mailTransporter)return null;
+  if(!mailEnabled)return null;
   const fromName=process.env.MAIL_FROM_NAME||'Empresas Poo';
+  const fromEmail=process.env.MAIL_FROM_EMAIL;
   try{
-    const info=await mailTransporter.sendMail({
-      from:'"'+fromName+'" <'+process.env.GMAIL_USER+'>',
-      to:to,
-      subject:subject,
-      html:html,
-      text:text||subject
+    const resp=await globalThis.fetch('https://api.brevo.com/v3/smtp/email',{
+      method:'POST',
+      headers:{
+        'api-key':process.env.BREVO_API_KEY,
+        'Content-Type':'application/json',
+        'Accept':'application/json'
+      },
+      body:JSON.stringify({
+        sender:{name:fromName,email:fromEmail},
+        to:[{email:to}],
+        subject:subject,
+        htmlContent:html,
+        textContent:text||subject
+      })
     });
-    return {id:info.messageId};
+    const data=await resp.json();
+    if(!resp.ok)throw new Error(data.message||data.code||('HTTP '+resp.status));
+    return {id:data.messageId};
   }catch(e){throw e;}
 }
 
