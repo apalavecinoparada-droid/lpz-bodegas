@@ -10,6 +10,126 @@ let pdfParse=null;
 try{pdfParse=require('pdf-parse');console.log('[OK] pdf-parse cargado');}
 catch(e){console.log('[WARN] pdf-parse no disponible:',e.message);}
 
+// ── Sistema de envío de correos (SMTP) ──
+let nodemailer=null;let mailTransporter=null;
+try{
+  nodemailer=require('nodemailer');
+  if(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS){
+    mailTransporter=nodemailer.createTransport({
+      host:process.env.SMTP_HOST,
+      port:parseInt(process.env.SMTP_PORT)||465,
+      secure:(parseInt(process.env.SMTP_PORT)||465)===465, // true para 465 (SSL), false para 587 (STARTTLS)
+      auth:{user:process.env.SMTP_USER,pass:process.env.SMTP_PASS},
+      tls:{rejectUnauthorized:false} // tolera certs auto-firmados de hosting compartido
+    });
+    // Verificación opcional al iniciar (no bloquea el arranque del servidor si falla)
+    mailTransporter.verify(function(err){
+      if(err)console.log('[WARN] SMTP no responde:',err.message);
+      else console.log('[OK] SMTP listo para enviar correos via',process.env.SMTP_HOST);
+    });
+  }else{
+    console.log('[INFO] SMTP deshabilitado: faltan variables SMTP_HOST/SMTP_USER/SMTP_PASS');
+  }
+}catch(e){console.log('[WARN] nodemailer no disponible:',e.message);}
+
+// Función helper: envía correo de notificación de nueva solicitud
+// Si SMTP no está configurado o falla, no bloquea la creación de la solicitud
+async function enviarMailSolicitudCreada(solicitudId){
+  if(!mailTransporter){return;} // SMTP no configurado: salir silenciosamente
+  try{
+    // Traer datos completos de la solicitud + destinatario + solicitante + faena/equipo
+    const r=await pool.query(`
+      SELECT s.*, 
+             dest.email AS dest_email, dest.nombre AS dest_nombre,
+             sol.nombre AS sol_nombre,
+             emp.razon_social AS empresa_nombre,
+             f.nombre AS faena_nombre,
+             eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
+             sc.nombre AS subcategoria_nombre
+      FROM solicitudes s
+      JOIN usuarios dest ON s.dirigida_a_id = dest.usuario_id
+      JOIN usuarios sol  ON s.solicitante_id = sol.usuario_id
+      LEFT JOIN empresas emp ON s.empresa_id = emp.empresa_id
+      LEFT JOIN faenas f ON s.faena_id = f.faena_id
+      LEFT JOIN equipos eq ON s.equipo_id = eq.equipo_id
+      LEFT JOIN subcategorias sc ON s.subcategoria_id = sc.subcategoria_id
+      WHERE s.solicitud_id=$1
+    `,[solicitudId]);
+    if(!r.rows.length)return;
+    const s=r.rows[0];
+    if(!s.dest_email){console.log('[INFO] Solicitud',solicitudId,'sin email de destinatario');return;}
+
+    // Color y label de prioridad
+    const prioColors={urgente:'#DC2626',alta:'#EA580C',normal:'#0891B2',baja:'#64748B'};
+    const prioLabel=(s.prioridad||'normal').toUpperCase();
+    const prioColor=prioColors[s.prioridad]||'#64748B';
+
+    // Link al sistema (lo más probable es que sea Railway)
+    const baseUrl=process.env.PUBLIC_URL||'https://empresaspoo.up.railway.app';
+    const linkSolicitud=baseUrl+'/?view=solicitudes';
+
+    // Cuerpo HTML con diseño branded
+    const html=`<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#F1F5F9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <div style="max-width:600px;margin:20px auto;background:#fff;border-radius:8px;overflow:hidden;border:1px solid #E2E8F0;">
+    <div style="background:#1E3A2D;padding:20px 24px;color:#FCD34D;">
+      <div style="font-size:13px;opacity:0.85;">Empresas Poo · Sistema de gestión</div>
+      <div style="font-size:18px;font-weight:600;margin-top:4px;color:#fff;">Nueva solicitud pendiente de revisión</div>
+    </div>
+    <div style="padding:22px 24px;color:#1E293B;">
+      <div style="font-size:14px;color:#475569;margin-bottom:14px;">Hola ${escapeHtml(s.dest_nombre||'')},</div>
+      <div style="font-size:14px;color:#475569;line-height:1.6;margin-bottom:18px;">
+        <strong>${escapeHtml(s.sol_nombre||'Un usuario')}</strong> te envió una solicitud que requiere tu revisión.
+      </div>
+      <div style="background:#FEF3C7;border:1px solid #FCD34D;border-radius:6px;padding:14px;margin-bottom:18px;">
+        <div style="margin-bottom:8px;">
+          <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:10px;background:${prioColor};color:#fff;">${prioLabel}</span>
+          <span style="font-size:12px;color:#92400E;margin-left:8px;">Solicitud #${s.solicitud_id}</span>
+        </div>
+        <div style="font-size:15px;font-weight:600;color:#1E293B;margin-bottom:6px;">
+          ${(parseFloat(s.cantidad)||1)>1?(parseFloat(s.cantidad).toFixed(0)+' × '):''}${escapeHtml(s.detalle||'')}
+        </div>
+        ${s.observacion?`<div style="font-size:12px;color:#475569;line-height:1.6;margin-top:6px;">${escapeHtml(s.observacion)}</div>`:''}
+      </div>
+      <table style="width:100%;font-size:13px;border-collapse:collapse;margin-bottom:20px;">
+        <tr><td style="color:#94A3B8;padding:5px 0;">Solicitante</td><td style="text-align:right;padding:5px 0;color:#1E293B;font-weight:500;">${escapeHtml(s.sol_nombre||'')}</td></tr>
+        ${s.empresa_nombre?`<tr><td style="color:#94A3B8;padding:5px 0;">Empresa</td><td style="text-align:right;padding:5px 0;">${escapeHtml(s.empresa_nombre)}</td></tr>`:''}
+        ${s.faena_nombre?`<tr><td style="color:#94A3B8;padding:5px 0;">Faena</td><td style="text-align:right;padding:5px 0;">${escapeHtml(s.faena_nombre)}</td></tr>`:''}
+        ${s.equipo_codigo?`<tr><td style="color:#94A3B8;padding:5px 0;">Equipo</td><td style="text-align:right;padding:5px 0;">${escapeHtml(s.equipo_codigo)} — ${escapeHtml(s.equipo_nombre||'')}</td></tr>`:''}
+        ${s.subcategoria_nombre?`<tr><td style="color:#94A3B8;padding:5px 0;">Categoría</td><td style="text-align:right;padding:5px 0;">${escapeHtml(s.subcategoria_nombre)}</td></tr>`:''}
+        <tr><td style="color:#94A3B8;padding:5px 0;">Fecha</td><td style="text-align:right;padding:5px 0;">${new Date(s.creado_en).toLocaleString('es-CL')}</td></tr>
+      </table>
+      <div style="text-align:center;margin:20px 0 8px;">
+        <a href="${linkSolicitud}" style="display:inline-block;background:#1E3A2D;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-size:14px;font-weight:600;">Ver solicitud en el sistema →</a>
+      </div>
+    </div>
+    <div style="background:#F8FAFC;padding:14px 24px;border-top:1px solid #E2E8F0;font-size:11px;color:#94A3B8;text-align:center;line-height:1.5;">
+      Este correo se envió automáticamente desde contacto@empresaspoo.cl<br>
+      No respondas a este correo · empresaspoo.up.railway.app
+    </div>
+  </div>
+</body></html>`;
+
+    const info=await mailTransporter.sendMail({
+      from:'"Empresas Poo" <'+process.env.SMTP_USER+'>',
+      to:s.dest_email,
+      subject:`[${prioLabel}] Nueva solicitud: ${(s.detalle||'').substring(0,60)}`,
+      html:html,
+      text:`Nueva solicitud de ${s.sol_nombre}: ${s.detalle}\nPrioridad: ${prioLabel}\nVer en: ${linkSolicitud}`
+    });
+    console.log('[OK] Mail enviado a',s.dest_email,'(solicitud #'+s.solicitud_id+', msgId:',info.messageId+')');
+  }catch(e){
+    console.log('[WARN] Error enviando mail solicitud',solicitudId+':',e.message);
+    // NO se propaga el error: la solicitud ya se creó, el mail es secundario
+  }
+}
+
+function escapeHtml(str){
+  if(str===null||str===undefined)return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
 const app        = express();
 const PORT       = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'lpz_bodegas_secret_2025';
@@ -3848,8 +3968,8 @@ async function setupRendiciones(q){
       const cats=[
         'MONITOREO Y/O PARALIZACIÓN FORMIN','DETENIDO POR PASO DE VEHÍCULOS','DETENIDO POR CARGUÍO DE CAMIONES',
         'CLIMA Y/O INCENDIO DETIENE OPERACIÓN','ATOCHAMIENTO EN CANCHA','ATRASO INICIO O SALIDA TEMPRANA DE FAENA',
-        'CONTROL A FAENA','FALTA DE PERSONAL','CHARLA, CAPACITACIONES O REUNIONES','PUESTA EN MARCHA',
-        'BAÑO OPERADOR','MANTENCIÓN PROGRAMADA','CARGA COMBUSTIBLE O ACEITE','FALLA EQUIPO',
+        'CONTROL A FAENA','FALTA DE PERSONAL','DETENIDO POR FALTA DE ASISTENCIA','CHARLA, CAPACITACIONES O REUNIONES',
+        'PUESTA EN MARCHA','BAÑO OPERADOR','MANTENCIÓN PROGRAMADA','CARGA COMBUSTIBLE O ACEITE','FALLA EQUIPO',
         'TRASLADO DE FUNDO','DETENIDO POR FALTA DE VOLTEO','DETENIDO POR FALTA DE ORDENAMIENTO',
         'TRASLADO DENTRO FAENA','DETENIDO POR FALTA DE MADEREO','CAMBIO DE CADENA O ESPADA',
         'MEDICIÓN DE LARGO DE TROZOS','OTROS'
@@ -4369,12 +4489,16 @@ app.post('/api/solicitudes', auth, async(req,res)=>{
           [empresa_id||null,req.user.id,dirigida_a_id,parseFloat(l.cantidad)||1,l.detalle,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,l.prioridad||prioridad||'normal',l.observacion||null,req.user.email]);
         results.push(r.rows[0]);
       }
+      // Enviar correos en background (no bloquea la respuesta)
+      results.forEach(function(row){enviarMailSolicitudCreada(row.solicitud_id);});
       return res.status(201).json({ok:true,count:results.length});
     }
     // Single line
     if(!detalle) return res.status(400).json({error:'Detalle es obligatorio'});
     const r=await pool.query('INSERT INTO solicitudes(empresa_id,solicitante_id,dirigida_a_id,cantidad,detalle,subcategoria_id,faena_id,equipo_id,prioridad,observacion,usuario_creador) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',
       [empresa_id||null,req.user.id,dirigida_a_id,parseFloat(cantidad)||1,detalle,subcategoria_id||null,faena_id||null,equipo_id||null,prioridad||'normal',observacion||null,req.user.email]);
+    // Enviar correo en background (no bloquea la respuesta)
+    enviarMailSolicitudCreada(r.rows[0].solicitud_id);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
