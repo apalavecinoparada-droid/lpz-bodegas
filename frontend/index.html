@@ -10667,7 +10667,9 @@ function MobileRendiciones(p){
 // ── Formulario de TERRENO móvil — para operadores de maquinaria ──
 function MobileTerreno(p){
   var faenas=p.m.faenas||[];
-  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo&&!e.es_transporte&&(e.tipo_cargo==='maquinaria'||!e.tipo_cargo);});
+  // Incluir maquinaria Y vehículos (los que usan odómetro/km)
+  var TIPOS_TERRENO=['maquinaria','camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'];
+  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo&&!e.es_transporte&&(TIPOS_TERRENO.indexOf(e.tipo_cargo||'maquinaria')>=0);});
   var estanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
   var[msg,setMsg]=useState('');
   var[saved,setSaved]=useState(false);
@@ -10730,26 +10732,54 @@ function MobileTerreno(p){
     h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Registro Terreno')),
     h('div',{className:'mob-form',style:{paddingBottom:40}},
       msg&&h('div',{className:'al al-e',style:{marginBottom:10}},msg),
-      F('Equipo *',h('select',{value:form.equipo_id,onChange:function(e){upd('equipo_id',e.target.value);}},h('option',{value:''},'Seleccione su equipo...'),equipos.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);}))),
-      F('Fecha',h('input',{type:'date',value:form.fecha,onChange:function(e){upd('fecha',e.target.value);}})),
-      F('Faena *',h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);}},h('option',{value:''},'Seleccione...'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
-      form.equipo_id&&h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:8,padding:10,marginBottom:12,fontSize:13}},
-        loadingHoro?h('div',{style:{color:'#3B82F6'}},'Buscando último registro...'):
-        ultimoHoro!=null?h('div',null,
-          h('div',{style:{color:'#1E40AF',fontWeight:600,marginBottom:2}},'Último horómetro registrado'),
-          h('div',{style:{fontSize:20,fontWeight:700,color:'#1E3A2D'}},ultimoHoro.toFixed(1)+' h')
-        ):h('div',{style:{color:'#64748B'}},'Primer registro de este equipo')
-      ),
-      F('Horómetro inicial',h('input',{type:'number',value:form.horometro_inicial,onChange:function(e){upd('horometro_inicial',e.target.value);},step:0.1,min:0,inputMode:'decimal',style:{background:'#F8FAFC'}})),
-      h('div',{className:'mob-field'},
-        h('label',{style:{color:'#1E3A2D',fontWeight:700}},'⚡ Horómetro final *'),
-        h('input',{type:'number',value:form.horometro_final,onChange:function(e){upd('horometro_final',e.target.value);},step:0.1,min:0,inputMode:'decimal',placeholder:'Lectura al finalizar la jornada',style:{fontSize:22,fontWeight:700,border:'2px solid #1E3A2D',padding:'16px 12px',textAlign:'center'}})
-      ),
-      hf>0&&h('div',{style:{background:hf>=hi?'#F0FDF4':'#FEF2F2',border:'2px solid '+(hf>=hi?'#86EFAC':'#FECACA'),borderRadius:10,padding:14,marginBottom:12,textAlign:'center'}},
-        h('div',{style:{fontSize:12,color:hf>=hi?'#166534':'#991B1B',fontWeight:600,marginBottom:4}},hf>=hi?'HORAS TRABAJADAS':'ERROR'),
-        h('div',{style:{fontSize:28,fontWeight:700,color:hf>=hi?'#166534':'#991B1B'}},hf>=hi?hTrab+' h':'Final < Inicial')
-      ),
-      F('Horas perdidas (detenciones)',h('input',{type:'number',value:form.horas_perdidas,onChange:function(e){upd('horas_perdidas',e.target.value);},step:0.1,min:0,inputMode:'decimal',placeholder:'0'})),
+      // Detección de tipo de equipo seleccionado (vehículo vs máquina)
+      (function(){
+        var eqSel=equipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
+        var tc=eqSel?(eqSel.tipo_cargo||'maquinaria'):'maquinaria';
+        var esVehiculo=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf(tc)>=0;
+        var lblIni=esVehiculo?'Odómetro inicial':'Horómetro inicial';
+        var lblFin=esVehiculo?'⚡ Odómetro final *':'⚡ Horómetro final *';
+        var phFin=esVehiculo?'Kilometraje al finalizar':'Lectura al finalizar la jornada';
+        var unidad=esVehiculo?'km':'h';
+        var labelTrab=esVehiculo?'KILÓMETROS RECORRIDOS':'HORAS TRABAJADAS';
+        return h(React.Fragment,null,
+          F('Equipo *',h('select',{value:form.equipo_id,onChange:function(e){upd('equipo_id',e.target.value);}},
+            h('option',{value:''},'Seleccione su equipo...'),
+            equipos.map(function(e){
+              var tipoIcon=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf(e.tipo_cargo||'maquinaria')>=0?'🚗 ':'🚜 ';
+              return h('option',{key:e.equipo_id,value:e.equipo_id},tipoIcon+e.codigo+' — '+e.nombre);
+            })
+          )),
+          // Caja con icono distintivo según tipo
+          form.equipo_id&&h('div',{style:{background:esVehiculo?'#EFF6FF':'#FEF3C7',border:'2px solid '+(esVehiculo?'#BFDBFE':'#FCD34D'),borderRadius:8,padding:'10px 12px',marginBottom:12,display:'flex',alignItems:'center',gap:10}},
+            h('div',{style:{fontSize:28}},esVehiculo?'🚗':'🚜'),
+            h('div',{style:{flex:1}},
+              h('div',{style:{fontSize:13,fontWeight:700,color:esVehiculo?'#1E40AF':'#92400E'}},esVehiculo?'Vehículo':'Maquinaria'),
+              h('div',{style:{fontSize:11,color:esVehiculo?'#1E40AF':'#92400E'}},esVehiculo?'Mide kilometraje (odómetro)':'Mide horas de trabajo (horómetro)')
+            )
+          ),
+          F('Fecha',h('input',{type:'date',value:form.fecha,onChange:function(e){upd('fecha',e.target.value);}})),
+          F('Faena *',h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);}},h('option',{value:''},'Seleccione...'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+          form.equipo_id&&h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:8,padding:10,marginBottom:12,fontSize:13}},
+            loadingHoro?h('div',{style:{color:'#3B82F6'}},'Buscando último registro...'):
+            ultimoHoro!=null?h('div',null,
+              h('div',{style:{color:'#1E40AF',fontWeight:600,marginBottom:2}},'Último '+(esVehiculo?'odómetro':'horómetro')+' registrado'),
+              h('div',{style:{fontSize:20,fontWeight:700,color:'#1E3A2D'}},ultimoHoro.toFixed(esVehiculo?0:1)+' '+unidad)
+            ):h('div',{style:{color:'#64748B'}},'Primer registro de este equipo')
+          ),
+          F(lblIni,h('input',{type:'number',value:form.horometro_inicial,onChange:function(e){upd('horometro_inicial',e.target.value);},step:esVehiculo?1:0.1,min:0,inputMode:'decimal',style:{background:'#F8FAFC'}})),
+          h('div',{className:'mob-field'},
+            h('label',{style:{color:'#1E3A2D',fontWeight:700}},lblFin),
+            h('input',{type:'number',value:form.horometro_final,onChange:function(e){upd('horometro_final',e.target.value);},step:esVehiculo?1:0.1,min:0,inputMode:'decimal',placeholder:phFin,style:{fontSize:22,fontWeight:700,border:'2px solid #1E3A2D',padding:'16px 12px',textAlign:'center'}})
+          ),
+          hf>0&&h('div',{style:{background:hf>=hi?'#F0FDF4':'#FEF2F2',border:'2px solid '+(hf>=hi?'#86EFAC':'#FECACA'),borderRadius:10,padding:14,marginBottom:12,textAlign:'center'}},
+            h('div',{style:{fontSize:12,color:hf>=hi?'#166534':'#991B1B',fontWeight:600,marginBottom:4}},hf>=hi?labelTrab:'ERROR'),
+            h('div',{style:{fontSize:28,fontWeight:700,color:hf>=hi?'#166534':'#991B1B'}},hf>=hi?hTrab+' '+unidad:'Final < Inicial')
+          ),
+          // Horas perdidas + TOB solo para maquinaria (vehículos no aplican)
+          !esVehiculo&&F('Horas perdidas (detenciones)',h('input',{type:'number',value:form.horas_perdidas,onChange:function(e){upd('horas_perdidas',e.target.value);},step:0.1,min:0,inputMode:'decimal',placeholder:'0'}))
+        );
+      })(),
       // ── Desglose Tiempos Obvios (solo si hay horas perdidas) ──
       hPerd>0&&h('div',{style:{background:'#FFF7ED',border:'2px solid '+(tobOk?'#86EFAC':'#FED7AA'),borderRadius:10,padding:12,marginBottom:12}},
         h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
@@ -10847,6 +10877,30 @@ function App(){
     function mobileBack(){setMobileView('home');}
     function goDesktop(){setMobileMode(false);}
     if(mobileView==='home')return h(MobileHome,{user:user,tok:tok,m:m,onNav:mobileNav,onLogout:handleLogout,onDesktop:goDesktop});
+    // Órdenes de Compra en móvil: redirige a vista escritorio (formulario denso, mejor en pantalla amplia)
+    if(mobileView==='ordenes'){
+      var ocOps=[
+        {id:'ordenes',icon:'📑',label:'Órdenes de Compra',sub:'Lista, crear, recibir, cerrar'},
+        {id:'oc-guias',icon:'📋',label:'Guías de Despacho',sub:'Recepciones por guía'}
+      ];
+      return h('div',{className:'mob-wrap',style:{background:'#F1F4F9',minHeight:'100vh'}},
+        h('div',{className:'mob-topbar'},h('button',{onClick:mobileBack},'←'),h('h3',null,'Órdenes de Compra')),
+        h('div',{style:{padding:8,paddingBottom:40}},
+          h('div',{style:{background:'#FEF3C7',border:'1px solid #FCD34D',borderRadius:6,padding:10,fontSize:11,color:'#92400E',marginBottom:10}},
+            '💡 El módulo de OC funciona mejor en pantalla grande. Selecciona una opción y se abrirá la vista escritorio adaptada al teléfono.'
+          ),
+          h('div',{className:'mob-grid'},
+            ocOps.map(function(op){
+              return h('button',{key:op.id,className:'mob-btn',onClick:function(){setMobileMode(false);setView(op.id);}},
+                h('span',{className:'mob-btn-icon'},op.icon),
+                h('span',{className:'mob-btn-label'},op.label),
+                h('span',{className:'mob-btn-sub'},op.sub)
+              );
+            })
+          )
+        )
+      );
+    }
     // Inventario en móvil: muestra menú de submódulos que dirigen a la versión escritorio
     if(mobileView==='inventario'){
       var inventarioOps=[
