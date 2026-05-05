@@ -6131,7 +6131,7 @@ function CombCierreQuincenal(p){
 // ══════════════════════════════════════════════════════
 
 var SISTEMAS_OPS=['motor','hidraulico','transmision','mandos_finales','electrico','enfriamiento','rodado','estructura','combustible','frenos','direccion','cabezal_forestal','lubricacion','general','otros'];
-var TIPO_MANT_OPS=['preventivo','correctivo','predictivo','inspeccion','cambio_aceite','cambio_filtro','revision_general','reparacion_mayor','emergencia'];
+var TIPO_MANT_OPS=['correctiva','programada','predictiva'];
 var ESTADO_OT_OPS=['abierta','programada','en_ejecucion','pausada','cerrada','cancelada'];
 
 function MantPanel(p){
@@ -6311,7 +6311,7 @@ function MantAvisos(p){
     api('/mant/avisos','POST',form,p.tok).then(function(){load();setShowForm(false);setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});
   }
   function crearOT(aviso){
-    api('/mant/ot','POST',{empresa_id:aviso.empresa_id,equipo_id:aviso.equipo_id,faena_id:aviso.faena_id,aviso_id:aviso.aviso_id,tipo_mantencion:'correctivo',origen:'aviso_falla',sintoma_reportado:aviso.sintoma,sistema:aviso.sistema,prioridad:aviso.criticidad==='alta'?'urgente':'normal'},p.tok)
+    api('/mant/ot','POST',{empresa_id:aviso.empresa_id,equipo_id:aviso.equipo_id,faena_id:aviso.faena_id,aviso_id:aviso.aviso_id,tipo_mantencion:'correctiva',origen:'aviso_falla',sintoma_reportado:aviso.sintoma,sistema:aviso.sistema,prioridad:aviso.criticidad==='alta'?'urgente':'normal'},p.tok)
       .then(function(r){alert('OT creada: '+r.numero_ot);load();}).catch(function(e){alert('Error: '+e.message);});
   }
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
@@ -6372,7 +6372,7 @@ function TareaAddPersonal(p2){
 
 function MantOT(p){
   const[ots,setOts]=useState([]);const[selOT,setSelOT]=useState(null);
-  const[showForm,setShowForm]=useState(false);const[form,setForm]=useState({empresa_id:'',equipo_id:'',faena_id:'',tipo_mantencion:'preventivo',origen:'manual',fecha_apertura:new Date().toISOString().split('T')[0],prioridad:'normal',sistema:'',sintoma_reportado:'',responsable:'',mecanico_asignado:'',taller_tipo:'interno'});
+  const[showForm,setShowForm]=useState(false);const[form,setForm]=useState({empresa_id:'',equipo_id:'',faena_id:'',tipo_mantencion:'correctiva',origen:'manual',fecha_apertura:new Date().toISOString().split('T')[0],prioridad:'normal',sistema:'',sintoma_reportado:'',responsable:'',mecanico_asignado:'',taller_tipo:'interno'});
   const[filtEst,setFiltEst]=useState('');const[msg,setMsg]=useState('');
   const empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   const personalMant2=(p.m.personal||[]).filter(function(x){return x.participa_mantencion&&x.activo;});
@@ -6402,7 +6402,11 @@ function MantOT(p){
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Equipo *'),h('select',{value:form.equipo_id,onChange:function(e){setForm(function(f){return Object.assign({},f,{equipo_id:e.target.value});});},style:inpS},h('option',{value:''},'Seleccione...'),equipos.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.nombre);}))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena'),h('select',{value:form.faena_id,onChange:function(e){setForm(function(f){return Object.assign({},f,{faena_id:e.target.value});});},style:inpS},h('option',{value:''},'Sin faena'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Tipo mantención'),h('select',{value:form.tipo_mantencion,onChange:function(e){setForm(function(f){return Object.assign({},f,{tipo_mantencion:e.target.value});});},style:inpS},TIPO_MANT_OPS.map(function(t){return h('option',{key:t,value:t},t.replace(/_/g,' '));}))),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Origen'),h('select',{value:form.origen,onChange:function(e){setForm(function(f){return Object.assign({},f,{origen:e.target.value});});},style:inpS},['manual','programado','aviso_falla','correctivo','inspeccion','emergencia'].map(function(t){return h('option',{key:t,value:t},t.replace(/_/g,' '));}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3},title:'Cómo se generó esta OT: del operador (aviso de falla), del plan maestro de mantención, o creada manualmente'},'Origen ⓘ'),h('select',{value:form.origen,onChange:function(e){setForm(function(f){return Object.assign({},f,{origen:e.target.value});});},style:inpS},[
+          {v:'manual',l:'Manual — creada directamente'},
+          {v:'aviso_falla',l:'Aviso de falla — reportada por operador'},
+          {v:'plan_maestro',l:'Plan maestro — programada por horómetro/km'}
+        ].map(function(o){return h('option',{key:o.v,value:o.v},o.l);}))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Prioridad'),h('select',{value:form.prioridad,onChange:function(e){setForm(function(f){return Object.assign({},f,{prioridad:e.target.value});});},style:inpS},['urgente','alta','normal','baja'].map(function(t){return h('option',{key:t,value:t},t);}))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Responsable'),hSel({value:form.responsable||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{responsable:e.target.value});});},style:inpS},[h('option',{value:''},'—')].concat(personalMant2.map(function(x){return h('option',{key:x.persona_id,value:x.nombre_completo},x.nombre_completo);})))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Mecánico líder'),hSel({value:form.mecanico_asignado||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{mecanico_asignado:e.target.value});});},style:inpS},[h('option',{value:''},'—')].concat(personalMant2.map(function(x){return h('option',{key:x.persona_id,value:x.nombre_completo},x.nombre_completo);})))),
@@ -6771,7 +6775,7 @@ function MantOTDetalle(p){
 
 function MantPlanes(p){
   const[planes,setPlanes]=useState([]);const[showForm,setShowForm]=useState(false);
-  const[form,setForm]=useState({nombre:'',descripcion:'',tipo_activo:'todos',sistema:'',tipo_mantencion:'preventivo',intervalo_horas:'',intervalo_km:'',intervalo_dias:'',tolerancia_horas:10,tiempo_estimado_hrs:'',prioridad:'normal',checklist_items:[],repuestos_sugeridos:[],lubricantes_sugeridos:[]});
+  const[form,setForm]=useState({nombre:'',descripcion:'',tipo_activo:'todos',sistema:'',tipo_mantencion:'programada',intervalo_horas:'',intervalo_km:'',intervalo_dias:'',tolerancia_horas:10,tiempo_estimado_hrs:'',prioridad:'normal',checklist_items:[],repuestos_sugeridos:[],lubricantes_sugeridos:[]});
   const[msg,setMsg]=useState('');
   function load(){api('/mant/planes','GET',null,p.tok).then(function(r){setPlanes(Array.isArray(r)?r:[]);}).catch(function(){});}
   useEffect(load,[p.tok]);
