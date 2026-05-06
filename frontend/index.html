@@ -11399,8 +11399,490 @@ function MobileTerreno(p){
   );
 }
 
+// ══════════════════════════════════════════════════════════════════
+// DTE RECIBIDOS — Bandeja de facturas/notas recibidas
+// ══════════════════════════════════════════════════════════════════
+function DTERecibidosView(p){
+  var[dtes,setDtes]=useState([]);var[load,setLoad]=useState(true);var[selDte,setSelDte]=useState(null);
+  var[showImport,setShowImport]=useState(false);var[showVincular,setShowVincular]=useState(null);
+  var[fTipo,setFTipo]=useState('');var[fProv,setFProv]=useState('');var[fEmpresa,setFEmpresa]=useState('');
+  var[fEstado,setFEstado]=useState('');var[fVinc,setFVinc]=useState('');var[fDesde,setFDesde]=useState('');var[fHasta,setFHasta]=useState('');var[fQ,setFQ]=useState('');
+  var provs=p.m&&Array.isArray(p.m.provs)?p.m.provs:[];
+  var empresas=p.m&&Array.isArray(p.m.empresas)?p.m.empresas:[];
+  function load2(){
+    setLoad(true);
+    var qs=[];
+    if(fTipo)qs.push('tipo_dte='+fTipo);
+    if(fProv)qs.push('proveedor_id='+fProv);
+    if(fEmpresa)qs.push('empresa_id='+fEmpresa);
+    if(fEstado)qs.push('estado='+fEstado);
+    if(fVinc)qs.push('vinculado='+fVinc);
+    if(fDesde)qs.push('desde='+fDesde);
+    if(fHasta)qs.push('hasta='+fHasta);
+    if(fQ)qs.push('q='+encodeURIComponent(fQ));
+    api('/dte-recibidos'+(qs.length?'?'+qs.join('&'):''),'GET',null,p.tok)
+      .then(function(r){setDtes(Array.isArray(r)?r:[]);})
+      .catch(function(){setDtes([]);})
+      .finally(function(){setLoad(false);});
+  }
+  useEffect(function(){load2();},[p.tok,fTipo,fProv,fEmpresa,fEstado,fVinc,fDesde,fHasta,fQ]);
+  // KPIs del listado actual
+  var totalNeto=dtes.reduce(function(s,d){return s+(parseFloat(d.neto)||0);},0);
+  var totalIva=dtes.reduce(function(s,d){return s+(parseFloat(d.iva)||0);},0);
+  var totalGral=dtes.reduce(function(s,d){return s+(parseFloat(d.total)||0);},0);
+  // Pendientes = sin asignar; Parciales = con asignación parcial; Completos = totalmente asignados
+  var pendientes=dtes.filter(function(d){return (parseFloat(d.monto_vinculado)||0)===0;}).length;
+  var parciales=dtes.filter(function(d){var mv=parseFloat(d.monto_vinculado)||0;var t=parseFloat(d.total)||0;return mv>0&&Math.abs(t-mv)>=1;}).length;
+  var vinculados=dtes.filter(function(d){var mv=parseFloat(d.monto_vinculado)||0;var t=parseFloat(d.total)||0;return mv>0&&Math.abs(t-mv)<1;}).length;
+  function eliminar(dte){
+    if(!confirm('¿Eliminar el DTE Folio '+dte.folio+'?'))return;
+    api('/dte-recibidos/'+dte.dte_id,'DELETE',null,p.tok).then(function(){load2();}).catch(function(ex){alert(ex.message);});
+  }
+  return h('div',null,
+    // KPIs en cards
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:8,marginBottom:10}},
+      h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #3B82F6'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'TOTAL DTE'),h('div',{style:{fontSize:22,fontWeight:700,color:'#1E3A2D'}},dtes.length)),
+      h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #94A3B8'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'SIN ASIGNAR'),h('div',{style:{fontSize:22,fontWeight:700,color:'#475569'}},pendientes)),
+      h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #F59E0B'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'PARCIALES'),h('div',{style:{fontSize:22,fontWeight:700,color:'#92400E'}},parciales)),
+      h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #16A34A'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'COMPLETOS'),h('div',{style:{fontSize:22,fontWeight:700,color:'#16A34A'}},vinculados)),
+      h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #6366F1'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'NETO'),h('div',{style:{fontSize:18,fontWeight:700}},'$'+N(totalNeto,0))),
+      h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #1E3A2D'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'TOTAL'),h('div',{style:{fontSize:18,fontWeight:700,color:'#1E3A2D'}},'$'+N(totalGral,0)))
+    ),
+    // Filtros y acciones
+    h('div',{className:'card',style:{padding:10,marginBottom:10}},
+      h('div',{style:{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',marginBottom:8}},
+        h(Btn,{onClick:function(){setShowImport(true);}},'📥 Importar ZIP de Facto'),
+        h('input',{type:'text',value:fQ,onChange:function(e){setFQ(e.target.value);},placeholder:'Buscar folio o proveedor...',style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:220}}),
+        h('div',{style:{marginLeft:'auto',fontSize:12,color:'#64748B'}},dtes.length+' DTE en la bandeja')
+      ),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:6,fontSize:11}},
+        h('select',{value:fTipo,onChange:function(e){setFTipo(e.target.value);},style:{padding:'5px 6px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
+          h('option',{value:''},'Todos los tipos'),h('option',{value:'33'},'33 - Factura'),h('option',{value:'34'},'34 - Factura Exenta'),h('option',{value:'56'},'56 - Nota Débito'),h('option',{value:'61'},'61 - Nota Crédito'),h('option',{value:'52'},'52 - Guía Despacho'),h('option',{value:'39'},'39 - Boleta')),
+        h('select',{value:fProv,onChange:function(e){setFProv(e.target.value);},style:{padding:'5px 6px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
+          h('option',{value:''},'Todos proveedores'),provs.map(function(pr){return h('option',{key:pr.proveedor_id,value:pr.proveedor_id},pr.nombre);})),
+        h('select',{value:fEmpresa,onChange:function(e){setFEmpresa(e.target.value);},style:{padding:'5px 6px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
+          h('option',{value:''},'Todas empresas'),empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
+        h('select',{value:fVinc,onChange:function(e){setFVinc(e.target.value);},style:{padding:'5px 6px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
+          h('option',{value:''},'Todos los DTE'),h('option',{value:'no'},'Sin asignar'),h('option',{value:'parcial'},'Asignación parcial'),h('option',{value:'completo'},'Totalmente asignados')),
+        h('input',{type:'date',value:fDesde,onChange:function(e){setFDesde(e.target.value);},style:{padding:'5px 6px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11},title:'Desde'}),
+        h('input',{type:'date',value:fHasta,onChange:function(e){setFHasta(e.target.value);},style:{padding:'5px 6px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11},title:'Hasta'}),
+        h(Btn,{v:'gray',sm:true,onClick:function(){setFTipo('');setFProv('');setFEmpresa('');setFEstado('');setFVinc('');setFDesde('');setFHasta('');setFQ('');}},'✕ Limpiar')
+      )
+    ),
+    // Tabla
+    load?h('div',{className:'spin'},'Cargando...'):h('div',{className:'card'},
+      h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
+        h('thead',null,h('tr',{style:{background:'#F1F5F9',textAlign:'left'}},
+          h('th',{style:{padding:8}},'Tipo'),
+          h('th',{style:{padding:8}},'Folio'),
+          h('th',{style:{padding:8}},'Fecha'),
+          h('th',{style:{padding:8}},'Proveedor'),
+          h('th',{style:{padding:8,textAlign:'right'}},'Total DTE'),
+          h('th',{style:{padding:8,textAlign:'center',width:200}},'Asignación a OCs'),
+          h('th',{style:{padding:8,textAlign:'center'}},'Acciones')
+        )),
+        h('tbody',null,
+          dtes.length===0?h('tr',null,h('td',{colSpan:7,style:{padding:20,textAlign:'center',color:'#94A3B8'}},'Sin DTE en la bandeja. Importa un ZIP de Facto para empezar.')):
+          dtes.map(function(d){
+            var totalDte=parseFloat(d.total)||0;
+            var aplicado=parseFloat(d.monto_vinculado)||0;
+            var pct=totalDte>0?Math.min(100,(aplicado/totalDte)*100):0;
+            var ocsCount=parseInt(d.ocs_count)||0;
+            var estadoColor=Math.abs(totalDte-aplicado)<1?'#16A34A':aplicado>totalDte?'#DC2626':aplicado>0?'#F59E0B':'#94A3B8';
+            var estadoLbl=Math.abs(totalDte-aplicado)<1?'Completo':aplicado>totalDte?'Sobre':aplicado>0?'Parcial':'Sin asignar';
+            return h('tr',{key:d.dte_id,style:{borderTop:'1px solid #E2E8F0',cursor:'pointer'},onClick:function(){setSelDte(d);}},
+              h('td',{style:{padding:8}},h('span',{style:{padding:'2px 8px',background:d.tipo_dte==='61'?'#FEE2E2':d.tipo_dte==='56'?'#FEF3C7':'#DBEAFE',color:d.tipo_dte==='61'?'#991B1B':d.tipo_dte==='56'?'#92400E':'#1E40AF',borderRadius:10,fontSize:10,fontWeight:600}},d.tipo_doc||('Tipo '+d.tipo_dte))),
+              h('td',{style:{padding:8,fontWeight:700,color:'#1E40AF'}},'#'+d.folio),
+              h('td',{style:{padding:8}},d.fecha_emision?fmtD(d.fecha_emision):'—'),
+              h('td',{style:{padding:8}},h('div',null,h('div',{style:{fontWeight:600}},d.proveedor_nombre_match||d.proveedor_nombre||'—'),h('div',{style:{fontSize:10,color:'#94A3B8'}},d.proveedor_rut||''))),
+              h('td',{style:{padding:8,textAlign:'right',fontWeight:700,color:'#1E3A2D'}},'$'+N(totalDte,0)),
+              // Columna de asignación con barra de progreso
+              h('td',{style:{padding:8}},
+                h('div',{style:{background:'#E2E8F0',borderRadius:4,height:18,position:'relative',overflow:'hidden',marginBottom:3}},
+                  h('div',{style:{background:estadoColor,height:'100%',width:pct+'%'}}),
+                  h('div',{style:{position:'absolute',top:0,left:0,right:0,height:'100%',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700,color:pct>50?'#fff':'#1E3A2D',mixBlendMode:'difference'}},pct.toFixed(0)+'%')
+                ),
+                h('div',{style:{fontSize:10,color:estadoColor,fontWeight:600,textAlign:'center'}},
+                  ocsCount>0?(estadoLbl+' · '+ocsCount+' OC'+(ocsCount>1?'s':'')+' · $'+N(aplicado,0)):'Sin asignar'
+                )
+              ),
+              h('td',{style:{padding:8,textAlign:'center'}},
+                h('div',{style:{display:'flex',gap:3,justifyContent:'center'},onClick:function(e){e.stopPropagation();}},
+                  h('button',{onClick:function(){setSelDte(d);},title:'Ver detalle / PDF',style:{padding:'4px 8px',fontSize:11,background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:4,cursor:'pointer',color:'#1E40AF'}},'👁'),
+                  h('button',{onClick:function(){setShowVincular(d);},title:'Distribuir en OCs',style:{padding:'4px 8px',fontSize:11,background:'#DCFCE7',border:'1px solid #86EFAC',borderRadius:4,cursor:'pointer',color:'#15803D'}},'🔗'),
+                  h('button',{onClick:function(){eliminar(d);},title:'Eliminar',style:{padding:'4px 8px',fontSize:11,background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:4,cursor:'pointer',color:'#DC2626'}},'🗑')
+                )
+              )
+            );
+          })
+        )
+      )
+    ),
+    // Modal: detalle del DTE
+    selDte&&h(DTEDetalleModal,{dteId:selDte.dte_id,tok:p.tok,onClose:function(){setSelDte(null);load2();},m:p.m}),
+    // Modal: importar ZIP
+    showImport&&h(ImportZipDTEBandeja,{tok:p.tok,m:p.m,onClose:function(){setShowImport(false);},onRefresh:load2}),
+    // Modal: gestionar vinculaciones DTE↔OC (1 DTE puede repartirse en varias OCs)
+    showVincular&&h(GestionarVinculosOC,{dte:showVincular,tok:p.tok,m:p.m,onClose:function(){setShowVincular(null);load2();},onChanged:load2})
+  );
+}
+
+// ── Modal: Detalle de un DTE (vista tipo factura + PDF) ──
+function DTEDetalleModal(p){
+  var[dte,setDte]=useState(null);var[load,setLoad]=useState(true);
+  useEffect(function(){
+    api('/dte-recibidos/'+p.dteId,'GET',null,p.tok).then(setDte).catch(function(){setDte(null);}).finally(function(){setLoad(false);});
+  },[p.dteId]);
+  function imprimirPDF(){
+    // Imprime el contenido del modal usando window.print()
+    var contenido=document.getElementById('dte-print-area');if(!contenido)return;
+    var w=window.open('','_blank','width=900,height=700');
+    if(!w){alert('Permita ventanas emergentes para imprimir');return;}
+    w.document.write('<html><head><title>DTE '+(dte&&dte.tipo_doc||'')+' '+(dte&&dte.folio||'')+'</title>');
+    w.document.write('<style>body{font-family:Arial,sans-serif;font-size:12px;margin:30px;color:#1E293B;}h1{color:#1E3A2D;margin:0 0 10px 0;}h2{color:#475569;font-size:14px;margin-top:20px;}table{width:100%;border-collapse:collapse;font-size:11px;}td,th{padding:6px;border-bottom:1px solid #E2E8F0;text-align:left;}.tot{text-align:right;font-weight:700;}.head{background:#1E3A2D;color:#FCD34D;padding:14px;border-radius:6px;margin-bottom:18px;}.box{border:1px solid #CBD5E1;border-radius:6px;padding:10px;margin-bottom:12px;}.row{display:flex;gap:14px;}.row>div{flex:1}.lbl{font-size:10px;color:#94A3B8;text-transform:uppercase;font-weight:600}.val{font-size:13px;color:#1E293B}.totales{background:#F1F5F9;padding:14px;border-radius:6px;margin-top:14px}.totales tr td:first-child{text-align:right;color:#64748B}.totales tr td:last-child{text-align:right;font-weight:600}.tot-final{border-top:2px solid #1E3A2D;font-size:15px;color:#1E3A2D}</style>');
+    w.document.write('</head><body>'+contenido.innerHTML+'</body></html>');
+    w.document.close();setTimeout(function(){w.print();},500);
+  }
+  if(load)return h(Modal,{title:'Cargando DTE...',onClose:p.onClose,lg:true},h('div',{style:{padding:30,textAlign:'center'}},'Cargando...'));
+  if(!dte)return h(Modal,{title:'Error',onClose:p.onClose,lg:true},h('div',{style:{padding:20,color:'#DC2626'}},'No se pudo cargar el DTE'));
+  return h(Modal,{title:(dte.tipo_doc||'DTE')+' #'+dte.folio,onClose:p.onClose,lg:true},
+    h('div',null,
+      h('div',{style:{display:'flex',gap:6,marginBottom:10,flexWrap:'wrap'}},
+        h(Btn,{v:'teal',sm:true,onClick:imprimirPDF},'🖨 Imprimir / PDF'),
+        (dte.ocs_vinculadas||[]).length>0&&h('div',{style:{padding:'4px 10px',background:'#DCFCE7',color:'#15803D',borderRadius:5,fontSize:11,fontWeight:600}},
+          '✓ Vinculado a '+(dte.ocs_vinculadas||[]).length+' OC'+((dte.ocs_vinculadas||[]).length>1?'s':'')+': '+(dte.ocs_vinculadas||[]).map(function(r){return r.numero_oc;}).join(', ')
+        )
+      ),
+      h('div',{id:'dte-print-area',style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,padding:18,maxHeight:'70vh',overflowY:'auto'}},
+        // Encabezado tipo factura
+        h('div',{className:'head',style:{background:'#1E3A2D',color:'#FCD34D',padding:14,borderRadius:6,marginBottom:18}},
+          h('h1',{style:{margin:0,color:'#FCD34D',fontSize:18}},dte.tipo_doc||'Documento Tributario Electrónico'),
+          h('div',{style:{fontSize:24,fontWeight:700,color:'#fff',marginTop:6}},'#'+dte.folio),
+          h('div',{style:{fontSize:11,opacity:0.85,marginTop:4}},'Tipo SII: '+dte.tipo_dte+' · Emisión: '+(dte.fecha_emision?fmtD(dte.fecha_emision):'—'))
+        ),
+        // Emisor y Receptor
+        h('div',{className:'row',style:{display:'flex',gap:14,marginBottom:14}},
+          h('div',{className:'box',style:{flex:1,border:'1px solid #CBD5E1',borderRadius:6,padding:12}},
+            h('div',{className:'lbl',style:{fontSize:10,color:'#94A3B8',fontWeight:600,textTransform:'uppercase',marginBottom:6}},'EMISOR'),
+            h('div',{style:{fontSize:14,fontWeight:700,color:'#1E293B'}},dte.proveedor_nombre||'—'),
+            h('div',{style:{fontSize:11,color:'#64748B',marginTop:2}},'RUT: '+(dte.proveedor_rut||'—')),
+            dte.proveedor_giro&&h('div',{style:{fontSize:11,color:'#64748B'}},'Giro: '+dte.proveedor_giro),
+            dte.proveedor_direccion&&h('div',{style:{fontSize:11,color:'#64748B'}},dte.proveedor_direccion),
+            dte.proveedor_nombre_match?h('div',{style:{fontSize:10,color:'#16A34A',marginTop:4}},'✓ Match: '+dte.proveedor_nombre_match):h('div',{style:{fontSize:10,color:'#F59E0B',marginTop:4}},'⚠ Sin match en proveedores')
+          ),
+          h('div',{className:'box',style:{flex:1,border:'1px solid #CBD5E1',borderRadius:6,padding:12}},
+            h('div',{className:'lbl',style:{fontSize:10,color:'#94A3B8',fontWeight:600,textTransform:'uppercase',marginBottom:6}},'RECEPTOR'),
+            h('div',{style:{fontSize:14,fontWeight:700,color:'#1E293B'}},dte.cliente_nombre||'—'),
+            h('div',{style:{fontSize:11,color:'#64748B',marginTop:2}},'RUT: '+(dte.cliente_rut||'—')),
+            dte.empresa_razon_social&&h('div',{style:{fontSize:10,color:'#16A34A',marginTop:4}},'✓ Empresa: '+dte.empresa_razon_social)
+          )
+        ),
+        // Líneas del detalle
+        h('h2',{style:{color:'#475569',fontSize:13,marginTop:18,marginBottom:8}},'Detalle'),
+        h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+          h('thead',null,h('tr',{style:{background:'#F1F5F9'}},
+            h('th',{style:{padding:6,textAlign:'left',borderBottom:'2px solid #1E3A2D'}},'#'),
+            h('th',{style:{padding:6,textAlign:'left',borderBottom:'2px solid #1E3A2D'}},'Descripción'),
+            h('th',{style:{padding:6,textAlign:'right',borderBottom:'2px solid #1E3A2D'}},'Cantidad'),
+            h('th',{style:{padding:6,textAlign:'right',borderBottom:'2px solid #1E3A2D'}},'Precio Unit.'),
+            h('th',{style:{padding:6,textAlign:'right',borderBottom:'2px solid #1E3A2D'}},'Total')
+          )),
+          h('tbody',null,
+            (dte.lineas||[]).length===0?h('tr',null,h('td',{colSpan:5,style:{padding:14,textAlign:'center',color:'#94A3B8'}},'Sin líneas en este DTE')):
+            (dte.lineas||[]).map(function(ln,i){
+              return h('tr',{key:ln.linea_id,style:{borderBottom:'1px solid #E2E8F0'}},
+                h('td',{style:{padding:6,color:'#94A3B8'}},i+1),
+                h('td',{style:{padding:6}},ln.descripcion),
+                h('td',{style:{padding:6,textAlign:'right'}},N(ln.cantidad,2)),
+                h('td',{style:{padding:6,textAlign:'right'}},'$'+N(ln.precio_unitario,2)),
+                h('td',{style:{padding:6,textAlign:'right',fontWeight:600}},'$'+N(ln.total_linea,0))
+              );
+            })
+          )
+        ),
+        // Totales
+        h('div',{className:'totales',style:{background:'#F1F5F9',padding:14,borderRadius:6,marginTop:14}},
+          h('table',{style:{width:'100%',marginLeft:'auto',maxWidth:340}},
+            h('tbody',null,
+              h('tr',null,h('td',{style:{textAlign:'right',color:'#64748B',padding:'4px 8px'}},'Neto:'),h('td',{style:{textAlign:'right',fontWeight:600,padding:'4px 8px'}},'$'+N(dte.neto,0))),
+              h('tr',null,h('td',{style:{textAlign:'right',color:'#64748B',padding:'4px 8px'}},'IVA (19%):'),h('td',{style:{textAlign:'right',fontWeight:600,padding:'4px 8px'}},'$'+N(dte.iva,0))),
+              h('tr',{className:'tot-final'},h('td',{style:{textAlign:'right',color:'#1E3A2D',padding:'8px',borderTop:'2px solid #1E3A2D',fontSize:14,fontWeight:700}},'TOTAL:'),h('td',{style:{textAlign:'right',color:'#1E3A2D',padding:'8px',borderTop:'2px solid #1E3A2D',fontSize:15,fontWeight:700}},'$'+N(dte.total,0)))
+            )
+          )
+        ),
+        // Pie con metadatos
+        h('div',{style:{marginTop:14,paddingTop:10,borderTop:'1px dashed #CBD5E1',fontSize:10,color:'#94A3B8'}},
+          'Importado el ',(dte.importado_en?new Date(dte.importado_en).toLocaleString('es-CL'):'—'),' por ',dte.importado_por||'—'
+        )
+      )
+    )
+  );
+}
+
+// ── Modal: Gestionar vinculaciones DTE ↔ múltiples OCs ──
+function GestionarVinculosOC(p){
+  var[ocsCandidatas,setOcsCandidatas]=useState([]);var[load,setLoad]=useState(true);
+  var[selOc,setSelOc]=useState('');var[montoNuevo,setMontoNuevo]=useState('');var[obsNueva,setObsNueva]=useState('');
+  var[saving,setSaving]=useState(false);var[err,setErr]=useState('');
+  var[dteData,setDteData]=useState(p.dte);
+  function recargar(){
+    api('/dte-recibidos/'+p.dte.dte_id,'GET',null,p.tok).then(function(r){setDteData(r);}).catch(function(){});
+    api('/dte-recibidos/'+p.dte.dte_id+'/ocs-candidatas','GET',null,p.tok).then(function(r){setOcsCandidatas(Array.isArray(r)?r:[]);}).catch(function(){setOcsCandidatas([]);}).finally(function(){setLoad(false);});
+  }
+  useEffect(function(){recargar();},[]);
+  var totalDte=parseFloat(dteData.total)||0;
+  var ocsVinc=dteData.ocs_vinculadas||[];
+  var totalAplicado=ocsVinc.reduce(function(s,r){return s+parseFloat(r.monto_aplicado||0);},0);
+  var saldoFaltante=totalDte-totalAplicado;
+  // Sugerencia automática: cuando se selecciona una OC, llenar con el saldo pendiente
+  function onSelectOC(ocId){
+    setSelOc(ocId);setErr('');
+    var oc=ocsCandidatas.find(function(o){return String(o.oc_id)===String(ocId);});
+    if(oc){
+      // Sugerir el menor entre el saldo del DTE y el saldo de la OC
+      var sugMonto=Math.min(saldoFaltante,parseFloat(oc.saldo_pendiente)||0);
+      if(sugMonto>0)setMontoNuevo(String(Math.round(sugMonto)));
+    }
+  }
+  function agregarVinculacion(){
+    setErr('');
+    if(!selOc){setErr('Selecciona una OC');return;}
+    var monto=parseFloat(montoNuevo);
+    if(!monto||monto<=0){setErr('Ingresa un monto mayor a 0');return;}
+    if(monto>totalDte+1){setErr('El monto no puede ser mayor al total del DTE');return;}
+    setSaving(true);
+    api('/dte-recibidos/'+p.dte.dte_id+'/oc','POST',{oc_id:selOc,monto_aplicado:monto,observacion:obsNueva||null},p.tok)
+      .then(function(){setSelOc('');setMontoNuevo('');setObsNueva('');recargar();p.onChanged&&p.onChanged();})
+      .catch(function(ex){setErr(ex.message);})
+      .finally(function(){setSaving(false);});
+  }
+  function eliminarVinculacion(relId){
+    if(!confirm('¿Quitar esta vinculación?'))return;
+    api('/dte-oc/'+relId,'DELETE',null,p.tok).then(function(){recargar();p.onChanged&&p.onChanged();}).catch(function(ex){alert(ex.message);});
+  }
+  function editarMonto(rel){
+    var nuevo=prompt('Monto aplicado a OC '+rel.numero_oc+':',rel.monto_aplicado);
+    if(!nuevo)return;
+    var m=parseFloat(nuevo);if(!m||m<=0){alert('Monto inválido');return;}
+    api('/dte-oc/'+rel.rel_id,'PUT',{monto_aplicado:m,observacion:rel.observacion||null},p.tok).then(function(){recargar();p.onChanged&&p.onChanged();}).catch(function(ex){alert(ex.message);});
+  }
+  // Filtrar OCs candidatas: excluir las ya vinculadas
+  var idsVinc=ocsVinc.map(function(r){return r.oc_id;});
+  var ocsDisponibles=ocsCandidatas.filter(function(o){return idsVinc.indexOf(o.oc_id)<0;});
+  // Estado del DTE
+  var pctAplicado=totalDte>0?Math.min(100,(totalAplicado/totalDte)*100):0;
+  var estadoColor=Math.abs(saldoFaltante)<1?'#16A34A':saldoFaltante>0?'#F59E0B':'#DC2626';
+  var estadoLabel=Math.abs(saldoFaltante)<1?'Completo':saldoFaltante>0?'Parcial':'SOBRE-asignado';
+  return h(Modal,{title:'Distribución de '+(p.dte.tipo_doc||'DTE')+' #'+p.dte.folio+' en órdenes de compra',onClose:p.onClose,lg:true},
+    h('div',null,
+      // Cabecera con datos del DTE y barra de progreso
+      h('div',{style:{background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:6,padding:14,marginBottom:14}},
+        h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:10}},
+          h('div',null,
+            h('div',{style:{fontSize:11,color:'#64748B',fontWeight:600}},'PROVEEDOR'),
+            h('div',{style:{fontWeight:600}},p.dte.proveedor_nombre_match||p.dte.proveedor_nombre||'—')
+          ),
+          h('div',{style:{textAlign:'right'}},
+            h('div',{style:{fontSize:11,color:'#64748B',fontWeight:600}},'TOTAL DTE'),
+            h('div',{style:{fontSize:20,fontWeight:700,color:'#1E3A2D'}},'$'+N(totalDte,0))
+          )
+        ),
+        // Barra de progreso de asignación
+        h('div',{style:{background:'#E2E8F0',borderRadius:8,height:24,position:'relative',overflow:'hidden'}},
+          h('div',{style:{background:estadoColor,height:'100%',width:pctAplicado+'%',transition:'width 0.3s'}}),
+          h('div',{style:{position:'absolute',top:0,left:0,right:0,height:'100%',display:'flex',alignItems:'center',justifyContent:'center',fontSize:12,fontWeight:700,color:pctAplicado>50?'#fff':'#1E3A2D',mixBlendMode:'difference'}},
+            '$'+N(totalAplicado,0)+' / $'+N(totalDte,0)+' ('+pctAplicado.toFixed(0)+'%)')
+        ),
+        h('div',{style:{display:'flex',justifyContent:'space-between',marginTop:8,fontSize:12}},
+          h('span',{style:{color:estadoColor,fontWeight:600}},'Estado: '+estadoLabel),
+          saldoFaltante>0&&h('span',{style:{color:'#92400E'}},'Falta asignar: $'+N(saldoFaltante,0)),
+          saldoFaltante<0&&h('span',{style:{color:'#DC2626'}},'Sobre-asignado en: $'+N(-saldoFaltante,0))
+        )
+      ),
+      // Lista de OCs ya vinculadas
+      h('div',{style:{marginBottom:14}},
+        h('div',{style:{fontWeight:700,fontSize:13,marginBottom:8,color:'#1E3A2D'}},'Órdenes de Compra vinculadas ('+ocsVinc.length+')'),
+        ocsVinc.length===0?h('div',{style:{padding:14,background:'#FEF3C7',color:'#92400E',borderRadius:6,fontSize:12,textAlign:'center'}},'Sin vinculaciones todavía. Agrega una abajo.'):
+        h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
+          h('thead',null,h('tr',{style:{background:'#F1F5F9'}},
+            h('th',{style:{padding:6,textAlign:'left'}},'OC'),
+            h('th',{style:{padding:6,textAlign:'left'}},'Fecha'),
+            h('th',{style:{padding:6,textAlign:'right'}},'Total OC'),
+            h('th',{style:{padding:6,textAlign:'right'}},'Aplicado a esta DTE'),
+            h('th',{style:{padding:6,textAlign:'left'}},'Observación'),
+            h('th',{style:{padding:6,textAlign:'center'}},'Acciones')
+          )),
+          h('tbody',null,ocsVinc.map(function(r){
+            return h('tr',{key:r.rel_id,style:{borderBottom:'1px solid #E2E8F0'}},
+              h('td',{style:{padding:6,fontWeight:600,color:'#1E40AF'}},r.numero_oc),
+              h('td',{style:{padding:6}},r.oc_fecha?fmtD(r.oc_fecha):'—'),
+              h('td',{style:{padding:6,textAlign:'right'}},'$'+N(r.oc_total,0)),
+              h('td',{style:{padding:6,textAlign:'right',fontWeight:700,color:'#16A34A'}},'$'+N(r.monto_aplicado,0)),
+              h('td',{style:{padding:6,fontSize:11,color:'#64748B'}},r.observacion||'—'),
+              h('td',{style:{padding:6,textAlign:'center'}},
+                h('button',{onClick:function(){editarMonto(r);},title:'Editar monto',style:{padding:'3px 7px',fontSize:11,background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:4,cursor:'pointer',color:'#1E40AF',marginRight:3}},'✏'),
+                h('button',{onClick:function(){eliminarVinculacion(r.rel_id);},title:'Quitar vinculación',style:{padding:'3px 7px',fontSize:11,background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:4,cursor:'pointer',color:'#DC2626'}},'🗑')
+              )
+            );
+          }))
+        )
+      ),
+      // Form: agregar nueva vinculación
+      saldoFaltante>1&&h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6,padding:14}},
+        h('div',{style:{fontWeight:700,fontSize:13,marginBottom:8,color:'#1E40AF'}},'+ Agregar vinculación a otra OC'),
+        load?h('div',null,'Cargando OCs...'):
+        ocsDisponibles.length===0?h('div',{style:{padding:10,fontSize:12,color:'#92400E'}},'No hay más OCs disponibles para este proveedor'):
+        h('div',{style:{display:'grid',gridTemplateColumns:'2fr 1fr',gap:8,alignItems:'end'}},
+          h('div',null,
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Orden de Compra'),
+            h('select',{value:selOc,onChange:function(e){onSelectOC(e.target.value);},style:{width:'100%',padding:8,border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
+              h('option',{value:''},'Selecciona una OC...'),
+              ocsDisponibles.map(function(o){
+                var sld=parseFloat(o.saldo_pendiente)||0;
+                var lbl=o.numero_oc+' — Total $'+N(o.total,0)+(o.monto_facturado>0?(' (Facturado $'+N(o.monto_facturado,0)+', saldo $'+N(sld,0)+')'):'');
+                return h('option',{key:o.oc_id,value:o.oc_id},lbl);
+              })
+            )
+          ),
+          h('div',null,
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Monto a aplicar'),
+            h('input',{type:'number',value:montoNuevo,onChange:function(e){setMontoNuevo(e.target.value);},style:{width:'100%',padding:8,border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,fontWeight:600},placeholder:'0'})
+          ),
+          h('div',{style:{gridColumn:'1/-1'}},
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observación (opcional)'),
+            h('input',{type:'text',value:obsNueva,onChange:function(e){setObsNueva(e.target.value);},style:{width:'100%',padding:6,border:'1px solid #CBD5E1',borderRadius:5,fontSize:12},placeholder:'Ej: Anticipo, saldo final, ítems x e y...'})
+          )
+        ),
+        err&&h('div',{style:{color:'#DC2626',fontSize:11,marginTop:6}},err),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',marginTop:10,gap:6}},
+          h(Btn,{onClick:agregarVinculacion,disabled:saving||!selOc||!montoNuevo},saving?'Agregando...':'+ Agregar vinculación')
+        )
+      ),
+      h('div',{style:{display:'flex',justifyContent:'flex-end',marginTop:14}},
+        h(Btn,{v:'gray',sm:true,onClick:p.onClose},'Cerrar')
+      )
+    )
+  );
+}
+
+// ── Modal: Importador ZIP de DTE a la BANDEJA (no a OC) ──
+function ImportZipDTEBandeja(p){
+  var[status,setStatus]=useState('idle');var[dtes,setDtes]=useState([]);var[sel,setSel]=useState({});
+  var[msg,setMsg]=useState('');var[results,setResults]=useState(null);var[filtTipo,setFiltTipo]=useState('');
+  var provs=p.m&&Array.isArray(p.m.provs)?p.m.provs:[];
+  function parseXmlDte(xmlStr){
+    try{
+      var parser=new DOMParser();var doc=parser.parseFromString(xmlStr,'text/xml');
+      var ns='http://www.sii.cl/SiiDte';
+      function tag(name){var el=doc.getElementsByTagNameNS(ns,name)[0]||doc.getElementsByTagName(name)[0];return el?el.textContent.trim():null;}
+      var tipoDte=tag('TipoDTE');
+      var tipoMap={'33':'Factura','34':'Factura Exenta','39':'Boleta','52':'Guía Despacho','56':'Nota Débito','61':'Nota Crédito'};
+      var detalles=doc.getElementsByTagNameNS(ns,'Detalle');if(!detalles.length)detalles=doc.getElementsByTagName('Detalle');
+      var lineas=[];
+      for(var i=0;i<detalles.length;i++){
+        var d=detalles[i];
+        function tagD(n){var el=d.getElementsByTagNameNS(ns,n)[0]||d.getElementsByTagName(n)[0];return el?el.textContent.trim():null;}
+        var desc=tagD('NmbItem');var qty=parseFloat(tagD('QtyItem')||'1')||1;
+        var prc=parseFloat(tagD('PrcItem')||'0')||0;var monto=parseFloat(tagD('MontoItem')||'0')||0;
+        if(desc)lineas.push({descripcion:desc,cantidad:qty,precio_unitario:prc||monto,total_linea:monto});
+      }
+      var provRut=tag('RUTEmisor');var rNorm=provRut?(provRut).replace(/[\.\-]/g,'').toLowerCase():'';
+      var provMatch=rNorm?provs.find(function(px){return(px.rut||'').replace(/[\.\-]/g,'').toLowerCase()===rNorm;}):null;
+      return{
+        tipo_dte:tipoDte,tipo_doc:tipoMap[tipoDte]||'Tipo '+tipoDte,
+        folio:tag('Folio'),fecha_emision:tag('FchEmis'),
+        proveedor_rut:provRut,proveedor_nombre:tag('RznSoc'),proveedor_giro:tag('GiroEmis'),
+        proveedor_direccion:(tag('DirOrigen')||'')+(tag('CmnaOrigen')?' '+tag('CmnaOrigen'):''),
+        proveedor_id:provMatch?provMatch.proveedor_id:null,
+        cliente_rut:tag('RUTRecep'),cliente_nombre:tag('RznSocRecep'),
+        neto:parseFloat(tag('MntNeto'))||0,iva:parseFloat(tag('IVA'))||0,total:parseFloat(tag('MntTotal'))||0,
+        lineas:lineas,xml_completo:xmlStr
+      };
+    }catch(e){return null;}
+  }
+  function onFile(e){
+    var file=e.target.files[0];if(!file)return;
+    setStatus('loading');setMsg('Extrayendo archivos XML del ZIP...');setDtes([]);setSel({});setResults(null);
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      if(typeof JSZip==='undefined'){setMsg('Error: librería ZIP no disponible');setStatus('error');return;}
+      JSZip.loadAsync(ev.target.result).then(function(zip){
+        var xmlFiles=[];zip.forEach(function(path,zEntry){if(/\.xml$/i.test(path)&&!zEntry.dir)xmlFiles.push(zEntry);});
+        if(!xmlFiles.length){setMsg('El ZIP no contiene archivos XML');setStatus('error');return;}
+        Promise.all(xmlFiles.map(function(f){return f.async('string').then(function(c){return{name:f.name,content:c};});})).then(function(arr){
+          var parsed=arr.map(function(it){var p=parseXmlDte(it.content);if(p)p._filename=it.name;return p;}).filter(Boolean);
+          if(!parsed.length){setMsg('No se pudo parsear ningún XML válido del ZIP');setStatus('error');}
+          else{setDtes(parsed);setMsg(parsed.length+' DTE encontrados de '+xmlFiles.length+' archivos');setStatus('ready');var s2={};parsed.forEach(function(d,i){s2[i]=true;});setSel(s2);}
+        });
+      }).catch(function(ex){setMsg('Error al abrir ZIP: '+ex.message);setStatus('error');});
+    };
+    reader.readAsArrayBuffer(file);
+  }
+  function importar(){
+    var items=Object.keys(sel).filter(function(k){return sel[k];}).map(function(k){return dtes[k];});
+    if(!items.length){setMsg('Seleccione al menos un DTE');return;}
+    setStatus('saving');setMsg('Importando '+items.length+' DTE a la bandeja...');
+    api('/dte-recibidos/import','POST',{dtes:items},p.tok).then(function(r){
+      setResults(r);setMsg('Importación completada: '+r.importados+' importados, '+r.duplicados+' duplicados, '+r.errores+' errores');setStatus('done');
+    }).catch(function(ex){setMsg('Error: '+ex.message);setStatus('error');});
+  }
+  var filtered=dtes.filter(function(d){if(!filtTipo)return true;return d.tipo_dte===filtTipo;});
+  var totalSel=Object.keys(sel).filter(function(k){return sel[k];}).length;
+  return h(Modal,{title:'📥 Importar DTE desde ZIP de Facto',onClose:p.onClose,lg:true},
+    h('div',null,
+      h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6,padding:12,marginBottom:12,fontSize:12}},
+        h('div',{style:{fontWeight:600,color:'#1D4ED8',marginBottom:4}},'Importación masiva a la bandeja'),
+        h('div',{style:{color:'#1E40AF'}},'Selecciona el ZIP que descargaste de Facto. Los DTEs se cargarán a la bandeja sin afectar inventario ni OC. Después podrás vincularlos a las OC correspondientes.')
+      ),
+      status==='idle'&&h('div',{style:{textAlign:'center',padding:30}},
+        h('input',{type:'file',accept:'.zip',onChange:onFile,style:{display:'block',margin:'0 auto 12px'}}),
+        h('div',{style:{fontSize:11,color:'#64748B'}},'Sube el archivo .zip descargado desde Facto')
+      ),
+      status==='loading'&&h('div',{style:{padding:20,textAlign:'center'}},h('div',{className:'spin'},msg)),
+      msg&&status!=='loading'&&h('div',{style:{padding:8,fontSize:12,color:status==='error'?'#DC2626':'#1E40AF',marginBottom:8}},msg),
+      (status==='ready'||status==='saving')&&h('div',null,
+        h('div',{style:{display:'flex',gap:6,alignItems:'center',marginBottom:8}},
+          h('button',{onClick:function(){var n={};dtes.forEach(function(_,i){n[i]=true;});setSel(n);},style:{padding:'4px 8px',fontSize:11,border:'1px solid #CBD5E1',borderRadius:4,cursor:'pointer'}},'Seleccionar todos'),
+          h('button',{onClick:function(){setSel({});},style:{padding:'4px 8px',fontSize:11,border:'1px solid #CBD5E1',borderRadius:4,cursor:'pointer'}},'Ninguno'),
+          h('select',{value:filtTipo,onChange:function(e){setFiltTipo(e.target.value);},style:{padding:'4px 6px',fontSize:11,border:'1px solid #CBD5E1',borderRadius:4}},h('option',{value:''},'Todos los tipos'),h('option',{value:'33'},'33-Factura'),h('option',{value:'34'},'34-F. Exenta'),h('option',{value:'56'},'56-N. Débito'),h('option',{value:'61'},'61-N. Crédito')),
+          h('div',{style:{marginLeft:'auto',fontSize:11,color:'#64748B'}},totalSel+' / '+dtes.length+' seleccionados')
+        ),
+        h('div',{style:{maxHeight:'45vh',overflowY:'auto',border:'1px solid #E2E8F0',borderRadius:6}},
+          h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
+            h('thead',null,h('tr',{style:{background:'#F1F5F9',position:'sticky',top:0}},
+              h('th',{style:{padding:6,width:30}}),h('th',{style:{padding:6,textAlign:'left'}},'Tipo'),h('th',{style:{padding:6,textAlign:'left'}},'Folio'),h('th',{style:{padding:6,textAlign:'left'}},'Fecha'),h('th',{style:{padding:6,textAlign:'left'}},'Proveedor'),h('th',{style:{padding:6,textAlign:'right'}},'Total')
+            )),
+            h('tbody',null,filtered.map(function(d,i){
+              var idx=dtes.indexOf(d);
+              return h('tr',{key:idx,style:{borderTop:'1px solid #E2E8F0'}},
+                h('td',{style:{padding:6,textAlign:'center'}},h('input',{type:'checkbox',checked:!!sel[idx],onChange:function(e){var s=Object.assign({},sel);s[idx]=e.target.checked;setSel(s);}})),
+                h('td',{style:{padding:6}},h('span',{style:{fontSize:10,fontWeight:600}},d.tipo_doc)),
+                h('td',{style:{padding:6,fontWeight:600,color:'#1E40AF'}},'#'+d.folio),
+                h('td',{style:{padding:6}},d.fecha_emision||'—'),
+                h('td',{style:{padding:6}},d.proveedor_nombre||'—',d.proveedor_id?h('span',{style:{fontSize:9,color:'#16A34A',marginLeft:4}},'✓'):h('span',{style:{fontSize:9,color:'#F59E0B',marginLeft:4}},'⚠')),
+                h('td',{style:{padding:6,textAlign:'right',fontWeight:600}},'$'+N(d.total,0))
+              );
+            }))
+          )
+        ),
+        h('div',{style:{display:'flex',gap:6,justifyContent:'flex-end',marginTop:12}},
+          h(Btn,{v:'gray',sm:true,onClick:p.onClose},'Cancelar'),
+          h(Btn,{onClick:importar,disabled:status==='saving'||totalSel===0},status==='saving'?'Importando...':'📥 Importar '+totalSel+' DTE')
+        )
+      ),
+      status==='done'&&results&&h('div',null,
+        h('div',{style:{background:'#DCFCE7',border:'1px solid #86EFAC',borderRadius:6,padding:14,marginBottom:10}},
+          h('div',{style:{fontWeight:700,color:'#15803D'}},'✓ Importación completada'),
+          h('div',{style:{marginTop:6,fontSize:12}},'Importados: ',h('strong',null,results.importados),' · Duplicados (ya existían): ',h('strong',null,results.duplicados),' · Errores: ',h('strong',null,results.errores))
+        ),
+        h(Btn,{onClick:function(){p.onRefresh();p.onClose();}},'Cerrar y ver bandeja')
+      )
+    )
+  );
+}
+
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas'};
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
@@ -11575,7 +12057,7 @@ function App(){
       h('div',{className:'sb-logo'},h('h1',null,'Empresas Poo'),h('p',null,'Sistema de Gestión')),
       h('div',{style:{padding:'4px 0',flex:1}},
         canSee('ordenes')&&grpHdr('oc','ORDENES DE COMPRA'),
-        canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true),navI('oc-guias','📋','Guías de Despacho',true)),
+        canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true),navI('oc-guias','📋','Guías de Despacho',true),navI('dte-recibidos','📥','DTE Recibidos',true)),
         canSee('ordenes')&&h('div',{className:'sb-sep'}),
         canSee('combustibles')&&grpHdr('comb','CONTROL DE COMBUSTIBLES'),
         canSee('combustibles')&&grp.comb&&h('div',null,
@@ -11694,6 +12176,7 @@ function App(){
           view==='reportes'&&h(ReportesView,{tok,m}),
           view==='ordenes'&&h(OCView,{tok,m,user,setView}),
           view==='oc-guias'&&h(OCGuiasView,{tok,m}),
+          view==='dte-recibidos'&&h(DTERecibidosView,{tok,m,user,setView}),
           view==='rendiciones'&&h(RendicionesView,{tok,m}),
           view==='vacaciones'&&h(VacacionesView,{tok,m}),
           view==='solicitudes'&&h(SolicitudesView,{tok,m,user}),
