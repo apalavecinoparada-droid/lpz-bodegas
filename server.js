@@ -6265,6 +6265,20 @@ app.delete('/api/dte-recibidos/:id', auth, async(req,res)=>{
   }catch(e){res.status(400).json({error:e.message});}
 });
 
+// POST: eliminar múltiples DTE de la bandeja en una sola operación
+app.post('/api/dte-recibidos/bulk-delete', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    var ids=Array.isArray(req.body.ids)?req.body.ids.map(function(i){return parseInt(i);}).filter(function(i){return !isNaN(i);}):[];
+    if(!ids.length)return res.status(400).json({error:'No se enviaron IDs válidos'});
+    await client.query('BEGIN');
+    var r=await client.query('DELETE FROM dte_recibidos WHERE dte_id=ANY($1::int[]) RETURNING dte_id',[ids]);
+    await client.query('COMMIT');
+    res.json({ok:true,eliminados:r.rowCount,ids:r.rows.map(function(x){return x.dte_id;})});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
 // GET: OCs candidatas para vincular a un DTE (mismo proveedor preferentemente)
 app.get('/api/dte-recibidos/:id/ocs-candidatas', auth, async(req,res)=>{
   try{
