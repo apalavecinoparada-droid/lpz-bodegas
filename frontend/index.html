@@ -11407,6 +11407,8 @@ function DTERecibidosView(p){
   var[showImport,setShowImport]=useState(false);var[showVincular,setShowVincular]=useState(null);
   var[fTipo,setFTipo]=useState('');var[fProv,setFProv]=useState('');var[fEmpresa,setFEmpresa]=useState('');
   var[fEstado,setFEstado]=useState('');var[fVinc,setFVinc]=useState('');var[fDesde,setFDesde]=useState('');var[fHasta,setFHasta]=useState('');var[fQ,setFQ]=useState('');
+  var[selected,setSelected]=useState({}); // map de dte_id -> true
+  var[bulkDeleting,setBulkDeleting]=useState(false);
   var provs=p.m&&Array.isArray(p.m.provs)?p.m.provs:[];
   var empresas=p.m&&Array.isArray(p.m.empresas)?p.m.empresas:[];
   function load2(){
@@ -11437,6 +11439,30 @@ function DTERecibidosView(p){
   function eliminar(dte){
     if(!confirm('¿Eliminar el DTE Folio '+dte.folio+'?'))return;
     api('/dte-recibidos/'+dte.dte_id,'DELETE',null,p.tok).then(function(){load2();}).catch(function(ex){alert(ex.message);});
+  }
+  // Helpers de selección múltiple
+  var idsSel=Object.keys(selected).filter(function(k){return selected[k];}).map(function(k){return parseInt(k);});
+  var todosSeleccionados=dtes.length>0&&dtes.every(function(d){return selected[d.dte_id];});
+  var algunoSeleccionado=idsSel.length>0;
+  function toggleOne(dteId){
+    var s=Object.assign({},selected);if(s[dteId])delete s[dteId];else s[dteId]=true;setSelected(s);
+  }
+  function toggleAll(){
+    if(todosSeleccionados){setSelected({});return;}
+    var s={};dtes.forEach(function(d){s[d.dte_id]=true;});setSelected(s);
+  }
+  function eliminarMasivo(){
+    if(idsSel.length===0)return;
+    var conVinc=dtes.filter(function(d){return idsSel.indexOf(d.dte_id)>=0&&parseFloat(d.monto_vinculado||0)>0;}).length;
+    var msg='¿Eliminar '+idsSel.length+' DTE seleccionado'+(idsSel.length>1?'s':'')+'?';
+    if(conVinc>0)msg+='\n\n⚠ '+conVinc+' tiene'+(conVinc>1?'n':'')+' OC vinculadas — esas vinculaciones también se eliminarán.';
+    msg+='\n\nEsta acción NO se puede deshacer.';
+    if(!confirm(msg))return;
+    setBulkDeleting(true);
+    api('/dte-recibidos/bulk-delete','POST',{ids:idsSel},p.tok)
+      .then(function(r){alert('✓ '+r.eliminados+' DTE eliminado'+(r.eliminados>1?'s':''));setSelected({});load2();})
+      .catch(function(ex){alert('Error: '+ex.message);})
+      .finally(function(){setBulkDeleting(false);});
   }
   return h('div',null,
     // KPIs en cards
@@ -11469,10 +11495,17 @@ function DTERecibidosView(p){
         h(Btn,{v:'gray',sm:true,onClick:function(){setFTipo('');setFProv('');setFEmpresa('');setFEstado('');setFVinc('');setFDesde('');setFHasta('');setFQ('');}},'✕ Limpiar')
       )
     ),
+    // Barra de acciones masivas (visible solo cuando hay seleccionados)
+    algunoSeleccionado&&h('div',{style:{background:'#1E3A2D',color:'#fff',padding:'10px 14px',borderRadius:6,marginBottom:10,display:'flex',alignItems:'center',gap:10,boxShadow:'0 2px 6px rgba(0,0,0,0.1)'}},
+      h('div',{style:{fontSize:13,fontWeight:600,flex:1}},'✓ '+idsSel.length+' DTE seleccionado'+(idsSel.length>1?'s':'')),
+      h('button',{onClick:function(){setSelected({});},style:{padding:'6px 12px',fontSize:11,background:'transparent',border:'1px solid rgba(255,255,255,0.3)',borderRadius:4,cursor:'pointer',color:'#fff'}},'✕ Limpiar selección'),
+      h('button',{onClick:eliminarMasivo,disabled:bulkDeleting,style:{padding:'6px 14px',fontSize:12,fontWeight:600,background:'#DC2626',border:'1px solid #B91C1C',borderRadius:4,cursor:'pointer',color:'#fff'}},bulkDeleting?'Eliminando...':'🗑 Eliminar seleccionados')
+    ),
     // Tabla
     load?h('div',{className:'spin'},'Cargando...'):h('div',{className:'card'},
       h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
         h('thead',null,h('tr',{style:{background:'#F1F5F9',textAlign:'left'}},
+          h('th',{style:{padding:8,width:30,textAlign:'center'}},h('input',{type:'checkbox',checked:todosSeleccionados,onChange:toggleAll,title:todosSeleccionados?'Deseleccionar todos':'Seleccionar todos',style:{cursor:'pointer'}})),
           h('th',{style:{padding:8}},'Tipo'),
           h('th',{style:{padding:8}},'Folio'),
           h('th',{style:{padding:8}},'Fecha'),
@@ -11482,7 +11515,7 @@ function DTERecibidosView(p){
           h('th',{style:{padding:8,textAlign:'center'}},'Acciones')
         )),
         h('tbody',null,
-          dtes.length===0?h('tr',null,h('td',{colSpan:7,style:{padding:20,textAlign:'center',color:'#94A3B8'}},'Sin DTE en la bandeja. Importa un ZIP de Facto para empezar.')):
+          dtes.length===0?h('tr',null,h('td',{colSpan:8,style:{padding:20,textAlign:'center',color:'#94A3B8'}},'Sin DTE en la bandeja. Importa un ZIP de Facto para empezar.')):
           dtes.map(function(d){
             var totalDte=parseFloat(d.total)||0;
             var aplicado=parseFloat(d.monto_vinculado)||0;
@@ -11490,7 +11523,11 @@ function DTERecibidosView(p){
             var ocsCount=parseInt(d.ocs_count)||0;
             var estadoColor=Math.abs(totalDte-aplicado)<1?'#16A34A':aplicado>totalDte?'#DC2626':aplicado>0?'#F59E0B':'#94A3B8';
             var estadoLbl=Math.abs(totalDte-aplicado)<1?'Completo':aplicado>totalDte?'Sobre':aplicado>0?'Parcial':'Sin asignar';
-            return h('tr',{key:d.dte_id,style:{borderTop:'1px solid #E2E8F0',cursor:'pointer'},onClick:function(){setSelDte(d);}},
+            var isSel=!!selected[d.dte_id];
+            return h('tr',{key:d.dte_id,style:{borderTop:'1px solid #E2E8F0',cursor:'pointer',background:isSel?'#FEF3C7':'transparent'},onClick:function(){setSelDte(d);}},
+              h('td',{style:{padding:8,textAlign:'center'},onClick:function(e){e.stopPropagation();}},
+                h('input',{type:'checkbox',checked:isSel,onChange:function(){toggleOne(d.dte_id);},style:{cursor:'pointer'}})
+              ),
               h('td',{style:{padding:8}},h('span',{style:{padding:'2px 8px',background:d.tipo_dte==='61'?'#FEE2E2':d.tipo_dte==='56'?'#FEF3C7':'#DBEAFE',color:d.tipo_dte==='61'?'#991B1B':d.tipo_dte==='56'?'#92400E':'#1E40AF',borderRadius:10,fontSize:10,fontWeight:600}},d.tipo_doc||('Tipo '+d.tipo_dte))),
               h('td',{style:{padding:8,fontWeight:700,color:'#1E40AF'}},'#'+d.folio),
               h('td',{style:{padding:8}},d.fecha_emision?fmtD(d.fecha_emision):'—'),
