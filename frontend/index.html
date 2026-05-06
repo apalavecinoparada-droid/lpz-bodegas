@@ -11478,6 +11478,12 @@ function DTERecibidosView(p){
     h('div',{className:'card',style:{padding:10,marginBottom:10}},
       h('div',{style:{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',marginBottom:8}},
         h(Btn,{onClick:function(){setShowImport(true);}},'📥 Importar ZIP de Facto'),
+        h(Btn,{v:'gray',sm:true,onClick:function(){
+          if(!confirm('Re-detectar la empresa de TODOS los DTE basándose en el RUT del receptor.\n\nÚtil si importaste DTEs antes de agregar las empresas, o si la detección falló. ¿Continuar?'))return;
+          api('/dte-recibidos/redetectar-empresa','POST',{force:true},p.tok)
+            .then(function(r){alert('✓ Re-detección completada\n\nActualizados: '+r.actualizados+'\nSin match (revisar manualmente): '+r.sin_match);load2();})
+            .catch(function(ex){alert('Error: '+ex.message);});
+        }},'🔄 Re-detectar empresa'),
         h('input',{type:'text',value:fQ,onChange:function(e){setFQ(e.target.value);},placeholder:'Buscar folio o proveedor...',style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:220}}),
         h('div',{style:{marginLeft:'auto',fontSize:12,color:'#64748B'}},dtes.length+' DTE en la bandeja')
       ),
@@ -11807,6 +11813,7 @@ function ImportZipDTEBandeja(p){
   var[status,setStatus]=useState('idle');var[dtes,setDtes]=useState([]);var[sel,setSel]=useState({});
   var[msg,setMsg]=useState('');var[results,setResults]=useState(null);var[filtTipo,setFiltTipo]=useState('');
   var provs=p.m&&Array.isArray(p.m.provs)?p.m.provs:[];
+  var empresas=p.m&&Array.isArray(p.m.empresas)?p.m.empresas:[];
   function parseXmlDte(xmlStr){
     try{
       var parser=new DOMParser();var doc=parser.parseFromString(xmlStr,'text/xml');
@@ -11823,15 +11830,21 @@ function ImportZipDTEBandeja(p){
         var prc=parseFloat(tagD('PrcItem')||'0')||0;var monto=parseFloat(tagD('MontoItem')||'0')||0;
         if(desc)lineas.push({descripcion:desc,cantidad:qty,precio_unitario:prc||monto,total_linea:monto});
       }
+      // Match proveedor por RUT emisor
       var provRut=tag('RUTEmisor');var rNorm=provRut?(provRut).replace(/[\.\-]/g,'').toLowerCase():'';
       var provMatch=rNorm?provs.find(function(px){return(px.rut||'').replace(/[\.\-]/g,'').toLowerCase()===rNorm;}):null;
+      // Match empresa por RUT receptor (cliente)
+      var clienteRut=tag('RUTRecep');var cNorm=clienteRut?(clienteRut).replace(/[\.\-]/g,'').toLowerCase():'';
+      var empMatch=cNorm?empresas.find(function(em){return(em.rut||'').replace(/[\.\-]/g,'').toLowerCase()===cNorm;}):null;
       return{
         tipo_dte:tipoDte,tipo_doc:tipoMap[tipoDte]||'Tipo '+tipoDte,
         folio:tag('Folio'),fecha_emision:tag('FchEmis'),
         proveedor_rut:provRut,proveedor_nombre:tag('RznSoc'),proveedor_giro:tag('GiroEmis'),
         proveedor_direccion:(tag('DirOrigen')||'')+(tag('CmnaOrigen')?' '+tag('CmnaOrigen'):''),
         proveedor_id:provMatch?provMatch.proveedor_id:null,
-        cliente_rut:tag('RUTRecep'),cliente_nombre:tag('RznSocRecep'),
+        cliente_rut:clienteRut,cliente_nombre:tag('RznSocRecep'),
+        empresa_id:empMatch?empMatch.empresa_id:null,
+        empresa_nombre:empMatch?empMatch.razon_social:null,
         neto:parseFloat(tag('MntNeto'))||0,iva:parseFloat(tag('IVA'))||0,total:parseFloat(tag('MntTotal'))||0,
         lineas:lineas,xml_completo:xmlStr
       };
@@ -11887,7 +11900,7 @@ function ImportZipDTEBandeja(p){
         h('div',{style:{maxHeight:'45vh',overflowY:'auto',border:'1px solid #E2E8F0',borderRadius:6}},
           h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
             h('thead',null,h('tr',{style:{background:'#F1F5F9',position:'sticky',top:0}},
-              h('th',{style:{padding:6,width:30}}),h('th',{style:{padding:6,textAlign:'left'}},'Tipo'),h('th',{style:{padding:6,textAlign:'left'}},'Folio'),h('th',{style:{padding:6,textAlign:'left'}},'Fecha'),h('th',{style:{padding:6,textAlign:'left'}},'Proveedor'),h('th',{style:{padding:6,textAlign:'right'}},'Total')
+              h('th',{style:{padding:6,width:30}}),h('th',{style:{padding:6,textAlign:'left'}},'Tipo'),h('th',{style:{padding:6,textAlign:'left'}},'Folio'),h('th',{style:{padding:6,textAlign:'left'}},'Fecha'),h('th',{style:{padding:6,textAlign:'left'}},'Proveedor'),h('th',{style:{padding:6,textAlign:'left'}},'Empresa'),h('th',{style:{padding:6,textAlign:'right'}},'Total')
             )),
             h('tbody',null,filtered.map(function(d,i){
               var idx=dtes.indexOf(d);
@@ -11897,6 +11910,7 @@ function ImportZipDTEBandeja(p){
                 h('td',{style:{padding:6,fontWeight:600,color:'#1E40AF'}},'#'+d.folio),
                 h('td',{style:{padding:6}},d.fecha_emision||'—'),
                 h('td',{style:{padding:6}},d.proveedor_nombre||'—',d.proveedor_id?h('span',{style:{fontSize:9,color:'#16A34A',marginLeft:4}},'✓'):h('span',{style:{fontSize:9,color:'#F59E0B',marginLeft:4}},'⚠')),
+                h('td',{style:{padding:6}},d.empresa_nombre?h('span',{style:{color:'#16A34A',fontWeight:600,fontSize:10}},'✓ '+d.empresa_nombre):h('span',{style:{color:'#F59E0B',fontSize:10}},'⚠ '+(d.cliente_nombre||'sin match'))),
                 h('td',{style:{padding:6,textAlign:'right',fontWeight:600}},'$'+N(d.total,0))
               );
             }))
