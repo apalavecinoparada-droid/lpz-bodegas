@@ -6265,6 +6265,34 @@ app.delete('/api/dte-recibidos/:id', auth, async(req,res)=>{
   }catch(e){res.status(400).json({error:e.message});}
 });
 
+// POST: re-detectar empresa de DTEs por RUT del receptor (útil para DTEs ya importados sin empresa)
+app.post('/api/dte-recibidos/redetectar-empresa', auth, async(req,res)=>{
+  try{
+    // Trae todas las empresas activas
+    var emps=await pool.query("SELECT empresa_id, rut FROM empresas WHERE activo=true OR activo IS NULL");
+    var rutMap={};
+    emps.rows.forEach(function(e){
+      var k=(e.rut||'').replace(/[\.\-]/g,'').toLowerCase();
+      if(k)rutMap[k]=e.empresa_id;
+    });
+    // Busca DTEs sin empresa o todos (si force=true)
+    var sql=req.body.force?'SELECT dte_id, cliente_rut FROM dte_recibidos':'SELECT dte_id, cliente_rut FROM dte_recibidos WHERE empresa_id IS NULL';
+    var rows=await pool.query(sql);
+    var actualizados=0;var sinMatch=0;
+    for(var i=0;i<rows.rows.length;i++){
+      var d=rows.rows[i];
+      var k=(d.cliente_rut||'').replace(/[\.\-]/g,'').toLowerCase();
+      if(k && rutMap[k]){
+        await pool.query('UPDATE dte_recibidos SET empresa_id=$1 WHERE dte_id=$2',[rutMap[k],d.dte_id]);
+        actualizados++;
+      }else{
+        sinMatch++;
+      }
+    }
+    res.json({ok:true,actualizados:actualizados,sin_match:sinMatch,total_revisados:rows.rows.length});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 // POST: eliminar múltiples DTE de la bandeja en una sola operación
 app.post('/api/dte-recibidos/bulk-delete', auth, async(req,res)=>{
   const client=await pool.connect();
