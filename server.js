@@ -3933,6 +3933,62 @@ async function setupRendiciones(q){
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
 
+  // ── DTE Recibidos: bandeja de facturas/notas recibidas (parseadas de XML SII de Facto u otra fuente) ──
+  await q(`CREATE TABLE IF NOT EXISTS dte_recibidos (
+    dte_id SERIAL PRIMARY KEY,
+    tipo_dte VARCHAR(10) NOT NULL,
+    tipo_doc VARCHAR(30),
+    folio VARCHAR(30) NOT NULL,
+    fecha_emision DATE,
+    proveedor_rut VARCHAR(20),
+    proveedor_nombre VARCHAR(200),
+    proveedor_giro VARCHAR(200),
+    proveedor_direccion VARCHAR(300),
+    proveedor_id INT REFERENCES proveedores(proveedor_id),
+    cliente_rut VARCHAR(20),
+    cliente_nombre VARCHAR(200),
+    empresa_id INT REFERENCES empresas(empresa_id),
+    neto NUMERIC(14,2) DEFAULT 0,
+    iva NUMERIC(14,2) DEFAULT 0,
+    total NUMERIC(14,2) DEFAULT 0,
+    xml_completo TEXT,
+    estado VARCHAR(20) DEFAULT 'pendiente',
+    oc_id INT REFERENCES ordenes_compra(oc_id),
+    vinculado_en TIMESTAMP,
+    vinculado_por VARCHAR(100),
+    observaciones TEXT,
+    importado_por VARCHAR(100),
+    importado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(proveedor_rut,tipo_dte,folio)
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS dte_recibido_lineas (
+    linea_id SERIAL PRIMARY KEY,
+    dte_id INT NOT NULL REFERENCES dte_recibidos(dte_id) ON DELETE CASCADE,
+    linea_num INT,
+    descripcion TEXT,
+    cantidad NUMERIC(12,3) DEFAULT 1,
+    precio_unitario NUMERIC(14,4) DEFAULT 0,
+    total_linea NUMERIC(14,2) DEFAULT 0
+  )`);
+
+  // Tabla N:N entre DTE recibidos y OCs (un DTE puede pagar varias OCs y viceversa)
+  await q(`CREATE TABLE IF NOT EXISTS dte_oc (
+    rel_id SERIAL PRIMARY KEY,
+    dte_id INT NOT NULL REFERENCES dte_recibidos(dte_id) ON DELETE CASCADE,
+    oc_id INT NOT NULL REFERENCES ordenes_compra(oc_id) ON DELETE CASCADE,
+    monto_aplicado NUMERIC(14,2) NOT NULL DEFAULT 0,
+    observacion TEXT,
+    creado_por VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(dte_id,oc_id)
+  )`);
+
+  // Migración por si la tabla existía sin columna oc_id
+  try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS oc_id INT REFERENCES ordenes_compra(oc_id)');}catch(e){}
+  try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS xml_completo TEXT');}catch(e){}
+
+
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS fecha_ingreso DATE');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS cotizaciones_anteriores INT DEFAULT 0');}catch(e){}
   try{await q("ALTER TABLE personal ADD COLUMN IF NOT EXISTS categoria VARCHAR(30) DEFAULT 'otros_faena'");}catch(e){}
@@ -6052,8 +6108,185 @@ app.post('/api/admin/wipe-transacciones', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
-// SPA fallback — must be AFTER all API routes
-app.get('*', (req,res)=>res.sendFile(path.join(__dirname,'frontend','index.html')));
+// ═══════════════════════════════════════════════════════════════
+// DTE RECIBIDOS — Bandeja de facturas/notas recibidas
+// Relación N:N con OCs vía tabla dte_oc (una factura puede pagar varias OCs)
+// ═══════════════════════════════════════════════════════════════
+
+// GET: lista de DTE recibidos con filtros + estado de vinculación calculado
+app.get('/api/dte-recibidos', auth, async(req,res)=>{
+  try{
+    var w=[];var p=[];var i=1;
+    if(req.query.tipo_dte){w.push('d.tipo_dte=$'+i);p.push(req.query.tipo_dte);i++;}
+    if(req.query.proveedor_id){w.push('d.proveedor_id=$'+i);p.push(req.query.proveedor_id);i++;}
+    if(req.query.empresa_id){w.push('d.empresa_id=$'+i);p.push(req.query.empresa_id);i++;}
+    if(req.query.desde){w.push('d.fecha_emision>=$'+i);p.push(req.query.desde);i++;}
+    if(req.query.hasta){w.push('d.fecha_emision<=$'+i);p.push(req.query.hasta);i++;}
+    if(req.query.q){w.push('(d.folio ILIKE $'+i+' OR d.proveedor_nombre ILIKE $'+i+')');p.push('%'+req.query.q+'%');i++;}
+    // Filtro por vinculación: usa la suma de la tabla dte_oc
+    var vincFilter='';
+    if(req.query.vinculado==='no')vincFilter=' HAVING COALESCE(SUM(do2.monto_aplicado),0)=0';
+    else if(req.query.vinculado==='si')vincFilter=' HAVING COALESCE(SUM(do2.monto_aplicado),0)>0';
+    else if(req.query.vinculado==='parcial')vincFilter=' HAVING COALESCE(SUM(do2.monto_aplicado),0)>0 AND COALESCE(SUM(do2.monto_aplicado),0)<d.total';
+    else if(req.query.vinculado==='completo')vincFilter=' HAVING ABS(COALESCE(SUM(do2.monto_aplicado),0)-d.total)<1';
+    var sql=`SELECT d.*, p.nombre AS proveedor_nombre_match, e.razon_social AS empresa_razon_social,
+             COALESCE(SUM(do2.monto_aplicado),0) AS monto_vinculado,
+             COUNT(DISTINCT do2.oc_id) AS ocs_count
+             FROM dte_recibidos d
+             LEFT JOIN proveedores p ON d.proveedor_id=p.proveedor_id
+             LEFT JOIN empresas e ON d.empresa_id=e.empresa_id
+             LEFT JOIN dte_oc do2 ON d.dte_id=do2.dte_id`;
+    if(w.length)sql+=' WHERE '+w.join(' AND ');
+    sql+=' GROUP BY d.dte_id, p.nombre, e.razon_social';
+    sql+=vincFilter;
+    sql+=' ORDER BY d.fecha_emision DESC NULLS LAST, d.dte_id DESC LIMIT 1000';
+    var r=await pool.query(sql,p);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// GET: detalle de un DTE con líneas y OCs vinculadas
+app.get('/api/dte-recibidos/:id', auth, async(req,res)=>{
+  try{
+    var d=await pool.query('SELECT d.*, p.nombre AS proveedor_nombre_match, e.razon_social AS empresa_razon_social FROM dte_recibidos d LEFT JOIN proveedores p ON d.proveedor_id=p.proveedor_id LEFT JOIN empresas e ON d.empresa_id=e.empresa_id WHERE d.dte_id=$1',[req.params.id]);
+    if(!d.rows.length)return res.status(404).json({error:'No encontrado'});
+    var l=await pool.query('SELECT * FROM dte_recibido_lineas WHERE dte_id=$1 ORDER BY linea_num',[req.params.id]);
+    var ocs=await pool.query(`SELECT do2.*, oc.numero_oc, oc.fecha_emision AS oc_fecha, oc.total AS oc_total, oc.estado AS oc_estado, pr.nombre AS oc_proveedor
+                              FROM dte_oc do2
+                              JOIN ordenes_compra oc ON do2.oc_id=oc.oc_id
+                              LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
+                              WHERE do2.dte_id=$1 ORDER BY do2.creado_en`,[req.params.id]);
+    var dte=d.rows[0];
+    dte.lineas=l.rows;
+    dte.ocs_vinculadas=ocs.rows;
+    dte.monto_vinculado=ocs.rows.reduce(function(s,r){return s+parseFloat(r.monto_aplicado||0);},0);
+    res.json(dte);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// POST: importar lote de DTE desde el parser del frontend
+app.post('/api/dte-recibidos/import', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    var dtes=Array.isArray(req.body.dtes)?req.body.dtes:[];
+    var resumen={importados:0,duplicados:0,errores:0,detalles:[]};
+    for(var i=0;i<dtes.length;i++){
+      var d=dtes[i];
+      try{
+        var dup=await client.query('SELECT dte_id FROM dte_recibidos WHERE proveedor_rut=$1 AND tipo_dte=$2 AND folio=$3',[d.proveedor_rut,d.tipo_dte,String(d.folio)]);
+        if(dup.rows.length){resumen.duplicados++;resumen.detalles.push({folio:d.folio,status:'duplicado',dte_id:dup.rows[0].dte_id});continue;}
+        var ins=await client.query(`INSERT INTO dte_recibidos
+          (tipo_dte,tipo_doc,folio,fecha_emision,proveedor_rut,proveedor_nombre,proveedor_giro,proveedor_direccion,proveedor_id,
+           cliente_rut,cliente_nombre,empresa_id,neto,iva,total,xml_completo,importado_por)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING dte_id`,
+          [d.tipo_dte,d.tipo_doc,String(d.folio),d.fecha_emision||null,d.proveedor_rut,d.proveedor_nombre,d.proveedor_giro,d.proveedor_direccion,d.proveedor_id||null,
+           d.cliente_rut,d.cliente_nombre,d.empresa_id||null,parseFloat(d.neto)||0,parseFloat(d.iva)||0,parseFloat(d.total)||0,d.xml_completo||null,req.user.email]);
+        var dteId=ins.rows[0].dte_id;
+        if(Array.isArray(d.lineas)){
+          for(var j=0;j<d.lineas.length;j++){
+            var ln=d.lineas[j];
+            await client.query('INSERT INTO dte_recibido_lineas(dte_id,linea_num,descripcion,cantidad,precio_unitario,total_linea) VALUES($1,$2,$3,$4,$5,$6)',
+              [dteId,j+1,ln.descripcion||'',parseFloat(ln.cantidad)||0,parseFloat(ln.precio_unitario)||0,parseFloat(ln.total_linea)||0]);
+          }
+        }
+        resumen.importados++;
+        resumen.detalles.push({folio:d.folio,status:'importado',dte_id:dteId});
+      }catch(ex){
+        resumen.errores++;
+        resumen.detalles.push({folio:d.folio,status:'error',mensaje:ex.message});
+      }
+    }
+    await client.query('COMMIT');
+    res.json(resumen);
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// PUT: actualizar metadatos de un DTE
+app.put('/api/dte-recibidos/:id', auth, async(req,res)=>{
+  try{
+    var b=req.body;
+    var r=await pool.query(`UPDATE dte_recibidos SET
+      proveedor_id=COALESCE($1,proveedor_id),
+      empresa_id=COALESCE($2,empresa_id),
+      observaciones=$3
+      WHERE dte_id=$4 RETURNING *`,
+      [b.proveedor_id||null,b.empresa_id||null,b.observaciones||null,req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'No encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// POST: agregar una vinculación DTE→OC con monto
+app.post('/api/dte-recibidos/:id/oc', auth, async(req,res)=>{
+  try{
+    if(!req.body.oc_id)return res.status(400).json({error:'oc_id requerido'});
+    var monto=parseFloat(req.body.monto_aplicado);
+    if(!monto||monto<=0)return res.status(400).json({error:'monto_aplicado debe ser mayor a 0'});
+    // Verificar que la OC exista
+    var oc=await pool.query('SELECT oc_id, total FROM ordenes_compra WHERE oc_id=$1',[req.body.oc_id]);
+    if(!oc.rows.length)return res.status(404).json({error:'OC no encontrada'});
+    var r=await pool.query(`INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5) RETURNING *`,
+      [req.params.id,req.body.oc_id,monto,req.body.observacion||null,req.user.email]);
+    res.json(r.rows[0]);
+  }catch(e){
+    if(e.code==='23505')return res.status(400).json({error:'Esta OC ya está vinculada a este DTE. Edita la vinculación existente.'});
+    res.status(400).json({error:e.message});
+  }
+});
+
+// PUT: actualizar monto de una vinculación
+app.put('/api/dte-oc/:relId', auth, async(req,res)=>{
+  try{
+    var monto=parseFloat(req.body.monto_aplicado);
+    if(!monto||monto<=0)return res.status(400).json({error:'monto_aplicado debe ser mayor a 0'});
+    var r=await pool.query(`UPDATE dte_oc SET monto_aplicado=$1, observacion=$2 WHERE rel_id=$3 RETURNING *`,
+      [monto,req.body.observacion||null,req.params.relId]);
+    if(!r.rows.length)return res.status(404).json({error:'No encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// DELETE: quitar una vinculación específica DTE-OC
+app.delete('/api/dte-oc/:relId', auth, async(req,res)=>{
+  try{
+    var r=await pool.query('DELETE FROM dte_oc WHERE rel_id=$1 RETURNING *',[req.params.relId]);
+    if(!r.rows.length)return res.status(404).json({error:'No encontrado'});
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// DELETE: eliminar DTE de la bandeja
+app.delete('/api/dte-recibidos/:id', auth, async(req,res)=>{
+  try{
+    await pool.query('DELETE FROM dte_recibidos WHERE dte_id=$1',[req.params.id]);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// GET: OCs candidatas para vincular a un DTE (mismo proveedor preferentemente)
+app.get('/api/dte-recibidos/:id/ocs-candidatas', auth, async(req,res)=>{
+  try{
+    var dte=await pool.query('SELECT proveedor_id FROM dte_recibidos WHERE dte_id=$1',[req.params.id]);
+    if(!dte.rows.length)return res.status(404).json({error:'DTE no encontrado'});
+    var provId=dte.rows[0].proveedor_id;
+    // OCs del mismo proveedor + las que aún tienen saldo no facturado
+    var sql=`SELECT oc.oc_id, oc.numero_oc, oc.fecha_emision, oc.total, oc.estado, oc.empresa_id,
+                    pr.nombre AS proveedor_nombre, em.razon_social AS empresa_razon_social,
+                    COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc do2 WHERE do2.oc_id=oc.oc_id),0) AS monto_facturado,
+                    (oc.total - COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc do2 WHERE do2.oc_id=oc.oc_id),0)) AS saldo_pendiente
+             FROM ordenes_compra oc
+             LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
+             LEFT JOIN empresas em ON oc.empresa_id=em.empresa_id
+             WHERE oc.proveedor_id=$1 AND oc.estado!='CANCELADA' AND oc.estado!='ANULADA'
+             ORDER BY oc.fecha_emision DESC LIMIT 100`;
+    var r=await pool.query(sql,[provId]);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+
 
 app.listen(PORT,'0.0.0.0', async()=>{
   console.log('\n============================================================');
