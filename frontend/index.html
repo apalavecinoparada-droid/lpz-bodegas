@@ -3503,7 +3503,7 @@ function OCView(p){
   const subcats=p.m&&Array.isArray(p.m.subcats)?p.m.subcats:[];
   const[ocs,setOCs]=useState([]);const[load,setLoad]=useState(true);
   const[formOC,setFormOC]=useState(null);const[cerrarOC,setCerrarOC]=useState(null);const[linkOT,setLinkOT]=useState(null);const[otsList,setOtsList]=useState([]);
-  const[recibirOC,setRecibirOC]=useState(null);const[verOC,setVerOC]=useState(null);
+  const[recibirOC,setRecibirOC]=useState(null);const[verOC,setVerOC]=useState(null);const[verTermica,setVerTermica]=useState(null);
   const[reabrirOC,setReabrirOC]=useState(null);
   const[filtEst,setFiltEst]=useState('');const[filtProv,setFiltProv]=useState('');
   const[filtDesde,setFiltDesde]=useState('');const[filtHasta,setFiltHasta]=useState('');
@@ -3648,7 +3648,8 @@ function OCView(p){
     cerrarOC&&h(OCCerrarModal,{tok:p.tok,oc:cerrarOC,m:p.m,onClose:function(){setCerrarOC(null);},onSave:function(){setCerrarOC(null);load2();}}),
     recibirOC&&h(OCRecibirModal,{tok:p.tok,oc:recibirOC,m:p.m,onClose:function(){setRecibirOC(null);},onSave:function(){setRecibirOC(null);load2();}}),
     reabrirOC&&h(OCReabrirModal,{tok:p.tok,oc:reabrirOC,onClose:function(){setReabrirOC(null);},onSave:function(){setReabrirOC(null);load2();}}),
-    verOC&&h(OCDocView,{oc:verOC,m:p.m,onClose:function(){setVerOC(null);}}),
+    verOC&&h(OCDocView,{oc:verOC,m:p.m,onClose:function(){setVerOC(null);},onAbrirTermica:function(oc){setVerOC(null);setVerTermica(oc);}}),
+    verTermica&&h(OCTermicaView,{oc:verTermica,m:p.m,onClose:function(){setVerTermica(null);}}),
     showCalc&&h(CalcCombustible,{onClose:function(){setShowCalc(false);}}),
     showZipImport&&h(ImportZipDTE,{tok:p.tok,m:p.m,onClose:function(){setShowZipImport(false);},onRefresh:load2}),
     linkOT&&h(Modal,{title:'Asignar lineas OC '+(linkOT.numero_oc||'')+' a Ordenes de Trabajo',onClose:function(){setLinkOT(null);load2();}},
@@ -3773,6 +3774,7 @@ function OCDocView(p){
       h('div',{className:'mh'},
         h('h3',null,'Orden de Compra — '+str(oc.numero_oc)),
         h('div',{style:{display:'flex',gap:8,alignItems:'center'}},
+          h('button',{className:'btn btn-sm',style:{background:'#1E3A2D',color:'#FCD34D'},onClick:function(){if(p.onAbrirTermica)p.onAbrirTermica(oc);}},'🧾 Ticket térmico'),
           h('button',{className:'btn btn-p btn-sm',onClick:imprimir},'🖨 Imprimir'),
           h('button',{className:'mc',onClick:p.onClose},'×')
         )
@@ -3782,9 +3784,239 @@ function OCDocView(p){
   );
 }
 
-// ── OC FORM MODAL ──
+// ── OC TICKET TÉRMICO ──
+// Vista de impresión optimizada para impresoras térmicas (80mm o 58mm)
+// Detalle agrupado por faena para trazabilidad clara
+function OCTermicaView(p){
+  const oc=p.oc||{};
+  const lineas=Array.isArray(oc.lineas)?oc.lineas:[];
+  const empresa=(p.m&&Array.isArray(p.m.empresas)?p.m.empresas:[]).find(function(e){return e.empresa_id===oc.empresa_id;})||{};
+  const faenas=(p.m&&Array.isArray(p.m.faenas)?p.m.faenas:[]);
+  const equipos=(p.m&&Array.isArray(p.m.equipos)?p.m.equipos:[]);
+  const subcats=(p.m&&Array.isArray(p.m.subcats)?p.m.subcats:[]);
+  const[ancho,setAncho]=useState('80'); // '80' o '58'
+  const CLP2=function(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));};
+  // Sanitiza textos para evitar caracteres extraños en impresoras térmicas viejas
+  const clean=function(s){if(!s)return '';return String(s).replace(/[áàä]/g,'a').replace(/[éèë]/g,'e').replace(/[íìï]/g,'i').replace(/[óòö]/g,'o').replace(/[úùü]/g,'u').replace(/ñ/g,'n').replace(/[ÁÀÄ]/g,'A').replace(/[ÉÈË]/g,'E').replace(/[ÍÌÏ]/g,'I').replace(/[ÓÒÖ]/g,'O').replace(/[ÚÙÜ]/g,'U').replace(/Ñ/g,'N');};
+  
+  // Agrupar líneas por faena para impresión clara
+  function groupByFaena(){
+    const grupos={};
+    lineas.forEach(function(ln){
+      const fId=ln.faena_id||'sin';
+      if(!grupos[fId]){
+        const f=faenas.find(function(x){return String(x.faena_id)===String(ln.faena_id);});
+        grupos[fId]={faena_nombre:f?f.nombre:(ln.faena_nombre||'Sin faena asignada'),lineas:[],subtotal:0};
+      }
+      grupos[fId].lineas.push(ln);
+      grupos[fId].subtotal+=parseFloat(ln.subtotal)||(parseFloat(ln.cantidad)||0)*(parseFloat(ln.precio_unitario)||0);
+    });
+    return grupos;
+  }
+
+  // Genera el HTML del ticket optimizado para 80mm o 58mm
+  function buildTicketHTML(){
+    const w=ancho==='58'?'58mm':'80mm';
+    const pad=ancho==='58'?'2mm':'3mm';
+    const fontSize=ancho==='58'?'10px':'11px';
+    const titleSize=ancho==='58'?'11px':'13px';
+    const grupos=groupByFaena();
+    const empresaTxt=clean(empresa.razon_social||'EMPRESAS POO');
+    const empresaRut=empresa.rut||'';
+    const empresaDir=clean((empresa.direccion||'')+(empresa.ciudad?', '+empresa.ciudad:''));
+    const empresaTel=empresa.telefono||'';
+    
+    // Buscar proveedor en m.provs
+    const provs=(p.m&&Array.isArray(p.m.provs)?p.m.provs:[]);
+    const prov=provs.find(function(pr){return pr.proveedor_id===oc.proveedor_id;})||{};
+    const provNombre=clean(prov.nombre||oc.proveedor_nombre||'Sin proveedor');
+    const provRut=prov.rut||'';
+    const provDir=clean(prov.direccion||'');
+    const provCiudad=clean(prov.ciudad||'');
+    const provTel=prov.telefono||'';
+    
+    const fechaTxt=oc.fecha_emision?new Date(oc.fecha_emision).toLocaleDateString('es-CL'):'';
+    const ahora=new Date().toLocaleString('es-CL');
+    
+    let html='<!DOCTYPE html><html><head><meta charset="UTF-8">';
+    html+='<title>OC '+(oc.numero_oc||'')+'</title>';
+    html+='<style>';
+    html+='@page{size:'+w+' auto;margin:0}';
+    html+='*{box-sizing:border-box}';
+    html+='body{margin:0;padding:'+pad+';font-family:"Courier New",monospace;font-size:'+fontSize+';color:#000;line-height:1.35;width:'+w+';background:#fff}';
+    html+='.c{text-align:center}.r{text-align:right}.l{text-align:left}';
+    html+='.b{font-weight:bold}.sm{font-size:9px}.lg{font-size:'+titleSize+'}';
+    html+='.sep{border-top:1px dashed #000;margin:5px 0;height:0}';
+    html+='.dsep{border-top:2px solid #000;margin:5px 0;height:0}';
+    html+='.row{display:flex;justify-content:space-between;gap:6px}';
+    html+='.col-2{flex:1}';
+    html+='.box{border:1px solid #000;padding:3px 5px;margin:3px 0}';
+    html+='.linea{margin-bottom:6px;padding-bottom:4px;border-bottom:1px dotted #999}';
+    html+='.linea:last-child{border-bottom:none;margin-bottom:2px}';
+    html+='.tag-faena{display:block;background:#000;color:#fff;padding:2px 4px;font-size:9px;font-weight:bold;text-align:center;margin:6px 0 4px;letter-spacing:0.5px}';
+    html+='.qty{font-size:10px;color:#444}.note{font-size:9px;color:#555;font-style:italic;margin-top:1px}';
+    html+='.firma{margin-top:30px;border-top:1px solid #000;padding-top:3px;text-align:center;font-size:9px}';
+    html+='@media print{body{margin:0;padding:'+pad+'}}';
+    html+='</style></head><body>';
+    
+    // Cabecera de empresa
+    html+='<div class="c b lg">'+empresaTxt.toUpperCase()+'</div>';
+    if(empresaRut)html+='<div class="c sm">RUT: '+empresaRut+'</div>';
+    if(empresaDir)html+='<div class="c sm">'+empresaDir+'</div>';
+    if(empresaTel)html+='<div class="c sm">Tel: '+empresaTel+'</div>';
+    html+='<div class="sep"></div>';
+    
+    // Título OC
+    html+='<div class="c b" style="font-size:'+(ancho==='58'?'12px':'14px')+';letter-spacing:1px">ORDEN DE COMPRA</div>';
+    html+='<div class="c b lg">N° '+clean(oc.numero_oc||'')+'</div>';
+    html+='<div class="sep"></div>';
+    
+    // Datos OC
+    html+='<div class="row"><span>Fecha:</span><span class="b">'+fechaTxt+'</span></div>';
+    html+='<div class="row"><span>Estado:</span><span class="b">'+clean(oc.estado||'').toUpperCase()+'</span></div>';
+    if(oc.numero_solicitud)html+='<div class="row"><span>Solicitud:</span><span>'+clean(oc.numero_solicitud)+'</span></div>';
+    if(oc.tipo_doc)html+='<div class="row"><span>Tipo doc:</span><span>'+clean(oc.tipo_doc)+'</span></div>';
+    
+    // Proveedor
+    html+='<div class="sep"></div>';
+    html+='<div class="b">PROVEEDOR</div>';
+    html+='<div>'+provNombre+'</div>';
+    if(provRut)html+='<div class="sm">RUT: '+provRut+'</div>';
+    if(provDir)html+='<div class="sm">'+provDir+'</div>';
+    if(provCiudad)html+='<div class="sm">'+provCiudad+'</div>';
+    if(provTel)html+='<div class="sm">Tel: '+provTel+'</div>';
+    
+    // Detalle agrupado por faena
+    html+='<div class="dsep"></div>';
+    html+='<div class="c b">DETALLE</div>';
+    html+='<div class="sep"></div>';
+    
+    Object.keys(grupos).forEach(function(fId){
+      const g=grupos[fId];
+      // Encabezado de faena (etiqueta destacada)
+      html+='<div class="tag-faena">'+clean(g.faena_nombre).toUpperCase()+'</div>';
+      
+      g.lineas.forEach(function(ln){
+        const desc=clean(ln.descripcion||ln.producto_nombre||'');
+        const cant=parseFloat(ln.cantidad)||0;
+        const pu=parseFloat(ln.precio_unitario)||0;
+        const sub=parseFloat(ln.subtotal)||(cant*pu);
+        const eq=ln.equipo_id?(equipos.find(function(e){return e.equipo_id===ln.equipo_id;})||{}):null;
+        const sc=ln.subcategoria_id?(subcats.find(function(s){return s.subcategoria_id===ln.subcategoria_id;})||{}):null;
+        
+        html+='<div class="linea">';
+        html+='<div class="b">'+cant.toFixed(cant%1===0?0:2)+'x '+desc+'</div>';
+        html+='<div class="row"><span class="qty">'+cant.toFixed(cant%1===0?0:2)+' x '+CLP2(pu)+'</span><span class="b">'+CLP2(sub)+'</span></div>';
+        // Líneas extra
+        const extras=[];
+        if(eq&&eq.codigo)extras.push('eq: '+eq.codigo);
+        if(sc&&sc.nombre)extras.push(clean(sc.nombre));
+        if(ln.observaciones)extras.push(clean(ln.observaciones));
+        if(extras.length)html+='<div class="note">'+extras.join(' | ')+'</div>';
+        html+='</div>';
+      });
+      
+      // Subtotal de la faena (si hay más de una faena)
+      if(Object.keys(grupos).length>1){
+        html+='<div class="row" style="background:#f0f0f0;padding:2px 4px;margin-top:2px"><span class="sm b">Sub '+clean(g.faena_nombre).substring(0,20)+':</span><span class="b">'+CLP2(g.subtotal)+'</span></div>';
+      }
+    });
+    
+    // Totales
+    html+='<div class="dsep"></div>';
+    const neto=parseFloat(oc.neto)||0;
+    const iva=parseFloat(oc.iva)||0;
+    const total=parseFloat(oc.total)||0;
+    html+='<div class="row"><span>Subtotal:</span><span>'+CLP2(neto)+'</span></div>';
+    if(iva>0)html+='<div class="row"><span>IVA 19%:</span><span>'+CLP2(iva)+'</span></div>';
+    html+='<div class="dsep"></div>';
+    html+='<div class="row b" style="font-size:'+(ancho==='58'?'12px':'14px')+'"><span>TOTAL:</span><span>'+CLP2(total)+'</span></div>';
+    
+    // Observaciones generales
+    if(oc.observaciones){
+      html+='<div class="sep"></div>';
+      html+='<div class="b sm">OBSERVACIONES:</div>';
+      html+='<div class="sm">'+clean(oc.observaciones)+'</div>';
+    }
+    
+    // Información de pago si existe
+    if(oc.condicion_pago||oc.fecha_vencimiento){
+      html+='<div class="sep"></div>';
+      if(oc.condicion_pago)html+='<div class="row sm"><span>Pago:</span><span>'+clean(oc.condicion_pago)+'</span></div>';
+      if(oc.fecha_vencimiento)html+='<div class="row sm"><span>Vence:</span><span>'+new Date(oc.fecha_vencimiento).toLocaleDateString('es-CL')+'</span></div>';
+    }
+    
+    // Solicitante / firma
+    html+='<div class="sep"></div>';
+    if(oc.usuario_creador)html+='<div class="c sm">Creado por: '+clean(oc.usuario_creador)+'</div>';
+    html+='<div class="firma">_____________________<br>Firma autorizada</div>';
+    
+    // Pie
+    html+='<div class="c sm" style="margin-top:14px">Generado: '+ahora+'</div>';
+    html+='<div class="c sm">empresaspoo.cl</div>';
+    
+    html+='</body></html>';
+    return html;
+  }
+
+  function imprimir(){
+    const w=window.open('','_blank','width=400,height=700');
+    if(!w){alert('Permita ventanas emergentes para imprimir');return;}
+    w.document.write(buildTicketHTML());
+    w.document.close();
+    setTimeout(function(){w.print();},400);
+  }
+  
+  function descargarPDF(){
+    // Estrategia simple: abrir en nueva ventana lista para imprimir como PDF
+    // El usuario elige "Guardar como PDF" en el diálogo de impresión nativo
+    const w=window.open('','_blank','width=400,height=700');
+    if(!w){alert('Permita ventanas emergentes para descargar PDF');return;}
+    w.document.write(buildTicketHTML());
+    w.document.close();
+    // Mostrar instrucción al usuario en la ventana
+    const inst=w.document.createElement('div');
+    inst.style.cssText='position:fixed;top:5px;left:5px;right:5px;background:#FEF3C7;border:1px solid #F59E0B;padding:8px;font-size:10px;font-family:sans-serif;color:#92400E;border-radius:4px;z-index:9999;text-align:center';
+    inst.innerHTML='💡 En el dialogo elige "<b>Guardar como PDF</b>" en lugar de impresora';
+    w.document.body.appendChild(inst);
+    setTimeout(function(){w.print();},500);
+  }
+
+  return h('div',{className:'ov',style:{zIndex:410}},
+    h('div',{className:'modal',style:{maxWidth:540,maxHeight:'92vh',display:'flex',flexDirection:'column'}},
+      h('div',{className:'mh'},
+        h('h3',null,'🧾 Ticket térmico — OC '+str(oc.numero_oc)),
+        h('button',{className:'mc',onClick:p.onClose},'×')
+      ),
+      h('div',{style:{padding:14,overflow:'auto',flex:1,background:'#F1F5F9'}},
+        // Selector de ancho
+        h('div',{style:{background:'#fff',padding:10,borderRadius:6,marginBottom:12,border:'1px solid #E2E8F0',display:'flex',gap:8,alignItems:'center'}},
+          h('label',{style:{fontSize:12,fontWeight:600,color:'#475569'}},'Ancho del papel:'),
+          h('button',{onClick:function(){setAncho('80');},style:{padding:'6px 14px',fontSize:12,fontWeight:600,background:ancho==='80'?'#1E3A2D':'#E2E8F0',color:ancho==='80'?'#fff':'#475569',border:'none',borderRadius:5,cursor:'pointer'}},'80mm (estándar)'),
+          h('button',{onClick:function(){setAncho('58');},style:{padding:'6px 14px',fontSize:12,fontWeight:600,background:ancho==='58'?'#1E3A2D':'#E2E8F0',color:ancho==='58'?'#fff':'#475569',border:'none',borderRadius:5,cursor:'pointer'}},'58mm (compacto)'),
+          h('div',{style:{marginLeft:'auto',fontSize:10,color:'#94A3B8'}},lineas.length+' líneas · '+Object.keys(groupByFaena()).length+' faena(s)')
+        ),
+        // Preview del ticket
+        h('div',{style:{display:'flex',justifyContent:'center',padding:'10px 0'}},
+          h('div',{style:{boxShadow:'0 4px 12px rgba(0,0,0,0.15)',background:'#fff'},dangerouslySetInnerHTML:{__html:buildTicketHTML().replace(/<\/?html[^>]*>|<\/?head[^>]*>|<\/?body[^>]*>|<title>[^<]*<\/title>|<meta[^>]*>/gi,'')}})
+        ),
+        // Tip ayuda
+        h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',padding:10,borderRadius:6,fontSize:11,color:'#1E40AF',marginTop:10}},
+          h('strong',null,'💡 Tip: '),
+          'Si tu impresora térmica no está configurada en el sistema, usa "Descargar PDF" para enviarlo o imprimirlo desde otro dispositivo. Las faenas se imprimen como secciones separadas para entregar en cada ubicación.'
+        )
+      ),
+      h('div',{style:{padding:12,borderTop:'1px solid #E2E8F0',display:'flex',gap:8,justifyContent:'flex-end',background:'#fff'}},
+        h('button',{className:'btn',onClick:p.onClose,style:{background:'#E2E8F0',color:'#475569'}},'Cerrar'),
+        h('button',{className:'btn',onClick:descargarPDF,style:{background:'#7C3AED',color:'#fff'}},'⬇ Guardar PDF'),
+        h('button',{className:'btn btn-p',onClick:imprimir},'🖨 Imprimir ticket')
+      )
+    )
+  );
+}
 
 
+// ── OC RECONOCIMIENTO DE FACTURA (OCR + ZIP DTE) ──
 function OCRFactura(p){
   const[file,setFile]=useState(null);
   const[preview,setPreview]=useState(null);
