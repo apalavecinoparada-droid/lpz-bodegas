@@ -7022,7 +7022,7 @@ function TransporteView(p){
   var[fCamion,setFCamion]=useState('');
   var[fDesde,setFDesde]=useState((new Date(Date.now()-30*86400000)).toISOString().slice(0,10));
   var[fHasta,setFHasta]=useState(new Date().toISOString().slice(0,10));
-  var emptyForm={fecha:new Date().toISOString().slice(0,10),empresa_id:'',camion_id:'',chofer_id:'',faena_id:'',equipo_id:'',origen:'',destino:'',km_cargado:'',km_vacio:'0',odometro_inicio:'',odometro_fin:'',estado:'finalizado',observaciones:'',litros_combustible:'0',estanque_id:''};
+  var emptyForm={fecha:new Date().toISOString().slice(0,10),empresa_id:'',camion_id:'',chofer_id:'',faena_id:'',equipo_id:'',equipos_ids:[],origen:'',destino:'',km_cargado:'',km_vacio:'0',odometro_inicio:'',odometro_fin:'',estado:'finalizado',observaciones:'',litros_combustible:'0',estanque_id:''};
   var[form,setForm]=useState(emptyForm);
   var[pendientes,setPendientes]=useState([]);
   var[planSel,setPlanSel]=useState('');
@@ -7049,6 +7049,7 @@ function TransporteView(p){
       chofer_id:pl.chofer_id||'',
       faena_id:pl.faena_id||'',
       equipo_id:pl.equipo_id||'',
+      equipos_ids:pl.equipo_id?[pl.equipo_id]:[],
       origen:pl.origen||'',
       destino:pl.destino||'',
       km_cargado:pl.km_cargado_plan||'',
@@ -7070,7 +7071,8 @@ function TransporteView(p){
 
   function openNew(){setSel(null);setForm(emptyForm);setPlanSel('');setShowForm(true);setMsg('');}
   function openEdit(r){
-    setSel(r);setForm({fecha:(r.fecha||'').slice(0,10),empresa_id:r.empresa_id||'',camion_id:r.camion_id||'',chofer_id:r.chofer_id||'',faena_id:r.faena_id||'',equipo_id:r.equipo_id||'',origen:r.origen||'',destino:r.destino||'',km_cargado:r.km_cargado||'',km_vacio:r.km_vacio||'0',odometro_inicio:r.odometro_inicio||'',odometro_fin:r.odometro_fin||'',estado:r.estado||'finalizado',observaciones:r.observaciones||'',litros_combustible:r.litros_combustible||'0',estanque_id:r.origen_combustible_externo||r.estanque_id||''});
+    var eqsArr=Array.isArray(r.equipos_transportados)?r.equipos_transportados.map(function(e){return e.equipo_id;}):(r.equipo_id?[r.equipo_id]:[]);
+    setSel(r);setForm({fecha:(r.fecha||'').slice(0,10),empresa_id:r.empresa_id||'',camion_id:r.camion_id||'',chofer_id:r.chofer_id||'',faena_id:r.faena_id||'',equipo_id:r.equipo_id||'',equipos_ids:eqsArr,origen:r.origen||'',destino:r.destino||'',km_cargado:r.km_cargado||'',km_vacio:r.km_vacio||'0',odometro_inicio:r.odometro_inicio||'',odometro_fin:r.odometro_fin||'',estado:r.estado||'finalizado',observaciones:r.observaciones||'',litros_combustible:r.litros_combustible||'0',estanque_id:r.origen_combustible_externo||r.estanque_id||''});
     setShowForm(true);setMsg('');
   }
   function guardar(){
@@ -7147,7 +7149,12 @@ function TransporteView(p){
           {lbl:'Empresa',render:function(r){return (r.empresa_nombre||'').length>15?(r.empresa_nombre||'').slice(0,15)+'...':r.empresa_nombre;}},
           {lbl:'Camión',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.camion_patente);}},
           {lbl:'Chofer',render:function(r){return (r.chofer_nombre||'').length>20?(r.chofer_nombre||'').slice(0,20)+'...':r.chofer_nombre;}},
-          {lbl:'Equipo',render:function(r){return r.equipo_codigo?h('span',{title:r.equipo_nombre},r.equipo_codigo):'—';}},
+          {lbl:'Equipo(s)',render:function(r){
+            var arr=Array.isArray(r.equipos_transportados)?r.equipos_transportados:[];
+            if(arr.length>1)return h('span',{title:arr.map(function(e){return e.codigo+' '+e.nombre;}).join(', '),style:{fontSize:11,fontWeight:600,color:'#15803D'}},arr[0].codigo+' +'+(arr.length-1));
+            if(arr.length===1)return h('span',{title:arr[0].nombre,style:{fontSize:11}},arr[0].codigo);
+            return r.equipo_codigo?h('span',{title:r.equipo_nombre,style:{fontSize:11}},r.equipo_codigo):'—';
+          }},
           {lbl:'Origen',render:function(r){return h('span',{title:r.origen},(r.origen||'').length>18?(r.origen||'').slice(0,18)+'...':r.origen);}},
           {lbl:'Destino',render:function(r){return h('span',{title:r.destino},(r.destino||'').length>18?(r.destino||'').slice(0,18)+'...':r.destino);}},
           {lbl:'Km carg.',r:true,render:function(r){return r.km_cargado;}},
@@ -7199,7 +7206,39 @@ function TransporteView(p){
         h('div',null,h('label',{style:lblS},'Camión cama baja *'),h('select',{value:form.camion_id,onChange:function(e){upd('camion_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),camiones.map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.patente_serie+(c.patente_carro?' + '+c.patente_carro:'')+' — '+c.nombre);}))),
         h('div',null,h('label',{style:lblS},'Chofer *'),h('select',{value:form.chofer_id,onChange:function(e){upd('chofer_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),choferes.map(function(c){return h('option',{key:c.persona_id,value:c.persona_id},c.nombre_completo);}))),
         h('div',null,h('label',{style:lblS},'Faena asociada'),h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);},style:inpS},h('option',{value:''},'—'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
-        h('div',null,h('label',{style:lblS},'Equipo transportado'),h('select',{value:form.equipo_id,onChange:function(e){upd('equipo_id',e.target.value);},style:inpS},h('option',{value:''},'—'),eqTransp.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);}))),
+        // Selector múltiple de equipos transportados (chips)
+        h('div',{style:{gridColumn:'span 3',background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:6,padding:10}},
+          h('label',{style:lblS},'🚜 Equipos transportados (puede agregar varios)'),
+          // Chips de equipos seleccionados
+          h('div',{style:{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8,minHeight:30,padding:6,background:'#fff',border:'1px dashed #CBD5E1',borderRadius:5}},
+            (form.equipos_ids||[]).length===0?h('span',{style:{fontSize:11,color:'#94A3B8',fontStyle:'italic'}},'Ningún equipo agregado'):
+            (form.equipos_ids||[]).map(function(eqId){
+              var eq=eqTransp.find(function(e){return String(e.equipo_id)===String(eqId);});
+              if(!eq)return null;
+              return h('span',{key:eqId,style:{display:'inline-flex',alignItems:'center',gap:4,padding:'4px 10px',background:'#DCFCE7',border:'1px solid #86EFAC',borderRadius:14,fontSize:12,fontWeight:600,color:'#15803D'}},
+                eq.codigo+' — '+eq.nombre,
+                h('button',{onClick:function(){var nu=(form.equipos_ids||[]).filter(function(x){return String(x)!==String(eqId);});upd('equipos_ids',nu);upd('equipo_id',nu[0]||'');},style:{background:'transparent',border:'none',cursor:'pointer',color:'#15803D',fontSize:14,padding:0,marginLeft:2,fontWeight:700}},'×')
+              );
+            })
+          ),
+          // Selector para agregar
+          h('div',{style:{display:'flex',gap:6}},
+            h('select',{value:'',onChange:function(e){
+              var v=e.target.value;if(!v)return;
+              var nu=(form.equipos_ids||[]).slice();
+              if(nu.indexOf(parseInt(v))<0&&nu.indexOf(v)<0)nu.push(parseInt(v));
+              upd('equipos_ids',nu);upd('equipo_id',nu[0]||'');
+            },style:Object.assign({},inpS,{flex:1})},
+              h('option',{value:''},'+ Agregar equipo...'),
+              eqTransp.filter(function(e){return (form.equipos_ids||[]).indexOf(e.equipo_id)<0;}).map(function(e){
+                return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);
+              })
+            )
+          ),
+          (form.equipos_ids||[]).length>1&&h('div',{style:{fontSize:10,color:'#475569',marginTop:5,fontStyle:'italic'}},
+            '💡 Traslados internos: agregaste '+form.equipos_ids.length+' equipos en este viaje'
+          )
+        ),
         h('div',null,h('label',{style:lblS},'Origen *'),h('input',{type:'text',value:form.origen,onChange:function(e){upd('origen',e.target.value);},style:inpS,placeholder:'Lugar de origen'})),
         h('div',null,h('label',{style:lblS},'Destino *'),h('input',{type:'text',value:form.destino,onChange:function(e){upd('destino',e.target.value);},style:inpS,placeholder:'Lugar de destino / Fundo'})),
         h('div',null,h('label',{style:lblS},'Estado'),h('select',{value:form.estado,onChange:function(e){upd('estado',e.target.value);},style:inpS},ESTADOS.map(function(e){return h('option',{key:e.v,value:e.v},e.l);})))
@@ -10963,7 +11002,7 @@ function MobileTransporte(p){
   var[planActivo,setPlanActivo]=useState(null);
   var[msg,setMsg]=useState('');
   var[saved,setSaved]=useState(false);
-  var emptyForm={fecha:new Date().toISOString().slice(0,10),empresa_id:'',camion_id:'',chofer_id:'',faena_id:'',equipo_id:'',origen:'',destino:'',odometro_inicio:'',odometro_fin:'',km_cargado:'',km_vacio:'0',litros_combustible:'0',estanque_id:'',observaciones:''};
+  var emptyForm={fecha:new Date().toISOString().slice(0,10),empresa_id:'',camion_id:'',chofer_id:'',faena_id:'',equipo_id:'',equipos_ids:[],origen:'',destino:'',odometro_inicio:'',odometro_fin:'',km_cargado:'',km_vacio:'0',litros_combustible:'0',estanque_id:'',observaciones:''};
   var[form,setForm]=useState(emptyForm);
 
   useEffect(function(){
@@ -10993,6 +11032,7 @@ function MobileTransporte(p){
       chofer_id:plan.chofer_id||'',
       faena_id:plan.faena_id||'',
       equipo_id:plan.equipo_id||'',
+      equipos_ids:plan.equipo_id?[plan.equipo_id]:[],
       origen:plan.origen||'',
       destino:plan.destino||'',
       odometro_inicio:'',
@@ -11101,7 +11141,40 @@ function MobileTransporte(p){
       F('Camión cama baja',h('select',{value:form.camion_id,onChange:function(e){upd('camion_id',e.target.value);}},h('option',{value:''},'Seleccione camión...'),camiones.map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.patente_serie+(c.patente_carro?' + '+c.patente_carro:'')+' — '+c.nombre);}))),
       F('Chofer',h('select',{value:form.chofer_id,onChange:function(e){upd('chofer_id',e.target.value);}},h('option',{value:''},'Seleccione chofer...'),choferes.map(function(c){return h('option',{key:c.persona_id,value:c.persona_id},c.nombre_completo);}))),
       F('Faena',h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);}},h('option',{value:''},'—'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
-      F('Equipo transportado',h('select',{value:form.equipo_id,onChange:function(e){upd('equipo_id',e.target.value);}},h('option',{value:''},'—'),equipos.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);}))),
+      // Selector múltiple de equipos transportados (chips para móvil)
+      h('div',{style:{background:'#F0FDF4',border:'2px solid #86EFAC',borderRadius:10,padding:12,margin:'10px 0'}},
+        h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D',marginBottom:6,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}},
+          '🚜 Equipos transportados',
+          (form.equipos_ids||[]).length>0&&h('span',{style:{padding:'2px 8px',background:'#15803D',color:'#fff',borderRadius:10,fontSize:11,fontWeight:600}},(form.equipos_ids||[]).length)
+        ),
+        // Chips
+        h('div',{style:{display:'flex',flexWrap:'wrap',gap:6,marginBottom:8,minHeight:32,padding:6,background:'#fff',border:'1px dashed #86EFAC',borderRadius:6}},
+          (form.equipos_ids||[]).length===0?h('span',{style:{fontSize:12,color:'#94A3B8',fontStyle:'italic',padding:4}},'Aún no agregaste equipos'):
+          (form.equipos_ids||[]).map(function(eqId){
+            var eq=equipos.find(function(e){return String(e.equipo_id)===String(eqId);});
+            if(!eq)return null;
+            return h('span',{key:eqId,style:{display:'inline-flex',alignItems:'center',gap:4,padding:'6px 10px',background:'#DCFCE7',border:'1px solid #86EFAC',borderRadius:14,fontSize:13,fontWeight:600,color:'#15803D'}},
+              eq.codigo,
+              h('button',{onClick:function(){var nu=(form.equipos_ids||[]).filter(function(x){return String(x)!==String(eqId);});upd('equipos_ids',nu);upd('equipo_id',nu[0]||'');},style:{background:'transparent',border:'none',cursor:'pointer',color:'#15803D',fontSize:18,padding:0,marginLeft:2,fontWeight:700,lineHeight:1}},'×')
+            );
+          })
+        ),
+        // Selector grande para móvil
+        h('select',{value:'',onChange:function(e){
+          var v=e.target.value;if(!v)return;
+          var nu=(form.equipos_ids||[]).slice();
+          if(nu.indexOf(parseInt(v))<0&&nu.indexOf(v)<0)nu.push(parseInt(v));
+          upd('equipos_ids',nu);upd('equipo_id',nu[0]||'');
+        },style:{width:'100%',padding:'12px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:15,boxSizing:'border-box',background:'#fff'}},
+          h('option',{value:''},'+ Toca para agregar un equipo...'),
+          equipos.filter(function(e){return (form.equipos_ids||[]).indexOf(e.equipo_id)<0;}).map(function(e){
+            return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);
+          })
+        ),
+        (form.equipos_ids||[]).length>1&&h('div',{style:{fontSize:11,color:'#15803D',marginTop:6,fontStyle:'italic',textAlign:'center'}},
+          '✓ Traslado interno con '+form.equipos_ids.length+' equipos'
+        )
+      ),
       F('Origen (lugar de salida)',h('input',{type:'text',value:form.origen,onChange:function(e){upd('origen',e.target.value);},placeholder:'Ej: Taller Los Ángeles'})),
       F('Destino (lugar de llegada)',h('input',{type:'text',value:form.destino,onChange:function(e){upd('destino',e.target.value);},placeholder:'Ej: Fundo El Roble, Nacimiento'})),
       // ── Bloque guiado de kilometraje (odómetro → desglose) ──
