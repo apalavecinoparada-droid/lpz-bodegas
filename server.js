@@ -4754,6 +4754,17 @@ async function setupTransporte(q){
   try{await q('ALTER TABLE trans_traslados ADD COLUMN IF NOT EXISTS origen_combustible_externo VARCHAR(20)');}catch(e){}
   try{await q('ALTER TABLE trans_traslados ADD COLUMN IF NOT EXISTS planificacion_id INT');}catch(e){}
 
+  // Tabla N:N: múltiples equipos transportados en un mismo traslado (ej: camión cama baja en internos)
+  await q(`CREATE TABLE IF NOT EXISTS trans_traslado_equipos (
+    rel_id SERIAL PRIMARY KEY,
+    traslado_id INT NOT NULL REFERENCES trans_traslados(traslado_id) ON DELETE CASCADE,
+    equipo_id INT NOT NULL REFERENCES equipos(equipo_id),
+    orden INT DEFAULT 1,
+    observacion VARCHAR(200),
+    UNIQUE(traslado_id,equipo_id)
+  )`);
+  await q('CREATE INDEX IF NOT EXISTS idx_trans_eq_traslado ON trans_traslado_equipos(traslado_id)');
+
   // Tabla planificación (referencia para el chofer)
   await q(`CREATE TABLE IF NOT EXISTS trans_planificacion (
     plan_id SERIAL PRIMARY KEY,
@@ -4855,18 +4866,22 @@ app.get('/api/trans/traslados', auth, async(req,res)=>{
     if(camion_id){v.push(camion_id);w.push(`t.camion_id=$${v.length}`);}
     if(chofer_id){v.push(chofer_id);w.push(`t.chofer_id=$${v.length}`);}
     if(faena_id){v.push(faena_id);w.push(`t.faena_id=$${v.length}`);}
-    if(equipo_id){v.push(equipo_id);w.push(`t.equipo_id=$${v.length}`);}
+    if(equipo_id){v.push(equipo_id);w.push(`(t.equipo_id=$${v.length} OR EXISTS(SELECT 1 FROM trans_traslado_equipos te WHERE te.traslado_id=t.traslado_id AND te.equipo_id=$${v.length}))`);}
     if(estado){v.push(estado);w.push(`t.estado=$${v.length}`);}
     if(desde){v.push(desde);w.push(`t.fecha>=$${v.length}`);}
     if(hasta){v.push(hasta);w.push(`t.fecha<=$${v.length}`);}
-    const r=await pool.query(`SELECT t.*,emp.razon_social AS empresa_nombre,cam.nombre AS camion_nombre,cam.patente_serie AS camion_patente,p.nombre_completo AS chofer_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo,est.codigo AS estanque_codigo,est.nombre AS estanque_nombre FROM trans_traslados t JOIN empresas emp ON t.empresa_id=emp.empresa_id JOIN equipos cam ON t.camion_id=cam.equipo_id JOIN personal p ON t.chofer_id=p.persona_id LEFT JOIN faenas f ON t.faena_id=f.faena_id LEFT JOIN equipos eq ON t.equipo_id=eq.equipo_id LEFT JOIN comb_estanques est ON t.estanque_id=est.estanque_id WHERE ${w.join(' AND ')} ORDER BY t.fecha DESC,t.traslado_id DESC`,v);
+    const r=await pool.query(`SELECT t.*,emp.razon_social AS empresa_nombre,cam.nombre AS camion_nombre,cam.patente_serie AS camion_patente,p.nombre_completo AS chofer_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo,est.codigo AS estanque_codigo,est.nombre AS estanque_nombre,
+      COALESCE((SELECT json_agg(json_build_object('equipo_id',te.equipo_id,'codigo',e2.codigo,'nombre',e2.nombre,'observacion',te.observacion) ORDER BY te.orden)
+                FROM trans_traslado_equipos te JOIN equipos e2 ON te.equipo_id=e2.equipo_id WHERE te.traslado_id=t.traslado_id), '[]'::json) AS equipos_transportados
+      FROM trans_traslados t JOIN empresas emp ON t.empresa_id=emp.empresa_id JOIN equipos cam ON t.camion_id=cam.equipo_id JOIN personal p ON t.chofer_id=p.persona_id LEFT JOIN faenas f ON t.faena_id=f.faena_id LEFT JOIN equipos eq ON t.equipo_id=eq.equipo_id LEFT JOIN comb_estanques est ON t.estanque_id=est.estanque_id WHERE ${w.join(' AND ')} ORDER BY t.fecha DESC,t.traslado_id DESC`,v);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
 
 app.post('/api/trans/traslados', auth, async(req,res)=>{
+  const client=await pool.connect();
   try{
-    const{fecha,empresa_id,camion_id,chofer_id,faena_id,equipo_id,origen,destino,km_cargado,km_vacio,odometro_inicio,odometro_fin,estado,observaciones,litros_combustible,estanque_id}=req.body;
+    const{fecha,empresa_id,camion_id,chofer_id,faena_id,equipo_id,equipos_ids,origen,destino,km_cargado,km_vacio,odometro_inicio,odometro_fin,estado,observaciones,litros_combustible,estanque_id}=req.body;
     if(!empresa_id||!camion_id||!chofer_id||!origen||!destino)return res.status(400).json({error:'Empresa, camión, chofer, origen y destino son obligatorios'});
     const kc=parseFloat(km_cargado)||0;const kv=parseFloat(km_vacio)||0;
     if(kc<0||kv<0)return res.status(400).json({error:'Kilómetros no pueden ser negativos'});
@@ -4874,24 +4889,37 @@ app.post('/api/trans/traslados', auth, async(req,res)=>{
     if(odometro_inicio&&odometro_fin&&parseInt(odometro_fin)<parseInt(odometro_inicio))return res.status(400).json({error:'Odómetro final debe ser mayor al inicial'});
     const lts=parseFloat(litros_combustible)||0;
     if(lts<0)return res.status(400).json({error:'Litros no pueden ser negativos'});
-    // Distinguir entre estanque interno (entero) y proveedor externo (string EXT-*)
     let estIntId=null,extCod=null;
     if(estanque_id){
       const s=String(estanque_id);
       if(s.startsWith('EXT-'))extCod=s;
       else estIntId=parseInt(s)||null;
     }
+    // Normalizar lista de equipos: equipos_ids tiene prioridad, sino fallback a equipo_id
+    let eqList=Array.isArray(equipos_ids)?equipos_ids.map(function(id){return parseInt(id);}).filter(function(id){return !isNaN(id);}):[];
+    if(eqList.length===0&&equipo_id)eqList=[parseInt(equipo_id)].filter(function(id){return !isNaN(id);});
+    // El primer equipo se guarda en la columna principal por compat con código viejo
+    const equipoPrincipal=eqList.length>0?eqList[0]:null;
     const costos=await calcularCostoTraslado(empresa_id,fecha||new Date().toISOString().slice(0,10),kc,kv);
-    const r=await pool.query(`INSERT INTO trans_traslados(fecha,empresa_id,camion_id,chofer_id,faena_id,equipo_id,origen,destino,km_cargado,km_vacio,odometro_inicio,odometro_fin,tarifa_id,costo_km_cargado,costo_km_vacio,costo_fijo,costo_recargo,costo_total,estado,observaciones,litros_combustible,estanque_id,origen_combustible_externo,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING *`,
-      [fecha||new Date().toISOString().slice(0,10),empresa_id,camion_id,chofer_id,faena_id||null,equipo_id||null,origen,destino,kc,kv,odometro_inicio?parseInt(odometro_inicio):null,odometro_fin?parseInt(odometro_fin):null,costos.tarifa_id,costos.costo_km_cargado,costos.costo_km_vacio,costos.costo_fijo,costos.costo_recargo,costos.costo_total,estado||'finalizado',observaciones||null,lts,estIntId,extCod,req.user.email]);
-    if(odometro_fin)await pool.query('UPDATE equipos SET kilometraje_actual=GREATEST(COALESCE(kilometraje_actual,0),$1) WHERE equipo_id=$2',[parseInt(odometro_fin),camion_id]);
+    await client.query('BEGIN');
+    const r=await client.query(`INSERT INTO trans_traslados(fecha,empresa_id,camion_id,chofer_id,faena_id,equipo_id,origen,destino,km_cargado,km_vacio,odometro_inicio,odometro_fin,tarifa_id,costo_km_cargado,costo_km_vacio,costo_fijo,costo_recargo,costo_total,estado,observaciones,litros_combustible,estanque_id,origen_combustible_externo,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING *`,
+      [fecha||new Date().toISOString().slice(0,10),empresa_id,camion_id,chofer_id,faena_id||null,equipoPrincipal,origen,destino,kc,kv,odometro_inicio?parseInt(odometro_inicio):null,odometro_fin?parseInt(odometro_fin):null,costos.tarifa_id,costos.costo_km_cargado,costos.costo_km_vacio,costos.costo_fijo,costos.costo_recargo,costos.costo_total,estado||'finalizado',observaciones||null,lts,estIntId,extCod,req.user.email]);
+    const trasId=r.rows[0].traslado_id;
+    // Insertar todos los equipos en la tabla N:N
+    for(let i=0;i<eqList.length;i++){
+      try{await client.query('INSERT INTO trans_traslado_equipos(traslado_id,equipo_id,orden) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[trasId,eqList[i],i+1]);}catch(e){}
+    }
+    if(odometro_fin)await client.query('UPDATE equipos SET kilometraje_actual=GREATEST(COALESCE(kilometraje_actual,0),$1) WHERE equipo_id=$2',[parseInt(odometro_fin),camion_id]);
+    await client.query('COMMIT');
     res.status(201).json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 
 app.put('/api/trans/traslados/:id', auth, async(req,res)=>{
+  const client=await pool.connect();
   try{
-    const{fecha,empresa_id,camion_id,chofer_id,faena_id,equipo_id,origen,destino,km_cargado,km_vacio,odometro_inicio,odometro_fin,estado,observaciones,litros_combustible,estanque_id}=req.body;
+    const{fecha,empresa_id,camion_id,chofer_id,faena_id,equipo_id,equipos_ids,origen,destino,km_cargado,km_vacio,odometro_inicio,odometro_fin,estado,observaciones,litros_combustible,estanque_id}=req.body;
     const kc=parseFloat(km_cargado)||0;const kv=parseFloat(km_vacio)||0;
     if(kc<0||kv<0)return res.status(400).json({error:'Kilómetros no pueden ser negativos'});
     const lts=parseFloat(litros_combustible)||0;
@@ -4901,11 +4929,22 @@ app.put('/api/trans/traslados/:id', auth, async(req,res)=>{
       if(s.startsWith('EXT-'))extCod=s;
       else estIntId=parseInt(s)||null;
     }
+    let eqList=Array.isArray(equipos_ids)?equipos_ids.map(function(id){return parseInt(id);}).filter(function(id){return !isNaN(id);}):[];
+    if(eqList.length===0&&equipo_id)eqList=[parseInt(equipo_id)].filter(function(id){return !isNaN(id);});
+    const equipoPrincipal=eqList.length>0?eqList[0]:null;
     const costos=await calcularCostoTraslado(empresa_id,fecha,kc,kv);
-    const r=await pool.query(`UPDATE trans_traslados SET fecha=$1,empresa_id=$2,camion_id=$3,chofer_id=$4,faena_id=$5,equipo_id=$6,origen=$7,destino=$8,km_cargado=$9,km_vacio=$10,odometro_inicio=$11,odometro_fin=$12,tarifa_id=$13,costo_km_cargado=$14,costo_km_vacio=$15,costo_fijo=$16,costo_recargo=$17,costo_total=$18,estado=$19,observaciones=$20,litros_combustible=$21,estanque_id=$22,origen_combustible_externo=$23,modificado_en=NOW() WHERE traslado_id=$24 RETURNING *`,
-      [fecha,empresa_id,camion_id,chofer_id,faena_id||null,equipo_id||null,origen,destino,kc,kv,odometro_inicio?parseInt(odometro_inicio):null,odometro_fin?parseInt(odometro_fin):null,costos.tarifa_id,costos.costo_km_cargado,costos.costo_km_vacio,costos.costo_fijo,costos.costo_recargo,costos.costo_total,estado||'finalizado',observaciones||null,lts,estIntId,extCod,req.params.id]);
+    await client.query('BEGIN');
+    const r=await client.query(`UPDATE trans_traslados SET fecha=$1,empresa_id=$2,camion_id=$3,chofer_id=$4,faena_id=$5,equipo_id=$6,origen=$7,destino=$8,km_cargado=$9,km_vacio=$10,odometro_inicio=$11,odometro_fin=$12,tarifa_id=$13,costo_km_cargado=$14,costo_km_vacio=$15,costo_fijo=$16,costo_recargo=$17,costo_total=$18,estado=$19,observaciones=$20,litros_combustible=$21,estanque_id=$22,origen_combustible_externo=$23,modificado_en=NOW() WHERE traslado_id=$24 RETURNING *`,
+      [fecha,empresa_id,camion_id,chofer_id,faena_id||null,equipoPrincipal,origen,destino,kc,kv,odometro_inicio?parseInt(odometro_inicio):null,odometro_fin?parseInt(odometro_fin):null,costos.tarifa_id,costos.costo_km_cargado,costos.costo_km_vacio,costos.costo_fijo,costos.costo_recargo,costos.costo_total,estado||'finalizado',observaciones||null,lts,estIntId,extCod,req.params.id]);
+    // Reemplazar todos los equipos relacionados
+    await client.query('DELETE FROM trans_traslado_equipos WHERE traslado_id=$1',[req.params.id]);
+    for(let i=0;i<eqList.length;i++){
+      try{await client.query('INSERT INTO trans_traslado_equipos(traslado_id,equipo_id,orden) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[req.params.id,eqList[i],i+1]);}catch(e){}
+    }
+    await client.query('COMMIT');
     res.json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 
 app.delete('/api/trans/traslados/:id', auth, async(req,res)=>{
