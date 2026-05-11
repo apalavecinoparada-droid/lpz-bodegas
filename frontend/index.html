@@ -6817,6 +6817,14 @@ function MantOTDetalle(p){
   const[newTareaForm,setNewTareaForm]=useState({sistema_id:'',tarea_std_id:'',descripcion:''});
   const[trasForm,setTrasForm]=useState({vehiculo_traslado:p.ot.vehiculo_traslado||'',distancia_km:p.ot.distancia_km||'',costo_combustible_traslado:p.ot.costo_combustible_traslado||''});
   const[trasEditing,setTrasEditing]=useState(false);
+  const[reabrirModal,setReabrirModal]=useState(false);
+  const[reabrirMotivo,setReabrirMotivo]=useState('');
+  function reabrirOT(){
+    if(!reabrirMotivo.trim()){alert('Debes indicar el motivo de la reapertura');return;}
+    api('/mant/ot/'+ot.ot_id+'/reabrir','PATCH',{motivo:reabrirMotivo.trim()},p.tok)
+      .then(function(r){setOt(r.ot);setForm(r.ot);setReabrirModal(false);setReabrirMotivo('');setMsg('✓ OT reabierta. Recuerda volver a cerrarla al terminar los cambios.');})
+      .catch(function(e){alert('Error: '+e.message);});
+  }
   function guardarTraslado(){
     var f2=Object.assign({},form,{vehiculo_traslado:trasForm.vehiculo_traslado,distancia_km:trasForm.distancia_km,costo_combustible_traslado:trasForm.costo_combustible_traslado,costo_traslado:trasForm.costo_combustible_traslado});
     api('/mant/ot/'+ot.ot_id,'PUT',f2,p.tok).then(function(r){setOt(r);setForm(r);setTrasEditing(false);setMsg('Traslado guardado');}).catch(function(e){setMsg('Error: '+e.message);});
@@ -6916,6 +6924,7 @@ function MantOTDetalle(p){
         h(Btn,{v:'teal',sm:true,onClick:exportarOT},'⬇ Excel'),
         ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&h(Btn,{onClick:guardar},'💾 Guardar'),
         ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&h(Btn,{v:'g',sm:true,onClick:function(){if(!confirm('Cerrar esta OT? Se registrará la fecha de término y se calculará el tiempo de detención.'))return;var f2=Object.assign({},form,{estado:'cerrada'});if(!f2.fecha_inicio)f2.fecha_inicio=ot.fecha_inicio||new Date().toISOString();api('/mant/ot/'+ot.ot_id,'PUT',f2,p.tok).then(function(r){setOt(r);setForm(r);setMsg('OT cerrada correctamente');}).catch(function(e){setMsg('Error: '+e.message);});}},'✓ Cerrar OT'),
+        ot.estado==='cerrada'&&h('button',{onClick:function(){setReabrirModal(true);setReabrirMotivo('');},style:{padding:'4px 10px',fontSize:11,color:'#fff',border:'none',borderRadius:5,background:'#F59E0B',cursor:'pointer',fontWeight:600},title:'Reabrir esta OT para agregar items pendientes'},'🔓 Reabrir OT'),
         ot.estado!=='cerrada'&&h('button',{onClick:deleteOT,style:{padding:'4px 10px',fontSize:11,color:'#EF4444',border:'1px solid #FCA5A5',borderRadius:5,background:'#FFF1F2',cursor:'pointer'}},'🗑 Eliminar')
       )
     ),
@@ -7137,6 +7146,39 @@ function MantOTDetalle(p){
         h('input',{type:'number',placeholder:'Cant.',value:newMat.cantidad,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{cantidad:e.target.value});});},style:inpS}),
         h('input',{type:'number',placeholder:'P. unit. $',value:newMat.precio_unitario,onChange:function(e){setNewMat(function(f){return Object.assign({},f,{precio_unitario:e.target.value});});},style:inpS}),
         h(Btn,{sm:true,onClick:addMaterial},'+ Agregar')
+      )
+    ),
+    // Modal de reapertura de OT
+    reabrirModal&&h('div',{style:{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20}},
+      h('div',{style:{background:'#fff',borderRadius:8,maxWidth:500,width:'100%',padding:0,boxShadow:'0 10px 40px rgba(0,0,0,0.2)'}},
+        h('div',{style:{padding:'14px 18px',borderBottom:'1px solid #E2E8F0',display:'flex',justifyContent:'space-between',alignItems:'center',background:'#FFFBEB'}},
+          h('div',null,
+            h('div',{style:{fontSize:15,fontWeight:700,color:'#92400E'}},'🔓 Reabrir Orden de Trabajo'),
+            h('div',{style:{fontSize:11,color:'#64748B',marginTop:2}},ot.numero_ot+' · '+(ot.equipo_nombre||''))
+          ),
+          h('button',{onClick:function(){setReabrirModal(false);},style:{fontSize:18,cursor:'pointer',background:'none',border:'none',color:'#94A3B8'}},'✕')
+        ),
+        h('div',{style:{padding:18}},
+          h('div',{style:{padding:10,background:'#FEF3C7',border:'1px solid #FCD34D',borderRadius:6,fontSize:12,color:'#92400E',marginBottom:14,lineHeight:1.5}},
+            h('div',{style:{fontWeight:700,marginBottom:5}},'⚠ Esta acción reabrirá la OT'),
+            'Al reabrir:',
+            h('ul',{style:{margin:'6px 0 0 18px',padding:0}},
+              h('li',null,'El estado cambia de "cerrada" a "en ejecución"'),
+              h('li',null,'Se elimina la fecha de término (se recalculará al volver a cerrar)'),
+              h('li',null,'El equipo vuelve a marcarse como "detenido"'),
+              h('li',null,'Queda registro de la reapertura en las observaciones')
+            )
+          ),
+          h('div',{style:{marginBottom:14}},
+            h('label',{style:{fontSize:12,fontWeight:600,display:'block',marginBottom:5,color:'#1E3A2D'}},'Motivo de la reapertura *'),
+            h('textarea',{value:reabrirMotivo,onChange:function(e){setReabrirMotivo(e.target.value);},rows:3,placeholder:'Ej: Faltó incluir el repuesto X recibido posterior al cierre',style:{width:'100%',padding:'10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,fontFamily:'inherit',boxSizing:'border-box',resize:'vertical'}}),
+            h('div',{style:{fontSize:10,color:'#64748B',marginTop:3}},'Este motivo quedará registrado para auditoría')
+          ),
+          h('div',{style:{display:'flex',gap:8,justifyContent:'flex-end',paddingTop:8,borderTop:'1px solid #E2E8F0'}},
+            h('button',{onClick:function(){setReabrirModal(false);},style:{padding:'8px 16px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:13,background:'#fff'}},'Cancelar'),
+            h('button',{onClick:reabrirOT,disabled:!reabrirMotivo.trim(),style:{padding:'8px 18px',background:reabrirMotivo.trim()?'#F59E0B':'#FCD34D',color:'#fff',border:'none',borderRadius:5,cursor:reabrirMotivo.trim()?'pointer':'not-allowed',fontSize:13,fontWeight:600}},'🔓 Reabrir OT')
+          )
+        )
       )
     )
   );
@@ -12195,6 +12237,8 @@ function MobileTerreno(p){
   var[loadHist,setLoadHist]=useState(false);
   var[filtroEquipoHist,setFiltroEquipoHist]=useState('');
   var[filtroMesHist,setFiltroMesHist]=useState(new Date().toISOString().slice(0,7));
+  // Estado para edición
+  var[editingId,setEditingId]=useState(null);
   function cargarHistorial(){
     setLoadHist(true);
     var q='?mes='+filtroMesHist+(filtroEquipoHist?'&equipo_id='+filtroEquipoHist:'');
@@ -12209,6 +12253,8 @@ function MobileTerreno(p){
   },[p.tok]);
   useEffect(function(){
     if(!form.equipo_id){setUltimoHoro(null);return;}
+    // En modo edición, no auto-cargar el último horómetro (mantener el del registro original)
+    if(editingId)return;
     var eq=equipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
     var faenaAuto=eq&&eq.faena_id?eq.faena_id:'';
     setLoadingHoro(true);
@@ -12218,7 +12264,7 @@ function MobileTerreno(p){
       setForm(function(f){return Object.assign({},f,{horometro_inicial:h,faena_id:f.faena_id||faenaAuto});});
       setLoadingHoro(false);
     }).catch(function(){setLoadingHoro(false);});
-  },[form.equipo_id]);
+  },[form.equipo_id,editingId]);
   function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
   var hi=parseFloat(form.horometro_inicial)||0;
   var hf=parseFloat(form.horometro_final)||0;
@@ -12240,17 +12286,54 @@ function MobileTerreno(p){
       if(Math.abs(hPerd-sumTob)>0.01){setMsg('El desglose ('+sumTob.toFixed(1)+'h) debe ser igual a las horas perdidas ('+hPerd.toFixed(1)+'h)');return;}
     }
     var payload=Object.assign({},form,{tob_detalle:tobLineas.filter(function(l){return l.tob_cat_id&&parseFloat(l.horas)>0;})});
-    api('/terreno/registros','POST',payload,p.tok).then(function(){setSaved(true);setMsg('');}).catch(function(e){setMsg(e.message);});
+    if(editingId){
+      api('/terreno/registros/'+editingId,'PUT',payload,p.tok)
+        .then(function(){setSaved(true);setMsg('');setEditingId(null);})
+        .catch(function(e){setMsg(e.message);});
+    }else{
+      api('/terreno/registros','POST',payload,p.tok)
+        .then(function(){setSaved(true);setMsg('');})
+        .catch(function(e){setMsg(e.message);});
+    }
   }
-  function nuevo(){setSaved(false);setTobLineas([]);setForm(Object.assign({},form,{fecha:new Date().toISOString().slice(0,10),horometro_inicial:'',horometro_final:'',horas_perdidas:'0',litros_combustible:'',estanque_id:'',observaciones:''}));setUltimoHoro(null);}
+  function nuevo(){setSaved(false);setEditingId(null);setTobLineas([]);setForm(Object.assign({},form,{fecha:new Date().toISOString().slice(0,10),horometro_inicial:'',horometro_final:'',horas_perdidas:'0',litros_combustible:'',estanque_id:'',observaciones:''}));setUltimoHoro(null);}
+  function abrirEdicion(reg){
+    // Cargar el registro al formulario, cargar también su desglose TOB y entrar en modo edición
+    setEditingId(reg.registro_id);
+    setForm({
+      fecha:(reg.fecha+'').slice(0,10),
+      equipo_id:reg.equipo_id,
+      faena_id:reg.faena_id||'',
+      horometro_inicial:reg.horometro_inicial||'',
+      horometro_final:reg.horometro_final||'',
+      horas_perdidas:reg.horas_perdidas||'0',
+      litros_combustible:reg.litros_combustible||'',
+      estanque_id:reg.estanque_id||'',
+      observaciones:reg.observaciones||''
+    });
+    // Cargar el desglose TOB existente del backend
+    api('/terreno/registros/'+reg.registro_id+'/tob','GET',null,p.tok).then(function(tobRes){
+      var lineas=Array.isArray(tobRes)?tobRes:(tobRes&&tobRes.lineas?tobRes.lineas:[]);
+      setTobLineas(lineas.map(function(l){return{tob_cat_id:l.tob_cat_id,horas:l.horas,clasificacion:l.clasificacion||'E',observacion:l.observacion||''};}));
+    }).catch(function(){setTobLineas([]);});
+    setMsg('');setSaved(false);setModo('form');
+  }
+  function cancelarEdicion(){setEditingId(null);nuevo();}
+  function eliminarRegistro(reg){
+    if(!confirm('¿Eliminar el registro del '+fmtD(reg.fecha)+' de '+(reg.equipo_codigo||'')+'?\n\nEsta acción no se puede deshacer.'))return;
+    api('/terreno/registros/'+reg.registro_id,'DELETE',null,p.tok)
+      .then(function(){cargarHistorial();})
+      .catch(function(e){alert('Error: '+e.message);});
+  }
   var F=function(lbl,content){return h('div',{className:'mob-field'},h('label',null,lbl),content);};
   if(saved)return h('div',{className:'mob-wrap'},
     h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Terreno')),
     h('div',{style:{textAlign:'center',padding:'60px 20px'}},
       h('div',{style:{fontSize:48,marginBottom:12}},'✅'),
-      h('div',{style:{fontSize:16,fontWeight:700,color:'#166534',marginBottom:4}},'Registro guardado'),
+      h('div',{style:{fontSize:16,fontWeight:700,color:'#166534',marginBottom:4}},editingId?'Registro actualizado':'Registro guardado'),
       h('div',{style:{fontSize:13,color:'#64748B',marginBottom:16}},hTrab+' horas trabajadas'),
       h('button',{onClick:nuevo,className:'mob-submit',style:{maxWidth:240,margin:'16px auto',display:'block'}},'Registrar otro día'),
+      h('button',{onClick:function(){setSaved(false);setEditingId(null);setModo('historial');cargarHistorial();},style:{background:'none',border:'1px solid #1E3A2D',color:'#1E3A2D',padding:'12px 24px',borderRadius:8,marginTop:8,cursor:'pointer',fontSize:14,maxWidth:240,margin:'8px auto',display:'block',width:'100%'}},'📋 Ver mis registros'),
       h('button',{onClick:p.onBack,style:{background:'none',border:'1px solid #CBD5E1',padding:'12px 24px',borderRadius:8,marginTop:8,cursor:'pointer',fontSize:14}},'Volver al inicio')
     )
   );
@@ -12333,13 +12416,23 @@ function MobileTerreno(p){
             rendValor&&h('div',null,h('div',{style:{color:'#94A3B8',fontSize:10}},'Rendimiento'),h('div',{style:{fontWeight:700,color:'#1E40AF'}},rendValor))
           ),
           // Observaciones
-          r.observaciones&&h('div',{style:{fontSize:11,color:'#475569',marginTop:6,padding:6,background:'#FFFBEB',borderRadius:4,fontStyle:'italic'}},'💬 '+r.observaciones)
+          r.observaciones&&h('div',{style:{fontSize:11,color:'#475569',marginTop:6,padding:6,background:'#FFFBEB',borderRadius:4,fontStyle:'italic'}},'💬 '+r.observaciones),
+          // Botones de acción: editar y eliminar
+          h('div',{style:{display:'flex',gap:6,marginTop:8}},
+            h('button',{onClick:function(){abrirEdicion(r);},style:{flex:1,padding:'9px 12px',background:'#EFF6FF',color:'#1E40AF',border:'1px solid #BFDBFE',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer'}},'✏ Editar'),
+            h('button',{onClick:function(){eliminarRegistro(r);},style:{padding:'9px 14px',background:'#FEF2F2',color:'#991B1B',border:'1px solid #FCA5A5',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer'}},'🗑')
+          )
         );
       })
     ),
     // ── VISTA: FORMULARIO NUEVO REGISTRO ──
     modo==='form'&&h('div',{className:'mob-form',style:{paddingBottom:40}},
       msg&&h('div',{className:'al al-e',style:{marginBottom:10}},msg),
+      editingId&&h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6,padding:10,marginBottom:10,fontSize:12,color:'#1E40AF',display:'flex',alignItems:'center',gap:8}},
+        h('span',{style:{fontSize:18}},'✏'),
+        h('div',{style:{flex:1}},'Editando registro #'+editingId),
+        h('button',{onClick:cancelarEdicion,style:{background:'transparent',border:'1px solid #1E40AF',color:'#1E40AF',padding:'4px 10px',borderRadius:4,fontSize:11,cursor:'pointer'}},'Cancelar')
+      ),
       // Detección de tipo de equipo seleccionado (vehículo vs máquina)
       (function(){
         var eqSel=equipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
@@ -12420,7 +12513,8 @@ function MobileTerreno(p){
         parseFloat(form.litros_combustible)>0&&F('Estanque *',h('select',{value:form.estanque_id,onChange:function(e){upd('estanque_id',e.target.value);}},h('option',{value:''},'Seleccione estanque...'),estanques.map(function(es){return h('option',{key:es.estanque_id,value:es.estanque_id},es.codigo+' — '+es.nombre);})))
       ),
       F('Observaciones',h('textarea',{value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},rows:2,placeholder:'Opcional: detenciones, fallas, etc.'})),
-      h('button',{onClick:guardar,className:'mob-submit'},'Guardar registro')
+      h('button',{onClick:guardar,className:'mob-submit'},editingId?'💾 Guardar cambios':'Guardar registro'),
+      editingId&&h('button',{onClick:cancelarEdicion,style:{width:'100%',padding:14,marginTop:8,background:'#F1F5F9',color:'#475569',border:'1px solid #CBD5E1',borderRadius:8,fontSize:14,fontWeight:600,cursor:'pointer'}},'Cancelar edición')
     )
   );
 }
