@@ -143,6 +143,97 @@ async function enviarMailSolicitudCreada(solicitudId){
   }
 }
 
+// Notificar al solicitante cuando su solicitud cambia de estado (en_curso / completada / rechazada)
+async function enviarMailSolicitudRespuesta(solicitudId, accion){
+  if(!mailEnabled){return;}
+  try{
+    const r=await pool.query(`
+      SELECT s.*, 
+             dest.email AS dest_email, dest.nombre AS dest_nombre,
+             sol.email AS sol_email, sol.nombre AS sol_nombre,
+             emp.razon_social AS empresa_nombre,
+             f.nombre AS faena_nombre,
+             eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre
+      FROM solicitudes s
+      JOIN usuarios dest ON s.dirigida_a_id = dest.usuario_id
+      JOIN usuarios sol  ON s.solicitante_id = sol.usuario_id
+      LEFT JOIN empresas emp ON s.empresa_id = emp.empresa_id
+      LEFT JOIN faenas f ON s.faena_id = f.faena_id
+      LEFT JOIN equipos eq ON s.equipo_id = eq.equipo_id
+      WHERE s.solicitud_id=$1
+    `,[solicitudId]);
+    if(!r.rows.length)return;
+    const s=r.rows[0];
+    if(!s.sol_email){console.log('[INFO] Solicitud',solicitudId,'sin email de solicitante');return;}
+
+    // Configuración visual según acción
+    const cfgs={
+      en_curso:{label:'EN CURSO',color:'#3B82F6',bg:'#DBEAFE',border:'#93C5FD',titulo:'Tu solicitud está en curso',icono:'▶',mensaje:'comenzó a trabajar en tu solicitud'},
+      completada:{label:'COMPLETADA',color:'#10B981',bg:'#DCFCE7',border:'#86EFAC',titulo:'Tu solicitud fue completada',icono:'✓',mensaje:'completó tu solicitud'},
+      rechazada:{label:'RECHAZADA',color:'#EF4444',bg:'#FEE2E2',border:'#FCA5A5',titulo:'Tu solicitud fue rechazada',icono:'✕',mensaje:'rechazó tu solicitud'}
+    };
+    const cfg=cfgs[accion]||cfgs.en_curso;
+
+    const baseUrl=process.env.PUBLIC_URL||'https://empresaspoo.up.railway.app';
+    const linkSolicitud=baseUrl+'/?view=solicitudes';
+
+    const html=`<!DOCTYPE html>
+<html><head><meta charset="utf-8"></head>
+<body style="margin:0;padding:0;background:#F1F5F9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <div style="max-width:600px;margin:20px auto;background:#fff;border-radius:8px;overflow:hidden;border:1px solid #E2E8F0;">
+    <div style="background:#1E3A2D;padding:20px 24px;color:#FCD34D;">
+      <div style="font-size:13px;opacity:0.85;">Empresas Poo · Sistema de gestión</div>
+      <div style="font-size:18px;font-weight:600;margin-top:4px;color:#fff;">${cfg.icono} ${cfg.titulo}</div>
+    </div>
+    <div style="padding:22px 24px;color:#1E293B;">
+      <div style="font-size:14px;color:#475569;margin-bottom:14px;">Hola ${escapeHtml(s.sol_nombre||'')},</div>
+      <div style="font-size:14px;color:#475569;line-height:1.6;margin-bottom:18px;">
+        <strong>${escapeHtml(s.dest_nombre||'El destinatario')}</strong> ${cfg.mensaje} <strong>#${s.solicitud_id}</strong>.
+      </div>
+      <div style="background:${cfg.bg};border:1px solid ${cfg.border};border-radius:6px;padding:14px;margin-bottom:18px;">
+        <div style="margin-bottom:8px;">
+          <span style="font-size:11px;font-weight:700;padding:3px 10px;border-radius:10px;background:${cfg.color};color:#fff;">${cfg.label}</span>
+          <span style="font-size:12px;color:#475569;margin-left:8px;">Solicitud #${s.solicitud_id}</span>
+        </div>
+        <div style="font-size:15px;font-weight:600;color:#1E293B;margin-bottom:6px;">
+          ${(parseFloat(s.cantidad)||1)>1?(parseFloat(s.cantidad).toFixed(0)+' × '):''}${escapeHtml(s.detalle||'')}
+        </div>
+      </div>
+      ${s.respuesta?`<div style="background:#F8FAFC;border-left:4px solid ${cfg.color};padding:12px 14px;margin-bottom:18px;border-radius:4px;">
+        <div style="font-size:11px;color:#94A3B8;font-weight:600;text-transform:uppercase;margin-bottom:5px;">Respuesta del destinatario</div>
+        <div style="font-size:13px;color:#1E293B;line-height:1.6;white-space:pre-wrap;">${escapeHtml(s.respuesta)}</div>
+      </div>`:''}
+      <table style="width:100%;font-size:13px;border-collapse:collapse;margin-bottom:20px;">
+        <tr><td style="color:#94A3B8;padding:5px 0;">Estado</td><td style="text-align:right;padding:5px 0;color:${cfg.color};font-weight:600;">${cfg.label}</td></tr>
+        <tr><td style="color:#94A3B8;padding:5px 0;">Destinatario</td><td style="text-align:right;padding:5px 0;">${escapeHtml(s.dest_nombre||'')}</td></tr>
+        ${s.empresa_nombre?`<tr><td style="color:#94A3B8;padding:5px 0;">Empresa</td><td style="text-align:right;padding:5px 0;">${escapeHtml(s.empresa_nombre)}</td></tr>`:''}
+        ${s.faena_nombre?`<tr><td style="color:#94A3B8;padding:5px 0;">Faena</td><td style="text-align:right;padding:5px 0;">${escapeHtml(s.faena_nombre)}</td></tr>`:''}
+        ${s.equipo_codigo?`<tr><td style="color:#94A3B8;padding:5px 0;">Equipo</td><td style="text-align:right;padding:5px 0;">${escapeHtml(s.equipo_codigo)} — ${escapeHtml(s.equipo_nombre||'')}</td></tr>`:''}
+        <tr><td style="color:#94A3B8;padding:5px 0;">Fecha respuesta</td><td style="text-align:right;padding:5px 0;">${new Date().toLocaleString('es-CL')}</td></tr>
+      </table>
+      <div style="text-align:center;margin:20px 0 8px;">
+        <a href="${linkSolicitud}" style="display:inline-block;background:#1E3A2D;color:#fff;padding:12px 28px;border-radius:6px;text-decoration:none;font-size:14px;font-weight:600;">Ver solicitud en el sistema →</a>
+      </div>
+    </div>
+    <div style="background:#F8FAFC;padding:14px 24px;border-top:1px solid #E2E8F0;font-size:11px;color:#94A3B8;text-align:center;line-height:1.5;">
+      Este correo se envió automáticamente desde contacto@empresaspoo.cl<br>
+      No respondas a este correo · empresaspoo.up.railway.app
+    </div>
+  </div>
+</body></html>`;
+
+    const info=await sendMailResend(
+      s.sol_email,
+      `${cfg.icono} Solicitud #${s.solicitud_id} ${cfg.label.toLowerCase()}: ${(s.detalle||'').substring(0,50)}`,
+      html,
+      `${cfg.titulo}\n\n${s.dest_nombre} ${cfg.mensaje} #${s.solicitud_id}: ${s.detalle}${s.respuesta?'\n\nRespuesta: '+s.respuesta:''}\n\nVer en: ${linkSolicitud}`
+    );
+    console.log('[OK] Mail respuesta enviado a',s.sol_email,'(solicitud #'+s.solicitud_id,'·',accion+', id:',(info&&info.id)+')');
+  }catch(e){
+    console.log('[WARN] Error enviando mail respuesta solicitud',solicitudId+':',e.message);
+  }
+}
+
 function escapeHtml(str){
   if(str===null||str===undefined)return '';
   return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
@@ -4781,16 +4872,19 @@ app.post('/api/solicitudes', auth, async(req,res)=>{
 app.patch('/api/solicitudes/:id/en-curso', auth, async(req,res)=>{
   try{const{respuesta}=req.body;
   const r=await pool.query("UPDATE solicitudes SET estado='en_curso',respuesta=$1,respondido_en=NOW() WHERE solicitud_id=$2 RETURNING *",[respuesta||null,req.params.id]);
+  enviarMailSolicitudRespuesta(req.params.id,'en_curso');
   res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
 app.patch('/api/solicitudes/:id/completar', auth, async(req,res)=>{
   try{const{respuesta}=req.body;
   const r=await pool.query("UPDATE solicitudes SET estado='completada',respuesta=COALESCE($1,respuesta),completado_en=NOW() WHERE solicitud_id=$2 RETURNING *",[respuesta||null,req.params.id]);
+  enviarMailSolicitudRespuesta(req.params.id,'completada');
   res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
 app.patch('/api/solicitudes/:id/rechazar', auth, async(req,res)=>{
   try{const{respuesta}=req.body;
   const r=await pool.query("UPDATE solicitudes SET estado='rechazada',respuesta=$1,respondido_en=NOW() WHERE solicitud_id=$2 RETURNING *",[respuesta||null,req.params.id]);
+  enviarMailSolicitudRespuesta(req.params.id,'rechazada');
   res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
 app.put('/api/solicitudes/:id', auth, async(req,res)=>{
