@@ -2232,12 +2232,33 @@ function SolicitudesView(p){
     if(!form.dirigida_a_id){setMsg('Seleccione un destinatario');return;}
     var validas=form.lineas.filter(function(l){return l.detalle;});
     if(!validas.length){setMsg('Ingrese al menos un ítem con detalle');return;}
+    // Modo edición: PUT solo una línea
+    if(editing){
+      var l=validas[0];
+      api('/solicitudes/'+editing,'PUT',{empresa_id:form.empresa_id,dirigida_a_id:form.dirigida_a_id,cantidad:l.cantidad,detalle:l.detalle,subcategoria_id:l.subcategoria_id,faena_id:l.faena_id,equipo_id:l.equipo_id,prioridad:l.prioridad||form.prioridad,observacion:l.observacion},p.tok)
+        .then(function(){load();cancelarEdicion();setMsg('Solicitud actualizada');})
+        .catch(function(e){setMsg('Error: '+e.message);});
+      return;
+    }
     api('/solicitudes','POST',{dirigida_a_id:form.dirigida_a_id,empresa_id:form.empresa_id,prioridad:form.prioridad,lineas:validas},p.tok).then(function(r){load();setShowForm(false);setForm({dirigida_a_id:'',empresa_id:'',prioridad:'normal',lineas:[{cantidad:1,detalle:'',subcategoria_id:'',faena_id:'',equipo_id:''}]});setMsg((r.count||1)+' solicitud(es) registrada(s)');}).catch(function(e){setMsg('Error: '+e.message);});
   }
   function enCurso(id){api('/solicitudes/'+id+'/en-curso','PATCH',{respuesta:respText},p.tok).then(function(){load();setRespModal(null);setRespText('');}).catch(function(e){alert(e.message);});}
   function completar(id){api('/solicitudes/'+id+'/completar','PATCH',{respuesta:respText},p.tok).then(function(){load();setRespModal(null);setRespText('');}).catch(function(e){alert(e.message);});}
   function rechazar(id){api('/solicitudes/'+id+'/rechazar','PATCH',{respuesta:respText},p.tok).then(function(){load();setRespModal(null);setRespText('');}).catch(function(e){alert(e.message);});}
   function eliminar(id){if(!confirm('Eliminar esta solicitud?'))return;api('/solicitudes/'+id,'DELETE',null,p.tok).then(function(){load();}).catch(function(e){alert(e.message);});}
+  var[editing,setEditing]=useState(null); // solicitud_id que se está editando
+  function abrirEditar(sol){
+    setEditing(sol.solicitud_id);
+    setForm({
+      dirigida_a_id:sol.dirigida_a_id||'',
+      empresa_id:sol.empresa_id||'',
+      prioridad:sol.prioridad||'normal',
+      lineas:[{cantidad:sol.cantidad||1,detalle:sol.detalle||'',subcategoria_id:sol.subcategoria_id||'',faena_id:sol.faena_id||'',equipo_id:sol.equipo_id||'',observacion:sol.observacion||''}]
+    });
+    setShowForm(true);
+    setMsg('');
+  }
+  function cancelarEdicion(){setEditing(null);setShowForm(false);setForm({dirigida_a_id:'',empresa_id:'',prioridad:'normal',lineas:[{cantidad:1,detalle:'',subcategoria_id:'',faena_id:'',equipo_id:''}]});}
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
   var filtered=solicitudes.filter(function(s){
     if(tab==='recibidas')return String(s.dirigida_a_id)===String(userId);
@@ -2259,11 +2280,11 @@ function SolicitudesView(p){
     ),
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
       h('div',{style:{display:'flex',gap:4}},tabs.map(function(t){return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'6px 14px',borderRadius:5,fontSize:12,cursor:'pointer',border:'1px solid #CBD5E1',background:tab===t.k?'#1E3A2D':'#F8FAFC',color:tab===t.k?'#fff':'#475569',fontWeight:tab===t.k?600:400}},t.l);})),
-      h(Btn,{onClick:function(){setShowForm(!showForm);}},showForm?'Cancelar':'+ Nueva Solicitud')
+      h(Btn,{onClick:function(){if(showForm){cancelarEdicion();}else{setShowForm(true);}}},showForm?'Cancelar':'+ Nueva Solicitud')
     ),
     msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
-    showForm&&h('div',{className:'card',style:{marginBottom:12}},
-      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Nueva solicitud'),
+    showForm&&h('div',{className:'card',style:{marginBottom:12,borderLeft:editing?'4px solid #1E40AF':'4px solid #1E3A2D'}},
+      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8,color:editing?'#1E40AF':'#1E3A2D'}},editing?'✏ Editando solicitud #'+editing:'Nueva solicitud'),
       h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:10}},
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Dirigida a *'),h('select',{value:form.dirigida_a_id,onChange:function(e){setForm(Object.assign({},form,{dirigida_a_id:e.target.value}));},style:inpS},h('option',{value:''},'Seleccione destinatario...'),usuarios.filter(function(u){return String(u.usuario_id)!==String(userId);}).map(function(u){return h('option',{key:u.usuario_id,value:u.usuario_id},u.nombre);}))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Prioridad'),h('select',{value:form.prioridad,onChange:function(e){setForm(Object.assign({},form,{prioridad:e.target.value}));},style:inpS},PRIORIDADES_SOL.map(function(pr){return h('option',{key:pr.v,value:pr.v},pr.l);}))),
@@ -2286,8 +2307,8 @@ function SolicitudesView(p){
         );
       }),
       h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:8}},
-        h('button',{onClick:addLinea,style:{padding:'6px 12px',border:'1px dashed #3B82F6',borderRadius:5,background:'#EFF6FF',color:'#3B82F6',cursor:'pointer',fontSize:12,fontWeight:600}},'+ Agregar ítem'),
-        h(Btn,{onClick:guardar},'Registrar '+form.lineas.filter(function(l){return l.detalle;}).length+' solicitud(es)')
+        editing?h('div',{style:{fontSize:11,color:'#1E40AF',fontStyle:'italic'}},'ℹ Estás editando una solicitud existente. Para agregar más ítems, crea una nueva solicitud después de guardar.'):h('button',{onClick:addLinea,style:{padding:'6px 12px',border:'1px dashed #3B82F6',borderRadius:5,background:'#EFF6FF',color:'#3B82F6',cursor:'pointer',fontSize:12,fontWeight:600}},'+ Agregar ítem'),
+        h(Btn,{onClick:guardar},editing?'💾 Guardar cambios':'Registrar '+form.lineas.filter(function(l){return l.detalle;}).length+' solicitud(es)')
       )
     ),
     h('div',{className:'card'},h(TBL,{cols:[
@@ -2311,6 +2332,7 @@ function SolicitudesView(p){
           puedeResponder&&r.estado==='pendiente'&&h('button',{onClick:function(){setRespModal({sol:r,action:'en_curso'});setRespText('');},style:{fontSize:10,padding:'2px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'▶ En curso'),
           puedeResponder&&(r.estado==='pendiente'||r.estado==='en_curso')&&h('button',{onClick:function(){setRespModal({sol:r,action:'completar'});setRespText('');},style:{fontSize:10,padding:'2px 6px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✓ Completar'),
           puedeResponder&&r.estado==='pendiente'&&h('button',{onClick:function(){setRespModal({sol:r,action:'rechazar'});setRespText('');},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✕'),
+          (esCreador||esAdmin)&&r.estado==='pendiente'&&h('button',{onClick:function(){abrirEditar(r);},style:{color:'#1E40AF',background:'none',border:'1px solid #BFDBFE',borderRadius:3,cursor:'pointer',fontSize:10,padding:'2px 6px'},title:'Editar'},'✏ Editar'),
           (esCreador||esAdmin)&&r.estado==='pendiente'&&h('button',{onClick:function(){eliminar(r.solicitud_id);},style:{color:'#94A3B8',background:'none',border:'none',cursor:'pointer',fontSize:10}},'🗑')
         );
       }}
@@ -11229,8 +11251,12 @@ function MobileTransporte(p){
   var estanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
   var[camiones,setCamiones]=useState([]);
   var[choferes,setChoferes]=useState([]);
-  var[modo,setModo]=useState('pendientes'); // pendientes | form
+  var[modo,setModo]=useState('pendientes'); // pendientes | form | historial
   var[pendientes,setPendientes]=useState([]);
+  var[historial,setHistorial]=useState([]);
+  var[loadingHist,setLoadingHist]=useState(false);
+  var[fHistMes,setFHistMes]=useState(new Date().toISOString().slice(0,7));
+  var[fHistCamion,setFHistCamion]=useState('');
   var[planActivo,setPlanActivo]=useState(null);
   var[msg,setMsg]=useState('');
   var[saved,setSaved]=useState(false);
@@ -11251,6 +11277,21 @@ function MobileTransporte(p){
     }).catch(function(){});
   }
   useEffect(loadPendientes,[p.tok]);
+
+  // Cargar historial de traslados realizados
+  function loadHistorial(){
+    setLoadingHist(true);
+    var desde=fHistMes+'-01';
+    var d=new Date(fHistMes+'-01T00:00:00');d.setMonth(d.getMonth()+1);d.setDate(0);
+    var hasta=d.toISOString().slice(0,10);
+    var qs='?desde='+desde+'&hasta='+hasta;
+    if(fHistCamion)qs+='&camion_id='+fHistCamion;
+    api('/trans/traslados'+qs,'GET',null,p.tok)
+      .then(function(r){setHistorial(Array.isArray(r)?r:[]);})
+      .catch(function(){setHistorial([]);})
+      .finally(function(){setLoadingHist(false);});
+  }
+  useEffect(function(){if(modo==='historial')loadHistorial();},[modo,fHistMes,fHistCamion]);
 
   function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
 
@@ -11324,8 +11365,13 @@ function MobileTransporte(p){
 
   // Pantalla pendientes (default al entrar)
   if(modo==='pendientes')return h('div',{className:'mob-wrap'},
-    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Traslados planificados')),
-    h('div',{style:{padding:'12px'}},
+    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Traslados')),
+    // Tabs
+    h('div',{style:{display:'flex',background:'#F1F5F9',borderRadius:8,padding:3,margin:10,gap:3}},
+      h('button',{onClick:function(){setModo('pendientes');},style:{flex:1,padding:10,background:'#fff',color:'#1E3A2D',border:'none',borderRadius:6,fontSize:13,fontWeight:700,cursor:'pointer',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}},'📋 Pendientes ('+pendientes.length+')'),
+      h('button',{onClick:function(){setModo('historial');},style:{flex:1,padding:10,background:'transparent',color:'#64748B',border:'none',borderRadius:6,fontSize:13,fontWeight:600,cursor:'pointer'}},'🚚 Realizados')
+    ),
+    h('div',{style:{padding:'0 12px 12px'}},
       h('button',{onClick:nuevoDirecto,style:{width:'100%',padding:'14px',background:'#1E3A2D',color:'#D4C5A9',border:'none',borderRadius:10,fontSize:15,fontWeight:700,marginBottom:16,cursor:'pointer'}},'+ Nuevo traslado directo'),
       pendientes.length===0?h('div',{style:{textAlign:'center',padding:'40px 20px',color:'#94A3B8'}},
         h('div',{style:{fontSize:40,marginBottom:8}},'📭'),
@@ -11358,6 +11404,96 @@ function MobileTransporte(p){
       )
     )
   );
+
+  // Pantalla de HISTORIAL de traslados realizados
+  if(modo==='historial'){
+    var totalKm=historial.reduce(function(s,t){return s+(parseFloat(t.km_cargado||0)+parseFloat(t.km_vacio||0));},0);
+    var totalCargado=historial.reduce(function(s,t){return s+parseFloat(t.km_cargado||0);},0);
+    var totalCosto=historial.reduce(function(s,t){return s+parseFloat(t.costo_total||0);},0);
+    return h('div',{className:'mob-wrap'},
+      h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Mis traslados')),
+      // Tabs
+      h('div',{style:{display:'flex',background:'#F1F5F9',borderRadius:8,padding:3,margin:10,gap:3}},
+        h('button',{onClick:function(){setModo('pendientes');},style:{flex:1,padding:10,background:'transparent',color:'#64748B',border:'none',borderRadius:6,fontSize:13,fontWeight:600,cursor:'pointer'}},'📋 Pendientes ('+pendientes.length+')'),
+        h('button',{onClick:function(){setModo('historial');},style:{flex:1,padding:10,background:'#fff',color:'#1E3A2D',border:'none',borderRadius:6,fontSize:13,fontWeight:700,cursor:'pointer',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}},'🚚 Realizados')
+      ),
+      // Filtros
+      h('div',{style:{padding:'0 10px',marginBottom:8}},
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}},
+          h('input',{type:'month',value:fHistMes,onChange:function(e){setFHistMes(e.target.value);},style:{padding:'10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13,boxSizing:'border-box'}}),
+          h('select',{value:fHistCamion,onChange:function(e){setFHistCamion(e.target.value);},style:{padding:'10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13,boxSizing:'border-box',background:'#fff'}},
+            h('option',{value:''},'Todos los camiones'),
+            camiones.map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.patente_serie);})
+          )
+        )
+      ),
+      // KPIs resumen
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6,padding:'0 10px',marginBottom:10}},
+        h('div',{style:{background:'#1E3A2D',color:'#fff',padding:10,borderRadius:8,textAlign:'center'}},
+          h('div',{style:{fontSize:10,opacity:0.8}},'TRASLADOS'),
+          h('div',{style:{fontSize:20,fontWeight:700,color:'#FCD34D'}},historial.length)
+        ),
+        h('div',{style:{background:'#3B82F6',color:'#fff',padding:10,borderRadius:8,textAlign:'center'}},
+          h('div',{style:{fontSize:10,opacity:0.8}},'KM TOTAL'),
+          h('div',{style:{fontSize:16,fontWeight:700}},Math.round(totalKm))
+        ),
+        h('div',{style:{background:'#16A34A',color:'#fff',padding:10,borderRadius:8,textAlign:'center'}},
+          h('div',{style:{fontSize:10,opacity:0.8}},'COSTO TOT.'),
+          h('div',{style:{fontSize:14,fontWeight:700}},'$'+Math.round(totalCosto/1000)+'k')
+        )
+      ),
+      // Lista
+      h('div',{style:{padding:'0 10px 40px'}},
+        loadingHist?h('div',{style:{textAlign:'center',padding:30,color:'#94A3B8'}},'Cargando...'):
+        historial.length===0?h('div',{style:{textAlign:'center',padding:40,color:'#94A3B8'}},
+          h('div',{style:{fontSize:40,marginBottom:8}},'📭'),
+          h('div',{style:{fontSize:13}},'Sin traslados en este período')
+        ):
+        historial.map(function(t){
+          var eqsArr=Array.isArray(t.equipos_transportados)?t.equipos_transportados:[];
+          var eqLabel=eqsArr.length>1?(eqsArr[0].codigo+' +'+(eqsArr.length-1)):(eqsArr[0]?eqsArr[0].codigo:(t.equipo_codigo||''));
+          var kmTotal=(parseFloat(t.km_cargado||0)+parseFloat(t.km_vacio||0));
+          var estadoColor=t.estado==='finalizado'?'#16A34A':t.estado==='facturado'?'#1E40AF':'#F59E0B';
+          var estadoLabel=t.estado==='finalizado'?'✓ Finalizado':t.estado==='facturado'?'💰 Facturado':t.estado;
+          return h('div',{key:t.traslado_id,style:{background:'#fff',borderLeft:'4px solid '+estadoColor,borderRadius:6,padding:12,marginBottom:8,boxShadow:'0 1px 3px rgba(0,0,0,0.05)'}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
+              h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D'}},
+                new Date((t.fecha+'').slice(0,10)+'T00:00:00').toLocaleDateString('es-CL',{day:'numeric',month:'short'})
+              ),
+              h('span',{style:{padding:'2px 8px',background:estadoColor,color:'#fff',borderRadius:10,fontSize:9,fontWeight:700}},estadoLabel)
+            ),
+            h('div',{style:{fontSize:13,fontWeight:600,color:'#0F172A',marginBottom:4,wordBreak:'break-word'}},
+              (t.origen||'?')+' → '+(t.destino||'?')
+            ),
+            h('div',{style:{fontSize:11,color:'#64748B',marginBottom:6}},
+              '🚛 ',h('strong',null,t.camion_patente||'?'),
+              eqLabel?h('span',null,' · 📦 ',eqLabel):null,
+              t.faena_nombre?h('span',null,' · ',t.faena_nombre):null
+            ),
+            h('div',{style:{display:'flex',gap:8,fontSize:11,padding:6,background:'#F8FAFC',borderRadius:6}},
+              h('div',{style:{flex:1,textAlign:'center'}},
+                h('div',{style:{fontSize:9,color:'#94A3B8'}},'KM TOTAL'),
+                h('div',{style:{fontWeight:700,color:'#1E3A2D'}},Math.round(kmTotal))
+              ),
+              h('div',{style:{flex:1,textAlign:'center'}},
+                h('div',{style:{fontSize:9,color:'#94A3B8'}},'CARGA'),
+                h('div',{style:{fontWeight:700,color:'#16A34A'}},Math.round(parseFloat(t.km_cargado||0)))
+              ),
+              h('div',{style:{flex:1,textAlign:'center'}},
+                h('div',{style:{fontSize:9,color:'#94A3B8'}},'VACÍO'),
+                h('div',{style:{fontWeight:700,color:'#64748B'}},Math.round(parseFloat(t.km_vacio||0)))
+              ),
+              parseFloat(t.costo_total||0)>0&&h('div',{style:{flex:1.2,textAlign:'center',borderLeft:'1px solid #E2E8F0'}},
+                h('div',{style:{fontSize:9,color:'#94A3B8'}},'COSTO'),
+                h('div',{style:{fontWeight:700,color:'#15803D',fontSize:11}},'$'+(parseFloat(t.costo_total)>=1000?(Math.round(parseFloat(t.costo_total)/1000)+'k'):Math.round(parseFloat(t.costo_total))))
+              )
+            ),
+            t.observaciones&&h('div',{style:{fontSize:10,color:'#64748B',marginTop:6,padding:6,background:'#FEF3C7',borderRadius:4,fontStyle:'italic'}},t.observaciones)
+          );
+        })
+      )
+    );
+  }
 
   // Formulario de ejecución
   return h('div',{className:'mob-wrap'},
@@ -11531,38 +11667,132 @@ function MobileSolicitudes(p){
   var faenas=p.m.faenas||[];
   var equipos=(p.m.equipos||[]).filter(function(e){return e.activo;});
   var subcats=(p.m.subcats||[]).filter(function(s){return s.activo;});
+  var userId=p.user?p.user.id:null;
   var[usuarios,setUsuarios]=useState([]);
   var[msg,setMsg]=useState('');
   var[saved,setSaved]=useState(false);
   var[showAdv,setShowAdv]=useState(false);
-  var[form,setForm]=useState({dirigida_a_id:'',prioridad:'normal',detalle:'',cantidad:'1',empresa_id:'',faena_id:'',equipo_id:'',subcategoria_id:'',observacion:''});
+  var[modo,setModo]=useState('form'); // 'form' o 'historial'
+  var[editing,setEditing]=useState(null);
+  var[solicitudes,setSolicitudes]=useState([]);
+  var emptyForm={dirigida_a_id:'',prioridad:'normal',detalle:'',cantidad:'1',empresa_id:'',faena_id:'',equipo_id:'',subcategoria_id:'',observacion:''};
+  var[form,setForm]=useState(emptyForm);
   useEffect(function(){
     api('/usuarios','GET',null,p.tok).then(function(r){setUsuarios((Array.isArray(r)?r:[]).filter(function(u){return u.activo;}));}).catch(function(){});
   },[p.tok]);
+  function loadSolicitudes(){
+    api('/solicitudes','GET',null,p.tok).then(function(r){setSolicitudes(Array.isArray(r)?r:[]);}).catch(function(){});
+  }
+  useEffect(function(){if(modo==='historial')loadSolicitudes();},[modo]);
   function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
   function guardar(){
     if(!form.dirigida_a_id){setMsg('Seleccione destinatario');return;}
     if(!form.detalle){setMsg('Ingrese detalle');return;}
-    api('/solicitudes','POST',form,p.tok).then(function(){setSaved(true);setMsg('');}).catch(function(e){setMsg(e.message);});
+    if(editing){
+      api('/solicitudes/'+editing,'PUT',form,p.tok)
+        .then(function(){setSaved(true);setMsg('');setEditing(null);loadSolicitudes();})
+        .catch(function(e){setMsg(e.message);});
+    }else{
+      api('/solicitudes','POST',form,p.tok).then(function(){setSaved(true);setMsg('');}).catch(function(e){setMsg(e.message);});
+    }
   }
-  function nuevo(){setSaved(false);setShowAdv(false);setForm({dirigida_a_id:form.dirigida_a_id,prioridad:'normal',detalle:'',cantidad:'1',empresa_id:'',faena_id:'',equipo_id:'',subcategoria_id:'',observacion:''});}
+  function nuevo(){setSaved(false);setShowAdv(false);setEditing(null);setForm(Object.assign({},emptyForm,{dirigida_a_id:form.dirigida_a_id}));}
+  function abrirEditar(sol){
+    setEditing(sol.solicitud_id);
+    setForm({
+      dirigida_a_id:sol.dirigida_a_id||'',
+      prioridad:sol.prioridad||'normal',
+      detalle:sol.detalle||'',
+      cantidad:sol.cantidad||'1',
+      empresa_id:sol.empresa_id||'',
+      faena_id:sol.faena_id||'',
+      equipo_id:sol.equipo_id||'',
+      subcategoria_id:sol.subcategoria_id||'',
+      observacion:sol.observacion||''
+    });
+    setShowAdv(!!(sol.empresa_id||sol.faena_id||sol.equipo_id||sol.subcategoria_id||sol.observacion));
+    setModo('form');setSaved(false);setMsg('');
+  }
+  function eliminar(id){
+    if(!confirm('¿Eliminar esta solicitud?'))return;
+    api('/solicitudes/'+id,'DELETE',null,p.tok).then(function(){loadSolicitudes();}).catch(function(e){alert(e.message);});
+  }
   var F=function(lbl,content){return h('div',{className:'mob-field'},h('label',null,lbl),content);};
   var PRIO=[{v:'normal',l:'Normal',c:'#3B82F6'},{v:'alta',l:'Alta',c:'#F59E0B'},{v:'urgente',l:'Urgente',c:'#EF4444'}];
+  
+  // ── Pantalla de éxito tras guardar ──
   if(saved)return h('div',{className:'mob-wrap'},
     h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Solicitud')),
     h('div',{style:{textAlign:'center',padding:'60px 20px'}},
       h('div',{style:{fontSize:48,marginBottom:12}},'✅'),
-      h('div',{style:{fontSize:16,fontWeight:700,color:'#166534',marginBottom:16}},'Solicitud enviada'),
+      h('div',{style:{fontSize:16,fontWeight:700,color:'#166534',marginBottom:16}},editing?'Solicitud actualizada':'Solicitud enviada'),
       h('button',{onClick:nuevo,className:'mob-submit',style:{maxWidth:240,margin:'16px auto',display:'block'}},'Nueva solicitud'),
+      h('button',{onClick:function(){setSaved(false);setEditing(null);setModo('historial');},style:{background:'none',border:'1px solid #1E3A2D',color:'#1E3A2D',padding:'12px 24px',borderRadius:8,marginTop:8,cursor:'pointer',fontSize:14,maxWidth:240,margin:'8px auto',display:'block',width:'100%'}},'📋 Ver mis solicitudes'),
       h('button',{onClick:p.onBack,style:{background:'none',border:'1px solid #CBD5E1',padding:'12px 24px',borderRadius:8,marginTop:8,cursor:'pointer',fontSize:14}},'Volver al inicio')
     )
   );
+  
+  // ── Vista de historial ──
+  if(modo==='historial'){
+    var misSolicitudes=solicitudes.filter(function(s){return String(s.solicitante_id)===String(userId);});
+    var estadoColors={pendiente:{b:'#FEF3C7',c:'#92400E',l:'Pendiente'},en_curso:{b:'#DBEAFE',c:'#1E40AF',l:'En curso'},completada:{b:'#DCFCE7',c:'#166534',l:'Completada'},rechazada:{b:'#FEE2E2',c:'#991B1B',l:'Rechazada'}};
+    var prioColors={baja:'#94A3B8',normal:'#3B82F6',alta:'#F59E0B',urgente:'#EF4444'};
+    return h('div',{className:'mob-wrap'},
+      h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Mis solicitudes')),
+      // Tabs
+      h('div',{style:{display:'flex',background:'#F1F5F9',borderRadius:8,padding:3,margin:10,gap:3}},
+        h('button',{onClick:function(){setModo('form');setEditing(null);},style:{flex:1,padding:10,background:'transparent',color:'#64748B',border:'none',borderRadius:6,fontSize:13,fontWeight:600,cursor:'pointer'}},'📝 Nueva'),
+        h('button',{onClick:function(){setModo('historial');},style:{flex:1,padding:10,background:'#fff',color:'#1E3A2D',border:'none',borderRadius:6,fontSize:13,fontWeight:700,cursor:'pointer',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}},'📋 Enviadas ('+misSolicitudes.length+')')
+      ),
+      h('div',{style:{padding:'0 10px 40px'}},
+        misSolicitudes.length===0?h('div',{style:{textAlign:'center',padding:40,color:'#94A3B8'}},'No tienes solicitudes enviadas'):
+        misSolicitudes.map(function(s){
+          var ec=estadoColors[s.estado]||{b:'#F1F5F9',c:'#64748B',l:s.estado};
+          var pc=prioColors[s.prioridad]||'#3B82F6';
+          var editable=s.estado==='pendiente';
+          return h('div',{key:s.solicitud_id,style:{background:'#fff',borderLeft:'4px solid '+pc,borderRadius:6,padding:12,marginBottom:8,boxShadow:'0 1px 3px rgba(0,0,0,0.05)'}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'start',marginBottom:6,gap:6}},
+              h('div',{style:{flex:1,minWidth:0}},
+                h('div',{style:{fontSize:11,color:'#94A3B8'}},'#'+s.solicitud_id+' · '+(s.creado_en?new Date(s.creado_en).toLocaleDateString('es-CL'):'—')),
+                h('div',{style:{fontWeight:700,fontSize:14,color:'#1E293B',marginTop:3,wordBreak:'break-word'}},s.detalle)
+              ),
+              h('span',{style:{padding:'3px 8px',background:ec.b,color:ec.c,borderRadius:10,fontSize:10,fontWeight:700,whiteSpace:'nowrap'}},ec.l)
+            ),
+            h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},
+              'Cantidad: ',h('strong',null,s.cantidad),' · Dirigida a: ',h('strong',null,s.dirigida_a_nombre||'—'),
+              s.faena_nombre?h('span',null,' · ',s.faena_nombre):null,
+              s.equipo_codigo?h('span',null,' · ',s.equipo_codigo):null
+            ),
+            s.respuesta&&h('div',{style:{padding:8,background:'#F0FDF4',borderLeft:'3px solid #16A34A',borderRadius:4,fontSize:11,color:'#166534',marginBottom:8}},
+              h('strong',null,'Respuesta: '),s.respuesta
+            ),
+            editable&&h('div',{style:{display:'flex',gap:6}},
+              h('button',{onClick:function(){abrirEditar(s);},style:{flex:1,padding:'8px 12px',background:'#EFF6FF',color:'#1E40AF',border:'1px solid #BFDBFE',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer'}},'✏ Editar'),
+              h('button',{onClick:function(){eliminar(s.solicitud_id);},style:{flex:1,padding:'8px 12px',background:'#FEF2F2',color:'#991B1B',border:'1px solid #FCA5A5',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer'}},'🗑 Eliminar')
+            ),
+            !editable&&h('div',{style:{fontSize:10,color:'#94A3B8',textAlign:'center',padding:6,fontStyle:'italic'}},'Esta solicitud ya fue procesada y no puede modificarse')
+          );
+        })
+      )
+    );
+  }
+  
+  // ── Formulario (Nueva o Edición) ──
   return h('div',{className:'mob-wrap'},
-    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Nueva Solicitud')),
+    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,editing?'Editar Solicitud':'Nueva Solicitud')),
+    // Tabs
+    h('div',{style:{display:'flex',background:'#F1F5F9',borderRadius:8,padding:3,margin:10,gap:3}},
+      h('button',{onClick:function(){setModo('form');},style:{flex:1,padding:10,background:'#fff',color:'#1E3A2D',border:'none',borderRadius:6,fontSize:13,fontWeight:700,cursor:'pointer',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}},'📝 '+(editing?'Editar':'Nueva')),
+      h('button',{onClick:function(){setModo('historial');setEditing(null);},style:{flex:1,padding:10,background:'transparent',color:'#64748B',border:'none',borderRadius:6,fontSize:13,fontWeight:600,cursor:'pointer'}},'📋 Mis solicitudes')
+    ),
     h('div',{className:'mob-form',style:{paddingBottom:40}},
       msg&&h('div',{className:'al al-e',style:{marginBottom:10}},msg),
+      editing&&h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6,padding:10,marginBottom:10,fontSize:12,color:'#1E40AF',display:'flex',alignItems:'center',gap:8}},
+        h('span',{style:{fontSize:18}},'✏'),
+        h('div',{style:{flex:1}},'Editando solicitud #'+editing),
+        h('button',{onClick:function(){nuevo();},style:{background:'transparent',border:'1px solid #1E40AF',color:'#1E40AF',padding:'4px 10px',borderRadius:4,fontSize:11,cursor:'pointer'}},'Cancelar')
+      ),
       F('¿A quién va dirigida? *',h('select',{value:form.dirigida_a_id,onChange:function(e){upd('dirigida_a_id',e.target.value);}},h('option',{value:''},'Seleccione destinatario...'),usuarios.map(function(u){return h('option',{key:u.usuario_id,value:u.usuario_id},u.nombre);}))),
-      // Prioridad como botones grandes
       h('div',{className:'mob-field'},
         h('label',null,'Prioridad'),
         h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
@@ -11574,7 +11804,6 @@ function MobileSolicitudes(p){
       ),
       F('¿Qué necesitas? *',h('textarea',{value:form.detalle,onChange:function(e){upd('detalle',e.target.value);},rows:3,placeholder:'Ej: 10 litros de aceite hidráulico'})),
       F('Cantidad',h('input',{type:'number',value:form.cantidad,onChange:function(e){upd('cantidad',e.target.value);},min:0,step:0.1,inputMode:'decimal'})),
-      // Sección avanzada colapsable
       h('button',{onClick:function(){setShowAdv(!showAdv);},style:{width:'100%',padding:12,background:'#F1F5F9',border:'1px dashed #CBD5E1',borderRadius:8,cursor:'pointer',fontSize:13,fontWeight:600,color:'#475569',marginTop:4}},(showAdv?'▼ ':'▶ ')+'Opcional: empresa, faena, equipo'),
       showAdv&&h('div',{style:{background:'#F8FAFC',borderRadius:8,padding:10,marginTop:6}},
         F('Empresa',h('select',{value:form.empresa_id,onChange:function(e){upd('empresa_id',e.target.value);}},h('option',{value:''},'—'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
@@ -11583,7 +11812,7 @@ function MobileSolicitudes(p){
         F('Clasificación',h('select',{value:form.subcategoria_id,onChange:function(e){upd('subcategoria_id',e.target.value);}},h('option',{value:''},'—'),subcats.map(function(s){return h('option',{key:s.subcategoria_id,value:s.subcategoria_id},s.nombre);}))),
         F('Observación',h('textarea',{value:form.observacion,onChange:function(e){upd('observacion',e.target.value);},rows:2}))
       ),
-      h('button',{onClick:guardar,className:'mob-submit'},'Enviar solicitud')
+      h('button',{onClick:guardar,className:'mob-submit'},editing?'💾 Guardar cambios':'Enviar solicitud')
     )
   );
 }
