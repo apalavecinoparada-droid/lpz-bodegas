@@ -3603,6 +3603,38 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
   }catch(e){res.status(400).json({error:e.message});}
 });
 
+// Reabrir OT cerrada (volver a 'en_ejecucion')
+app.patch('/api/mant/ot/:id/reabrir', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const{motivo}=req.body;
+    if(!motivo||!motivo.trim())return res.status(400).json({error:'Debe indicar el motivo de la reapertura'});
+    await client.query('BEGIN');
+    const ot=await client.query('SELECT * FROM mant_ot WHERE ot_id=$1',[req.params.id]);
+    if(!ot.rows.length){await client.query('ROLLBACK');return res.status(404).json({error:'OT no encontrada'});}
+    if(ot.rows[0].estado!=='cerrada'){await client.query('ROLLBACK');return res.status(400).json({error:'Solo se pueden reabrir OTs en estado "cerrada". Esta está en: '+ot.rows[0].estado});}
+    // Guardar nota en observaciones con trazabilidad
+    const fecha=new Date().toLocaleString('es-CL');
+    const notaReap='\n\n[REABIERTA el '+fecha+' por '+req.user.email+'. Motivo: '+motivo.trim()+']';
+    const obsNueva=(ot.rows[0].observaciones||'')+notaReap;
+    // Volver a en_ejecucion (no a abierta, para preservar fecha_inicio) y limpiar fecha_termino
+    const r=await client.query(`UPDATE mant_ot SET 
+        estado='en_ejecucion',
+        fecha_termino=NULL,
+        observaciones=$1,
+        actualizado_en=NOW()
+      WHERE ot_id=$2 RETURNING *`,
+      [obsNueva,req.params.id]);
+    // Marcar equipo como detenido nuevamente
+    await client.query("UPDATE equipos SET estado_operativo='detenido' WHERE equipo_id=$1",[ot.rows[0].equipo_id]);
+    // Si la OT venía de un plan, revertir la programación al estado anterior (si existía)
+    // Sin embargo no podemos reconstruir la lectura previa, así que solo dejamos nota
+    await client.query('COMMIT');
+    res.json({ok:true,ot:r.rows[0]});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
 // GET single OT with joins
 app.get('/api/mant/ot/:id/full', auth, async(req,res)=>{
   try{
