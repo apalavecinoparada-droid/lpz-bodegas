@@ -2246,6 +2246,14 @@ function SolicitudesView(p){
   function completar(id){api('/solicitudes/'+id+'/completar','PATCH',{respuesta:respText},p.tok).then(function(){load();setRespModal(null);setRespText('');}).catch(function(e){alert(e.message);});}
   function rechazar(id){api('/solicitudes/'+id+'/rechazar','PATCH',{respuesta:respText},p.tok).then(function(){load();setRespModal(null);setRespText('');}).catch(function(e){alert(e.message);});}
   function eliminar(id){if(!confirm('Eliminar esta solicitud?'))return;api('/solicitudes/'+id,'DELETE',null,p.tok).then(function(){load();}).catch(function(e){alert(e.message);});}
+  var[transfModal,setTransfModal]=useState(null);var[transfDest,setTransfDest]=useState('');var[transfMotivo,setTransfMotivo]=useState('');
+  function abrirTransferir(sol){setTransfModal(sol);setTransfDest('');setTransfMotivo('');}
+  function ejecutarTransferencia(){
+    if(!transfDest){alert('Selecciona el nuevo destinatario');return;}
+    api('/solicitudes/'+transfModal.solicitud_id+'/transferir','PATCH',{nuevo_destinatario_id:transfDest,motivo:transfMotivo||null},p.tok)
+      .then(function(){setTransfModal(null);setTransfDest('');setTransfMotivo('');load();setMsg('Solicitud transferida');})
+      .catch(function(e){alert('Error: '+e.message);});
+  }
   var[editing,setEditing]=useState(null); // solicitud_id que se está editando
   function abrirEditar(sol){
     setEditing(sol.solicitud_id);
@@ -2331,6 +2339,7 @@ function SolicitudesView(p){
         return h('div',{style:{display:'flex',gap:3,flexWrap:'wrap'}},
           puedeResponder&&r.estado==='pendiente'&&h('button',{onClick:function(){setRespModal({sol:r,action:'en_curso'});setRespText('');},style:{fontSize:10,padding:'2px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'▶ En curso'),
           puedeResponder&&(r.estado==='pendiente'||r.estado==='en_curso')&&h('button',{onClick:function(){setRespModal({sol:r,action:'completar'});setRespText('');},style:{fontSize:10,padding:'2px 6px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✓ Completar'),
+          (puedeResponder||esCreador)&&(r.estado==='pendiente'||r.estado==='en_curso')&&h('button',{onClick:function(){abrirTransferir(r);},style:{fontSize:10,padding:'2px 6px',background:'#7C3AED',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'},title:'Transferir a otro usuario'},'↪ Transferir'),
           puedeResponder&&r.estado==='pendiente'&&h('button',{onClick:function(){setRespModal({sol:r,action:'rechazar'});setRespText('');},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'✕'),
           (esCreador||esAdmin)&&r.estado==='pendiente'&&h('button',{onClick:function(){abrirEditar(r);},style:{color:'#1E40AF',background:'none',border:'1px solid #BFDBFE',borderRadius:3,cursor:'pointer',fontSize:10,padding:'2px 6px'},title:'Editar'},'✏ Editar'),
           (esCreador||esAdmin)&&r.estado==='pendiente'&&h('button',{onClick:function(){eliminar(r.solicitud_id);},style:{color:'#94A3B8',background:'none',border:'none',cursor:'pointer',fontSize:10}},'🗑')
@@ -2351,6 +2360,37 @@ function SolicitudesView(p){
           respModal.action==='en_curso'&&h(Btn,{onClick:function(){enCurso(respModal.sol.solicitud_id);}},'▶ Poner en curso'),
           respModal.action==='completar'&&h(Btn,{v:'g',onClick:function(){completar(respModal.sol.solicitud_id);}},'✓ Completar'),
           respModal.action==='rechazar'&&h(Btn,{v:'r',onClick:function(){rechazar(respModal.sol.solicitud_id);}},'✕ Rechazar')
+        )
+      )
+    ),
+    // Modal de transferencia
+    transfModal&&h(Modal,{title:'↪ Transferir solicitud #'+transfModal.solicitud_id+' a otro usuario',onClose:function(){setTransfModal(null);}},
+      h('div',{style:{padding:'0 4px'}},
+        h('div',{style:{background:'#F8FAFC',borderRadius:6,padding:10,marginBottom:12,fontSize:12}},
+          h('div',null,h('strong',null,'De: '),transfModal.solicitante_nombre),
+          h('div',null,h('strong',null,'Dirigida a (actual): '),transfModal.dirigida_nombre),
+          h('div',null,h('strong',null,'Detalle: '),transfModal.detalle),
+          h('div',null,h('strong',null,'Cantidad: '),transfModal.cantidad),
+          transfModal.faena_nombre&&h('div',null,h('strong',null,'Faena: '),transfModal.faena_nombre),
+          h('div',{style:{marginTop:5,padding:'4px 8px',background:'#FEF3C7',borderRadius:4,fontSize:11,color:'#92400E'}},
+            'ℹ Al transferir, el nuevo destinatario recibirá un correo de notificación. La solicitud volverá al estado "pendiente".')
+        ),
+        h('div',{style:{marginBottom:10}},
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Nuevo destinatario *'),
+          h('select',{value:transfDest,onChange:function(e){setTransfDest(e.target.value);},style:inpS},
+            h('option',{value:''},'Seleccione...'),
+            usuarios.filter(function(u){return String(u.usuario_id)!==String(transfModal.dirigida_a_id);}).map(function(u){
+              return h('option',{key:u.usuario_id,value:u.usuario_id},u.nombre);
+            })
+          )
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Motivo de la transferencia (opcional)'),
+          h('textarea',{value:transfMotivo,onChange:function(e){setTransfMotivo(e.target.value);},style:Object.assign({},inpS,{minHeight:60}),placeholder:'Ej: Esta solicitud le corresponde al área de mantenimiento'})
+        ),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:10}},
+          h('button',{onClick:function(){setTransfModal(null);},style:{padding:'6px 14px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12}},'Cancelar'),
+          h(Btn,{v:'a',onClick:ejecutarTransferencia,disabled:!transfDest},'↪ Transferir')
         )
       )
     )
@@ -11675,6 +11715,10 @@ function MobileSolicitudes(p){
   var[modo,setModo]=useState('form'); // 'form' o 'historial'
   var[editing,setEditing]=useState(null);
   var[solicitudes,setSolicitudes]=useState([]);
+  var[subTab,setSubTab]=useState('enviadas'); // 'enviadas' | 'recibidas'
+  // Transferencia y respuesta (recibidas)
+  var[transfModal,setTransfModal]=useState(null);var[transfDest,setTransfDest]=useState('');var[transfMotivo,setTransfMotivo]=useState('');
+  var[respMov,setRespMov]=useState(null);var[respTxtMov,setRespTxtMov]=useState('');
   var emptyForm={dirigida_a_id:'',prioridad:'normal',detalle:'',cantidad:'1',empresa_id:'',faena_id:'',equipo_id:'',subcategoria_id:'',observacion:''};
   var[form,setForm]=useState(emptyForm);
   useEffect(function(){
@@ -11717,6 +11761,23 @@ function MobileSolicitudes(p){
     if(!confirm('¿Eliminar esta solicitud?'))return;
     api('/solicitudes/'+id,'DELETE',null,p.tok).then(function(){loadSolicitudes();}).catch(function(e){alert(e.message);});
   }
+  // Funciones de transferencia
+  function abrirTransferir(sol){setTransfModal(sol);setTransfDest('');setTransfMotivo('');}
+  function ejecutarTransferencia(){
+    if(!transfDest){alert('Selecciona el nuevo destinatario');return;}
+    api('/solicitudes/'+transfModal.solicitud_id+'/transferir','PATCH',{nuevo_destinatario_id:transfDest,motivo:transfMotivo||null},p.tok)
+      .then(function(){setTransfModal(null);setTransfDest('');setTransfMotivo('');loadSolicitudes();})
+      .catch(function(e){alert('Error: '+e.message);});
+  }
+  // Funciones de respuesta a solicitudes recibidas
+  function abrirResponder(sol,action){setRespMov({sol:sol,action:action});setRespTxtMov('');}
+  function ejecutarResp(){
+    if(!respMov)return;
+    var url='/solicitudes/'+respMov.sol.solicitud_id+'/'+(respMov.action==='en_curso'?'en-curso':respMov.action);
+    api(url,'PATCH',{respuesta:respTxtMov||null},p.tok)
+      .then(function(){setRespMov(null);setRespTxtMov('');loadSolicitudes();})
+      .catch(function(e){alert('Error: '+e.message);});
+  }
   var F=function(lbl,content){return h('div',{className:'mob-field'},h('label',null,lbl),content);};
   var PRIO=[{v:'normal',l:'Normal',c:'#3B82F6'},{v:'alta',l:'Alta',c:'#F59E0B'},{v:'urgente',l:'Urgente',c:'#EF4444'}];
   
@@ -11735,21 +11796,33 @@ function MobileSolicitudes(p){
   // ── Vista de historial ──
   if(modo==='historial'){
     var misSolicitudes=solicitudes.filter(function(s){return String(s.solicitante_id)===String(userId);});
+    var recibidas=solicitudes.filter(function(s){return String(s.dirigida_a_id)===String(userId);});
+    var pendientesRec=recibidas.filter(function(s){return s.estado==='pendiente';}).length;
+    var lista=subTab==='recibidas'?recibidas:misSolicitudes;
     var estadoColors={pendiente:{b:'#FEF3C7',c:'#92400E',l:'Pendiente'},en_curso:{b:'#DBEAFE',c:'#1E40AF',l:'En curso'},completada:{b:'#DCFCE7',c:'#166534',l:'Completada'},rechazada:{b:'#FEE2E2',c:'#991B1B',l:'Rechazada'}};
     var prioColors={baja:'#94A3B8',normal:'#3B82F6',alta:'#F59E0B',urgente:'#EF4444'};
     return h('div',{className:'mob-wrap'},
       h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Mis solicitudes')),
-      // Tabs
+      // Tabs principales
       h('div',{style:{display:'flex',background:'#F1F5F9',borderRadius:8,padding:3,margin:10,gap:3}},
         h('button',{onClick:function(){setModo('form');setEditing(null);},style:{flex:1,padding:10,background:'transparent',color:'#64748B',border:'none',borderRadius:6,fontSize:13,fontWeight:600,cursor:'pointer'}},'📝 Nueva'),
-        h('button',{onClick:function(){setModo('historial');},style:{flex:1,padding:10,background:'#fff',color:'#1E3A2D',border:'none',borderRadius:6,fontSize:13,fontWeight:700,cursor:'pointer',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}},'📋 Enviadas ('+misSolicitudes.length+')')
+        h('button',{onClick:function(){setModo('historial');},style:{flex:1,padding:10,background:'#fff',color:'#1E3A2D',border:'none',borderRadius:6,fontSize:13,fontWeight:700,cursor:'pointer',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}},'📋 Solicitudes')
+      ),
+      // Sub-tabs Enviadas/Recibidas
+      h('div',{style:{display:'flex',gap:6,padding:'0 10px',marginBottom:8}},
+        h('button',{onClick:function(){setSubTab('enviadas');loadSolicitudes();},style:{flex:1,padding:'10px 8px',background:subTab==='enviadas'?'#1E3A2D':'#fff',color:subTab==='enviadas'?'#fff':'#475569',border:'1px solid '+(subTab==='enviadas'?'#1E3A2D':'#CBD5E1'),borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer'}},'📤 Enviadas ('+misSolicitudes.length+')'),
+        h('button',{onClick:function(){setSubTab('recibidas');loadSolicitudes();},style:{flex:1,padding:'10px 8px',background:subTab==='recibidas'?'#1E3A2D':'#fff',color:subTab==='recibidas'?'#fff':'#475569',border:'1px solid '+(subTab==='recibidas'?'#1E3A2D':'#CBD5E1'),borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer',position:'relative'}},'📥 Recibidas ('+recibidas.length+')',pendientesRec>0&&h('span',{style:{position:'absolute',top:-4,right:-4,background:'#DC2626',color:'#fff',padding:'2px 6px',borderRadius:10,fontSize:9,fontWeight:700,minWidth:18}},pendientesRec))
       ),
       h('div',{style:{padding:'0 10px 40px'}},
-        misSolicitudes.length===0?h('div',{style:{textAlign:'center',padding:40,color:'#94A3B8'}},'No tienes solicitudes enviadas'):
-        misSolicitudes.map(function(s){
+        lista.length===0?h('div',{style:{textAlign:'center',padding:40,color:'#94A3B8'}},subTab==='recibidas'?'No tienes solicitudes recibidas':'No tienes solicitudes enviadas'):
+        lista.map(function(s){
           var ec=estadoColors[s.estado]||{b:'#F1F5F9',c:'#64748B',l:s.estado};
           var pc=prioColors[s.prioridad]||'#3B82F6';
-          var editable=s.estado==='pendiente';
+          var esCreador=String(s.solicitante_id)===String(userId);
+          var esDestinatario=String(s.dirigida_a_id)===String(userId);
+          var editable=esCreador&&s.estado==='pendiente';
+          var transferible=(esDestinatario||esCreador)&&(s.estado==='pendiente'||s.estado==='en_curso');
+          var puedeResponder=esDestinatario&&(s.estado==='pendiente'||s.estado==='en_curso');
           return h('div',{key:s.solicitud_id,style:{background:'#fff',borderLeft:'4px solid '+pc,borderRadius:6,padding:12,marginBottom:8,boxShadow:'0 1px 3px rgba(0,0,0,0.05)'}},
             h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'start',marginBottom:6,gap:6}},
               h('div',{style:{flex:1,minWidth:0}},
@@ -11759,20 +11832,86 @@ function MobileSolicitudes(p){
               h('span',{style:{padding:'3px 8px',background:ec.b,color:ec.c,borderRadius:10,fontSize:10,fontWeight:700,whiteSpace:'nowrap'}},ec.l)
             ),
             h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},
-              'Cantidad: ',h('strong',null,s.cantidad),' · Dirigida a: ',h('strong',null,s.dirigida_a_nombre||'—'),
+              'Cantidad: ',h('strong',null,s.cantidad),
+              subTab==='recibidas'?h('span',null,' · De: ',h('strong',null,s.solicitante_nombre||'—')):h('span',null,' · Para: ',h('strong',null,s.dirigida_a_nombre||s.dirigida_nombre||'—')),
               s.faena_nombre?h('span',null,' · ',s.faena_nombre):null,
               s.equipo_codigo?h('span',null,' · ',s.equipo_codigo):null
             ),
             s.respuesta&&h('div',{style:{padding:8,background:'#F0FDF4',borderLeft:'3px solid #16A34A',borderRadius:4,fontSize:11,color:'#166534',marginBottom:8}},
               h('strong',null,'Respuesta: '),s.respuesta
             ),
-            editable&&h('div',{style:{display:'flex',gap:6}},
-              h('button',{onClick:function(){abrirEditar(s);},style:{flex:1,padding:'8px 12px',background:'#EFF6FF',color:'#1E40AF',border:'1px solid #BFDBFE',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer'}},'✏ Editar'),
-              h('button',{onClick:function(){eliminar(s.solicitud_id);},style:{flex:1,padding:'8px 12px',background:'#FEF2F2',color:'#991B1B',border:'1px solid #FCA5A5',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer'}},'🗑 Eliminar')
+            // Acciones para recibidas
+            puedeResponder&&h('div',{style:{display:'flex',gap:6,marginBottom:editable||transferible?6:0,flexWrap:'wrap'}},
+              s.estado==='pendiente'&&h('button',{onClick:function(){abrirResponder(s,'en_curso');},style:{flex:'1 1 30%',padding:'8px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:6,fontSize:11,fontWeight:600,cursor:'pointer'}},'▶ En curso'),
+              h('button',{onClick:function(){abrirResponder(s,'completar');},style:{flex:'1 1 30%',padding:'8px 6px',background:'#10B981',color:'#fff',border:'none',borderRadius:6,fontSize:11,fontWeight:600,cursor:'pointer'}},'✓ Completar'),
+              s.estado==='pendiente'&&h('button',{onClick:function(){abrirResponder(s,'rechazar');},style:{flex:'1 1 30%',padding:'8px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:6,fontSize:11,fontWeight:600,cursor:'pointer'}},'✕ Rechazar')
             ),
-            !editable&&h('div',{style:{fontSize:10,color:'#94A3B8',textAlign:'center',padding:6,fontStyle:'italic'}},'Esta solicitud ya fue procesada y no puede modificarse')
+            // Botones de transferir + editar/eliminar
+            (editable||transferible)&&h('div',{style:{display:'flex',gap:6,flexWrap:'wrap'}},
+              transferible&&h('button',{onClick:function(){abrirTransferir(s);},style:{flex:1,padding:'8px 12px',background:'#F5F3FF',color:'#7C3AED',border:'1px solid #C4B5FD',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer'}},'↪ Transferir'),
+              editable&&h('button',{onClick:function(){abrirEditar(s);},style:{flex:1,padding:'8px 12px',background:'#EFF6FF',color:'#1E40AF',border:'1px solid #BFDBFE',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer'}},'✏ Editar'),
+              editable&&h('button',{onClick:function(){eliminar(s.solicitud_id);},style:{flex:1,padding:'8px 12px',background:'#FEF2F2',color:'#991B1B',border:'1px solid #FCA5A5',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer'}},'🗑')
+            ),
+            !editable&&!transferible&&!puedeResponder&&h('div',{style:{fontSize:10,color:'#94A3B8',textAlign:'center',padding:6,fontStyle:'italic'}},'Esta solicitud ya fue procesada')
           );
         })
+      ),
+      // Modal de transferencia (móvil)
+      transfModal&&h('div',{style:{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'flex-end',zIndex:200}},
+        h('div',{style:{background:'#fff',width:'100%',borderRadius:'16px 16px 0 0',padding:16,maxHeight:'90vh',overflowY:'auto',boxShadow:'0 -4px 20px rgba(0,0,0,0.2)'}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14,paddingBottom:8,borderBottom:'1px solid #E2E8F0'}},
+            h('h3',{style:{margin:0,fontSize:16,color:'#7C3AED'}},'↪ Transferir solicitud'),
+            h('button',{onClick:function(){setTransfModal(null);},style:{background:'none',border:'none',fontSize:24,cursor:'pointer',color:'#94A3B8'}},'×')
+          ),
+          h('div',{style:{background:'#F8FAFC',borderRadius:8,padding:10,marginBottom:12,fontSize:12}},
+            h('div',{style:{marginBottom:3}},h('strong',null,'#'+transfModal.solicitud_id+' — '+transfModal.detalle)),
+            h('div',{style:{color:'#64748B'}},'De: ',transfModal.solicitante_nombre,' · Actual: ',transfModal.dirigida_a_nombre||transfModal.dirigida_nombre)
+          ),
+          h('div',{style:{padding:10,background:'#FEF3C7',borderRadius:6,fontSize:11,color:'#92400E',marginBottom:12}},
+            'ℹ El nuevo destinatario recibirá un correo de notificación. La solicitud volverá a estado "pendiente".'
+          ),
+          h('div',{style:{marginBottom:12}},
+            h('label',{style:{fontSize:12,fontWeight:600,display:'block',marginBottom:5,color:'#475569'}},'Nuevo destinatario *'),
+            h('select',{value:transfDest,onChange:function(e){setTransfDest(e.target.value);},style:{width:'100%',padding:'12px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:14,background:'#fff',boxSizing:'border-box'}},
+              h('option',{value:''},'Seleccione usuario...'),
+              usuarios.filter(function(u){return String(u.usuario_id)!==String(transfModal.dirigida_a_id);}).map(function(u){
+                return h('option',{key:u.usuario_id,value:u.usuario_id},u.nombre);
+              })
+            )
+          ),
+          h('div',{style:{marginBottom:14}},
+            h('label',{style:{fontSize:12,fontWeight:600,display:'block',marginBottom:5,color:'#475569'}},'Motivo (opcional)'),
+            h('textarea',{value:transfMotivo,onChange:function(e){setTransfMotivo(e.target.value);},rows:3,style:{width:'100%',padding:'10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:14,fontFamily:'inherit',boxSizing:'border-box',resize:'vertical'},placeholder:'Ej: Esta solicitud le corresponde a otra área'})
+          ),
+          h('div',{style:{display:'flex',gap:8}},
+            h('button',{onClick:function(){setTransfModal(null);},style:{flex:1,padding:'14px',background:'#F1F5F9',color:'#475569',border:'none',borderRadius:8,fontSize:14,fontWeight:600,cursor:'pointer'}},'Cancelar'),
+            h('button',{onClick:ejecutarTransferencia,disabled:!transfDest,style:{flex:2,padding:'14px',background:transfDest?'#7C3AED':'#C4B5FD',color:'#fff',border:'none',borderRadius:8,fontSize:14,fontWeight:700,cursor:transfDest?'pointer':'not-allowed'}},'↪ Transferir')
+          )
+        )
+      ),
+      // Modal de respuesta (en_curso / completar / rechazar)
+      respMov&&h('div',{style:{position:'fixed',top:0,left:0,right:0,bottom:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'flex-end',zIndex:200}},
+        h('div',{style:{background:'#fff',width:'100%',borderRadius:'16px 16px 0 0',padding:16,maxHeight:'80vh',overflowY:'auto'}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:14,paddingBottom:8,borderBottom:'1px solid #E2E8F0'}},
+            h('h3',{style:{margin:0,fontSize:16,color:respMov.action==='completar'?'#10B981':respMov.action==='rechazar'?'#EF4444':'#3B82F6'}},
+              respMov.action==='en_curso'?'▶ Poner en curso':respMov.action==='completar'?'✓ Completar solicitud':'✕ Rechazar solicitud'
+            ),
+            h('button',{onClick:function(){setRespMov(null);},style:{background:'none',border:'none',fontSize:24,cursor:'pointer',color:'#94A3B8'}},'×')
+          ),
+          h('div',{style:{background:'#F8FAFC',padding:10,borderRadius:6,marginBottom:12,fontSize:12}},
+            h('div',null,h('strong',null,'#'+respMov.sol.solicitud_id+': '),respMov.sol.detalle)
+          ),
+          h('div',{style:{marginBottom:14}},
+            h('label',{style:{fontSize:12,fontWeight:600,display:'block',marginBottom:5,color:'#475569'}},'Respuesta (opcional)'),
+            h('textarea',{value:respTxtMov,onChange:function(e){setRespTxtMov(e.target.value);},rows:3,style:{width:'100%',padding:'10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:14,fontFamily:'inherit',boxSizing:'border-box'},placeholder:'Mensaje al solicitante...'})
+          ),
+          h('div',{style:{display:'flex',gap:8}},
+            h('button',{onClick:function(){setRespMov(null);},style:{flex:1,padding:'14px',background:'#F1F5F9',color:'#475569',border:'none',borderRadius:8,fontSize:14,fontWeight:600,cursor:'pointer'}},'Cancelar'),
+            h('button',{onClick:ejecutarResp,style:{flex:2,padding:'14px',background:respMov.action==='completar'?'#10B981':respMov.action==='rechazar'?'#EF4444':'#3B82F6',color:'#fff',border:'none',borderRadius:8,fontSize:14,fontWeight:700,cursor:'pointer'}},
+              respMov.action==='en_curso'?'▶ Poner en curso':respMov.action==='completar'?'✓ Completar':'✕ Rechazar'
+            )
+          )
+        )
       )
     );
   }
