@@ -171,6 +171,21 @@ const {useState,useEffect,useMemo,useCallback,useRef,Component}=React;
 const h=React.createElement;
 const CLP=n=>new Intl.NumberFormat('es-CL',{style:'currency',currency:'CLP',maximumFractionDigits:0}).format(n||0);
 function fmtD(s){if(!s)return '—';var d=(s+'').substring(0,10);var p=d.split('-');return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:d;}
+// Verifica si un equipo está asignado a una empresa, considerando la relación N:N (equipos_empresas)
+function equipoEnEmpresa(equipo,empresaId){
+  if(!empresaId)return true; // sin filtro, todos
+  if(!equipo)return false;
+  var eid=String(empresaId);
+  // 1. Coincidencia con empresa_id legacy
+  if(String(equipo.empresa_id)===eid)return true;
+  // 2. Coincidencia en array N:N empresas
+  if(Array.isArray(equipo.empresas)){
+    for(var i=0;i<equipo.empresas.length;i++){
+      if(String(equipo.empresas[i].empresa_id)===eid)return true;
+    }
+  }
+  return false;
+}
 // Convierte "APELLIDO_P APELLIDO_M NOMBRES" (formato maestro) → "NOMBRES APELLIDO_P APELLIDO_M" (formato legal/documentos)
 // Heurística: los primeros 2 tokens son los apellidos. Si hay menos de 3 tokens, devuelve igual.
 function nombresPrimero(nc){
@@ -1082,8 +1097,9 @@ function SalidaView(p){
   const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
   const[otsAbiertas,setOtsAbiertas]=useState([]);
   const[linkOTMov,setLinkOTMov]=useState(null);const[otsSalida,setOtsSalida]=useState([]);
-  const blank={fecha:TODAY,bodega_id:'',faena_id:'',eq_id:'',mot_id:'',re:'',rr:'',obs:'',ot_id:'',lineas:[{prod_id:'',qty:'1'}]};
+  const blank={fecha:TODAY,empresa_id:'',bodega_id:'',faena_id:'',eq_id:'',mot_id:'',re:'',rr:'',obs:'',ot_id:'',lineas:[{prod_id:'',qty:'1'}]};
   const[form,setForm]=useState(blank);
+  const empresas=p.m&&Array.isArray(p.m.empresas)?p.m.empresas:[];
   function load(){
     api('/movimientos?tipo=SALIDA','GET',null,p.tok).then(function(r){setMovs(Array.isArray(r)?r:[]);}).catch(function(){});
     api('/stock','GET',null,p.tok).then(function(rows){var m={};(rows||[]).forEach(function(r){m[r.producto_id+'_'+r.bodega_id]={q:parseFloat(r.cantidad_disponible),cpp:parseFloat(r.costo_promedio_actual)};});setStock(m);}).catch(function(){});
@@ -1096,7 +1112,9 @@ function SalidaView(p){
   function updL(i,k,v){setForm(function(f){return Object.assign({},f,{lineas:f.lineas.map(function(l,j){return j===i?Object.assign({},l,{[k]:v}):l;})});});}
   function getDisp(pid,bid){if(!pid||!bid)return null;var e=stock[pid+'_'+bid];return e?e.q:null;}
   function getCpp(pid,bid){if(!pid||!bid)return 0;var e=stock[pid+'_'+bid];return e?e.cpp:0;}
-  const eqFlt=form.faena_id?equipos.filter(function(e){return String(e.faena_id)===String(form.faena_id)&&e.activo;}):equipos.filter(function(e){return e.activo;});
+  const esMultiSal=form.empresa_id==='__MULTI__';
+  const faenasFiltSal=(form.empresa_id&&!esMultiSal)?faenas.filter(function(f){return f.activo&&String(f.empresa_id)===String(form.empresa_id);}):faenas.filter(function(f){return f.activo;});
+  const eqFlt=form.faena_id?equipos.filter(function(e){return String(e.faena_id)===String(form.faena_id)&&e.activo;}):((form.empresa_id&&!esMultiSal)?equipos.filter(function(e){return e.activo&&equipoEnEmpresa(e,form.empresa_id);}):equipos.filter(function(e){return e.activo;}));
   function save(){
     setErr('');
     if(!form.bodega_id||!form.fecha){setErr('Bodega y fecha son obligatorios');return;}
@@ -1162,9 +1180,14 @@ function SalidaView(p){
           err&&h('div',{className:'al al-e'},err),
           h('div',{className:'g2'},
             h(FR,{label:'Fecha',req:true},h(Inp,{value:form.fecha,onChange:v=>sf('fecha',v),type:'date'})),
+            h(FR,{label:'Empresa'},h('select',{value:form.empresa_id||'',onChange:function(e){var v=e.target.value;setForm(function(f){return Object.assign({},f,{empresa_id:v,faena_id:'',eq_id:''});});},style:{width:'100%',padding:'7px 9px',border:'1px solid '+(esMultiSal?'#7C3AED':'#CBD5E1'),borderRadius:5,fontSize:12,background:esMultiSal?'#F5F3FF':'#fff',fontWeight:esMultiSal?600:400,color:esMultiSal?'#7C3AED':'inherit'}},
+              h('option',{value:''},'Todas las empresas'),
+              h('option',{value:'__MULTI__'},'🏢🏢 Multiempresa (sin filtrar)'),
+              empresas.filter(function(e){return e.activo;}).map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})
+            )),
             h(FR,{label:'Bodega origen',req:true},h(Sel,{value:form.bodega_id,onChange:v=>{sf('bodega_id',v);setForm(f=>Object.assign({},f,{bodega_id:v,lineas:[{prod_id:'',qty:'1'}]}));}},h('option',{value:''},'Seleccione...'),bodegas.filter(b=>b.activo).map(b=>h('option',{key:b.bodega_id,value:b.bodega_id},b.nombre)))),
-            h(FR,{label:'Faena destino',req:true},h(Sel,{value:form.faena_id,onChange:v=>{sf('faena_id',v);sf('eq_id','');}},h('option',{value:''},'Seleccione...'),faenas.filter(f=>f.activo).map(f=>h('option',{key:f.faena_id,value:f.faena_id},f.nombre)))),
-            h(FR,{label:'Equipo / Cargo',req:true},h(Sel,{value:form.eq_id,onChange:v=>sf('eq_id',v)},h('option',{value:''},'Seleccione...'),eqFlt.map(e=>h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' - '+e.nombre)))),
+            h(FR,{label:'Faena destino',req:true},h(Sel,{value:form.faena_id,onChange:v=>{sf('faena_id',v);sf('eq_id','');}},h('option',{value:''},'Seleccione...'),faenasFiltSal.map(f=>h('option',{key:f.faena_id,value:f.faena_id},f.nombre)))),
+            h(FR,{label:'Equipo / Cargo',req:true},h(Sel,{value:form.eq_id,onChange:v=>sf('eq_id',v)},h('option',{value:''},'Seleccione...'),eqFlt.sort(function(a,b){if(esMultiSal){var ea=(a.empresa_nombre||'').toLowerCase();var eb=(b.empresa_nombre||'').toLowerCase();if(ea!==eb)return ea.localeCompare(eb);}return (a.codigo||'').localeCompare(b.codigo||'');}).map(e=>h('option',{key:e.equipo_id,value:e.equipo_id},(esMultiSal?'['+(e.empresa_nombre||'?')+'] ':'')+e.codigo+' - '+e.nombre)))),
             h(FR,{label:'Motivo',req:true},h(Sel,{value:form.mot_id,onChange:v=>sf('mot_id',v)},h('option',{value:''},'Seleccione...'),motivos.filter(m=>m.activo).map(m=>h('option',{key:m.motivo_id,value:m.motivo_id},m.nombre)))),
             h(FR,{label:'Orden de Trabajo (OT)'},h(Sel,{value:form.ot_id||'',onChange:v=>sf('ot_id',v)},h('option',{value:''},'Sin OT (opcional)'),otsAbiertas.filter(function(ot){return !form.eq_id||String(ot.equipo_id)===String(form.eq_id);}).map(function(ot){return h('option',{key:ot.ot_id,value:ot.ot_id},ot.numero_ot+' — '+(ot.equipo_nombre||'')+' ('+ot.tipo_mantencion+')');}))),
             h(FR,{label:'Responsable entrega'},h(Inp,{value:form.re,onChange:v=>sf('re',v)})),
@@ -5741,17 +5764,36 @@ function CombMovForm(p){
     setErr('');setSaving(true);
     var url=p.editId?('/comb/movimientos/'+p.editId):('/comb/'+p.endpoint);
     var method=p.editId?'PUT':'POST';
-    api(url,method,form,p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
+    // Si está en modo multiempresa, resolver empresa_id real desde el equipo seleccionado
+    var payload=Object.assign({},form);
+    if(payload.empresa_id==='__MULTI__'){
+      var eq=equipos.find(function(e){return String(e.equipo_id)===String(payload.equipo_id);});
+      if(!eq||!eq.empresa_id){setErr('Selecciona un equipo con empresa asignada (modo multiempresa)');setSaving(false);return;}
+      payload.empresa_id=eq.empresa_id;
+    }
+    api(url,method,payload,p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
   }
-  const estFiltOrigen=form.empresa_id?estanques.filter(function(e){return !e.empresa_id||String(e.empresa_id)===String(form.empresa_id);}):estanques;
-  const faenasFilt=form.empresa_id?faenas.filter(function(f){return String(f.empresa_id)===String(form.empresa_id);}):faenas;
-  const equiposFilt=form.empresa_id?equipos.filter(function(e){return String(e.empresa_id)===String(form.empresa_id);}):equipos;
+  // Modo multiempresa: cuando empresa_id='__MULTI__', no filtra equipos/faenas/estanques por empresa
+  const esMulti=form.empresa_id==='__MULTI__';
+  const estFiltOrigen=(form.empresa_id&&!esMulti)?estanques.filter(function(e){return !e.empresa_id||String(e.empresa_id)===String(form.empresa_id);}):estanques;
+  const faenasFilt=(form.empresa_id&&!esMulti)?faenas.filter(function(f){return String(f.empresa_id)===String(form.empresa_id);}):faenas;
+  const equiposFilt=(form.empresa_id&&!esMulti)?equipos.filter(function(e){return equipoEnEmpresa(e,form.empresa_id);}):equipos;
   const stockOrigen=form.estanque_origen_id&&form.tipo_id?(p.m.combStock||[]).find(function(s){return String(s.estanque_id)===String(form.estanque_origen_id)&&String(s.tipo_id)===String(form.tipo_id);}):null;
+  // Empresa del equipo seleccionado (para mostrarla cuando estamos en modo multi)
+  const eqSel=form.equipo_id?equipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);}):null;
   return h(EB,null,
     h('div',{className:'mb'},
       err&&h('div',{className:'al al-e',style:{marginBottom:8}},err),
       h('div',{className:'g2'},
-        p.campos.includes('empresa')&&h(FS,{k:'empresa_id',l:'Empresa',req:true,item:form,onChange:setForm,opts:empresas.map(function(e){return{v:e.empresa_id,l:e.razon_social};})}),
+        p.campos.includes('empresa')&&h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa *'),
+          h('select',{value:form.empresa_id,onChange:function(e){setForm(Object.assign({},form,{empresa_id:e.target.value,faena_id:'',equipo_id:''}));},style:{width:'100%',padding:'7px 9px',border:'1px solid '+(esMulti?'#7C3AED':'#CBD5E1'),borderRadius:5,fontSize:12,background:esMulti?'#F5F3FF':'#fff',fontWeight:esMulti?600:400,color:esMulti?'#7C3AED':'inherit'}},
+            h('option',{value:''},'Seleccione...'),
+            h('option',{value:'__MULTI__'},'🏢🏢 Multiempresa (ver todos los equipos)'),
+            empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})
+          ),
+          esMulti&&h('div',{style:{fontSize:10,color:'#7C3AED',marginTop:3,fontStyle:'italic'}},'💡 Verás equipos de todas las empresas. La empresa se asigna automáticamente según el equipo elegido.')
+        ),
         h(FI,{k:'fecha',l:'Fecha',req:true,type:'date',item:form,onChange:setForm}),
         p.campos.includes('tipo')&&h(FS,{k:'tipo_id',l:'Combustible',req:true,item:form,onChange:setForm,opts:tipos.map(function(t){return{v:t.tipo_id,l:t.nombre};})}),
         p.campos.includes('proveedor')&&h(FS,{k:'proveedor_id',l:'Proveedor',item:form,onChange:setForm,opts:provs.map(function(p2){return{v:p2.proveedor_id,l:p2.nombre};})}),
@@ -5764,7 +5806,16 @@ function CombMovForm(p){
         p.campos.includes('precio')&&h(FI,{k:'precio_unitario',l:'Precio x litro $',req:true,type:'number',item:form,onChange:setForm}),
         p.campos.includes('precio')&&h('div',{className:'al al-i',style:{fontSize:12}},'Total: '+CLP(Math.round(total()))),
         p.campos.includes('faena')&&h(FS,{k:'faena_id',l:'Faena',item:form,onChange:setForm,opts:faenasFilt.map(function(f){return{v:f.faena_id,l:f.nombre};})}),
-        p.campos.includes('equipo')&&h(FS,{k:'equipo_id',l:'Equipo/Vehiculo',req:true,item:form,onChange:setForm,opts:equiposFilt.sort(function(a,b){return a.nombre.localeCompare(b.nombre);}).map(function(e){return{v:e.equipo_id,l:e.nombre};})}),
+        p.campos.includes('equipo')&&h('div',null,
+          h(FS,{k:'equipo_id',l:'Equipo/Vehiculo',req:true,item:form,onChange:setForm,opts:equiposFilt.sort(function(a,b){
+            if(esMulti){
+              var ea=(a.empresa_nombre||'').toLowerCase();var eb=(b.empresa_nombre||'').toLowerCase();
+              if(ea!==eb)return ea.localeCompare(eb);
+            }
+            return a.nombre.localeCompare(b.nombre);
+          }).map(function(e){return{v:e.equipo_id,l:esMulti?((e.empresa_nombre||'Sin empresa')+' — '+e.nombre):e.nombre};})}),
+          esMulti&&eqSel&&h('div',{style:{fontSize:11,color:'#7C3AED',marginTop:2,fontWeight:600,background:'#F5F3FF',padding:'4px 8px',borderRadius:4}},'🏢 Imputación: '+(eqSel.empresa_nombre||'Sin empresa'))
+        ),
         p.campos.includes('horometro')&&h(FI,{k:'horometro',l:'Horometro (hrs)',type:'number',item:form,onChange:setForm,ph:'ej: 1250.5'}),
         p.campos.includes('kilometraje')&&h(FI,{k:'kilometraje',l:'Kilometraje (km)',type:'number',item:form,onChange:setForm,ph:'ej: 45230'}),
         p.campos.includes('responsable')&&h(FI,{k:'responsable',l:'Responsable entrega',item:form,onChange:setForm}),
