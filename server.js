@@ -4476,7 +4476,7 @@ app.get('/api/rend/saldos', auth, async(req,res)=>{
   try{
     const{empresa_id}=req.query;
     let empFilt=empresa_id?' AND p.empresa_id='+parseInt(empresa_id):'';
-    const r=await pool.query(`SELECT p.persona_id,p.nombre_completo,p.rut,p.cargo,emp.razon_social AS empresa_nombre,
+    const r=await pool.query(`SELECT p.persona_id,p.nombre_completo,p.rut,p.cargo,p.empresa_id,emp.razon_social AS empresa_nombre,
       COALESCE((SELECT SUM(e.monto) FROM rend_entregas e WHERE e.persona_id=p.persona_id),0) AS total_entregas,
       COALESCE((SELECT SUM(g.monto) FROM rend_gastos g WHERE g.persona_id=p.persona_id AND g.estado!='rechazado'),0) AS total_gastos,
       COALESCE((SELECT SUM(e.monto) FROM rend_entregas e WHERE e.persona_id=p.persona_id),0)-COALESCE((SELECT SUM(g.monto) FROM rend_gastos g WHERE g.persona_id=p.persona_id AND g.estado!='rechazado'),0) AS saldo,
