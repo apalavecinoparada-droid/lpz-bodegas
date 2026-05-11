@@ -4688,6 +4688,27 @@ app.patch('/api/solicitudes/:id/rechazar', auth, async(req,res)=>{
   const r=await pool.query("UPDATE solicitudes SET estado='rechazada',respuesta=$1,respondido_en=NOW() WHERE solicitud_id=$2 RETURNING *",[respuesta||null,req.params.id]);
   res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
+app.put('/api/solicitudes/:id', auth, async(req,res)=>{
+  try{
+    // Verificar que sea el solicitante y que esté pendiente
+    const check=await pool.query('SELECT solicitante_id,estado FROM solicitudes WHERE solicitud_id=$1',[req.params.id]);
+    if(!check.rows.length)return res.status(404).json({error:'Solicitud no encontrada'});
+    const cur=check.rows[0];
+    // Permitir editar si es el solicitante o admin, y solo si está pendiente
+    if(cur.solicitante_id!==req.user.id&&!(req.user.rol==='admin'||req.user.rol==='superadmin'))
+      return res.status(403).json({error:'Solo el solicitante puede modificar esta solicitud'});
+    if(cur.estado!=='pendiente')return res.status(400).json({error:'Solo se pueden modificar solicitudes en estado pendiente. Esta ya fue '+cur.estado+'.'});
+    const{empresa_id,dirigida_a_id,cantidad,detalle,subcategoria_id,faena_id,equipo_id,prioridad,observacion}=req.body;
+    if(!detalle)return res.status(400).json({error:'Detalle es obligatorio'});
+    const r=await pool.query(`UPDATE solicitudes SET
+      empresa_id=$1,dirigida_a_id=COALESCE($2,dirigida_a_id),cantidad=$3,detalle=$4,
+      subcategoria_id=$5,faena_id=$6,equipo_id=$7,prioridad=$8,observacion=$9
+      WHERE solicitud_id=$10 RETURNING *`,
+      [empresa_id||null,dirigida_a_id||null,parseFloat(cantidad)||1,detalle,subcategoria_id||null,faena_id||null,equipo_id||null,prioridad||'normal',observacion||null,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 app.delete('/api/solicitudes/:id', auth, async(req,res)=>{
   try{await pool.query('DELETE FROM solicitudes WHERE solicitud_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
 });
