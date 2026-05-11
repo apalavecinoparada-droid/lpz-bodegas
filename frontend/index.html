@@ -8806,6 +8806,11 @@ function Personal(p){
   const[filtFaena,setFiltFaena]=useState('');
   const[filtEmpresa,setFiltEmpresa]=useState('');
   const[buscar,setBuscar]=useState('');
+  const[filtEstado,setFiltEstado]=useState('activos'); // 'activos' | 'inactivos' | 'todos'
+  const[reactivarModal,setReactivarModal]=useState(null);
+  const[reactFechaIngreso,setReactFechaIngreso]=useState('');
+  const[reactFechaTermino,setReactFechaTermino]=useState('');
+  const[reactTipoContrato,setReactTipoContrato]=useState('Indefinido');
   const[showImport,setShowImport]=useState(false);
   const[importResult,setImportResult]=useState(null);
   const[invPreview,setInvPreview]=useState(null);
@@ -8830,6 +8835,35 @@ function Personal(p){
   function eliminarPersona(row){
     if(!confirm('¿Eliminar permanentemente a '+row.nombre_completo+'?\n\nEsta acción no se puede deshacer. Si tiene registros asociados, se le indicará el error.'))return;
     api('/personal/'+row.persona_id,'DELETE',null,p.tok).then(function(){load();setMsg('✓ Trabajador eliminado');p.onMov&&p.onMov();}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function abrirReactivar(row){
+    setReactivarModal(row);
+    setReactFechaIngreso(new Date().toISOString().slice(0,10));
+    setReactFechaTermino('');
+    setReactTipoContrato(row.tipo_contrato||'Indefinido');
+  }
+  function ejecutarReactivar(){
+    if(!reactFechaIngreso){alert('La fecha de inicio del contrato es obligatoria');return;}
+    api('/personal/'+reactivarModal.persona_id+'/reactivar','PATCH',{
+      fecha_ingreso:reactFechaIngreso,
+      fecha_termino:reactFechaTermino||null,
+      tipo_contrato:reactTipoContrato||null
+    },p.tok).then(function(){
+      setReactivarModal(null);load();setMsg('✓ '+reactivarModal.nombre_completo+' reactivado');p.onMov&&p.onMov();
+    }).catch(function(e){alert('Error: '+e.message);});
+  }
+  function revisarContratosVencidos(){
+    if(!confirm('Esto buscará trabajadores cuya fecha de término ya pasó y los marcará como inactivos automáticamente. ¿Continuar?'))return;
+    api('/personal/revisar-contratos-vencidos','POST',{},p.tok).then(function(r){
+      load();
+      if(r.inactivados>0){
+        var nombres=r.trabajadores.map(function(t){return '• '+t.nombre_completo+' (término: '+(t.fecha_termino+'').slice(0,10)+')';}).join('\n');
+        alert('✓ '+r.inactivados+' trabajador(es) inactivados:\n\n'+nombres);
+      }else{
+        alert('✓ No hay contratos vencidos pendientes. Todo al día.');
+      }
+      p.onMov&&p.onMov();
+    }).catch(function(e){alert('Error: '+e.message);});
   }
   function previewInvertirNombres(){
     setInvLoading(true);setMsg('');
@@ -8880,6 +8914,10 @@ function Personal(p){
   var rows=personas.filter(function(x){
     if(filtEmpresa&&String(x.empresa_id)!==String(filtEmpresa)) return false;
     if(filtFaena&&String(x.faena_id)!==String(filtFaena)) return false;
+    // Filtro por estado
+    if(filtEstado==='activos'&&!x.activo) return false;
+    if(filtEstado==='inactivos'&&x.activo) return false;
+    // 'todos' no filtra
     if(buscar){
       var q=buscar.toLowerCase().trim();
       // Búsqueda por palabras: cada palabra del input debe aparecer en alguno de los campos
@@ -8889,9 +8927,25 @@ function Personal(p){
     }
     return true;
   });
+  // Conteos para mostrar en los tabs
+  var countActivos=personas.filter(function(x){return x.activo;}).length;
+  var countInactivos=personas.filter(function(x){return !x.activo;}).length;
+  // Alertas: trabajadores con término en próximos 30 días
+  var hoy=new Date();hoy.setHours(0,0,0,0);
+  var en30=new Date(hoy);en30.setDate(en30.getDate()+30);
+  function diasHastaTermino(d){if(!d)return null;var ft=new Date((d+'').slice(0,10)+'T00:00:00');return Math.floor((ft-hoy)/(1000*60*60*24));}
   var catLabel=function(c){var found=CATEGORIAS.find(function(x){return x.v===c;});return found?found.l:(c||'—');};
   var fmtD=function(d){if(!d)return '—';return (d+'').slice(8,10)+'/'+(d+'').slice(5,7)+'/'+(d+'').slice(0,4);};
   return h('div',null,
+    // Tabs de estado
+    h('div',{style:{display:'flex',gap:0,marginBottom:10,borderBottom:'2px solid #E2E8F0'}},
+      [{v:'activos',l:'✓ Activos',count:countActivos,c:'#16A34A'},
+       {v:'inactivos',l:'⊘ Inactivos',count:countInactivos,c:'#94A3B8'},
+       {v:'todos',l:'📋 Todos',count:personas.length,c:'#1E3A2D'}].map(function(t){
+        var on=filtEstado===t.v;
+        return h('button',{key:t.v,onClick:function(){setFiltEstado(t.v);},style:{padding:'8px 14px',background:'none',border:'none',borderBottom:'3px solid '+(on?t.c:'transparent'),color:on?t.c:'#64748B',fontWeight:on?700:500,fontSize:13,cursor:'pointer',marginBottom:-2}},t.l+' ('+t.count+')');
+      })
+    ),
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:6}},
       h('div',{style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}},
         h('select',{value:filtEmpresa,onChange:function(e){setFiltEmpresa(e.target.value);setFiltFaena('');},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,fontWeight:filtEmpresa?600:400}},
@@ -8906,6 +8960,7 @@ function Personal(p){
         h('span',{style:{fontSize:11,color:'#64748B'}},rows.length+'/'+personas.length+' registros')
       ),
       h('div',{style:{display:'flex',gap:6}},
+        h('button',{onClick:revisarContratosVencidos,style:{padding:'5px 10px',borderRadius:4,fontSize:11,cursor:'pointer',border:'1px solid #DC2626',background:'#FEF2F2',color:'#991B1B',fontWeight:600},title:'Inactiva trabajadores cuya fecha de término ya pasó'},'⏰ Revisar contratos vencidos'),
         h('button',{onClick:previewInvertirNombres,disabled:invLoading,style:{padding:'5px 10px',borderRadius:4,fontSize:11,cursor:invLoading?'wait':'pointer',border:'1px solid #8B5CF6',background:'#F5F3FF',color:'#5B21B6',fontWeight:600}},invLoading?'⏳...':'🔄 Invertir nombres'),
         h('label',{style:{padding:'5px 10px',borderRadius:4,fontSize:11,cursor:'pointer',border:'1px solid #F59E0B',background:'#FFFBEB',color:'#92400E',display:'inline-flex',alignItems:'center',gap:4}},
           '📥 Importar JSON',
@@ -9039,15 +9094,63 @@ function Personal(p){
         {lbl:'Faena',render:function(r){return r.faena_nombre||r.centro_costo||'—';}},
         {lbl:'Contrato',k:'tipo_contrato'},
         {lbl:'Ingreso',render:function(r){return fmtD(r.fecha_ingreso);}},
-        {lbl:'Término',render:function(r){return r.fecha_termino?h('span',{style:{color:'#EF4444',fontWeight:600}},fmtD(r.fecha_termino)):h('span',{style:{color:'#94A3B8'}},'—');}},
+        {lbl:'Término',render:function(r){
+          if(!r.fecha_termino)return h('span',{style:{color:'#94A3B8'}},'—');
+          var dias=diasHastaTermino(r.fecha_termino);
+          if(dias===null)return fmtD(r.fecha_termino);
+          if(dias<0)return h('span',{style:{color:'#991B1B',fontWeight:700,background:'#FEE2E2',padding:'2px 6px',borderRadius:4},title:'Contrato vencido hace '+Math.abs(dias)+' día(s)'},fmtD(r.fecha_termino)+' ⚠');
+          if(dias<=7)return h('span',{style:{color:'#991B1B',fontWeight:700,background:'#FEE2E2',padding:'2px 6px',borderRadius:4},title:'Vence en '+dias+' día(s)'},fmtD(r.fecha_termino)+' 🔴');
+          if(dias<=30)return h('span',{style:{color:'#92400E',fontWeight:700,background:'#FEF3C7',padding:'2px 6px',borderRadius:4},title:'Vence en '+dias+' día(s)'},fmtD(r.fecha_termino)+' ⚠');
+          return h('span',{style:{color:'#EF4444',fontWeight:600}},fmtD(r.fecha_termino));
+        }},
         {lbl:'Mant.',render:function(r){return r.participa_mantencion?h('span',{style:{color:'#10B981',fontWeight:700}},'✓'):'—';}},
         {lbl:'Transp.',render:function(r){return r.es_transporte?h('span',{style:{color:'#3B82F6',fontWeight:700}},'🚛'):'—';}},
         {lbl:'Estado',render:function(r){return h(Bg,{c:r.activo?'g':'r'},r.activo?'Activo':'Inactivo');}},
         {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:4}},
+          !r.activo&&h('button',{onClick:function(){abrirReactivar(r);},style:{fontSize:10,padding:'2px 8px',background:'#16A34A',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontWeight:600},title:'Reactivar con nuevo contrato'},'🔄 Reactivar'),
           h(Btn,{v:'a',sm:true,onClick:function(){openEdit(r);}},null,'✏'),
           h(Btn,{v:'r',sm:true,onClick:function(){eliminarPersona(r);}},null,'🗑')
         );}}
       ],rows:rows,empty:'Sin personal'})
+    ),
+    // Modal de reactivación con nuevas fechas de contrato
+    reactivarModal&&h('div',{style:{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20}},
+      h('div',{style:{background:'#fff',borderRadius:8,maxWidth:500,width:'100%',padding:0,boxShadow:'0 10px 40px rgba(0,0,0,0.2)'}},
+        h('div',{style:{padding:'14px 18px',borderBottom:'1px solid #E2E8F0',display:'flex',justifyContent:'space-between',alignItems:'center',background:'#F0FDF4'}},
+          h('div',null,
+            h('div',{style:{fontSize:15,fontWeight:700,color:'#15803D'}},'🔄 Reactivar trabajador'),
+            h('div',{style:{fontSize:11,color:'#64748B',marginTop:2}},reactivarModal.nombre_completo+(reactivarModal.rut?' · '+reactivarModal.rut:''))
+          ),
+          h('button',{onClick:function(){setReactivarModal(null);},style:{fontSize:18,cursor:'pointer',background:'none',border:'none',color:'#94A3B8'}},'✕')
+        ),
+        h('div',{style:{padding:18}},
+          h('div',{style:{padding:10,background:'#EFF6FF',borderRadius:6,fontSize:12,color:'#1E40AF',marginBottom:14}},
+            'ℹ Al reactivar, el trabajador volverá a aparecer en el listado de activos con las nuevas fechas de contrato. Si tenía una fecha de término vencida, ésta será reemplazada.'
+          ),
+          h('div',{style:{marginBottom:12}},
+            h('label',{style:{fontSize:12,fontWeight:600,display:'block',marginBottom:4,color:'#1E3A2D'}},'Nueva fecha de inicio de contrato *'),
+            h('input',{type:'date',value:reactFechaIngreso,onChange:function(e){setReactFechaIngreso(e.target.value);},style:{width:'100%',padding:'8px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,boxSizing:'border-box'}})
+          ),
+          h('div',{style:{marginBottom:12}},
+            h('label',{style:{fontSize:12,fontWeight:600,display:'block',marginBottom:4,color:'#1E3A2D'}},'Tipo de contrato'),
+            h('select',{value:reactTipoContrato,onChange:function(e){setReactTipoContrato(e.target.value);},style:{width:'100%',padding:'8px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,background:'#fff',boxSizing:'border-box'}},
+              h('option',{value:'Indefinido'},'Indefinido'),
+              h('option',{value:'A Plazo'},'A Plazo'),
+              h('option',{value:'Por Obra'},'Por Obra'),
+              h('option',{value:'Honorarios'},'Honorarios')
+            )
+          ),
+          h('div',{style:{marginBottom:14}},
+            h('label',{style:{fontSize:12,fontWeight:600,display:'block',marginBottom:4,color:'#1E3A2D'}},'Fecha de término ',h('span',{style:{fontSize:10,color:'#64748B',fontWeight:400}},'(opcional · dejar vacío si es indefinido)')),
+            h('input',{type:'date',value:reactFechaTermino,onChange:function(e){setReactFechaTermino(e.target.value);},min:reactFechaIngreso||new Date().toISOString().slice(0,10),style:{width:'100%',padding:'8px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,boxSizing:'border-box'}}),
+            reactFechaTermino&&h('div',{style:{fontSize:10,color:'#92400E',marginTop:4,fontStyle:'italic'}},'⚠ El trabajador será inactivado automáticamente cuando llegue esta fecha')
+          ),
+          h('div',{style:{display:'flex',gap:8,justifyContent:'flex-end',paddingTop:8,borderTop:'1px solid #E2E8F0'}},
+            h('button',{onClick:function(){setReactivarModal(null);},style:{padding:'8px 16px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:13,background:'#fff'}},'Cancelar'),
+            h('button',{onClick:ejecutarReactivar,style:{padding:'8px 18px',background:'#16A34A',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontSize:13,fontWeight:600}},'🔄 Reactivar trabajador')
+          )
+        )
+      )
     ),
     // Modal de preview de inversión de nombres
     invPreview&&h('div',{style:{position:'fixed',inset:0,background:'rgba(0,0,0,0.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20}},
