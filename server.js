@@ -514,6 +514,22 @@ async function autoSetup() {
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS placa_patente VARCHAR(30)`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS num_chasis VARCHAR(50)`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)`);
+  // Tabla N:N para equipos multi-empresa (un equipo puede estar asignado a varias empresas)
+  await q(`CREATE TABLE IF NOT EXISTS equipos_empresas (
+    rel_id SERIAL PRIMARY KEY,
+    equipo_id INT NOT NULL REFERENCES equipos(equipo_id) ON DELETE CASCADE,
+    empresa_id INT NOT NULL REFERENCES empresas(empresa_id),
+    es_principal BOOLEAN DEFAULT false,
+    creado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(equipo_id, empresa_id)
+  )`);
+  await q('CREATE INDEX IF NOT EXISTS idx_eq_emp_equipo ON equipos_empresas(equipo_id)');
+  await q('CREATE INDEX IF NOT EXISTS idx_eq_emp_empresa ON equipos_empresas(empresa_id)');
+  // Migración: copiar el empresa_id existente como principal a la tabla N:N (solo la primera vez)
+  try{await q(`INSERT INTO equipos_empresas(equipo_id,empresa_id,es_principal)
+    SELECT equipo_id, empresa_id, true FROM equipos
+    WHERE empresa_id IS NOT NULL
+      AND NOT EXISTS(SELECT 1 FROM equipos_empresas ee WHERE ee.equipo_id=equipos.equipo_id)`);}catch(e){}
   // Factor de conversion (v2.3)
   await q(`ALTER TABLE productos ADD COLUMN IF NOT EXISTS unidad_compra VARCHAR(30)`);
   await q(`ALTER TABLE productos ADD COLUMN IF NOT EXISTS factor_conversion NUMERIC(10,4) DEFAULT 1`);
@@ -1238,25 +1254,76 @@ async function resolveEmpresaId(val){
 }
 eqR.get('/', auth, async(req,res)=>{
   try{
-    const r=await pool.query('SELECT e.*,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,m.marca AS modelo_marca,m.modelo AS modelo_nombre,m.tipo_maquina AS modelo_tipo,m.motor_descripcion AS modelo_motor,m.potencia_hp AS modelo_hp FROM equipos e LEFT JOIN faenas f ON e.faena_id=f.faena_id LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id LEFT JOIN modelos_equipo m ON e.modelo_id=m.modelo_id ORDER BY emp.razon_social NULLS LAST,e.codigo');
+    const r=await pool.query(`SELECT e.*, f.nombre AS faena_nombre, emp.razon_social AS empresa_nombre,
+        m.marca AS modelo_marca, m.modelo AS modelo_nombre, m.tipo_maquina AS modelo_tipo, m.motor_descripcion AS modelo_motor, m.potencia_hp AS modelo_hp,
+        COALESCE((
+          SELECT json_agg(json_build_object('empresa_id',ee.empresa_id,'razon_social',e2.razon_social,'es_principal',ee.es_principal) ORDER BY ee.es_principal DESC, e2.razon_social)
+          FROM equipos_empresas ee JOIN empresas e2 ON ee.empresa_id=e2.empresa_id
+          WHERE ee.equipo_id=e.equipo_id
+        ), '[]'::json) AS empresas
+      FROM equipos e
+      LEFT JOIN faenas f ON e.faena_id=f.faena_id
+      LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
+      LEFT JOIN modelos_equipo m ON e.modelo_id=m.modelo_id
+      ORDER BY emp.razon_social NULLS LAST, e.codigo`);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
+// Función helper para sincronizar la tabla N:N
+async function syncEquipoEmpresas(client,equipoId,empresaIds,empresaPrincipalId){
+  // empresaIds: array de IDs; empresaPrincipalId: cuál marcar como principal
+  if(!Array.isArray(empresaIds)||empresaIds.length===0){
+    // sin empresas: si hay empresaPrincipalId úsalo, sino limpia todo
+    if(empresaPrincipalId){empresaIds=[empresaPrincipalId];}else{
+      await client.query('DELETE FROM equipos_empresas WHERE equipo_id=$1',[equipoId]);
+      return;
+    }
+  }
+  // Normalizar a enteros
+  empresaIds=empresaIds.map(function(x){return parseInt(x);}).filter(function(x){return !isNaN(x);});
+  const principal=empresaPrincipalId?parseInt(empresaPrincipalId):empresaIds[0];
+  // Eliminar las que ya no están
+  await client.query('DELETE FROM equipos_empresas WHERE equipo_id=$1 AND NOT(empresa_id=ANY($2::int[]))',[equipoId,empresaIds]);
+  // Insertar las nuevas, marcando la principal
+  for(let i=0;i<empresaIds.length;i++){
+    const eid=empresaIds[i];
+    const esPpal=(eid===principal);
+    await client.query(`INSERT INTO equipos_empresas(equipo_id,empresa_id,es_principal) VALUES($1,$2,$3)
+      ON CONFLICT(equipo_id,empresa_id) DO UPDATE SET es_principal=EXCLUDED.es_principal`,
+      [equipoId,eid,esPpal]);
+  }
+  // Sincronizar el campo legacy empresa_id de equipos con la principal
+  await client.query('UPDATE equipos SET empresa_id=$1 WHERE equipo_id=$2',[principal,equipoId]);
+}
 eqR.post('/', auth, async(req,res)=>{
+  const client=await pool.connect();
   try{
-    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia}=req.body;
-    const empresa_id=await resolveEmpresaId(req.body.empresa_id);
-    const r=await pool.query('INSERT INTO equipos(codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,empresa_id,tipo_cargo,modelo_id,contacto_terreno,horas_productivas_dia) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12]);
+    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia,empresas_ids,empresa_principal_id}=req.body;
+    let empresa_id=await resolveEmpresaId(req.body.empresa_id);
+    await client.query('BEGIN');
+    const r=await client.query('INSERT INTO equipos(codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,empresa_id,tipo_cargo,modelo_id,contacto_terreno,horas_productivas_dia) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12]);
+    const equipoId=r.rows[0].equipo_id;
+    // Sincronizar tabla N:N: si vienen empresas_ids úsalo, sino solo la empresa_id principal
+    const listaEmp=Array.isArray(empresas_ids)&&empresas_ids.length>0?empresas_ids:(empresa_id?[empresa_id]:[]);
+    await syncEquipoEmpresas(client,equipoId,listaEmp,empresa_principal_id||empresa_id);
+    await client.query('COMMIT');
     res.status(201).json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 eqR.put('/:id', auth, async(req,res)=>{
+  const client=await pool.connect();
   try{
-    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia}=req.body;
-    const empresa_id=await resolveEmpresaId(req.body.empresa_id);
-    const r=await pool.query('UPDATE equipos SET codigo=$1,nombre=$2,tipo=$3,faena_id=$4,patente_serie=$5,marca=$6,modelo=$7,anio=$8,placa_patente=$9,num_chasis=$10,empresa_id=$11,tipo_cargo=$12,modelo_id=$13,contacto_terreno=$14,horas_productivas_dia=$15 WHERE equipo_id=$16 RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12,req.params.id]);
+    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia,empresas_ids,empresa_principal_id}=req.body;
+    let empresa_id=await resolveEmpresaId(req.body.empresa_id);
+    await client.query('BEGIN');
+    const r=await client.query('UPDATE equipos SET codigo=$1,nombre=$2,tipo=$3,faena_id=$4,patente_serie=$5,marca=$6,modelo=$7,anio=$8,placa_patente=$9,num_chasis=$10,empresa_id=$11,tipo_cargo=$12,modelo_id=$13,contacto_terreno=$14,horas_productivas_dia=$15 WHERE equipo_id=$16 RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12,req.params.id]);
+    const listaEmp=Array.isArray(empresas_ids)&&empresas_ids.length>0?empresas_ids:(empresa_id?[empresa_id]:[]);
+    await syncEquipoEmpresas(client,parseInt(req.params.id),listaEmp,empresa_principal_id||empresa_id);
+    await client.query('COMMIT');
     res.json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 eqR.patch('/:id/activo', auth, async(req,res)=>{try{res.json((await pool.query('UPDATE equipos SET activo=NOT activo WHERE equipo_id=$1 RETURNING *',[req.params.id])).rows[0]);}catch(e){res.status(400).json({error:e.message});}});
 eqR.delete('/:id', auth, async(req,res)=>{
@@ -2271,6 +2338,8 @@ app.post('/api/comb/traspaso', auth, async(req,res)=>{
 // Distribución a equipo/vehículo
 app.post('/api/comb/distribucion', auth, async(req,res)=>{
   const client=await pool.connect();
+  // Helper: string vacío o no-numérico → null
+  const numOrNull=function(v){if(v===''||v===undefined||v===null)return null;var n=parseFloat(v);return isNaN(n)?null:n;};
   try{
     await client.query('BEGIN');
     const{empresa_id,fecha,tipo_id,estanque_origen_id,equipo_id,faena_id,litros,horometro,kilometraje,responsable,observaciones}=req.body;
@@ -2287,7 +2356,7 @@ app.post('/api/comb/distribucion', auth, async(req,res)=>{
     await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles-$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[lts,estanque_origen_id,tipo_id]);
     const r=await client.query(`INSERT INTO comb_movimientos(tipo_mov,empresa_id,fecha,tipo_id,estanque_origen_id,equipo_id,faena_id,litros,precio_unitario,costo_total,horometro,kilometraje,responsable,observaciones,usuario)
       VALUES('DISTRIBUCION',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-      [empresa_id||null,fecha,tipo_id,estanque_origen_id,equipo_id,faena_id||null,lts,cpp,costo_total,horometro||null,kilometraje||null,responsable||null,observaciones||null,req.user.email]);
+      [empresa_id||null,fecha,tipo_id,estanque_origen_id,equipo_id,faena_id||null,lts,cpp,costo_total,numOrNull(horometro),numOrNull(kilometraje),responsable||null,observaciones||null,req.user.email]);
     await client.query('COMMIT');
     res.status(201).json(r.rows[0]);
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
@@ -2324,6 +2393,9 @@ app.patch('/api/comb/movimientos/:id/anular', auth, async(req,res)=>{
 // Estrategia: revertir stock viejo, aplicar nuevos valores, ajustar stock nuevo
 app.put('/api/comb/movimientos/:id', auth, async(req,res)=>{
   const client=await pool.connect();
+  // Helper: convierte string vacío a null para campos numéricos opcionales
+  const numOrNull=function(v){if(v===''||v===undefined||v===null)return null;var n=parseFloat(v);return isNaN(n)?null:n;};
+  const intOrNull=function(v){if(v===''||v===undefined||v===null)return null;var n=parseInt(v);return isNaN(n)?null:n;};
   try{
     await client.query('BEGIN');
     const m=await client.query('SELECT * FROM comb_movimientos WHERE mov_id=$1',[req.params.id]);
@@ -2333,21 +2405,21 @@ app.put('/api/comb/movimientos/:id', auth, async(req,res)=>{
     const b=req.body;
     // Valores nuevos (mantener los viejos si no vienen)
     const nuevo={
-      empresa_id:b.empresa_id||old.empresa_id,
+      empresa_id:intOrNull(b.empresa_id)||old.empresa_id,
       fecha:b.fecha||old.fecha,
-      tipo_id:b.tipo_id||old.tipo_id,
-      estanque_origen_id:b.estanque_origen_id!==undefined?b.estanque_origen_id:old.estanque_origen_id,
-      estanque_destino_id:b.estanque_destino_id!==undefined?b.estanque_destino_id:old.estanque_destino_id,
-      equipo_id:b.equipo_id!==undefined?b.equipo_id:old.equipo_id,
-      faena_id:b.faena_id!==undefined?b.faena_id:old.faena_id,
-      proveedor_id:b.proveedor_id!==undefined?b.proveedor_id:old.proveedor_id,
+      tipo_id:intOrNull(b.tipo_id)||old.tipo_id,
+      estanque_origen_id:b.estanque_origen_id!==undefined?intOrNull(b.estanque_origen_id):old.estanque_origen_id,
+      estanque_destino_id:b.estanque_destino_id!==undefined?intOrNull(b.estanque_destino_id):old.estanque_destino_id,
+      equipo_id:b.equipo_id!==undefined?intOrNull(b.equipo_id):old.equipo_id,
+      faena_id:b.faena_id!==undefined?intOrNull(b.faena_id):old.faena_id,
+      proveedor_id:b.proveedor_id!==undefined?intOrNull(b.proveedor_id):old.proveedor_id,
       litros:parseFloat(b.litros)||old.litros,
       precio_unitario:parseFloat(b.precio_unitario)||old.precio_unitario,
-      horometro:b.horometro!==undefined?b.horometro:old.horometro,
-      kilometraje:b.kilometraje!==undefined?b.kilometraje:old.kilometraje,
-      responsable:b.responsable!==undefined?b.responsable:old.responsable,
-      numero_documento:b.numero_documento!==undefined?b.numero_documento:old.numero_documento,
-      observaciones:b.observaciones!==undefined?b.observaciones:old.observaciones
+      horometro:b.horometro!==undefined?numOrNull(b.horometro):old.horometro,
+      kilometraje:b.kilometraje!==undefined?numOrNull(b.kilometraje):old.kilometraje,
+      responsable:b.responsable!==undefined?(b.responsable||null):old.responsable,
+      numero_documento:b.numero_documento!==undefined?(b.numero_documento||null):old.numero_documento,
+      observaciones:b.observaciones!==undefined?(b.observaciones||null):old.observaciones
     };
     nuevo.costo_total=parseFloat((nuevo.litros*nuevo.precio_unitario).toFixed(2));
     // 1) Revertir stock con valores VIEJOS
