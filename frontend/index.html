@@ -6475,7 +6475,149 @@ function CombReportes(p){
   }
   function exportar(){
     if(!datos||!datos.length){alert('No hay datos para exportar');return;}
-    exportXLSX(datos,[{header:'Fecha',value:function(r){return fmtD(r.fecha);}},{header:'Tipo Movimiento',value:function(r){return COMB_LABELS[r.tipo_mov]||r.tipo_mov;}},{header:'Combustible',value:function(r){return r.tipo_nombre;}},{header:'Empresa',value:function(r){return r.empresa_nombre;}},{header:'Proveedor',value:function(r){return r.proveedor_nombre;}},{header:'Estanque Origen',value:function(r){return r.estanque_origen;}},{header:'Estanque Destino',value:function(r){return r.estanque_destino;}},{header:'Equipo',value:function(r){return r.equipo_nombre;}},{header:'Faena',value:function(r){return r.faena_nombre;}},{header:'Litros',value:function(r){return r.litros;}},{header:'Precio Unit',value:function(r){return r.precio_unitario;}},{header:'Costo Total',value:function(r){return r.costo_total;}},{header:'Horómetro',value:function(r){return r.horometro;}},{header:'Kilometraje',value:function(r){return r.kilometraje;}},{header:'Responsable',value:function(r){return r.responsable;}},{header:'N° Documento',value:function(r){return r.numero_documento;}},{header:'Ref OC',value:function(r){return r.oc_referencia;}},{header:'Usuario',value:function(r){return r.usuario;}}],'reporte_combustibles');
+    try{
+      // Helper: convertir a número real (no string) o null si vacío
+      function num(v){if(v===null||v===undefined||v==='')return null;var n=parseFloat(v);return isNaN(n)?null:n;}
+      function txt(v){return v==null?'':String(v);}
+      // Separar movimientos por tipo
+      var distribuciones=datos.filter(function(r){return r.tipo_mov==='DISTRIBUCION';});
+      var ingresos=datos.filter(function(r){return r.tipo_mov==='INGRESO_STOCK'||r.tipo_mov==='COMPRA_DIRECTA';});
+      var traspasos=datos.filter(function(r){return r.tipo_mov==='TRASPASO';});
+
+      var wb=XLSX.utils.book_new();
+
+      // Función genérica para crear una hoja con columnas tipadas
+      function crearHoja(filas,columnas,nombreHoja){
+        var aoa=[columnas.map(function(c){return c.header;})];
+        filas.forEach(function(r){
+          aoa.push(columnas.map(function(c){
+            var v=c.value(r);
+            return v==null?null:v;
+          }));
+        });
+        var ws=XLSX.utils.aoa_to_sheet(aoa);
+        // Aplicar formato a cada celda según su tipo
+        var range=XLSX.utils.decode_range(ws['!ref']);
+        for(var col=range.s.c;col<=range.e.c;col++){
+          var colDef=columnas[col];
+          if(!colDef||!colDef.fmt)continue;
+          for(var row=range.s.r+1;row<=range.e.r;row++){
+            var ref=XLSX.utils.encode_cell({r:row,c:col});
+            if(ws[ref]&&ws[ref].v!=null){
+              ws[ref].t='n';
+              ws[ref].z=colDef.fmt;
+            }
+          }
+        }
+        // Anchos de columna automáticos
+        ws['!cols']=columnas.map(function(c){return{wch:c.width||14};});
+        // Congelar fila de encabezado
+        ws['!freeze']={xSplit:0,ySplit:1};
+        XLSX.utils.book_append_sheet(wb,ws,nombreHoja);
+      }
+
+      // ── HOJA 1: DISTRIBUCIONES (gasto a equipos) ──
+      crearHoja(distribuciones,[
+        {header:'Fecha',width:11,value:function(r){return r.fecha?fmtD(r.fecha):'';}},
+        {header:'Combustible',width:14,value:function(r){return txt(r.tipo_nombre);}},
+        {header:'Empresa',width:32,value:function(r){return txt(r.empresa_nombre);}},
+        {header:'Faena',width:18,value:function(r){return txt(r.faena_nombre);}},
+        {header:'Equipo',width:28,value:function(r){return txt(r.equipo_nombre);}},
+        {header:'Litros',width:10,value:function(r){return num(r.litros);},fmt:'#,##0.00'},
+        {header:'Precio Unit',width:11,value:function(r){return num(r.precio_unitario);},fmt:'"$"#,##0.00'},
+        {header:'Costo Total',width:13,value:function(r){return num(r.costo_total);},fmt:'"$"#,##0'},
+        {header:'Estanque Origen',width:18,value:function(r){return txt(r.estanque_origen);}},
+        {header:'Horómetro',width:11,value:function(r){return num(r.horometro);},fmt:'#,##0.0'},
+        {header:'Kilometraje',width:12,value:function(r){return num(r.kilometraje);},fmt:'#,##0'},
+        {header:'Responsable',width:18,value:function(r){return txt(r.responsable);}},
+        {header:'Usuario',width:24,value:function(r){return txt(r.usuario);}}
+      ],'Distribuciones');
+
+      // ── HOJA 2: INGRESOS A ESTANQUE ──
+      crearHoja(ingresos,[
+        {header:'Fecha',width:11,value:function(r){return r.fecha?fmtD(r.fecha):'';}},
+        {header:'Tipo',width:14,value:function(r){return COMB_LABELS[r.tipo_mov]||r.tipo_mov;}},
+        {header:'Combustible',width:14,value:function(r){return txt(r.tipo_nombre);}},
+        {header:'Empresa',width:32,value:function(r){return txt(r.empresa_nombre);}},
+        {header:'Proveedor',width:24,value:function(r){return txt(r.proveedor_nombre);}},
+        {header:'Estanque Destino',width:18,value:function(r){return txt(r.estanque_destino||r.estanque_origen);}},
+        {header:'Litros',width:10,value:function(r){return num(r.litros);},fmt:'#,##0.00'},
+        {header:'Precio Unit',width:11,value:function(r){return num(r.precio_unitario);},fmt:'"$"#,##0.00'},
+        {header:'Costo Total',width:13,value:function(r){return num(r.costo_total);},fmt:'"$"#,##0'},
+        {header:'N° Documento',width:16,value:function(r){return txt(r.numero_documento);}},
+        {header:'Ref OC',width:12,value:function(r){return txt(r.oc_referencia);}},
+        {header:'Responsable',width:18,value:function(r){return txt(r.responsable);}},
+        {header:'Usuario',width:24,value:function(r){return txt(r.usuario);}}
+      ],'Ingresos');
+
+      // ── HOJA 3: TRASPASOS ENTRE ESTANQUES ──
+      crearHoja(traspasos,[
+        {header:'Fecha',width:11,value:function(r){return r.fecha?fmtD(r.fecha):'';}},
+        {header:'Combustible',width:14,value:function(r){return txt(r.tipo_nombre);}},
+        {header:'Empresa',width:32,value:function(r){return txt(r.empresa_nombre);}},
+        {header:'Estanque Origen',width:18,value:function(r){return txt(r.estanque_origen);}},
+        {header:'Estanque Destino',width:18,value:function(r){return txt(r.estanque_destino);}},
+        {header:'Litros',width:10,value:function(r){return num(r.litros);},fmt:'#,##0.00'},
+        {header:'Precio Unit',width:11,value:function(r){return num(r.precio_unitario);},fmt:'"$"#,##0.00'},
+        {header:'Costo Total',width:13,value:function(r){return num(r.costo_total);},fmt:'"$"#,##0'},
+        {header:'Responsable',width:18,value:function(r){return txt(r.responsable);}},
+        {header:'Usuario',width:24,value:function(r){return txt(r.usuario);}}
+      ],'Traspasos');
+
+      // ── HOJA 4: RESUMEN GENERAL ──
+      var resumenData=[
+        ['RESUMEN DEL REPORTE',''],
+        ['',''],
+        ['Período','desde '+(filtDesde||'inicio')+' hasta '+(filtHasta||'hoy')],
+        ['',''],
+        ['Tipo de movimiento','Cantidad','Litros','Costo total $']
+      ];
+      var sumLts=function(arr){return arr.reduce(function(s,r){return s+parseFloat(r.litros||0);},0);};
+      var sumCosto=function(arr){return arr.reduce(function(s,r){return s+parseFloat(r.costo_total||0);},0);};
+      resumenData.push(['Distribuciones (gasto a equipos)',distribuciones.length,sumLts(distribuciones),sumCosto(distribuciones)]);
+      resumenData.push(['Ingresos a estanque',ingresos.length,sumLts(ingresos),sumCosto(ingresos)]);
+      resumenData.push(['Traspasos entre estanques',traspasos.length,sumLts(traspasos),sumCosto(traspasos)]);
+      resumenData.push(['',]);
+      resumenData.push(['TOTAL',datos.length,sumLts(datos),sumCosto(datos)]);
+      // Resumen por equipo (solo distribuciones)
+      var porEquipo={};
+      distribuciones.forEach(function(r){
+        var k=r.equipo_nombre||'(sin equipo)';
+        if(!porEquipo[k])porEquipo[k]={lts:0,costo:0,n:0};
+        porEquipo[k].lts+=parseFloat(r.litros||0);
+        porEquipo[k].costo+=parseFloat(r.costo_total||0);
+        porEquipo[k].n++;
+      });
+      var equipos=Object.keys(porEquipo).sort(function(a,b){return porEquipo[b].lts-porEquipo[a].lts;});
+      if(equipos.length){
+        resumenData.push(['',]);
+        resumenData.push(['DISTRIBUCIONES POR EQUIPO',]);
+        resumenData.push(['Equipo','Cargas','Litros','Costo total $']);
+        equipos.forEach(function(k){
+          resumenData.push([k,porEquipo[k].n,porEquipo[k].lts,porEquipo[k].costo]);
+        });
+      }
+      var wsRes=XLSX.utils.aoa_to_sheet(resumenData);
+      // Formatear las columnas C y D (litros y costo) como números en filas con datos
+      var rangoRes=XLSX.utils.decode_range(wsRes['!ref']);
+      for(var rr=0;rr<=rangoRes.e.r;rr++){
+        ['C','D'].forEach(function(colL,j){
+          var ref=colL+(rr+1);
+          if(wsRes[ref]&&typeof wsRes[ref].v==='number'){
+            wsRes[ref].t='n';
+            wsRes[ref].z=j===0?'#,##0.00':'"$"#,##0';
+          }
+        });
+      }
+      wsRes['!cols']=[{wch:38},{wch:12},{wch:14},{wch:16}];
+      XLSX.utils.book_append_sheet(wb,wsRes,'Resumen');
+
+      // Mover Resumen al inicio
+      wb.SheetNames=['Resumen','Distribuciones','Ingresos','Traspasos'];
+
+      var fechaArchivo=new Date().toISOString().slice(0,10);
+      XLSX.writeFile(wb,'reporte_combustibles_'+fechaArchivo+'.xlsx');
+    }catch(e){alert('Error al exportar: '+e.message);}
   }
   const resumen=datos?{
     ltsTotal:datos.reduce(function(s,r){return s+parseFloat(r.litros||0);},0),
