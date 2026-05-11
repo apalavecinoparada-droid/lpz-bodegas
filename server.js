@@ -4771,6 +4771,108 @@ app.get('/api/terreno/registros', auth, async(req,res)=>{
 app.get('/api/terreno/registros/:id/tob', auth, async(req,res)=>{
   try{res.json((await pool.query('SELECT d.*,c.causa,c.clasificacion FROM terreno_tob_detalle d JOIN terreno_tob_categorias c ON d.tob_cat_id=c.tob_cat_id WHERE d.registro_id=$1 ORDER BY d.detalle_id',[req.params.id])).rows);}catch(e){res.status(500).json({error:e.message});}
 });
+
+// ── INFORME DE TERRENO: agrupado por empresa/faena/equipo ──
+app.get('/api/terreno/informe', auth, async(req,res)=>{
+  try{
+    const{empresa_id,faena_id,equipo_id,desde,hasta}=req.query;
+    let w=['1=1'],v=[];
+    if(empresa_id){v.push(empresa_id);w.push(`e.empresa_id=$${v.length}`);}
+    if(faena_id){v.push(faena_id);w.push(`r.faena_id=$${v.length}`);}
+    if(equipo_id){v.push(equipo_id);w.push(`r.equipo_id=$${v.length}`);}
+    if(desde){v.push(desde);w.push(`r.fecha>=$${v.length}`);}
+    if(hasta){v.push(hasta);w.push(`r.fecha<=$${v.length}`);}
+    // Detalle completo de registros (incluye datos para resumen y detalle)
+    const detSQL=`
+      SELECT r.*, 
+             e.codigo AS equipo_codigo, e.nombre AS equipo_nombre, e.tipo_cargo, e.empresa_id,
+             emp.razon_social AS empresa_nombre,
+             f.nombre AS faena_nombre,
+             es.codigo AS estanque_codigo, es.nombre AS estanque_nombre,
+             COALESCE((SELECT SUM(t.horas) FROM terreno_tob_detalle t WHERE t.registro_id=r.registro_id AND t.clasificacion='E'),0) AS tob_horas_e,
+             COALESCE((SELECT SUM(t.horas) FROM terreno_tob_detalle t WHERE t.registro_id=r.registro_id AND t.clasificacion='I'),0) AS tob_horas_i,
+             COALESCE((SELECT SUM(t.horas) FROM terreno_tob_detalle t WHERE t.registro_id=r.registro_id AND t.clasificacion='A'),0) AS tob_horas_a
+        FROM terreno_registros r
+        JOIN equipos e ON r.equipo_id=e.equipo_id
+        LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
+        JOIN faenas f ON r.faena_id=f.faena_id
+        LEFT JOIN comb_estanques es ON r.estanque_id=es.estanque_id
+       WHERE ${w.join(' AND ')}
+       ORDER BY emp.razon_social, f.nombre, e.codigo, r.fecha`;
+    const det=await pool.query(detSQL,v);
+    // Calcular resumen agrupado: por equipo (que arrastra empresa y faena)
+    const resumenMap={};
+    det.rows.forEach(function(r){
+      const empN=r.empresa_nombre||'Sin empresa';
+      const faN=r.faena_nombre||'Sin faena';
+      const eqK=r.equipo_id;
+      const key=empN+'|'+faN+'|'+eqK;
+      if(!resumenMap[key]){
+        resumenMap[key]={
+          empresa_id:r.empresa_id,empresa_nombre:empN,
+          faena_id:r.faena_id,faena_nombre:faN,
+          equipo_id:r.equipo_id,equipo_codigo:r.equipo_codigo,equipo_nombre:r.equipo_nombre,tipo_cargo:r.tipo_cargo,
+          registros:0,
+          horas_trabajadas:0,horas_perdidas:0,
+          tob_horas_e:0,tob_horas_i:0,tob_horas_a:0,
+          litros_combustible:0,
+          primera_fecha:r.fecha,ultima_fecha:r.fecha
+        };
+      }
+      const x=resumenMap[key];
+      x.registros++;
+      x.horas_trabajadas+=parseFloat(r.horas_trabajadas)||0;
+      x.horas_perdidas+=parseFloat(r.horas_perdidas)||0;
+      x.tob_horas_e+=parseFloat(r.tob_horas_e)||0;
+      x.tob_horas_i+=parseFloat(r.tob_horas_i)||0;
+      x.tob_horas_a+=parseFloat(r.tob_horas_a)||0;
+      x.litros_combustible+=parseFloat(r.litros_combustible)||0;
+      if(r.fecha<x.primera_fecha)x.primera_fecha=r.fecha;
+      if(r.fecha>x.ultima_fecha)x.ultima_fecha=r.fecha;
+    });
+    const resumen=Object.values(resumenMap).map(function(x){
+      // Rendimiento: vehículos = km/L, maquinaria = L/h
+      const esVeh=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf(x.tipo_cargo)>=0;
+      x.rendimiento=null;
+      x.rendimiento_unidad=null;
+      if(esVeh&&x.litros_combustible>0)x.rendimiento=(x.horas_trabajadas/x.litros_combustible);
+      if(esVeh)x.rendimiento_unidad='km/L';
+      else if(x.horas_trabajadas>0)x.rendimiento=(x.litros_combustible/x.horas_trabajadas);
+      else x.rendimiento_unidad='L/h';
+      if(!esVeh)x.rendimiento_unidad='L/h';
+      x.es_vehiculo=esVeh;
+      // Disponibilidad: horas trabajadas / (trabajadas + perdidas)
+      const totalDisp=x.horas_trabajadas+x.horas_perdidas;
+      x.disponibilidad_pct=totalDisp>0?(x.horas_trabajadas/totalDisp*100):null;
+      return x;
+    });
+    // Totales generales
+    const tot={
+      registros:det.rows.length,
+      equipos:Object.keys(resumenMap).length,
+      horas_trabajadas:resumen.reduce(function(s,x){return s+x.horas_trabajadas;},0),
+      horas_perdidas:resumen.reduce(function(s,x){return s+x.horas_perdidas;},0),
+      tob_horas_e:resumen.reduce(function(s,x){return s+x.tob_horas_e;},0),
+      tob_horas_i:resumen.reduce(function(s,x){return s+x.tob_horas_i;},0),
+      tob_horas_a:resumen.reduce(function(s,x){return s+x.tob_horas_a;},0),
+      litros_combustible:resumen.reduce(function(s,x){return s+x.litros_combustible;},0)
+    };
+    tot.disponibilidad_pct=(tot.horas_trabajadas+tot.horas_perdidas)>0?(tot.horas_trabajadas/(tot.horas_trabajadas+tot.horas_perdidas)*100):null;
+    // Top categorías de tiempo perdido (TOB)
+    const tobTopSQL=`
+      SELECT c.causa, c.clasificacion, COUNT(t.detalle_id) AS veces, COALESCE(SUM(t.horas),0) AS horas
+        FROM terreno_tob_detalle t
+        JOIN terreno_tob_categorias c ON t.tob_cat_id=c.tob_cat_id
+        JOIN terreno_registros r ON t.registro_id=r.registro_id
+        JOIN equipos e ON r.equipo_id=e.equipo_id
+       WHERE ${w.join(' AND ')}
+       GROUP BY c.causa, c.clasificacion
+       ORDER BY horas DESC
+       LIMIT 10`;
+    const tobTop=await pool.query(tobTopSQL,v);
+    res.json({resumen:resumen,detalle:det.rows,totales:tot,tob_top:tobTop.rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
 app.post('/api/terreno/registros', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
