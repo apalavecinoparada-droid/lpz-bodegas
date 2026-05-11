@@ -4709,6 +4709,41 @@ app.put('/api/solicitudes/:id', auth, async(req,res)=>{
   }catch(e){res.status(400).json({error:e.message});}
 });
 
+// Transferir solicitud a otro usuario (cualquier estado excepto completada/rechazada)
+app.patch('/api/solicitudes/:id/transferir', auth, async(req,res)=>{
+  try{
+    const{nuevo_destinatario_id,motivo}=req.body;
+    if(!nuevo_destinatario_id)return res.status(400).json({error:'Debe seleccionar el nuevo destinatario'});
+    // Cargar solicitud y validar permisos
+    const check=await pool.query('SELECT dirigida_a_id,solicitante_id,estado,observacion FROM solicitudes WHERE solicitud_id=$1',[req.params.id]);
+    if(!check.rows.length)return res.status(404).json({error:'Solicitud no encontrada'});
+    const cur=check.rows[0];
+    // Validar destinatario diferente
+    if(parseInt(nuevo_destinatario_id)===cur.dirigida_a_id)return res.status(400).json({error:'El nuevo destinatario debe ser diferente al actual'});
+    // Permitir transferir si: es el destinatario actual, el solicitante o admin
+    const esAdmin=req.user.rol==='admin'||req.user.rol==='superadmin';
+    if(cur.dirigida_a_id!==req.user.id&&cur.solicitante_id!==req.user.id&&!esAdmin)
+      return res.status(403).json({error:'Solo el destinatario, solicitante o un administrador puede transferir esta solicitud'});
+    // Solo pendientes o en curso
+    if(cur.estado!=='pendiente'&&cur.estado!=='en_curso')
+      return res.status(400).json({error:'Solo se pueden transferir solicitudes pendientes o en curso. Esta solicitud está: '+cur.estado});
+    // Construir nota de transferencia para guardar trazabilidad
+    const usuarioActual=await pool.query('SELECT nombre FROM usuarios WHERE usuario_id=$1',[req.user.id]);
+    const nuevoUsuario=await pool.query('SELECT nombre FROM usuarios WHERE usuario_id=$1',[nuevo_destinatario_id]);
+    const nombreActual=usuarioActual.rows.length?usuarioActual.rows[0].nombre:req.user.email;
+    const nombreNuevo=nuevoUsuario.rows.length?nuevoUsuario.rows[0].nombre:'usuario #'+nuevo_destinatario_id;
+    const fecha=new Date().toLocaleString('es-CL');
+    const notaTransferencia='\n[Transferida el '+fecha+' por '+nombreActual+' a '+nombreNuevo+(motivo?'. Motivo: '+motivo:'')+']';
+    const obsNueva=(cur.observacion||'')+notaTransferencia;
+    // Actualizar destinatario y reset estado a pendiente para que el nuevo lo vea como tal
+    const r=await pool.query(`UPDATE solicitudes SET dirigida_a_id=$1, estado='pendiente', observacion=$2, respondido_en=NULL WHERE solicitud_id=$3 RETURNING *`,
+      [nuevo_destinatario_id,obsNueva,req.params.id]);
+    // Notificar por email al nuevo destinatario en background
+    try{enviarMailSolicitudCreada(r.rows[0].solicitud_id);}catch(e){}
+    res.json({ok:true,solicitud:r.rows[0]});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 app.delete('/api/solicitudes/:id', auth, async(req,res)=>{
   try{await pool.query('DELETE FROM solicitudes WHERE solicitud_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
 });
