@@ -3721,6 +3721,39 @@ app.put('/api/personal/:id', auth, async(req,res)=>{
 app.patch('/api/personal/:id/activo', auth, async(req,res)=>{
   try{const r=await pool.query('UPDATE personal SET activo=NOT activo WHERE persona_id=$1 RETURNING *',[req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
+
+// Reactivar trabajador con nuevas fechas de contrato
+app.patch('/api/personal/:id/reactivar', auth, async(req,res)=>{
+  try{
+    const{fecha_ingreso,fecha_termino,tipo_contrato}=req.body;
+    if(!fecha_ingreso)return res.status(400).json({error:'La fecha de inicio del nuevo contrato es obligatoria'});
+    // Verificar que esté inactivo
+    const cur=await pool.query('SELECT activo,nombre_completo FROM personal WHERE persona_id=$1',[req.params.id]);
+    if(!cur.rows.length)return res.status(404).json({error:'Trabajador no encontrado'});
+    if(cur.rows[0].activo)return res.status(400).json({error:'El trabajador ya está activo'});
+    // Validar que la nueva fecha de término (si existe) sea futura
+    if(fecha_termino){
+      const ft=new Date(fecha_termino+'T00:00:00');
+      const hoy=new Date();hoy.setHours(0,0,0,0);
+      if(ft<hoy)return res.status(400).json({error:'La fecha de término del nuevo contrato debe ser hoy o futura'});
+    }
+    const r=await pool.query(`UPDATE personal SET activo=true,
+      fecha_ingreso=$1,
+      fecha_termino=$2,
+      tipo_contrato=COALESCE($3,tipo_contrato)
+      WHERE persona_id=$4 RETURNING *`,
+      [fecha_ingreso,fecha_termino||null,tipo_contrato||null,req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// Disparo manual de revisión de contratos vencidos
+app.post('/api/personal/revisar-contratos-vencidos', auth, async(req,res)=>{
+  try{
+    const r=await pool.query("UPDATE personal SET activo=false WHERE activo=true AND fecha_termino IS NOT NULL AND fecha_termino < CURRENT_DATE RETURNING persona_id,nombre_completo,fecha_termino,rut");
+    res.json({ok:true,inactivados:r.rows.length,trabajadores:r.rows});
+  }catch(e){res.status(400).json({error:e.message});}
+});
 app.delete('/api/personal/:id', auth, async(req,res)=>{
   try{
     const pid=req.params.id;
@@ -6069,8 +6102,12 @@ app.post('/api/finiquitos', auth, async(req,res)=>{
       WHERE persona_id=$6 AND empresa_id=$7 AND (estado IS NULL OR estado='PENDIENTE')
       RETURNING carta_id`,
       [finiquito_id,b.indem_anios_servicio||0,b.indem_vacaciones||0,b.indem_tiempo_servido||0,b.indem_aviso_previo||0,b.persona_id,b.empresa_id]);
+    // ── Actualizar personal: copiar fecha_termino del finiquito y marcar inactivo ──
+    const personalUpd=await client.query(`UPDATE personal SET fecha_termino=$1, activo=false 
+      WHERE persona_id=$2 RETURNING persona_id,nombre_completo`,
+      [b.fecha_termino, b.persona_id]);
     await client.query('COMMIT');
-    res.status(201).json({ok:true,finiquito_id:finiquito_id,cartas_actualizadas:cartaUpd.rows.length});
+    res.status(201).json({ok:true,finiquito_id:finiquito_id,cartas_actualizadas:cartaUpd.rows.length,personal_inactivado:personalUpd.rows.length>0});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
@@ -6504,6 +6541,23 @@ app.listen(PORT,'0.0.0.0', async()=>{
   let tries=0;
   while(tries<12){try{await pool.query('SELECT 1');console.log('  [OK] BD conectada');break;}catch{tries++;console.log(`  [ESPERA] BD... ${tries}/12`);await new Promise(r=>setTimeout(r,3000));}}
   await autoSetup();
+  // Auto-inactivar personal con fecha de término vencida
+  try{
+    const r=await pool.query("UPDATE personal SET activo=false WHERE activo=true AND fecha_termino IS NOT NULL AND fecha_termino < CURRENT_DATE RETURNING persona_id,nombre_completo,fecha_termino");
+    if(r.rows.length>0){
+      console.log('  [OK] Auto-inactivados '+r.rows.length+' trabajador(es) con contrato vencido');
+      r.rows.forEach(function(p){console.log('       - '+p.nombre_completo+' (término: '+(p.fecha_termino+'').slice(0,10)+')');});
+    }else{
+      console.log('  [OK] Personal: sin contratos vencidos por inactivar');
+    }
+  }catch(e){console.error('  [ERROR] Auto-inactivar personal:',e.message);}
+  // Programar revisión diaria a las 03:00 AM (cada 24h)
+  setInterval(async function(){
+    try{
+      const r=await pool.query("UPDATE personal SET activo=false WHERE activo=true AND fecha_termino IS NOT NULL AND fecha_termino < CURRENT_DATE RETURNING persona_id,nombre_completo");
+      if(r.rows.length>0)console.log('['+new Date().toISOString()+'] Auto-inactivados '+r.rows.length+' trabajador(es) con contrato vencido');
+    }catch(e){console.error('[CRON personal-inactivar]',e.message);}
+  },24*60*60*1000);
   console.log('  [OK] Sistema listo — admin@lpz.cl / admin123');
   console.log('============================================================\n');
 });
