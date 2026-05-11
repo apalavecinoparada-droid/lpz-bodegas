@@ -1681,6 +1681,313 @@ function CalcCombustible(p){
 }
 
 // ══ TERRENO — REGISTROS DIARIOS ══
+// ══ INFORME CONSOLIDADO DE TERRENO ══
+function TerrenoInforme(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var faenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
+  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo;});
+  // Filtros por defecto: este mes
+  var d=new Date();
+  var primerDia=new Date(d.getFullYear(),d.getMonth(),1).toISOString().slice(0,10);
+  var ultimoDia=new Date(d.getFullYear(),d.getMonth()+1,0).toISOString().slice(0,10);
+  var[modo,setModo]=useState('resumen'); // 'resumen' o 'detalle'
+  var[filtEmpresa,setFiltEmpresa]=useState('');
+  var[filtFaena,setFiltFaena]=useState('');
+  var[filtEquipo,setFiltEquipo]=useState('');
+  var[desde,setDesde]=useState(primerDia);
+  var[hasta,setHasta]=useState(ultimoDia);
+  var[data,setData]=useState({resumen:[],detalle:[],totales:{},tob_top:[]});
+  var[loading,setLoading]=useState(false);
+  // Agrupación: por empresa | por faena | por equipo (en modo resumen)
+  var[agrupar,setAgrupar]=useState('faena');
+  function cargar(){
+    setLoading(true);
+    var qs='?desde='+desde+'&hasta='+hasta;
+    if(filtEmpresa)qs+='&empresa_id='+filtEmpresa;
+    if(filtFaena)qs+='&faena_id='+filtFaena;
+    if(filtEquipo)qs+='&equipo_id='+filtEquipo;
+    api('/terreno/informe'+qs,'GET',null,p.tok).then(function(r){setData(r||{resumen:[],detalle:[],totales:{},tob_top:[]});}).catch(function(){setData({resumen:[],detalle:[],totales:{},tob_top:[]});}).finally(function(){setLoading(false);});
+  }
+  useEffect(cargar,[p.tok,desde,hasta,filtEmpresa,filtFaena,filtEquipo]);
+  // Faenas filtradas según empresa
+  var faenasFilt=filtEmpresa?faenas.filter(function(f){return String(f.empresa_id)===String(filtEmpresa);}):faenas;
+  // Equipos filtrados según empresa
+  var equiposFilt=filtEmpresa?equipos.filter(function(e){return String(e.empresa_id)===String(filtEmpresa);}):equipos;
+  // Atajos de fecha
+  function setRangoMes(off){
+    var nd=new Date();nd.setMonth(nd.getMonth()+off);
+    setDesde(new Date(nd.getFullYear(),nd.getMonth(),1).toISOString().slice(0,10));
+    setHasta(new Date(nd.getFullYear(),nd.getMonth()+1,0).toISOString().slice(0,10));
+  }
+  function setRangoAnio(){
+    var nd=new Date();
+    setDesde(new Date(nd.getFullYear(),0,1).toISOString().slice(0,10));
+    setHasta(new Date(nd.getFullYear(),11,31).toISOString().slice(0,10));
+  }
+  // Agrupar el resumen por la dimensión elegida
+  function buildGrupos(){
+    var rs=data.resumen||[];
+    var grupos={};
+    rs.forEach(function(x){
+      var key=agrupar==='empresa'?x.empresa_nombre:agrupar==='faena'?(x.empresa_nombre+' · '+x.faena_nombre):(x.empresa_nombre+' · '+x.faena_nombre+' · '+x.equipo_codigo);
+      if(!grupos[key]){
+        grupos[key]={
+          label:key,
+          empresa_nombre:x.empresa_nombre,faena_nombre:x.faena_nombre,
+          filas:[],
+          registros:0,horas_trabajadas:0,horas_perdidas:0,
+          tob_horas_e:0,tob_horas_i:0,tob_horas_a:0,
+          litros_combustible:0
+        };
+      }
+      var g=grupos[key];
+      g.filas.push(x);
+      g.registros+=x.registros;
+      g.horas_trabajadas+=x.horas_trabajadas;
+      g.horas_perdidas+=x.horas_perdidas;
+      g.tob_horas_e+=x.tob_horas_e;
+      g.tob_horas_i+=x.tob_horas_i;
+      g.tob_horas_a+=x.tob_horas_a;
+      g.litros_combustible+=x.litros_combustible;
+    });
+    return Object.values(grupos).sort(function(a,b){return (a.label||'').localeCompare(b.label||'');});
+  }
+  // Exportar a Excel
+  function exportarExcel(){
+    if(typeof XLSX==='undefined'){alert('Librería de Excel no disponible');return;}
+    var wb=XLSX.utils.book_new();
+    // Hoja 1: Resumen
+    var resData=[['Empresa','Faena','Código','Equipo','Tipo','Registros','Hrs trabajadas','Hrs perdidas','TOB Externos','TOB Internos','TOB Adm.','Litros','Rendimiento','Disponibilidad %','Primera','Última']];
+    (data.resumen||[]).forEach(function(x){
+      resData.push([x.empresa_nombre,x.faena_nombre,x.equipo_codigo,x.equipo_nombre,x.tipo_cargo,x.registros,
+        Number(x.horas_trabajadas.toFixed(2)),Number(x.horas_perdidas.toFixed(2)),
+        Number(x.tob_horas_e.toFixed(2)),Number(x.tob_horas_i.toFixed(2)),Number(x.tob_horas_a.toFixed(2)),
+        Number(x.litros_combustible.toFixed(2)),
+        x.rendimiento?Number(x.rendimiento.toFixed(2))+' '+(x.rendimiento_unidad||''):'—',
+        x.disponibilidad_pct!=null?Number(x.disponibilidad_pct.toFixed(1)):'—',
+        (x.primera_fecha+'').slice(0,10),(x.ultima_fecha+'').slice(0,10)]);
+    });
+    // Totales generales al final del resumen
+    var t=data.totales||{};
+    resData.push([]);
+    resData.push(['TOTALES','','','','',t.registros||0,
+      Number((t.horas_trabajadas||0).toFixed(2)),
+      Number((t.horas_perdidas||0).toFixed(2)),
+      Number((t.tob_horas_e||0).toFixed(2)),
+      Number((t.tob_horas_i||0).toFixed(2)),
+      Number((t.tob_horas_a||0).toFixed(2)),
+      Number((t.litros_combustible||0).toFixed(2)),
+      '',t.disponibilidad_pct!=null?Number(t.disponibilidad_pct.toFixed(1)):'—']);
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(resData),'Resumen');
+    // Hoja 2: Detalle
+    var detData=[['Fecha','Empresa','Faena','Código','Equipo','Tipo','Hrs trabajadas','Hrs perdidas','Litros','Observaciones']];
+    (data.detalle||[]).forEach(function(r){
+      detData.push([(r.fecha+'').slice(0,10),r.empresa_nombre||'—',r.faena_nombre||'—',r.equipo_codigo,r.equipo_nombre,r.tipo_cargo,
+        Number((parseFloat(r.horas_trabajadas)||0).toFixed(2)),
+        Number((parseFloat(r.horas_perdidas)||0).toFixed(2)),
+        Number((parseFloat(r.litros_combustible)||0).toFixed(2)),
+        r.observaciones||'']);
+    });
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(detData),'Detalle');
+    // Hoja 3: TOB top
+    if((data.tob_top||[]).length){
+      var tobData=[['Causa','Clasificación','Veces','Horas']];
+      data.tob_top.forEach(function(t){
+        tobData.push([t.causa,t.clasificacion,parseInt(t.veces),Number((parseFloat(t.horas)||0).toFixed(2))]);
+      });
+      XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(tobData),'TOB Top');
+    }
+    var nom='Informe_Terreno_'+desde+'_a_'+hasta+'.xlsx';
+    XLSX.writeFile(wb,nom);
+  }
+  var grupos=buildGrupos();
+  var T=data.totales||{};
+  // Render
+  return h('div',null,
+    // Filtros
+    h('div',{className:'card',style:{marginBottom:12}},
+      h('div',{style:{display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}},
+        h('div',null,
+          h('label',{style:{fontSize:10,color:'#64748B',display:'block',marginBottom:2}},'Empresa'),
+          h('select',{value:filtEmpresa,onChange:function(e){setFiltEmpresa(e.target.value);setFiltFaena('');setFiltEquipo('');},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:170}},
+            h('option',{value:''},'Todas las empresas'),
+            empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})
+          )
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:10,color:'#64748B',display:'block',marginBottom:2}},'Faena'),
+          h('select',{value:filtFaena,onChange:function(e){setFiltFaena(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:160}},
+            h('option',{value:''},'Todas las faenas'),
+            faenasFilt.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})
+          )
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:10,color:'#64748B',display:'block',marginBottom:2}},'Equipo'),
+          h('select',{value:filtEquipo,onChange:function(e){setFiltEquipo(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:180}},
+            h('option',{value:''},'Todos los equipos'),
+            equiposFilt.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);})
+          )
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:10,color:'#64748B',display:'block',marginBottom:2}},'Desde'),
+          h('input',{type:'date',value:desde,onChange:function(e){setDesde(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}})
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:10,color:'#64748B',display:'block',marginBottom:2}},'Hasta'),
+          h('input',{type:'date',value:hasta,onChange:function(e){setHasta(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}})
+        ),
+        h('div',{style:{display:'flex',gap:4}},
+          h('button',{onClick:function(){setRangoMes(0);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,background:'#fff',cursor:'pointer',fontSize:11}},'Este mes'),
+          h('button',{onClick:function(){setRangoMes(-1);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,background:'#fff',cursor:'pointer',fontSize:11}},'Anterior'),
+          h('button',{onClick:setRangoAnio,style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,background:'#fff',cursor:'pointer',fontSize:11}},'Año')
+        ),
+        h('div',{style:{flex:1}}),
+        h('button',{onClick:exportarExcel,style:{padding:'8px 14px',background:'#10B981',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:600}},'⬇ Excel')
+      )
+    ),
+    // KPIs totales
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:8,marginBottom:12}},
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'3px solid #1E3A2D',padding:10}},
+        h('div',{style:{fontSize:18,fontWeight:700,color:'#1E3A2D'}},T.equipos||0),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'Equipos')
+      ),
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'3px solid #6366F1',padding:10}},
+        h('div',{style:{fontSize:18,fontWeight:700,color:'#6366F1'}},T.registros||0),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'Registros')
+      ),
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'3px solid #16A34A',padding:10}},
+        h('div',{style:{fontSize:18,fontWeight:700,color:'#16A34A'}},(T.horas_trabajadas||0).toFixed(1)+'h'),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'Trabajadas')
+      ),
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'3px solid #F59E0B',padding:10}},
+        h('div',{style:{fontSize:18,fontWeight:700,color:'#F59E0B'}},(T.horas_perdidas||0).toFixed(1)+'h'),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'Perdidas')
+      ),
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'3px solid #3B82F6',padding:10}},
+        h('div',{style:{fontSize:18,fontWeight:700,color:'#3B82F6'}},(T.litros_combustible||0).toFixed(0)+'L'),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'Combustible')
+      ),
+      h('div',{className:'card',style:{textAlign:'center',borderLeft:'3px solid #10B981',padding:10}},
+        h('div',{style:{fontSize:18,fontWeight:700,color:'#10B981'}},T.disponibilidad_pct!=null?T.disponibilidad_pct.toFixed(1)+'%':'—'),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'Disponibilidad')
+      )
+    ),
+    // Toggle Resumen / Detalle + Agrupación
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
+      h('div',{style:{display:'flex',gap:0,border:'1px solid #CBD5E1',borderRadius:6,overflow:'hidden'}},
+        [{v:'resumen',l:'📊 Resumen acumulado'},{v:'detalle',l:'📋 Detalle por registro'}].map(function(t){
+          var on=modo===t.v;
+          return h('button',{key:t.v,onClick:function(){setModo(t.v);},style:{padding:'8px 16px',background:on?'#1E3A2D':'#fff',color:on?'#fff':'#475569',border:'none',cursor:'pointer',fontSize:12,fontWeight:on?700:500}},t.l);
+        })
+      ),
+      modo==='resumen'&&h('div',{style:{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#64748B'}},
+        'Agrupar por:',
+        h('select',{value:agrupar,onChange:function(e){setAgrupar(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}},
+          h('option',{value:'empresa'},'Empresa'),
+          h('option',{value:'faena'},'Empresa · Faena'),
+          h('option',{value:'equipo'},'Equipo individual')
+        )
+      )
+    ),
+    loading?h('div',{style:{padding:30,textAlign:'center',color:'#64748B'}},'Cargando informe...'):
+    // RESUMEN ACUMULADO
+    modo==='resumen'?(
+      (data.resumen||[]).length===0?h('div',{className:'card',style:{padding:30,textAlign:'center',color:'#94A3B8'}},'📭 Sin registros en el período y filtros seleccionados'):
+      h('div',null,
+        grupos.map(function(g,i){
+          var dispG=(g.horas_trabajadas+g.horas_perdidas)>0?(g.horas_trabajadas/(g.horas_trabajadas+g.horas_perdidas)*100):null;
+          return h('div',{key:i,className:'card',style:{marginBottom:10,padding:0,overflow:'hidden'}},
+            h('div',{style:{background:'#F8FAFC',padding:'10px 14px',borderBottom:'1px solid #E2E8F0',display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:6}},
+              h('div',{style:{fontWeight:700,fontSize:13,color:'#1E3A2D'}},g.label),
+              h('div',{style:{display:'flex',gap:10,fontSize:11,color:'#475569',flexWrap:'wrap'}},
+                h('span',null,h('strong',null,g.registros),' registros'),
+                h('span',null,h('strong',{style:{color:'#16A34A'}},g.horas_trabajadas.toFixed(1)+'h'),' trabajadas'),
+                h('span',null,h('strong',{style:{color:'#F59E0B'}},g.horas_perdidas.toFixed(1)+'h'),' perdidas'),
+                h('span',null,h('strong',{style:{color:'#3B82F6'}},g.litros_combustible.toFixed(0)+'L')),
+                dispG!=null&&h('span',null,h('strong',{style:{color:dispG>=85?'#16A34A':dispG>=70?'#F59E0B':'#DC2626'}},dispG.toFixed(1)+'%'),' disp.')
+              )
+            ),
+            agrupar!=='equipo'&&h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
+              h('thead',null,h('tr',{style:{background:'#fff',borderBottom:'1px solid #E2E8F0'}},
+                ['Código','Equipo','Reg.','Trab.','Perd.','TOB Ext','TOB Int','TOB Adm','Litros','Rend.','Disp.'].map(function(c,j){
+                  return h('th',{key:j,style:{padding:'6px 8px',textAlign:j<2?'left':'right',color:'#64748B',fontWeight:600,fontSize:10}},c);
+                })
+              )),
+              h('tbody',null,g.filas.map(function(x,j){
+                var dispX=x.disponibilidad_pct;
+                return h('tr',{key:j,style:{borderBottom:'1px solid #F1F5F9'}},
+                  h('td',{style:{padding:'6px 8px',fontWeight:600,color:'#1E3A2D'}},x.equipo_codigo),
+                  h('td',{style:{padding:'6px 8px'}},x.equipo_nombre),
+                  h('td',{style:{padding:'6px 8px',textAlign:'right'}},x.registros),
+                  h('td',{style:{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#16A34A'}},x.horas_trabajadas.toFixed(1)),
+                  h('td',{style:{padding:'6px 8px',textAlign:'right',color:'#F59E0B'}},x.horas_perdidas.toFixed(1)),
+                  h('td',{style:{padding:'6px 8px',textAlign:'right',color:'#64748B'}},x.tob_horas_e.toFixed(1)),
+                  h('td',{style:{padding:'6px 8px',textAlign:'right',color:'#64748B'}},x.tob_horas_i.toFixed(1)),
+                  h('td',{style:{padding:'6px 8px',textAlign:'right',color:'#64748B'}},x.tob_horas_a.toFixed(1)),
+                  h('td',{style:{padding:'6px 8px',textAlign:'right',color:'#3B82F6'}},x.litros_combustible.toFixed(0)),
+                  h('td',{style:{padding:'6px 8px',textAlign:'right',color:'#0F766E',fontWeight:600}},x.rendimiento?x.rendimiento.toFixed(2)+' '+x.rendimiento_unidad:'—'),
+                  h('td',{style:{padding:'6px 8px',textAlign:'right',fontWeight:600,color:dispX==null?'#94A3B8':dispX>=85?'#16A34A':dispX>=70?'#F59E0B':'#DC2626'}},dispX!=null?dispX.toFixed(1)+'%':'—')
+                );
+              }))
+            )
+          );
+        }),
+        // TOB TOP CAUSAS DE TIEMPO PERDIDO
+        (data.tob_top||[]).length>0&&h('div',{className:'card',style:{marginTop:14}},
+          h('div',{style:{fontWeight:700,fontSize:13,marginBottom:8,color:'#92400E'}},'⏱ Top causas de tiempo perdido (TOB)'),
+          h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
+            h('thead',null,h('tr',{style:{background:'#FEF3C7',borderBottom:'1px solid #FCD34D'}},
+              h('th',{style:{padding:'6px 8px',textAlign:'left',color:'#92400E',fontWeight:600}},'Causa'),
+              h('th',{style:{padding:'6px 8px',textAlign:'center',color:'#92400E',fontWeight:600}},'Clasif.'),
+              h('th',{style:{padding:'6px 8px',textAlign:'right',color:'#92400E',fontWeight:600}},'Veces'),
+              h('th',{style:{padding:'6px 8px',textAlign:'right',color:'#92400E',fontWeight:600}},'Horas')
+            )),
+            h('tbody',null,data.tob_top.map(function(t,i){
+              var cMap={E:{l:'Externo',c:'#DC2626'},I:{l:'Interno',c:'#F59E0B'},A:{l:'Administr.',c:'#3B82F6'}};
+              var cl=cMap[t.clasificacion]||{l:t.clasificacion,c:'#64748B'};
+              return h('tr',{key:i,style:{borderBottom:'1px solid #F1F5F9'}},
+                h('td',{style:{padding:'6px 8px'}},t.causa),
+                h('td',{style:{padding:'6px 8px',textAlign:'center'}},h('span',{style:{padding:'2px 8px',background:cl.c,color:'#fff',borderRadius:10,fontSize:10,fontWeight:600}},cl.l)),
+                h('td',{style:{padding:'6px 8px',textAlign:'right'}},parseInt(t.veces)),
+                h('td',{style:{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#92400E'}},parseFloat(t.horas).toFixed(1)+' h')
+              );
+            }))
+          )
+        )
+      )
+    ):(
+      // DETALLE POR REGISTRO
+      (data.detalle||[]).length===0?h('div',{className:'card',style:{padding:30,textAlign:'center',color:'#94A3B8'}},'📭 Sin registros en el período y filtros seleccionados'):
+      h('div',{className:'card',style:{padding:0,overflow:'auto'}},
+        h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
+          h('thead',null,h('tr',{style:{background:'#1E3A2D',color:'#fff'}},
+            ['Fecha','Empresa','Faena','Código','Equipo','Trabajadas','Perdidas','Combust.','Observaciones'].map(function(c,j){
+              return h('th',{key:j,style:{padding:'8px 10px',textAlign:j<5?'left':'right',fontWeight:600,fontSize:10}},c);
+            })
+          )),
+          h('tbody',null,data.detalle.map(function(r,i){
+            var esVeh=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf(r.tipo_cargo)>=0;
+            var hT=parseFloat(r.horas_trabajadas)||0;
+            var hP=parseFloat(r.horas_perdidas)||0;
+            var lt=parseFloat(r.litros_combustible)||0;
+            return h('tr',{key:i,style:{background:i%2===0?'#fff':'#F8FAFC',borderBottom:'1px solid #F1F5F9'}},
+              h('td',{style:{padding:'6px 10px',whiteSpace:'nowrap'}},(r.fecha+'').slice(0,10)),
+              h('td',{style:{padding:'6px 10px',color:'#475569'}},r.empresa_nombre||'—'),
+              h('td',{style:{padding:'6px 10px',color:'#475569'}},r.faena_nombre||'—'),
+              h('td',{style:{padding:'6px 10px',fontWeight:600,color:'#1E3A2D'}},r.equipo_codigo),
+              h('td',{style:{padding:'6px 10px'}},r.equipo_nombre),
+              h('td',{style:{padding:'6px 10px',textAlign:'right',fontWeight:600,color:'#16A34A'}},hT.toFixed(esVeh?0:1)+' '+(esVeh?'km':'h')),
+              h('td',{style:{padding:'6px 10px',textAlign:'right',color:'#F59E0B'}},hP>0?hP.toFixed(1)+'h':'—'),
+              h('td',{style:{padding:'6px 10px',textAlign:'right',color:'#3B82F6'}},lt>0?lt.toFixed(1)+'L':'—'),
+              h('td',{style:{padding:'6px 10px',fontSize:10,color:'#64748B',fontStyle:'italic',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},title:r.observaciones||''},r.observaciones||'')
+            );
+          }))
+        )
+      )
+    )
+  );
+}
+
 function TerrenoView(p){
   var userFaenaId=p.user&&!p.user.es_admin&&p.user.faena_id?String(p.user.faena_id):null;
   var userEmpresaId=p.user&&!p.user.es_admin&&p.user.empresa_id?String(p.user.empresa_id):null;
@@ -1704,6 +2011,8 @@ function TerrenoView(p){
   }
   var emptyForm={fecha:new Date().toISOString().slice(0,10),faena_id:'',equipo_id:'',horometro_inicial:'',horometro_final:'',horas_perdidas:0,litros_combustible:0,estanque_id:'',observaciones:'',tob_detalle:[]};
   var[form,setForm]=useState(emptyForm);
+  // Tab principal: 'registros' = vista normal, 'informe' = informe consolidado
+  var[vista,setVista]=useState('registros');
   function loadCats(){api('/terreno/tob-categorias','GET',null,p.tok).then(function(r){setTobCats(Array.isArray(r)?r:[]);}).catch(function(){});}
   function loadReg(){var q='?';if(filtEquipo)q+='equipo_id='+filtEquipo+'&';if(filtMes)q+='mes='+filtMes+'&';api('/terreno/registros'+q,'GET',null,p.tok).then(function(r){setRegistros(Array.isArray(r)?r:[]);}).catch(function(){});}
   function loadRend(){if(filtEquipo&&filtMes)api('/terreno/rendimiento-mensual?equipo_id='+filtEquipo+'&mes='+filtMes,'GET',null,p.tok).then(function(r){setRendimiento(r);}).catch(function(){setRendimiento(null);});else setRendimiento(null);}
@@ -1746,6 +2055,14 @@ function TerrenoView(p){
   var totPerdMes=registros.reduce(function(s,r){return s+(parseFloat(r.horas_perdidas)||0);},0);
   var rendMes=totHorasMes>0?totLitrosMes/totHorasMes:null;
   return h('div',null,
+    // Tabs principales: Registros / Informe
+    h('div',{style:{display:'flex',gap:0,marginBottom:14,borderBottom:'2px solid #E2E8F0'}},
+      [{v:'registros',l:'📝 Registros',c:'#1E3A2D'},{v:'informe',l:'📊 Informe consolidado',c:'#1E40AF'}].map(function(t){
+        var on=vista===t.v;
+        return h('button',{key:t.v,onClick:function(){setVista(t.v);},style:{padding:'8px 14px',background:'none',border:'none',borderBottom:'3px solid '+(on?t.c:'transparent'),color:on?t.c:'#64748B',fontWeight:on?700:500,fontSize:13,cursor:'pointer',marginBottom:-2}},t.l);
+      })
+    ),
+    vista==='informe'?h(TerrenoInforme,{tok:p.tok,m:p.m,user:p.user}):h('div',null,
     h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:14}},
       h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #1E3A2D'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#1E3A2D'}},totHorasMes.toFixed(1)+' h'),h('div',{style:{fontSize:11,color:'#64748B'}},'Horas trabajadas')),
       h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #F59E0B'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#F59E0B'}},totPerdMes.toFixed(1)+' h'),h('div',{style:{fontSize:11,color:'#64748B'}},'Horas perdidas')),
@@ -1915,6 +2232,7 @@ function TerrenoView(p){
         )
       );
     })()
+    ) // cierra h('div',null,...) del modo registros
   );
 }
 
