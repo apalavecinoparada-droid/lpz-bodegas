@@ -14123,7 +14123,581 @@ function ImportZipDTEBandeja(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+
+// ════════════════════════════════════════════════════════════════════════════
+// MÓDULO REMUNERACIONES — Componentes
+// ════════════════════════════════════════════════════════════════════════════
+var REM_MESES=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+function remBadge(estado){
+  var col={ABIERTO:['#DBEAFE','#1E40AF'],CALCULADO:['#FEF3C7','#92400E'],CERRADO:['#D1FAE5','#065F46'],PAGADO:['#E0E7FF','#3730A3']}[estado]||['#E2E8F0','#475569'];
+  return h('span',{style:{padding:'2px 10px',borderRadius:12,fontSize:10,fontWeight:700,background:col[0],color:col[1]}},estado);
+}
+
+// ── Parámetros legales mensuales ─────────────────────────────────────────────
+function RemParametrosView(p){
+  var[rows,setRows]=useState([]);
+  var[edit,setEdit]=useState(false);
+  var hoy=new Date();
+  var blank={anio:hoy.getFullYear(),mes:hoy.getMonth()+1,uf:0,utm:0,sueldo_minimo:0,sueldo_minimo_18a65:0,tope_imponible_uf:87.80,tope_imponible_salud_uf:87.80,tope_seg_cesantia_uf:131.90,seg_cesantia_trab_pct:0.6,seg_cesantia_empl_indef_pct:2.4,seg_cesantia_empl_plazo_pct:3.0,ley_sanna_pct:0.03};
+  var[form,setForm]=useState(blank);
+  var[msg,setMsg]=useState('');
+  function load(){api('/rem/parametros','GET',null,p.tok).then(setRows).catch(function(e){setMsg('Error: '+e.message);});}
+  useEffect(load,[p.tok]);
+  function save(){
+    if(!form.uf||!form.utm||!form.sueldo_minimo){setMsg('Faltan UF/UTM/Sueldo mínimo');return;}
+    var b=Object.assign({},form,{sueldo_minimo_18a65:form.sueldo_minimo_18a65||form.sueldo_minimo});
+    api('/rem/parametros','POST',b,p.tok).then(function(){setEdit(false);setForm(blank);load();setMsg('Guardado');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function importarPrevired(){
+    var anio=parseInt(prompt('Año a importar desde PreviRed:',hoy.getFullYear()));
+    if(!anio||isNaN(anio))return;
+    var mes=parseInt(prompt('Mes (1-12):',hoy.getMonth()+1));
+    if(!mes||isNaN(mes)||mes<1||mes>12)return;
+    setMsg('Importando desde PreviRed...');
+    api('/rem/parametros/importar-previred','POST',{anio:anio,mes:mes},p.tok).then(function(r){
+      var msgFinal='✓ Importado de '+r.fuente+': UF $'+r.datos_importados.uf+', UTM $'+r.datos_importados.utm+', S.Mín $'+r.datos_importados.sueldo_minimo+', Tope '+r.datos_importados.tope_imponible_uf+' UF, '+r.datos_importados.afps+' AFPs, '+r.datos_importados.asig_familiar+' tramos asig.fam.';
+      if(r.afps_actualizadas>0)msgFinal+=' | '+r.afps_actualizadas+' AFP(s) con tasas actualizadas';
+      if(r.advertencias&&r.advertencias.length>0)msgFinal+=' | ⚠ '+r.advertencias.join('; ');
+      setMsg(msgFinal);load();
+    }).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  var inpS={width:'100%',padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:12,boxSizing:'border-box'};
+  var lblS={fontSize:10,fontWeight:600,color:'#475569',display:'block',marginBottom:2};
+  return h('div',{style:{padding:16}},
+    h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:12}},
+      h('h2',{style:{fontSize:18,fontWeight:700,color:'#1E3A2D'}},'Parámetros Legales Mensuales'),
+      h('div',{style:{display:'flex',gap:8}},
+        h('button',{onClick:importarPrevired,style:{background:'#fff',color:'#1E3A2D',border:'1.5px solid #1E3A2D',padding:'7px 14px',borderRadius:5,fontSize:12,fontWeight:600,cursor:'pointer'}},'⬇ Importar de PreviRed'),
+        h('button',{onClick:function(){setEdit(true);setForm(blank);},style:{background:'#1E3A2D',color:'#fff',border:'none',padding:'7px 14px',borderRadius:5,fontSize:12,fontWeight:600,cursor:'pointer'}},'+ Nuevo mes')
+      )
+    ),
+    msg&&h('div',{style:{padding:8,background:'#FEF3C7',borderRadius:4,marginBottom:10,fontSize:12}},msg),
+    edit&&h('div',{style:{background:'#F8FAFC',border:'1px solid #CBD5E1',borderRadius:6,padding:14,marginBottom:14}},
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10}},
+        h('div',null,h('label',{style:lblS},'Año'),h('input',{type:'number',value:form.anio,onChange:function(e){setForm(Object.assign({},form,{anio:parseInt(e.target.value)}));},style:inpS})),
+        h('div',null,h('label',{style:lblS},'Mes'),h('select',{value:form.mes,onChange:function(e){setForm(Object.assign({},form,{mes:parseInt(e.target.value)}));},style:inpS},REM_MESES.slice(1).map(function(m,i){return h('option',{key:i+1,value:i+1},m);}))),
+        h('div',null,h('label',{style:lblS},'UF'),h('input',{type:'number',step:'0.01',value:form.uf,onChange:function(e){setForm(Object.assign({},form,{uf:e.target.value}));},style:inpS})),
+        h('div',null,h('label',{style:lblS},'UTM'),h('input',{type:'number',value:form.utm,onChange:function(e){setForm(Object.assign({},form,{utm:e.target.value}));},style:inpS})),
+        h('div',null,h('label',{style:lblS},'Sueldo mínimo'),h('input',{type:'number',value:form.sueldo_minimo,onChange:function(e){setForm(Object.assign({},form,{sueldo_minimo:e.target.value}));},style:inpS})),
+        h('div',null,h('label',{style:lblS},'Tope imp. (UF)'),h('input',{type:'number',step:'0.01',value:form.tope_imponible_uf,onChange:function(e){setForm(Object.assign({},form,{tope_imponible_uf:e.target.value}));},style:inpS})),
+        h('div',null,h('label',{style:lblS},'Tope salud (UF)'),h('input',{type:'number',step:'0.01',value:form.tope_imponible_salud_uf,onChange:function(e){setForm(Object.assign({},form,{tope_imponible_salud_uf:e.target.value}));},style:inpS})),
+        h('div',null,h('label',{style:lblS},'Tope AFC (UF)'),h('input',{type:'number',step:'0.01',value:form.tope_seg_cesantia_uf,onChange:function(e){setForm(Object.assign({},form,{tope_seg_cesantia_uf:e.target.value}));},style:inpS}))
+      ),
+      h('div',{style:{marginTop:12,display:'flex',gap:8}},
+        h('button',{onClick:save,style:{background:'#1E3A2D',color:'#fff',border:'none',padding:'7px 16px',borderRadius:5,fontWeight:600,cursor:'pointer'}},'Guardar'),
+        h('button',{onClick:function(){setEdit(false);},style:{background:'#fff',border:'1px solid #CBD5E1',padding:'7px 16px',borderRadius:5,cursor:'pointer'}},'Cancelar')
+      )
+    ),
+    h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,overflow:'hidden'}},
+      h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
+        h('thead',null,h('tr',{style:{background:'#1E3A2D',color:'#fff'}},
+          ['Año','Mes','UF','UTM','S.Mín.','Tope UF','Tope Salud','Tope AFC'].map(function(c){return h('th',{key:c,style:{padding:'8px 10px',textAlign:'left',fontWeight:600}},c);})
+        )),
+        h('tbody',null,rows.map(function(r,i){return h('tr',{key:r.parametro_id,style:{borderBottom:'1px solid #F1F5F9',background:i%2?'#FAFBFC':'#fff'}},
+          h('td',{style:{padding:'7px 10px'}},r.anio),
+          h('td',{style:{padding:'7px 10px'}},REM_MESES[r.mes]),
+          h('td',{style:{padding:'7px 10px',textAlign:'right'}},parseFloat(r.uf).toLocaleString('es-CL')),
+          h('td',{style:{padding:'7px 10px',textAlign:'right'}},parseInt(r.utm).toLocaleString('es-CL')),
+          h('td',{style:{padding:'7px 10px',textAlign:'right'}},CLP(r.sueldo_minimo)),
+          h('td',{style:{padding:'7px 10px',textAlign:'right'}},r.tope_imponible_uf),
+          h('td',{style:{padding:'7px 10px',textAlign:'right'}},r.tope_imponible_salud_uf),
+          h('td',{style:{padding:'7px 10px',textAlign:'right'}},r.tope_seg_cesantia_uf)
+        );}))
+      )
+    )
+  );
+}
+
+// ── Períodos de liquidación ──────────────────────────────────────────────────
+function RemPeriodosView(p){
+  var[rows,setRows]=useState([]);
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var hoy=new Date();
+  var[nuevo,setNuevo]=useState({empresa_id:'',anio:hoy.getFullYear(),mes:hoy.getMonth()+1});
+  var[msg,setMsg]=useState('');
+  function load(){api('/rem/periodos','GET',null,p.tok).then(setRows).catch(function(e){setMsg('Error: '+e.message);});}
+  useEffect(load,[p.tok]);
+  function crear(){
+    if(!nuevo.empresa_id){setMsg('Selecciona empresa');return;}
+    api('/rem/periodos','POST',nuevo,p.tok).then(function(){setMsg('Período creado');load();}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function calcular(id){
+    if(!confirm('¿Calcular liquidaciones de todos los trabajadores activos del período?'))return;
+    setMsg('Calculando...');
+    api('/rem/periodos/'+id+'/calcular','POST',{},p.tok).then(function(r){
+      setMsg('Calculadas: '+r.calculadas+(r.errores?' | Errores: '+r.errores:''));
+      if(r.errores&&r.errores>0)console.log('Errores cálculo:',r.errores);
+      load();
+    }).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function cerrar(id){if(!confirm('¿Cerrar período definitivamente?'))return;api('/rem/periodos/'+id+'/cerrar','POST',{},p.tok).then(load).catch(function(e){setMsg('Error: '+e.message);});}
+  function reabrir(id){if(!confirm('¿Reabrir período cerrado?'))return;api('/rem/periodos/'+id+'/reabrir','POST',{},p.tok).then(load).catch(function(e){setMsg('Error: '+e.message);});}
+  var inpS={padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:12};
+  return h('div',{style:{padding:16}},
+    h('h2',{style:{fontSize:18,fontWeight:700,color:'#1E3A2D',marginBottom:12}},'Períodos de Liquidación'),
+    msg&&h('div',{style:{padding:8,background:'#FEF3C7',borderRadius:4,marginBottom:10,fontSize:12}},msg),
+    h('div',{style:{background:'#F8FAFC',border:'1px solid #CBD5E1',borderRadius:6,padding:12,marginBottom:14,display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}},
+      h('div',null,h('div',{style:{fontSize:10,fontWeight:600,color:'#475569',marginBottom:2}},'Empresa'),h('select',{value:nuevo.empresa_id,onChange:function(e){setNuevo(Object.assign({},nuevo,{empresa_id:e.target.value}));},style:Object.assign({},inpS,{minWidth:250})},h('option',{value:''},'-- elegir --'),empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
+      h('div',null,h('div',{style:{fontSize:10,fontWeight:600,color:'#475569',marginBottom:2}},'Año'),h('input',{type:'number',value:nuevo.anio,onChange:function(e){setNuevo(Object.assign({},nuevo,{anio:parseInt(e.target.value)}));},style:Object.assign({},inpS,{width:80})})),
+      h('div',null,h('div',{style:{fontSize:10,fontWeight:600,color:'#475569',marginBottom:2}},'Mes'),h('select',{value:nuevo.mes,onChange:function(e){setNuevo(Object.assign({},nuevo,{mes:parseInt(e.target.value)}));},style:inpS},REM_MESES.slice(1).map(function(m,i){return h('option',{key:i+1,value:i+1},m);}))),
+      h('button',{onClick:crear,style:{background:'#1E3A2D',color:'#fff',border:'none',padding:'7px 14px',borderRadius:5,fontWeight:600,cursor:'pointer'}},'Abrir período')
+    ),
+    h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,overflow:'hidden'}},
+      h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
+        h('thead',null,h('tr',{style:{background:'#1E3A2D',color:'#fff'}},
+          ['Empresa','Período','Estado','Movs.','Liq.','Acciones'].map(function(c){return h('th',{key:c,style:{padding:'8px 10px',textAlign:'left',fontWeight:600}},c);})
+        )),
+        h('tbody',null,rows.map(function(r,i){return h('tr',{key:r.periodo_id,style:{borderBottom:'1px solid #F1F5F9',background:i%2?'#FAFBFC':'#fff'}},
+          h('td',{style:{padding:'7px 10px'}},r.empresa_nombre),
+          h('td',{style:{padding:'7px 10px'}},REM_MESES[r.mes]+' '+r.anio),
+          h('td',{style:{padding:'7px 10px'}},remBadge(r.estado)),
+          h('td',{style:{padding:'7px 10px',textAlign:'right'}},r.num_movimientos||0),
+          h('td',{style:{padding:'7px 10px',textAlign:'right'}},r.num_liquidaciones||0),
+          h('td',{style:{padding:'7px 10px'}},
+            (r.estado==='ABIERTO'||r.estado==='CALCULADO')&&h('button',{onClick:function(){calcular(r.periodo_id);},style:{background:'#1E3A2D',color:'#fff',border:'none',padding:'4px 10px',borderRadius:4,fontSize:11,cursor:'pointer',marginRight:4}},r.estado==='CALCULADO'?'Recalcular':'Calcular'),
+            (r.estado==='ABIERTO'||r.estado==='CALCULADO')&&h('button',{onClick:function(){cerrar(r.periodo_id);},style:{background:'#DC2626',color:'#fff',border:'none',padding:'4px 10px',borderRadius:4,fontSize:11,cursor:'pointer',marginRight:4}},'Cerrar'),
+            r.estado==='CERRADO'&&h('button',{onClick:function(){reabrir(r.periodo_id);},style:{background:'#fff',border:'1px solid #CBD5E1',padding:'4px 10px',borderRadius:4,fontSize:11,cursor:'pointer'}},'Reabrir'),
+            h('button',{onClick:function(){window.remPeriodoId=r.periodo_id;p.setView&&p.setView('rem-liquidaciones');},style:{background:'#fff',border:'1px solid #CBD5E1',padding:'4px 10px',borderRadius:4,fontSize:11,cursor:'pointer',marginLeft:4}},'Ver liquidaciones')
+          )
+        );}))
+      )
+    )
+  );
+}
+
+// ── Configuración Previsional del trabajador ────────────────────────────────
+function RemPrevisionView(p){
+  var personal=(p.m.personal||[]);
+  var[pid,setPid]=useState('');
+  var[cfg,setCfg]=useState(null);
+  var[cats,setCats]=useState({afp:[],isapre:[],ccaf:[],mutual:[],apv:[],tramos:[]});
+  var[msg,setMsg]=useState('');
+  useEffect(function(){
+    Promise.all([
+      api('/rem/afp','GET',null,p.tok),api('/rem/isapre','GET',null,p.tok),api('/rem/ccaf','GET',null,p.tok),
+      api('/rem/mutual','GET',null,p.tok),api('/rem/apv-instituciones','GET',null,p.tok),api('/rem/tramos-familiares','GET',null,p.tok)
+    ]).then(function(arr){setCats({afp:arr[0],isapre:arr[1],ccaf:arr[2],mutual:arr[3],apv:arr[4],tramos:arr[5]});}).catch(function(e){setMsg('Error catálogos: '+e.message);});
+  },[p.tok]);
+  useEffect(function(){
+    if(pid){api('/rem/personal/'+pid+'/prevision','GET',null,p.tok).then(setCfg).catch(function(e){setMsg('Error: '+e.message);});}
+    else setCfg(null);
+  },[pid]);
+  function set(k,v){setCfg(Object.assign({},cfg,{[k]:v}));}
+  function guardar(){
+    api('/rem/personal/'+pid+'/prevision','PUT',cfg,p.tok).then(function(){setMsg('Configuración guardada');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  var inpS={width:'100%',padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:12,boxSizing:'border-box'};
+  var lblS={fontSize:10,fontWeight:600,color:'#475569',display:'block',marginBottom:2};
+  if(!cfg){
+    return h('div',{style:{padding:16}},
+      h('h2',{style:{fontSize:18,fontWeight:700,color:'#1E3A2D',marginBottom:12}},'Configuración Previsional'),
+      msg&&h('div',{style:{padding:8,background:'#FEF3C7',borderRadius:4,marginBottom:10,fontSize:12}},msg),
+      h('div',{style:{maxWidth:500}},h('label',{style:lblS},'Trabajador'),
+        h('select',{value:pid,onChange:function(e){setPid(e.target.value);},style:inpS},
+          h('option',{value:''},'-- elegir trabajador --'),
+          personal.filter(function(x){return x.activo;}).map(function(per){return h('option',{key:per.persona_id,value:per.persona_id},per.nombre_completo+' — '+(per.rut||''));})
+        )
+      )
+    );
+  }
+  return h('div',{style:{padding:16,maxWidth:1000}},
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
+      h('h2',{style:{fontSize:18,fontWeight:700,color:'#1E3A2D'}},'Config. Previsional — '+cfg.nombre_completo),
+      h('button',{onClick:function(){setPid('');setCfg(null);},style:{background:'#fff',border:'1px solid #CBD5E1',padding:'6px 12px',borderRadius:5,cursor:'pointer'}},'← Cambiar trabajador')
+    ),
+    msg&&h('div',{style:{padding:8,background:'#FEF3C7',borderRadius:4,marginBottom:10,fontSize:12}},msg),
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:12,background:'#F8FAFC',padding:14,borderRadius:6,border:'1px solid #E2E8F0'}},
+      h('div',null,h('label',{style:lblS},'AFP'),h('select',{value:cfg.afp_id||'',onChange:function(e){set('afp_id',e.target.value||null);},style:inpS},h('option',{value:''},'-- sin AFP --'),cats.afp.map(function(a){return h('option',{key:a.afp_id,value:a.afp_id},a.nombre+' ('+a.cotiza_pct+'%+'+a.comision_pct+'%)');}))),
+      h('div',null,h('label',{style:lblS},'Salud (Isapre/Fonasa)'),h('select',{value:cfg.isapre_id||'',onChange:function(e){set('isapre_id',e.target.value||null);},style:inpS},h('option',{value:''},'-- elegir --'),cats.isapre.map(function(x){return h('option',{key:x.isapre_id,value:x.isapre_id},x.nombre);}))),
+      h('div',null,h('label',{style:lblS},'CCAF'),h('select',{value:cfg.ccaf_id||'',onChange:function(e){set('ccaf_id',e.target.value||null);},style:inpS},h('option',{value:''},'-- sin CCAF --'),cats.ccaf.map(function(c){return h('option',{key:c.ccaf_id,value:c.ccaf_id},c.nombre);}))),
+      h('div',null,h('label',{style:lblS},'Mutual'),h('select',{value:cfg.mutual_id||'',onChange:function(e){set('mutual_id',e.target.value||null);},style:inpS},h('option',{value:''},'-- elegir --'),cats.mutual.map(function(m){return h('option',{key:m.mutual_id,value:m.mutual_id},m.nombre);}))),
+      h('div',null,h('label',{style:lblS},'Tramo asig. familiar'),h('select',{value:cfg.tramo_familiar_id||4,onChange:function(e){set('tramo_familiar_id',parseInt(e.target.value));},style:inpS},cats.tramos.map(function(t){return h('option',{key:t.tramo_id,value:t.tramo_id},t.codigo+' — '+t.nombre);}))),
+      h('div',null,h('label',{style:lblS},'% Salud (default 7)'),h('input',{type:'number',step:'0.01',value:cfg.salud_pct||7,onChange:function(e){set('salud_pct',e.target.value);},style:inpS})),
+      h('div',null,h('label',{style:lblS},'Cargas simples'),h('input',{type:'number',value:cfg.cargas_simples||0,onChange:function(e){set('cargas_simples',parseInt(e.target.value)||0);},style:inpS})),
+      h('div',null,h('label',{style:lblS},'Cargas maternales'),h('input',{type:'number',value:cfg.cargas_maternales||0,onChange:function(e){set('cargas_maternales',parseInt(e.target.value)||0);},style:inpS})),
+      h('div',null,h('label',{style:lblS},'Cargas inválidos'),h('input',{type:'number',value:cfg.cargas_invalidos||0,onChange:function(e){set('cargas_invalidos',parseInt(e.target.value)||0);},style:inpS})),
+      h('div',null,h('label',{style:lblS},'Modalidad gratificación'),h('select',{value:cfg.grat_modalidad||'SIN_GRATIFICACION',onChange:function(e){set('grat_modalidad',e.target.value);},style:inpS},
+        h('option',{value:'SIN_GRATIFICACION'},'Sin gratificación'),
+        h('option',{value:'ART_50_TOPE_LEGAL'},'Art. 50 con tope legal (25%, tope 4.75 IMM/12)'),
+        h('option',{value:'ART_50_SIN_TOPE'},'Art. 50 sin tope (25%)'),
+        h('option',{value:'CONVENCIONAL'},'Convencional %')
+      )),
+      cfg.grat_modalidad==='CONVENCIONAL'&&h('div',null,h('label',{style:lblS},'% gratificación'),h('input',{type:'number',step:'0.01',value:cfg.grat_porcentaje||0,onChange:function(e){set('grat_porcentaje',e.target.value);},style:inpS})),
+      h('div',null,h('label',{style:lblS},'Plan salud pactado UF'),h('input',{type:'number',step:'0.01',value:cfg.salud_pactada_uf||0,onChange:function(e){set('salud_pactada_uf',e.target.value);},style:inpS})),
+      h('div',null,h('label',{style:lblS},'Trabajo pesado %'),h('select',{value:cfg.trabajo_pesado_pct||0,onChange:function(e){set('trabajo_pesado_pct',parseFloat(e.target.value));},style:inpS},h('option',{value:0},'0% (no aplica)'),h('option',{value:2},'2%'),h('option',{value:4},'4%'))),
+      h('div',null,h('label',{style:lblS},'Horas semanales jornada'),h('input',{type:'number',step:'0.5',value:cfg.horas_semanales_jornada||44,onChange:function(e){set('horas_semanales_jornada',e.target.value);},style:inpS})),
+      h('div',null,h('label',{style:lblS},'Banco'),h('input',{type:'text',value:cfg.banco_nombre||'',onChange:function(e){set('banco_nombre',e.target.value);},style:inpS})),
+      h('div',null,h('label',{style:lblS},'N° cuenta'),h('input',{type:'text',value:cfg.banco_numero_cuenta||'',onChange:function(e){set('banco_numero_cuenta',e.target.value);},style:inpS}))
+    ),
+    h('div',{style:{marginTop:14}},h('button',{onClick:guardar,style:{background:'#1E3A2D',color:'#fff',border:'none',padding:'10px 24px',borderRadius:5,fontWeight:600,cursor:'pointer'}},'Guardar configuración'))
+  );
+}
+
+// ── Movimientos del mes ──────────────────────────────────────────────────────
+function RemMovimientosView(p){
+  var personal=(p.m.personal||[]).filter(function(x){return x.activo;});
+  var[periodos,setPeriodos]=useState([]);
+  var[perId,setPerId]=useState('');
+  var[movs,setMovs]=useState([]);
+  var[tipos,setTipos]=useState([]);
+  var[nuevo,setNuevo]=useState({persona_id:'',tipo_mov_id:'',fecha:new Date().toISOString().slice(0,10),monto:'',glosa:''});
+  var[msg,setMsg]=useState('');
+  useEffect(function(){
+    api('/rem/periodos','GET',null,p.tok).then(setPeriodos).catch(function(){});
+    api('/rem/tipos-movimiento','GET',null,p.tok).then(setTipos).catch(function(){});
+  },[p.tok]);
+  function load(){if(perId)api('/rem/periodos/'+perId+'/movimientos','GET',null,p.tok).then(setMovs).catch(function(e){setMsg('Error: '+e.message);});}
+  useEffect(load,[perId]);
+  function agregar(){
+    if(!nuevo.persona_id||!nuevo.tipo_mov_id||!nuevo.monto){setMsg('Faltan datos');return;}
+    api('/rem/periodos/'+perId+'/movimientos','POST',nuevo,p.tok).then(function(){
+      setNuevo({persona_id:'',tipo_mov_id:'',fecha:new Date().toISOString().slice(0,10),monto:'',glosa:''});
+      setMsg('Agregado');load();
+    }).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function eliminar(id){if(!confirm('¿Eliminar movimiento?'))return;api('/rem/movimientos/'+id,'DELETE',null,p.tok).then(load).catch(function(e){setMsg('Error: '+e.message);});}
+  var inpS={padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:12};
+  return h('div',{style:{padding:16}},
+    h('h2',{style:{fontSize:18,fontWeight:700,color:'#1E3A2D',marginBottom:12}},'Movimientos del Mes'),
+    msg&&h('div',{style:{padding:8,background:'#FEF3C7',borderRadius:4,marginBottom:10,fontSize:12}},msg),
+    h('div',{style:{marginBottom:10}},h('label',{style:{fontSize:11,fontWeight:600,color:'#475569',marginRight:8}},'Período:'),
+      h('select',{value:perId,onChange:function(e){setPerId(e.target.value);},style:Object.assign({},inpS,{minWidth:350})},
+        h('option',{value:''},'-- elegir período --'),
+        periodos.filter(function(x){return x.estado!=='CERRADO';}).map(function(per){return h('option',{key:per.periodo_id,value:per.periodo_id},per.empresa_nombre+' — '+REM_MESES[per.mes]+' '+per.anio+' ('+per.estado+')');})
+      )
+    ),
+    perId&&h('div',null,
+      h('div',{style:{background:'#F8FAFC',border:'1px solid #CBD5E1',borderRadius:6,padding:12,marginBottom:12,display:'grid',gridTemplateColumns:'2fr 2.5fr 1fr 1fr 2fr auto',gap:8,alignItems:'center'}},
+        h('select',{value:nuevo.persona_id,onChange:function(e){setNuevo(Object.assign({},nuevo,{persona_id:e.target.value}));},style:inpS},h('option',{value:''},'Trabajador...'),personal.map(function(per){return h('option',{key:per.persona_id,value:per.persona_id},per.nombre_completo);})),
+        h('select',{value:nuevo.tipo_mov_id,onChange:function(e){setNuevo(Object.assign({},nuevo,{tipo_mov_id:e.target.value}));},style:inpS},h('option',{value:''},'Tipo...'),tipos.map(function(t){return h('option',{key:t.tipo_mov_id,value:t.tipo_mov_id},t.codigo+' '+t.nombre+' ['+t.tipo+']');})),
+        h('input',{type:'date',value:nuevo.fecha,onChange:function(e){setNuevo(Object.assign({},nuevo,{fecha:e.target.value}));},style:inpS}),
+        h('input',{type:'number',placeholder:'Monto',value:nuevo.monto,onChange:function(e){setNuevo(Object.assign({},nuevo,{monto:e.target.value}));},style:inpS}),
+        h('input',{type:'text',placeholder:'Glosa',value:nuevo.glosa,onChange:function(e){setNuevo(Object.assign({},nuevo,{glosa:e.target.value}));},style:inpS}),
+        h('button',{onClick:agregar,style:{background:'#1E3A2D',color:'#fff',border:'none',padding:'7px 14px',borderRadius:5,fontWeight:600,cursor:'pointer'}},'+ Agregar')
+      ),
+      h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,overflow:'hidden'}},
+        h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
+          h('thead',null,h('tr',{style:{background:'#1E3A2D',color:'#fff'}},['Trabajador','Tipo','Fecha','Monto','Glosa',''].map(function(c){return h('th',{key:c,style:{padding:'8px 10px',textAlign:'left',fontWeight:600}},c);}))),
+          h('tbody',null,movs.map(function(m,i){return h('tr',{key:m.movimiento_id,style:{borderBottom:'1px solid #F1F5F9',background:i%2?'#FAFBFC':'#fff'}},
+            h('td',{style:{padding:'7px 10px'}},m.nombre_completo),
+            h('td',{style:{padding:'7px 10px'}},m.codigo+' '+m.tipo_nombre),
+            h('td',{style:{padding:'7px 10px'}},(m.fecha||'').slice(0,10)),
+            h('td',{style:{padding:'7px 10px',textAlign:'right',fontWeight:600}},CLP(m.monto)),
+            h('td',{style:{padding:'7px 10px',color:'#64748B'}},m.glosa||''),
+            h('td',{style:{padding:'7px 10px'}},h('button',{onClick:function(){eliminar(m.movimiento_id);},style:{background:'#fff',border:'1px solid #FCA5A5',color:'#DC2626',padding:'3px 8px',borderRadius:4,fontSize:11,cursor:'pointer'}},'Eliminar'))
+          );}))
+        )
+      )
+    )
+  );
+}
+
+// ── Generador de PDF imprimible de liquidación (formato Empresas Poo) ───────
+function imprimirLiquidacionPDF(detalle, empresa){
+  var grupos={HABER_IMP:[],HABER_NO_IMP:[],DESC_LEGAL:[],DESC_OTRO:[],INFO:[]};
+  (detalle.detalle||[]).forEach(function(d){if(grupos[d.seccion])grupos[d.seccion].push(d);});
+  var fmt=function(n){return new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));};
+  var meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  // Convertir número a texto en palabras
+  function numToWords(n){
+    n=Math.round(n);
+    var u=['','un','dos','tres','cuatro','cinco','seis','siete','ocho','nueve','diez','once','doce','trece','catorce','quince','dieciséis','diecisiete','dieciocho','diecinueve'];
+    var d=['','','veinte','treinta','cuarenta','cincuenta','sesenta','setenta','ochenta','noventa'];
+    var c=['','ciento','doscientos','trescientos','cuatrocientos','quinientos','seiscientos','setecientos','ochocientos','novecientos'];
+    function fc(n){
+      if(n===0)return '';
+      if(n<20)return u[n];
+      if(n<30)return n===20?'veinte':'veinti'+u[n-20];
+      if(n<100){var t=Math.floor(n/10),r=n%10;return d[t]+(r?' y '+u[r]:'');}
+      if(n===100)return 'cien';
+      if(n<1000){var ce=Math.floor(n/100),re=n%100;return c[ce]+(re?' '+fc(re):'');}
+      if(n<1000000){var mi=Math.floor(n/1000),re=n%1000;var pref=mi===1?'mil':fc(mi)+' mil';return pref+(re?' '+fc(re):'');}
+      var mi2=Math.floor(n/1000000),re2=n%1000000;var pref2=mi2===1?'un millón':fc(mi2)+' millones';return pref2+(re2?' '+fc(re2):'');
+    }
+    return fc(n)||'cero';
+  }
+  var palabras=numToWords(detalle.liquido_pagar).trim()+' pesos';
+  // Capitalizar primera letra
+  palabras=palabras.charAt(0).toUpperCase()+palabras.slice(1);
+
+  var maxFilas=Math.max(grupos.HABER_IMP.length, grupos.DESC_LEGAL.length);
+  var filasMaxNoImp=Math.max(grupos.HABER_NO_IMP.length, grupos.DESC_OTRO.length);
+
+  function fila(izq, der){
+    return '<tr>'+
+      '<td class="col-lbl">'+(izq?izq.glosa:'')+'</td>'+
+      '<td class="col-num">'+(izq?fmt(izq.monto):'')+'</td>'+
+      '<td class="col-lbl">'+(der?der.glosa:'')+'</td>'+
+      '<td class="col-num">'+(der?fmt(der.monto):'')+'</td>'+
+    '</tr>';
+  }
+
+  var filasImp='';
+  for(var i=0;i<maxFilas;i++)filasImp+=fila(grupos.HABER_IMP[i],grupos.DESC_LEGAL[i]);
+  var filasNoImp='';
+  for(var j=0;j<filasMaxNoImp;j++)filasNoImp+=fila(grupos.HABER_NO_IMP[j],grupos.DESC_OTRO[j]);
+
+  var totImp=grupos.HABER_IMP.reduce(function(s,x){return s+parseFloat(x.monto||0);},0);
+  var totNoImp=grupos.HABER_NO_IMP.reduce(function(s,x){return s+parseFloat(x.monto||0);},0);
+  var totDescLeg=grupos.DESC_LEGAL.reduce(function(s,x){return s+parseFloat(x.monto||0);},0);
+  var totDescOtros=grupos.DESC_OTRO.reduce(function(s,x){return s+parseFloat(x.monto||0);},0);
+
+  var empresaRut=detalle.empresa_rut||(empresa&&empresa.rut)||'';
+  var empresaNombre=detalle.empresa_nombre||(empresa&&empresa.razon_social)||'';
+  var empresaDir=(empresa&&(empresa.direccion||''))+(empresa&&empresa.ciudad?', '+empresa.ciudad:'');
+  var logo=empresa&&empresa.logo_base64?empresa.logo_base64:'';
+
+  var html=''+
+'<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Liquidación - '+detalle.nombre_completo+'</title>'+
+'<style>'+
+'  *{box-sizing:border-box;margin:0;padding:0;}'+
+'  body{font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#000;padding:24px 32px;}'+
+'  .header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:18px;}'+
+'  .logo{max-height:70px;max-width:160px;}'+
+'  .empresa-info{text-align:right;font-size:10px;line-height:1.4;}'+
+'  .titulo{text-align:center;font-size:16px;font-weight:bold;margin:14px 0 16px;}'+
+'  .datos-trab{margin-bottom:8px;}'+
+'  .datos-trab .row{display:flex;margin-bottom:2px;}'+
+'  .datos-trab .lbl{width:110px;font-weight:bold;}'+
+'  .seccion-titulo{font-weight:bold;font-size:11px;margin:10px 0 4px;border-bottom:1px solid #000;padding-bottom:2px;}'+
+'  table.antecedentes-tbl{width:100%;border-collapse:collapse;margin-bottom:10px;}'+
+'  table.antecedentes-tbl td{padding:2px 6px;font-size:11px;vertical-align:top;}'+
+'  table.antecedentes-tbl td.lbl{font-weight:bold;width:90px;}'+
+'  table.haberes{width:100%;border-collapse:collapse;margin-top:6px;}'+
+'  table.haberes th{background:#E2E8F0;text-align:left;padding:5px 8px;font-size:11px;font-weight:bold;border-bottom:1.5px solid #000;}'+
+'  table.haberes td{padding:3px 8px;font-size:11px;}'+
+'  .col-lbl{width:35%;}'+
+'  .col-num{width:15%;text-align:right;font-family:Arial,sans-serif;}'+
+'  .subtotal{border-top:1px solid #888;font-weight:bold;}'+
+'  .subtotal td{padding:5px 8px;}'+
+'  .suma-final{background:#E2E8F0;font-weight:bold;}'+
+'  .liquido{background:#475569;color:#fff;text-align:center;padding:10px;font-size:16px;font-weight:bold;margin-top:6px;}'+
+'  .palabras{font-size:10px;margin-top:6px;font-style:italic;}'+
+'  .firmas{display:flex;justify-content:space-around;margin-top:60px;padding-top:6px;}'+
+'  .firma{text-align:center;font-size:11px;font-weight:bold;border-top:1px solid #000;width:35%;padding-top:4px;}'+
+'  .pie{font-size:10px;margin-top:18px;text-align:justify;}'+
+'  .asist{display:grid;grid-template-columns:1fr 2fr;gap:16px;margin-top:14px;font-size:10px;}'+
+'  .asist .blk{}'+
+'  .asist .titulo-blk{font-weight:bold;border-bottom:1px solid #000;padding-bottom:2px;margin-bottom:4px;}'+
+'  .asist .item{display:flex;justify-content:space-between;margin-bottom:1px;}'+
+'  @media print{body{padding:18px 24px;}@page{size:A4;margin:10mm;}}'+
+'</style></head><body>'+
+'<div class="header">'+
+'  <div>'+(logo?'<img src="'+logo+'" class="logo">':'<div style="font-weight:bold;font-size:14px;">'+empresaNombre+'</div>')+'</div>'+
+'  <div class="empresa-info">'+empresaRut+' '+empresaNombre+'<br>'+empresaDir+'</div>'+
+'</div>'+
+'<div class="titulo">LIQUIDACIÓN DE REMUNERACIONES</div>'+
+'<div class="datos-trab">'+
+'  <div class="row"><span class="lbl">Rut:</span><span>'+(detalle.rut||'')+'</span></div>'+
+'  <div class="row"><span class="lbl">Nombre:</span><span>'+(detalle.nombre_completo||'')+'</span></div>'+
+'  <div class="row"><span class="lbl">Cargo:</span><span>'+(detalle.cargo||'')+'</span></div>'+
+'</div>'+
+'<div class="seccion-titulo">Antecedentes</div>'+
+'<table class="antecedentes-tbl">'+
+'  <tr><td class="lbl">Sueldo Base:</td><td>$ '+fmt(detalle.sueldo_base||0)+'</td><td class="lbl">Período:</td><td>'+String(detalle.mes).padStart(2,'0')+'-'+detalle.anio+'</td><td class="lbl">Salud:</td><td>'+(detalle.salud||'')+'</td></tr>'+
+'  <tr><td class="lbl">Sueldo Imp.:</td><td>$ '+fmt(totImp)+'</td><td class="lbl">Contratado:</td><td>'+(detalle.fecha_ingreso?String(detalle.fecha_ingreso).slice(0,10):'')+'</td><td class="lbl">UF:</td><td>'+(detalle.uf_pago?new Intl.NumberFormat('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2}).format(parseFloat(detalle.uf_pago)):'')+'</td></tr>'+
+'  <tr><td class="lbl">Base Tribut.:</td><td>$ '+fmt(detalle.base_imponible_iusc||0)+'</td><td></td><td></td><td class="lbl">AFP:</td><td>'+(detalle.afp||'')+'</td></tr>'+
+'</table>'+
+'<table class="haberes">'+
+'  <thead><tr><th>Imponibles</th><th></th><th>Descuentos</th><th></th></tr></thead>'+
+'  <tbody>'+filasImp+
+'    <tr class="subtotal"><td>Total Imponibles:</td><td class="col-num">$ '+fmt(totImp)+'</td><td>Total Descuentos:</td><td class="col-num">$ '+fmt(totDescLeg)+'</td></tr>'+
+'  </tbody>'+
+'  <thead><tr><th>No Imponibles</th><th></th><th>Otros Descuentos</th><th></th></tr></thead>'+
+'  <tbody>'+filasNoImp+
+'    <tr class="subtotal"><td>Total No Imponibles:</td><td class="col-num">$ '+fmt(totNoImp)+'</td><td>Total Otros Descuentos:</td><td class="col-num">$ '+fmt(totDescOtros)+'</td></tr>'+
+'    <tr class="suma-final"><td>Suma Haberes:</td><td class="col-num">$ '+fmt(detalle.total_haberes)+'</td><td>Suma Descuentos:</td><td class="col-num">$ '+fmt(detalle.total_descuentos)+'</td></tr>'+
+'  </tbody>'+
+'</table>'+
+'<div class="liquido">Total Líquido a Pagar: $ '+fmt(detalle.liquido_pagar)+'</div>'+
+'<div class="palabras">SON: '+palabras+'.</div>'+
+'<div class="asist">'+
+'  <div class="blk">'+
+'    <div class="titulo-blk">Movimiento de Asistencia</div>'+
+'    <div class="item"><span>Asistencia:</span><span>'+(detalle.dias_trabajados||0)+'</span></div>'+
+'    <div class="item"><span>Ausentismos:</span><span>'+(detalle.dias_inasistencia||0)+'</span></div>'+
+'    <div class="item"><span>Licencia Médica:</span><span>0</span></div>'+
+'    <div class="item"><span>Vacaciones:</span><span>0</span></div>'+
+'  </div>'+
+'  <div class="blk">'+
+'    <div class="titulo-blk">Movimientos</div>'+
+'    <div>Sin movimientos que informar.</div>'+
+'  </div>'+
+'</div>'+
+'<div class="firmas">'+
+'  <div class="firma">Firma Empleador</div>'+
+'  <div class="firma">Firma Trabajador</div>'+
+'</div>'+
+'<div class="pie">Recibí a mi entera satisfacción detalle liquidación de sueldo y líquido a pago, dejando constancia que no tengo reclamo alguno a formular.</div>'+
+'<script>window.onload=function(){setTimeout(function(){window.print();},300);};<\/script>'+
+'</body></html>';
+
+  var w=window.open('','_blank','width=900,height=700');
+  w.document.write(html);w.document.close();w.focus();
+}
+
+// ── Liquidaciones (lista + detalle) ──────────────────────────────────────────
+function RemLiquidacionesView(p){
+  var[periodos,setPeriodos]=useState([]);
+  var[perId,setPerId]=useState(window.remPeriodoId||'');
+  var[liqs,setLiqs]=useState([]);
+  var[detalle,setDetalle]=useState(null);
+  var[msg,setMsg]=useState('');
+  useEffect(function(){api('/rem/periodos','GET',null,p.tok).then(setPeriodos).catch(function(){});},[p.tok]);
+  useEffect(function(){
+    if(perId)api('/rem/periodos/'+perId+'/liquidaciones','GET',null,p.tok).then(setLiqs).catch(function(e){setMsg('Error: '+e.message);});
+    else setLiqs([]);
+  },[perId]);
+  function ver(id){api('/rem/liquidaciones/'+id,'GET',null,p.tok).then(setDetalle).catch(function(e){setMsg('Error: '+e.message);});}
+  var inpS={padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:12};
+  if(detalle){
+    var grupos={HABER_IMP:[],HABER_NO_IMP:[],DESC_LEGAL:[],DESC_OTRO:[],INFO:[]};
+    (detalle.detalle||[]).forEach(function(d){if(grupos[d.seccion])grupos[d.seccion].push(d);});
+    return h('div',{style:{padding:16,maxWidth:700}},
+      h('div',{style:{display:'flex',gap:8,marginBottom:12}},
+        h('button',{onClick:function(){setDetalle(null);},style:{background:'#fff',border:'1px solid #CBD5E1',padding:'6px 12px',borderRadius:5,cursor:'pointer'}},'← Volver'),
+        h('button',{onClick:function(){imprimirLiquidacionPDF(detalle,{rut:detalle.empresa_rut,razon_social:detalle.empresa_nombre,direccion:detalle.empresa_direccion,ciudad:detalle.empresa_ciudad,logo_base64:detalle.empresa_logo});},style:{background:'#1E3A2D',color:'#fff',border:'none',padding:'6px 12px',borderRadius:5,cursor:'pointer',fontWeight:600}},'🖨 Imprimir / Guardar PDF')
+      ),
+      h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,padding:20}},
+        h('div',{style:{textAlign:'center',marginBottom:14,paddingBottom:10,borderBottom:'2px solid #1E3A2D'}},
+          h('div',{style:{fontSize:16,fontWeight:700,color:'#1E3A2D'}},'LIQUIDACIÓN DE SUELDO'),
+          h('div',{style:{fontSize:12,color:'#475569',marginTop:2}},detalle.empresa_nombre+' — '+(detalle.empresa_rut||'')),
+          h('div',{style:{fontSize:13,fontWeight:600,marginTop:4}},REM_MESES[detalle.mes]+' '+detalle.anio)
+        ),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,fontSize:12,marginBottom:14}},
+          h('div',null,h('b',null,'Trabajador: '),detalle.nombre_completo),
+          h('div',null,h('b',null,'RUT: '),detalle.rut||''),
+          h('div',null,h('b',null,'Cargo: '),detalle.cargo||''),
+          h('div',null,h('b',null,'Días trabajados: '),detalle.dias_trabajados),
+          h('div',null,h('b',null,'AFP: '),detalle.afp||''),
+          h('div',null,h('b',null,'Salud: '),detalle.salud||'')
+        ),
+        // Haberes
+        h('div',{style:{background:'#ECFDF5',padding:8,fontWeight:700,fontSize:12,marginBottom:4}},'HABERES'),
+        grupos.HABER_IMP.concat(grupos.HABER_NO_IMP).map(function(d,i){return h('div',{key:i,style:{display:'flex',justifyContent:'space-between',padding:'4px 8px',fontSize:12,borderBottom:'1px dashed #E2E8F0'}},h('span',null,d.glosa),h('span',{style:{fontFamily:'monospace'}},CLP(d.monto)));}),
+        h('div',{style:{display:'flex',justifyContent:'space-between',padding:'6px 8px',fontSize:12,fontWeight:700,background:'#F8FAFC',marginTop:4}},h('span',null,'Total Haberes'),h('span',{style:{fontFamily:'monospace'}},CLP(detalle.total_haberes))),
+        // Descuentos
+        h('div',{style:{background:'#FEF2F2',padding:8,fontWeight:700,fontSize:12,marginTop:12,marginBottom:4}},'DESCUENTOS'),
+        grupos.DESC_LEGAL.concat(grupos.DESC_OTRO).map(function(d,i){return h('div',{key:i,style:{display:'flex',justifyContent:'space-between',padding:'4px 8px',fontSize:12,borderBottom:'1px dashed #E2E8F0'}},h('span',null,d.glosa),h('span',{style:{fontFamily:'monospace',color:'#DC2626'}},'-'+CLP(d.monto)));}),
+        h('div',{style:{display:'flex',justifyContent:'space-between',padding:'6px 8px',fontSize:12,fontWeight:700,background:'#F8FAFC',marginTop:4}},h('span',null,'Total Descuentos'),h('span',{style:{fontFamily:'monospace',color:'#DC2626'}},'-'+CLP(detalle.total_descuentos))),
+        // Líquido
+        h('div',{style:{background:'#1E3A2D',color:'#fff',padding:14,marginTop:14,borderRadius:4,display:'flex',justifyContent:'space-between',fontSize:18,fontWeight:700}},
+          h('span',null,'LÍQUIDO A PAGAR'),h('span',{style:{fontFamily:'monospace'}},CLP(detalle.liquido_pagar))
+        )
+      )
+    );
+  }
+  return h('div',{style:{padding:16}},
+    h('h2',{style:{fontSize:18,fontWeight:700,color:'#1E3A2D',marginBottom:12}},'Liquidaciones de Sueldo'),
+    msg&&h('div',{style:{padding:8,background:'#FEF3C7',borderRadius:4,marginBottom:10,fontSize:12}},msg),
+    h('div',{style:{marginBottom:12}},h('label',{style:{fontSize:11,fontWeight:600,color:'#475569',marginRight:8}},'Período:'),
+      h('select',{value:perId,onChange:function(e){setPerId(e.target.value);},style:Object.assign({},inpS,{minWidth:350})},
+        h('option',{value:''},'-- elegir período --'),
+        periodos.map(function(per){return h('option',{key:per.periodo_id,value:per.periodo_id},per.empresa_nombre+' — '+REM_MESES[per.mes]+' '+per.anio+' ('+per.estado+')');})
+      )
+    ),
+    perId&&h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,overflow:'hidden'}},
+      h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
+        h('thead',null,h('tr',{style:{background:'#1E3A2D',color:'#fff'}},['Trabajador','RUT','Cargo','Días','Haberes','Descuentos','Líquido','Estado',''].map(function(c){return h('th',{key:c,style:{padding:'8px 10px',textAlign:'left',fontWeight:600}},c);}))),
+        h('tbody',null,liqs.map(function(l,i){return h('tr',{key:l.liquidacion_id,style:{borderBottom:'1px solid #F1F5F9',background:i%2?'#FAFBFC':'#fff'}},
+          h('td',{style:{padding:'7px 10px'}},l.nombre_completo),
+          h('td',{style:{padding:'7px 10px',fontFamily:'monospace'}},l.rut),
+          h('td',{style:{padding:'7px 10px',fontSize:11}},l.cargo||''),
+          h('td',{style:{padding:'7px 10px',textAlign:'right'}},l.dias_trabajados),
+          h('td',{style:{padding:'7px 10px',textAlign:'right'}},CLP(l.total_haberes)),
+          h('td',{style:{padding:'7px 10px',textAlign:'right',color:'#DC2626'}},CLP(l.total_descuentos)),
+          h('td',{style:{padding:'7px 10px',textAlign:'right',fontWeight:700,color:'#065F46'}},CLP(l.liquido_pagar)),
+          h('td',{style:{padding:'7px 10px'}},l.estado),
+          h('td',{style:{padding:'7px 10px'}},h('button',{onClick:function(){ver(l.liquidacion_id);},style:{background:'#1E3A2D',color:'#fff',border:'none',padding:'4px 10px',borderRadius:4,fontSize:11,cursor:'pointer'}},'Ver'))
+        );}))
+      )
+    )
+  );
+}
+
+// ── Préstamos ────────────────────────────────────────────────────────────────
+function RemPrestamosView(p){
+  var personal=(p.m.personal||[]).filter(function(x){return x.activo;});
+  var empresas=(p.m.empresas||[]).filter(function(x){return x.activo;});
+  var[rows,setRows]=useState([]);
+  var hoy=new Date();
+  var sigMes=hoy.getMonth()+2;var sigAnio=hoy.getFullYear()+(sigMes>12?1:0);if(sigMes>12)sigMes=1;
+  var[nuevo,setNuevo]=useState({empresa_id:'',persona_id:'',fecha:hoy.toISOString().slice(0,10),monto_total:'',num_cuotas:1,glosa:'',periodo_inicio:sigAnio+'-'+String(sigMes).padStart(2,'0'),tipo:'NORMAL'});
+  var[msg,setMsg]=useState('');
+  function load(){api('/rem/prestamos','GET',null,p.tok).then(setRows).catch(function(e){setMsg('Error: '+e.message);});}
+  useEffect(load,[p.tok]);
+  function crear(){
+    if(!nuevo.empresa_id||!nuevo.persona_id||!nuevo.monto_total){setMsg('Faltan datos');return;}
+    api('/rem/prestamos','POST',nuevo,p.tok).then(function(){
+      setNuevo(Object.assign({},nuevo,{persona_id:'',monto_total:'',glosa:''}));
+      setMsg('Préstamo creado');load();
+    }).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  var inpS={padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:12};
+  return h('div',{style:{padding:16}},
+    h('h2',{style:{fontSize:18,fontWeight:700,color:'#1E3A2D',marginBottom:12}},'Préstamos a trabajadores'),
+    msg&&h('div',{style:{padding:8,background:'#FEF3C7',borderRadius:4,marginBottom:10,fontSize:12}},msg),
+    h('div',{style:{background:'#F8FAFC',border:'1px solid #CBD5E1',borderRadius:6,padding:12,marginBottom:12,display:'grid',gridTemplateColumns:'1.5fr 2fr 1fr 1.2fr 0.7fr 1.5fr auto',gap:8,alignItems:'center'}},
+      h('select',{value:nuevo.empresa_id,onChange:function(e){setNuevo(Object.assign({},nuevo,{empresa_id:e.target.value}));},style:inpS},h('option',{value:''},'Empresa...'),empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
+      h('select',{value:nuevo.persona_id,onChange:function(e){setNuevo(Object.assign({},nuevo,{persona_id:e.target.value}));},style:inpS},h('option',{value:''},'Trabajador...'),personal.map(function(per){return h('option',{key:per.persona_id,value:per.persona_id},per.nombre_completo);})),
+      h('input',{type:'date',value:nuevo.fecha,onChange:function(e){setNuevo(Object.assign({},nuevo,{fecha:e.target.value}));},style:inpS}),
+      h('input',{type:'number',placeholder:'Monto total',value:nuevo.monto_total,onChange:function(e){setNuevo(Object.assign({},nuevo,{monto_total:e.target.value}));},style:inpS}),
+      h('input',{type:'number',placeholder:'Cuotas',min:1,max:60,value:nuevo.num_cuotas,onChange:function(e){setNuevo(Object.assign({},nuevo,{num_cuotas:parseInt(e.target.value)||1}));},style:inpS}),
+      h('input',{type:'text',placeholder:'Glosa',value:nuevo.glosa,onChange:function(e){setNuevo(Object.assign({},nuevo,{glosa:e.target.value}));},style:inpS}),
+      h('button',{onClick:crear,style:{background:'#1E3A2D',color:'#fff',border:'none',padding:'7px 14px',borderRadius:5,fontWeight:600,cursor:'pointer'}},'+ Crear')
+    ),
+    h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,overflow:'hidden'}},
+      h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
+        h('thead',null,h('tr',{style:{background:'#1E3A2D',color:'#fff'}},['Trabajador','Fecha','Monto','Cuotas','Pagadas','Estado','Glosa'].map(function(c){return h('th',{key:c,style:{padding:'8px 10px',textAlign:'left',fontWeight:600}},c);}))),
+        h('tbody',null,rows.map(function(r,i){return h('tr',{key:r.prestamo_id,style:{borderBottom:'1px solid #F1F5F9',background:i%2?'#FAFBFC':'#fff'}},
+          h('td',{style:{padding:'7px 10px'}},r.nombre_completo),
+          h('td',{style:{padding:'7px 10px'}},(r.fecha||'').slice(0,10)),
+          h('td',{style:{padding:'7px 10px',textAlign:'right',fontWeight:600}},CLP(r.monto_total)),
+          h('td',{style:{padding:'7px 10px',textAlign:'center'}},r.num_cuotas),
+          h('td',{style:{padding:'7px 10px',textAlign:'center'}},r.cuotas_pagadas+'/'+r.num_cuotas),
+          h('td',{style:{padding:'7px 10px'}},r.estado),
+          h('td',{style:{padding:'7px 10px',fontSize:11,color:'#64748B'}},r.glosa||'')
+        );}))
+      )
+    )
+  );
+}
+
+// ── PreviRed (generación de archivo) ─────────────────────────────────────────
+function RemPreviRedView(p){
+  var[periodos,setPeriodos]=useState([]);
+  var[perId,setPerId]=useState('');
+  var[resultado,setResultado]=useState(null);
+  var[msg,setMsg]=useState('');
+  useEffect(function(){api('/rem/periodos','GET',null,p.tok).then(setPeriodos).catch(function(){});},[p.tok]);
+  function generar(){
+    if(!perId){setMsg('Elige un período');return;}
+    if(!confirm('¿Generar archivo PreviRed para el período seleccionado?'))return;
+    setMsg('Generando...');
+    api('/rem/periodos/'+perId+'/previred','POST',{},p.tok).then(function(r){setResultado(r);setMsg('Archivo generado');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  var inpS={padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:12};
+  return h('div',{style:{padding:16}},
+    h('h2',{style:{fontSize:18,fontWeight:700,color:'#1E3A2D',marginBottom:6}},'Archivo PreviRed'),
+    h('p',{style:{fontSize:12,color:'#64748B',marginBottom:14}},'Genera los registros del archivo de pago de cotizaciones. Asegúrate de haber calculado todas las liquidaciones del período antes.'),
+    msg&&h('div',{style:{padding:8,background:'#FEF3C7',borderRadius:4,marginBottom:10,fontSize:12}},msg),
+    h('div',{style:{display:'flex',gap:10,alignItems:'flex-end',marginBottom:14}},
+      h('div',null,h('div',{style:{fontSize:10,fontWeight:600,color:'#475569',marginBottom:2}},'Período'),
+        h('select',{value:perId,onChange:function(e){setPerId(e.target.value);},style:Object.assign({},inpS,{minWidth:350})},
+          h('option',{value:''},'-- elegir --'),
+          periodos.filter(function(x){return (x.num_liquidaciones||0)>0;}).map(function(per){return h('option',{key:per.periodo_id,value:per.periodo_id},per.empresa_nombre+' — '+REM_MESES[per.mes]+' '+per.anio);})
+        )
+      ),
+      h('button',{onClick:generar,style:{background:'#1E3A2D',color:'#fff',border:'none',padding:'7px 16px',borderRadius:5,fontWeight:600,cursor:'pointer'}},'Generar archivo')
+    ),
+    resultado&&h('div',{style:{padding:12,background:'#ECFDF5',border:'1px solid #6EE7B7',borderRadius:4,fontSize:12}},
+      'Archivo ID ',h('b',null,resultado.archivo_id),' generado con ',h('b',null,resultado.num_lineas),' líneas. ',
+      h('i',{style:{color:'#64748B'}},'La descarga del .txt físico se habilitará en la siguiente fase.')
+    )
+  );
+}
+
 
 function App(){
   var st=localStorage.getItem('lpz_token');var su=null;try{su=JSON.parse(localStorage.getItem('lpz_user')||'null');}catch{}
@@ -14133,7 +14707,7 @@ function App(){
   const[view,setView]=useState('ordenes');
   const[m,setM]=useState({bodegas:[],cats:[],subcats:[],prods:[],faenas:[],equipos:[],provs:[],tdocs:[],motivos:[],empresas:[],conds:[]});
   const[alerts,setAlerts]=useState(0);const[refresh,setRefresh]=useState(0);
-  const[grp,setGrp]=useState({oc:false,comb:false,inv:false,mant:false,man:false,sys:false,sol:false,fin:false,terr:false,rend:false,pers:false,trans:false});
+  const[grp,setGrp]=useState({oc:false,comb:false,inv:false,mant:false,man:false,sys:false,sol:false,fin:false,terr:false,rend:false,pers:false,trans:false,rem:false});
   // Mobile detection
   const[isMobile]=useState(window.innerWidth<=768);
   const[mobileMode,setMobileMode]=useState(window.innerWidth<=768);
@@ -14339,6 +14913,17 @@ function App(){
           navI('finiquitos','🧾','Cálculo de Finiquitos',true)
         ),
         h('div',{className:'sb-sep'}),
+        grpHdr('rem','REMUNERACIONES'),
+        grp.rem&&h('div',null,
+          navI('rem-parametros','📊','Parámetros Legales',true),
+          navI('rem-periodos','📅','Períodos',true),
+          navI('rem-movimientos','📝','Movimientos del Mes',true),
+          navI('rem-liquidaciones','📄','Liquidaciones',true),
+          navI('rem-prestamos','🏦','Préstamos',true),
+          navI('rem-previred','📤','PreviRed',true),
+          navI('rem-prevision','⚙️','Config. Previsional',true)
+        ),
+        h('div',{className:'sb-sep'}),
         canSee('mantenedores')&&grpHdr('man','MANTENEDORES'),
         canSee('mantenedores')&&grp.man&&h('div',null,
           navI('empresas','▸','Empresas',true),
@@ -14406,6 +14991,13 @@ function App(){
           view==='trans-tarifas'&&h(TransporteTarifas,{tok,m}),
           view==='contratos'&&h(ContratosView,{tok,m,onRefresh:onMov}),
           view==='finiquitos'&&h(FiniquitosView,{tok,m}),
+          view==='rem-parametros'&&h(RemParametrosView,{tok,m}),
+          view==='rem-periodos'&&h(RemPeriodosView,{tok,m,setView}),
+          view==='rem-movimientos'&&h(RemMovimientosView,{tok,m}),
+          view==='rem-liquidaciones'&&h(RemLiquidacionesView,{tok,m}),
+          view==='rem-prestamos'&&h(RemPrestamosView,{tok,m}),
+          view==='rem-previred'&&h(RemPreviRedView,{tok,m}),
+          view==='rem-prevision'&&h(RemPrevisionView,{tok,m}),
           view==='empresas'&&h(MasterV,{tok,onMov,titulo:'Empresa',ep:'empresas',pk:'empresa_id',Form:EmpresaForm,importKey:'empresas',blank:{rut:'',razon_social:'',giro:'',direccion:'',ciudad:'',telefono:'',email:'',logo_base64:null,firma_representante:null,timbre_empresa:null,activo:true},cols:[{lbl:'ID',k:'empresa_id',mono:true,w:50},{lbl:'RUT',k:'rut',mono:true},{lbl:'Razon Social',k:'razon_social'},{lbl:'Giro',k:'giro'},{lbl:'Ciudad',k:'ciudad'},{lbl:'Telefono',k:'telefono'}]}),
           view==='bodegas'&&h(MasterV,{tok,onMov,titulo:'Bodega',ep:'bodegas',pk:'bodega_id',Form:BodegaForm,importKey:'bodegas',blank:{codigo:'',nombre:'',ubicacion:'',responsable:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Ubicacion',k:'ubicacion'},{lbl:'Responsable',k:'responsable'}]}),
           view==='productos'&&h(MasterV,{tok,onMov,titulo:'Producto',ep:'productos',pk:'producto_id',Form:ProdForm,importKey:'productos',blank:{codigo:'',nombre:'',descripcion:'',categoria_id:'',subcategoria_id:'',unidad_medida:'UN',stock_minimo:0,stock_maximo:'',costo_referencia:0,unidad_compra:'',factor_conversion:1,activo:true},extra:{cats:m.cats,subcats:m.subcats},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Subcategoria',k:'subcategoria_nombre'},{lbl:'UM',k:'unidad_medida'},{lbl:'Stk min',k:'stock_minimo'},{lbl:'Costo ref.',render:r=>CLP(r.costo_referencia)}]}),
