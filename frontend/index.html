@@ -1086,6 +1086,84 @@ function IngresoView(p){
 }
 
 // ── SALIDA VIEW ──
+// ── Ticket de salida térmico 80mm ────────────────────────────────────────────
+function imprimirTicketSalida(mov, lineas, empresa){
+  var fmt=function(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));};
+  var fmtQty=function(n){var v=parseFloat(n)||0; return v%1===0?String(v):v.toFixed(2);};
+  var fmtD=function(d){if(!d)return ''; var s=String(d).slice(0,10); var p=s.split('-'); return p.length===3?p[2]+'-'+p[1]+'-'+p[0]:s;};
+  var clean=function(s){return String(s||'').replace(/[<>&]/g,function(c){return {'<':'&lt;','>':'&gt;','&':'&amp;'}[c];});};
+  var total=0; (lineas||[]).forEach(function(l){total+=parseFloat(l.costo_total||l.costo_unitario*l.cantidad||0);});
+  var ahora=new Date().toLocaleString('es-CL');
+  var empNombre=clean((empresa&&empresa.razon_social)||'EMPRESAS POO');
+  var empRut=(empresa&&empresa.rut)||'';
+  var empDir=clean(((empresa&&empresa.direccion)||'')+((empresa&&empresa.ciudad)?', '+empresa.ciudad:''));
+
+  var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Ticket Salida #'+mov.movimiento_id+'</title>'+
+    '<style>'+
+    '@page{size:80mm auto;margin:0}'+
+    '*{box-sizing:border-box}'+
+    'body{margin:0;padding:3mm;font-family:"Courier New",monospace;font-size:11px;color:#000;line-height:1.35;width:80mm;background:#fff}'+
+    '.c{text-align:center}.r{text-align:right}.l{text-align:left}'+
+    '.b{font-weight:bold}.sm{font-size:9px}.lg{font-size:13px}.xl{font-size:15px}'+
+    '.sep{border-top:1px dashed #000;margin:5px 0;height:0}'+
+    '.dsep{border-top:2px solid #000;margin:5px 0;height:0}'+
+    '.row{display:flex;justify-content:space-between;gap:6px}'+
+    '.linea{margin-bottom:4px;padding-bottom:3px;border-bottom:1px dotted #999}'+
+    '.linea:last-child{border-bottom:none}'+
+    '.cod{font-size:9px;color:#444}'+
+    '.firma{margin-top:24px;border-top:1px solid #000;padding-top:3px;text-align:center;font-size:9px}'+
+    '@media print{body{margin:0;padding:3mm}}'+
+    '</style></head><body>'+
+    // Header empresa
+    '<div class="c b lg">'+empNombre.toUpperCase()+'</div>'+
+    (empRut?'<div class="c sm">RUT: '+empRut+'</div>':'')+
+    (empDir?'<div class="c sm">'+empDir+'</div>':'')+
+    '<div class="sep"></div>'+
+    // Título y número
+    '<div class="c b" style="font-size:13px;letter-spacing:1px">TICKET DE SALIDA</div>'+
+    '<div class="c b xl">N° '+mov.movimiento_id+'</div>'+
+    '<div class="sep"></div>'+
+    // Datos del movimiento
+    '<div class="row"><span>Fecha:</span><span class="b">'+fmtD(mov.fecha)+'</span></div>'+
+    '<div class="row"><span>Bodega:</span><span class="b">'+clean(mov.bodega_nombre||'')+'</span></div>'+
+    (mov.faena_nombre?'<div class="row"><span>Faena:</span><span class="b">'+clean(mov.faena_nombre)+'</span></div>':'')+
+    (mov.equipo_nombre?'<div class="row"><span>Equipo:</span><span class="b">'+clean(mov.equipo_nombre)+'</span></div>':'')+
+    (mov.motivo_nombre?'<div class="row"><span>Motivo:</span><span>'+clean(mov.motivo_nombre)+'</span></div>':'')+
+    (mov.numero_ot?'<div class="row"><span>OT:</span><span class="b">'+clean(mov.numero_ot)+'</span></div>':'')+
+    // Detalle
+    '<div class="dsep"></div>'+
+    '<div class="c b">DETALLE</div>'+
+    '<div class="sep"></div>'+
+    (lineas||[]).map(function(l){
+      var costoUni=parseFloat(l.costo_unitario||0);
+      var costoTot=parseFloat(l.costo_total||costoUni*parseFloat(l.cantidad||0));
+      var um=l.unidad_medida?' '+l.unidad_medida:'';
+      return '<div class="linea">'+
+        '<div class="cod">'+clean(l.producto_codigo||'')+'</div>'+
+        '<div>'+clean(l.producto_nombre||'')+'</div>'+
+        '<div class="row"><span class="sm">'+fmtQty(l.cantidad)+um+' x '+fmt(costoUni)+'</span><span class="b">'+fmt(costoTot)+'</span></div>'+
+      '</div>';
+    }).join('')+
+    '<div class="dsep"></div>'+
+    '<div class="row b lg"><span>TOTAL:</span><span>'+fmt(total)+'</span></div>'+
+    '<div class="dsep"></div>'+
+    // Observaciones
+    (mov.observaciones?'<div class="sm"><b>Obs:</b> '+clean(mov.observaciones)+'</div><div class="sep"></div>':'')+
+    // Firmas
+    '<div class="firma">'+clean(mov.responsable_entrega||'')+'<br>Entrega</div>'+
+    '<div class="firma">'+clean(mov.responsable_recepcion||'')+'<br>Recibe</div>'+
+    // Footer
+    '<div class="sep"></div>'+
+    '<div class="c sm">Impreso: '+ahora+'</div>'+
+    '<div class="c sm">'+clean(mov.usuario||'')+'</div>'+
+    '<script>window.onload=function(){setTimeout(function(){window.print();},400);};<\/script>'+
+    '</body></html>';
+
+  var w=window.open('','_blank','width=400,height=700');
+  if(!w){alert('Permita ventanas emergentes para imprimir');return;}
+  w.document.write(html);w.document.close();w.focus();
+}
+
 function SalidaView(p){
   const bodegas=p.m&&Array.isArray(p.m.bodegas)?p.m.bodegas:[];
   const prods=p.m&&Array.isArray(p.m.prods)?p.m.prods:[];
@@ -1145,6 +1223,15 @@ function SalidaView(p){
       {lbl:'Total CPP',r:true,render:r=>CLP(r.total||0)},
       {lbl:'Estado',render:r=>h(Bg,{c:r.estado==='ACTIVO'?'g':'r'},r.estado)},
       {lbl:'',c:true,render:r=>h('div',{style:{display:'flex',gap:4}},
+        h('button',{className:'btn btn-blue btn-xs',onClick:function(){
+          var emp=(p.m&&p.m.empresas||[]).find(function(e){
+            var f=(p.m&&p.m.faenas||[]).find(function(fx){return fx.faena_id===r.faena_id;});
+            return f && e.empresa_id===f.empresa_id;
+          });
+          api('/movimientos/'+r.movimiento_id+'/detalles','GET',null,p.tok).then(function(lineas){
+            imprimirTicketSalida(r,lineas||[],emp||{});
+          }).catch(function(e){alert('Error: '+e.message);});
+        },title:'Imprimir ticket de salida'},'🖨'),
         r.estado==='ACTIVO'&&h('button',{className:'btn btn-teal btn-xs',onClick:function(){openLinkOTSalida(r);},title:'Enlazar a Orden de Trabajo'},'🔗 OT'),
         r.estado==='ACTIVO'&&h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular')
       )}
