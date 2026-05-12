@@ -11997,7 +11997,7 @@ function MobileOC(p){
     cargarOCs();
   },[p.tok]);
   function cargarOCs(){
-    api('/oc','GET',null,p.tok).then(function(r){setOcs(Array.isArray(r)?r:[]);}).catch(function(){setOcs([]);});
+    api('/ordenes-compra','GET',null,p.tok).then(function(r){setOcs(Array.isArray(r)?r:[]);}).catch(function(){setOcs([]);});
   }
 
   // ── Helpers ──
@@ -12030,25 +12030,21 @@ function MobileOC(p){
     if(!linVal.length){setMsg('Agrega al menos una línea con descripción y cantidad');setPaso(2);return;}
     setLoading(true);setMsg('');
     var payload=Object.assign({},form,{lineas:linVal});
-    api('/oc','POST',payload,p.tok).then(function(r){
+    api('/ordenes-compra','POST',payload,p.tok).then(function(r){
       setLoading(false);
-      // Cargar la OC recién creada
-      api('/oc/'+r.oc_id,'GET',null,p.tok).then(function(oc){
-        api('/oc/'+r.oc_id+'/lineas','GET',null,p.tok).then(function(lns){
-          setOcSel(oc);setLineasSel(Array.isArray(lns)?lns:[]);
-          setPaso(4);
-          cargarOCs();
-        });
-      });
+      // Cargar la OC recién creada (el GET individual ya trae las líneas)
+      api('/ordenes-compra/'+r.oc_id,'GET',null,p.tok).then(function(oc){
+        setOcSel(oc);setLineasSel(Array.isArray(oc.lineas)?oc.lineas:[]);
+        setPaso(4);
+        cargarOCs();
+      }).catch(function(e){setMsg('OC creada pero hubo un error al cargar: '+e.message);setPaso(4);cargarOCs();});
     }).catch(function(e){setLoading(false);setMsg('Error: '+e.message);});
   }
   function abrirDetalle(oc){
     setLoading(true);
-    api('/oc/'+oc.oc_id,'GET',null,p.tok).then(function(full){
-      api('/oc/'+oc.oc_id+'/lineas','GET',null,p.tok).then(function(lns){
-        setOcSel(full);setLineasSel(Array.isArray(lns)?lns:[]);setModo('detalle');setLoading(false);
-      }).catch(function(){setLoading(false);});
-    }).catch(function(){setLoading(false);});
+    api('/ordenes-compra/'+oc.oc_id,'GET',null,p.tok).then(function(full){
+      setOcSel(full);setLineasSel(Array.isArray(full.lineas)?full.lineas:[]);setModo('detalle');setLoading(false);
+    }).catch(function(e){setLoading(false);alert('Error: '+e.message);});
   }
 
   // ── Generar PDF y compartir ──
@@ -12353,7 +12349,13 @@ function MobileOC(p){
           empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
         F('Proveedor *',h('select',{value:form.proveedor_id,onChange:function(e){upd('proveedor_id',e.target.value);},style:inpStyle},
           h('option',{value:''},'Seleccionar proveedor...'),
-          proveedores.sort(function(a,b){return (a.nombre||'').localeCompare(b.nombre||'');}).map(function(pv){return h('option',{key:pv.proveedor_id,value:pv.proveedor_id},pv.nombre);}))),
+          proveedores.slice().sort(function(a,b){
+            // Favoritos primero
+            if(a.favorito&&!b.favorito)return -1;
+            if(!a.favorito&&b.favorito)return 1;
+            // Luego alfabético
+            return (a.nombre||'').localeCompare(b.nombre||'');
+          }).map(function(pv){return h('option',{key:pv.proveedor_id,value:pv.proveedor_id},(pv.favorito?'⭐ ':'')+pv.nombre);}))),
         provSel&&h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6,padding:10,fontSize:11,color:'#1E40AF',marginBottom:12}},
           h('div',null,h('strong',null,'RUT: '),provSel.rut||'—'),
           provSel.giro&&h('div',null,h('strong',null,'Giro: '),provSel.giro)),
