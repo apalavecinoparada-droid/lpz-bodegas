@@ -11993,7 +11993,7 @@ function MobileOC(p){
   useEffect(function(){
     api('/proveedores','GET',null,p.tok).then(function(r){setProveedores((Array.isArray(r)?r:[]).filter(function(x){return x.activo;}));}).catch(function(){});
     api('/productos','GET',null,p.tok).then(function(r){setProductos((Array.isArray(r)?r:[]).filter(function(x){return x.activo;}));}).catch(function(){});
-    api('/oc-condiciones','GET',null,p.tok).then(function(r){setCondiciones((Array.isArray(r)?r:[]).filter(function(x){return x.activo;}));}).catch(function(){});
+    api('/condiciones-pago','GET',null,p.tok).then(function(r){setCondiciones((Array.isArray(r)?r:[]).filter(function(x){return x.activo!==false;}));}).catch(function(){});
     cargarOCs();
   },[p.tok]);
   function cargarOCs(){
@@ -12068,7 +12068,7 @@ function MobileOC(p){
     if(emp){
       doc.text('RUT: '+(emp.rut||'—'),M,17);
       if(emp.giro)doc.text('Giro: '+emp.giro,M,21);
-      if(emp.direccion)doc.text('Dir: '+emp.direccion+(emp.comuna?', '+emp.comuna:''),M,25);
+      if(emp.direccion)doc.text('Dir: '+emp.direccion,M,25);
     }
     // Caja OC arriba derecha
     doc.setFillColor(255,255,255);doc.rect(W-58,5,52,20,'F');
@@ -12084,11 +12084,11 @@ function MobileOC(p){
     doc.setTextColor(0,0,0);doc.setFont('helvetica','bold');doc.setFontSize(9);
     doc.text('PROVEEDOR',M+2,y+5);
     doc.setFont('helvetica','normal');doc.setFontSize(9);
-    doc.text(prov?prov.razon_social:'—',M+2,y+10);
+    doc.text(prov?prov.nombre:'—',M+2,y+10);
     doc.setFontSize(8);
     if(prov){
       doc.text('RUT: '+(prov.rut||'—')+'  ·  Giro: '+(prov.giro||'—'),M+2,y+14);
-      if(prov.direccion)doc.text('Dir: '+(prov.direccion||'')+(prov.comuna?', '+prov.comuna:''),M+2,y+18);
+      if(prov.direccion)doc.text('Dir: '+prov.direccion,M+2,y+18);
     }
     doc.setFont('helvetica','bold');doc.text('CONDICIONES',W/2+10,y+5);
     doc.setFont('helvetica','normal');doc.setFontSize(8);
@@ -12194,7 +12194,7 @@ function MobileOC(p){
     var texto=
       '*Orden de Compra '+ocSel.numero_oc+'*\n'+
       '_'+(emp?emp.razon_social:'')+'_\n\n'+
-      '*Proveedor:* '+(prov?prov.razon_social:'—')+'\n'+
+      '*Proveedor:* '+(prov?prov.nombre:'—')+'\n'+
       '*Fecha:* '+(ocSel.fecha_emision?(ocSel.fecha_emision+'').slice(0,10).split('-').reverse().join('/'):'—')+'\n'+
       '*Total:* $'+Number(ocSel.total||0).toLocaleString('es-CL')+'\n\n'+
       'Detalle:\n'+
@@ -12213,7 +12213,7 @@ function MobileOC(p){
   if(modo==='lista'){
     var ocsFilt=buscar?ocs.filter(function(oc){
       var q=buscar.toLowerCase();
-      return (oc.numero_oc||'').toLowerCase().indexOf(q)>=0||(oc.proveedor_razon_social||'').toLowerCase().indexOf(q)>=0;
+      return (oc.numero_oc||'').toLowerCase().indexOf(q)>=0||(oc.proveedor_nombre||'').toLowerCase().indexOf(q)>=0;
     }):ocs;
     var estadoColors={pendiente:{b:'#FEF3C7',c:'#92400E',l:'Pendiente'},recibida_parcial:{b:'#DBEAFE',c:'#1E40AF',l:'Parcial'},recibida:{b:'#DCFCE7',c:'#166534',l:'Recibida'},cerrada:{b:'#E0E7FF',c:'#3730A3',l:'Cerrada'},anulada:{b:'#FEE2E2',c:'#991B1B',l:'Anulada'}};
     return h('div',{className:'mob-wrap',style:{background:'#F8FAFC',minHeight:'100vh',paddingBottom:80}},
@@ -12232,7 +12232,7 @@ function MobileOC(p){
             h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:8,marginBottom:4}},
               h('div',{style:{flex:1,minWidth:0}},
                 h('div',{style:{fontWeight:700,fontSize:14,color:'#1E3A2D'}},oc.numero_oc),
-                h('div',{style:{fontSize:12,color:'#475569',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},oc.proveedor_razon_social||'Sin proveedor')
+                h('div',{style:{fontSize:12,color:'#475569',marginTop:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},oc.proveedor_nombre||'Sin proveedor')
               ),
               h('span',{style:{padding:'3px 8px',background:ec.b,color:ec.c,borderRadius:10,fontSize:10,fontWeight:700,whiteSpace:'nowrap'}},ec.l)
             ),
@@ -12261,7 +12261,7 @@ function MobileOC(p){
             h('div',{style:{fontSize:12,color:'#1E3A2D',marginTop:4}},emp?emp.razon_social:'—')
           ),
           h('div',{style:{fontSize:12,lineHeight:1.7}},
-            h('div',null,h('strong',null,'Proveedor: '),prov?prov.razon_social:'—'),
+            h('div',null,h('strong',null,'Proveedor: '),prov?prov.nombre:'—'),
             prov&&h('div',{style:{color:'#64748B',fontSize:11}},'RUT: '+(prov.rut||'—')),
             h('div',null,h('strong',null,'Fecha: '),fmtD(ocSel.fecha_emision)),
             ocSel.solicitante&&h('div',null,h('strong',null,'Solicitante: '),ocSel.solicitante),
@@ -12353,7 +12353,7 @@ function MobileOC(p){
           empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
         F('Proveedor *',h('select',{value:form.proveedor_id,onChange:function(e){upd('proveedor_id',e.target.value);},style:inpStyle},
           h('option',{value:''},'Seleccionar proveedor...'),
-          proveedores.sort(function(a,b){return (a.razon_social||'').localeCompare(b.razon_social||'');}).map(function(pv){return h('option',{key:pv.proveedor_id,value:pv.proveedor_id},pv.razon_social);}))),
+          proveedores.sort(function(a,b){return (a.nombre||'').localeCompare(b.nombre||'');}).map(function(pv){return h('option',{key:pv.proveedor_id,value:pv.proveedor_id},pv.nombre);}))),
         provSel&&h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6,padding:10,fontSize:11,color:'#1E40AF',marginBottom:12}},
           h('div',null,h('strong',null,'RUT: '),provSel.rut||'—'),
           provSel.giro&&h('div',null,h('strong',null,'Giro: '),provSel.giro)),
@@ -12405,7 +12405,7 @@ function MobileOC(p){
         h('div',{style:{background:'#fff',borderRadius:8,padding:12,marginBottom:8,border:'1px solid #E2E8F0'}},
           h('div',{style:{fontSize:11,color:'#64748B',fontWeight:600,marginBottom:6}},'EMPRESA Y PROVEEDOR'),
           h('div',{style:{fontSize:13,marginBottom:3}},h('strong',null,'Empresa: '),empSel?empSel.razon_social:'—'),
-          h('div',{style:{fontSize:13,marginBottom:3}},h('strong',null,'Proveedor: '),provSel?provSel.razon_social:'—'),
+          h('div',{style:{fontSize:13,marginBottom:3}},h('strong',null,'Proveedor: '),provSel?provSel.nombre:'—'),
           h('div',{style:{fontSize:13}},h('strong',null,'Fecha: '),fmtD(form.fecha_emision))
         ),
         h('div',{style:{background:'#fff',borderRadius:8,padding:12,marginBottom:8,border:'1px solid #E2E8F0'}},
