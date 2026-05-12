@@ -6762,6 +6762,1714 @@ app.get('/api/dte-recibidos/:id/ocs-candidatas', auth, async(req,res)=>{
 
 
 
+// ════════════════════════════════════════════════════════════════════════════
+// MÓDULO REMUNERACIONES — Empresas Poo
+// ════════════════════════════════════════════════════════════════════════════
+// Este archivo se integra a server.js siguiendo las convenciones existentes:
+//   - INT SERIAL para PKs (no BIGSERIAL)
+//   - Nombres en español (creado_en, modificado_en)
+//   - Tablas en plural con prefijo "rem_"
+//   - Patrón ALTER TABLE ADD COLUMN IF NOT EXISTS para migraciones aditivas
+//   - Helper q = pool.query.bind(pool)
+//   - Middleware auth para JWT
+//
+// NO modifica las tablas existentes de Empresas Poo:
+//   - personal: solo ADD COLUMN IF NOT EXISTS (no renombra ni quita nada)
+//   - contratos, contrato_funciones, contrato_anexos: intactas
+//   - finiquitos, cartas_termino: intactas
+//   - vacaciones_registros, feriados_chile: intactas
+//
+// Integración en server.js:
+//   1) Pegar este bloque completo después de setupFiniquitos (línea ~6280)
+//   2) Agregar en la sección de init (línea ~795):
+//      try{ await setupRemuneraciones(pool.query.bind(pool)); }catch(e){console.log('[WARN] rem tables:',e.message);}
+//   3) Las rutas se montan automáticamente al cargar el archivo
+//
+// ════════════════════════════════════════════════════════════════════════════
+
+async function setupRemuneraciones(q){
+
+  // ── 1. Catálogos previsionales (códigos oficiales PreviRed) ──────────────
+  await q(`CREATE TABLE IF NOT EXISTS rem_afp (
+    afp_id SERIAL PRIMARY KEY,
+    codigo_previred CHAR(2) NOT NULL UNIQUE,
+    nombre VARCHAR(40) NOT NULL,
+    cotiza_pct NUMERIC(5,2) NOT NULL DEFAULT 10.00,
+    comision_pct NUMERIC(5,2) NOT NULL DEFAULT 0,
+    sis_pct NUMERIC(5,4) NOT NULL DEFAULT 1.88,
+    activo BOOLEAN NOT NULL DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW(),
+    modificado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_isapre (
+    isapre_id SERIAL PRIMARY KEY,
+    codigo_previred CHAR(2) NOT NULL UNIQUE,
+    nombre VARCHAR(40) NOT NULL,
+    es_fonasa BOOLEAN NOT NULL DEFAULT false,
+    activo BOOLEAN NOT NULL DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_ccaf (
+    ccaf_id SERIAL PRIMARY KEY,
+    codigo_previred CHAR(2) NOT NULL UNIQUE,
+    nombre VARCHAR(40) NOT NULL,
+    activo BOOLEAN NOT NULL DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_mutual (
+    mutual_id SERIAL PRIMARY KEY,
+    codigo_previred CHAR(2) NOT NULL UNIQUE,
+    nombre VARCHAR(40) NOT NULL,
+    cotiza_base_pct NUMERIC(5,4) NOT NULL DEFAULT 0.9500,
+    activo BOOLEAN NOT NULL DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_apv_institucion (
+    apv_inst_id SERIAL PRIMARY KEY,
+    codigo_previred CHAR(3) NOT NULL UNIQUE,
+    nombre VARCHAR(80) NOT NULL,
+    tipo VARCHAR(20) NOT NULL,
+    activo BOOLEAN NOT NULL DEFAULT true
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_tramo_familiar (
+    tramo_id SMALLINT PRIMARY KEY,
+    codigo CHAR(1) NOT NULL UNIQUE,
+    nombre VARCHAR(40) NOT NULL
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_movimiento_personal (
+    mov_pers_id SMALLINT PRIMARY KEY,
+    codigo_previred SMALLINT NOT NULL UNIQUE,
+    nombre VARCHAR(80) NOT NULL
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_tipo_trabajador (
+    tipo_trab_id SMALLINT PRIMARY KEY,
+    nombre VARCHAR(60) NOT NULL
+  )`);
+
+  // ── 2. Parámetros legales mensuales (UF, UTM, IMM, topes, tramos) ────────
+  await q(`CREATE TABLE IF NOT EXISTS rem_parametro_mes (
+    parametro_id SERIAL PRIMARY KEY,
+    anio SMALLINT NOT NULL,
+    mes SMALLINT NOT NULL CHECK (mes BETWEEN 1 AND 12),
+    uf NUMERIC(10,2) NOT NULL,
+    utm NUMERIC(10,0) NOT NULL,
+    sueldo_minimo NUMERIC(10,0) NOT NULL,
+    sueldo_minimo_18a65 NUMERIC(10,0) NOT NULL,
+    tope_imponible_uf NUMERIC(8,2) NOT NULL DEFAULT 87.80,
+    tope_imponible_salud_uf NUMERIC(8,2) NOT NULL DEFAULT 87.80,
+    tope_seg_cesantia_uf NUMERIC(8,2) NOT NULL DEFAULT 131.90,
+    seg_cesantia_trab_pct NUMERIC(5,4) NOT NULL DEFAULT 0.6000,
+    seg_cesantia_empl_indef_pct NUMERIC(5,4) NOT NULL DEFAULT 2.4000,
+    seg_cesantia_empl_plazo_pct NUMERIC(5,4) NOT NULL DEFAULT 3.0000,
+    ley_sanna_pct NUMERIC(5,4) NOT NULL DEFAULT 0.0300,
+    sub_trab_joven_renta_tope NUMERIC(10,0),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    modificado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(anio, mes)
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_iusc_tramo (
+    iusc_tramo_id SERIAL PRIMARY KEY,
+    anio SMALLINT NOT NULL,
+    mes SMALLINT NOT NULL CHECK (mes BETWEEN 1 AND 12),
+    tramo SMALLINT NOT NULL CHECK (tramo BETWEEN 1 AND 8),
+    desde_utm NUMERIC(8,2) NOT NULL,
+    hasta_utm NUMERIC(10,2) NOT NULL,
+    factor NUMERIC(5,4) NOT NULL,
+    rebaja_utm NUMERIC(8,4) NOT NULL,
+    UNIQUE(anio, mes, tramo)
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_asig_familiar_param (
+    asig_fam_id SERIAL PRIMARY KEY,
+    anio SMALLINT NOT NULL,
+    mes SMALLINT NOT NULL CHECK (mes BETWEEN 1 AND 12),
+    tramo_id SMALLINT NOT NULL REFERENCES rem_tramo_familiar(tramo_id),
+    renta_promedio_hasta NUMERIC(10,0) NOT NULL,
+    monto_por_carga NUMERIC(10,0) NOT NULL,
+    UNIQUE(anio, mes, tramo_id)
+  )`);
+
+  // ── 3. Tipos de movimiento (haberes/descuentos por empresa) ──────────────
+  await q(`CREATE TABLE IF NOT EXISTS rem_tipo_movimiento (
+    tipo_mov_id SERIAL PRIMARY KEY,
+    empresa_id INT REFERENCES empresas(empresa_id) ON DELETE CASCADE,
+    codigo VARCHAR(6) NOT NULL,
+    nombre VARCHAR(60) NOT NULL,
+    tipo VARCHAR(20) NOT NULL CHECK (tipo IN ('HABER_IMPONIBLE','HABER_NO_IMPONIBLE','DESCUENTO_LEGAL','DESCUENTO_OTRO','INFORMATIVO')),
+    es_hrs_extras BOOLEAN NOT NULL DEFAULT false,
+    grava_gratif BOOLEAN NOT NULL DEFAULT false,
+    es_proporcional BOOLEAN NOT NULL DEFAULT false,
+    semana_corrida BOOLEAN NOT NULL DEFAULT false,
+    en_uf BOOLEAN NOT NULL DEFAULT false,
+    porcentaje BOOLEAN NOT NULL DEFAULT false,
+    codigo_lre VARCHAR(6),
+    cuenta_contable VARCHAR(20),
+    activo BOOLEAN NOT NULL DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(empresa_id, codigo)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_rem_tipo_mov_emp ON rem_tipo_movimiento(empresa_id)`);
+
+  // ── 4. Ampliar tabla personal con campos previsionales nuevos ────────────
+  // (siguiendo decisión: agregar a 'personal' existente)
+  const personalCols = [
+    ['afp_id',                 'INT REFERENCES rem_afp(afp_id)'],
+    ['isapre_id',              'INT REFERENCES rem_isapre(isapre_id)'],
+    ['ccaf_id',                'INT REFERENCES rem_ccaf(ccaf_id)'],
+    ['mutual_id',              'INT REFERENCES rem_mutual(mutual_id)'],
+    ['tipo_trabajador_id',     'SMALLINT REFERENCES rem_tipo_trabajador(tipo_trab_id) DEFAULT 0'],
+    ['tramo_familiar_id',      'SMALLINT REFERENCES rem_tramo_familiar(tramo_id) DEFAULT 4'],
+    ['cargas_simples',         'SMALLINT NOT NULL DEFAULT 0'],
+    ['cargas_maternales',      'SMALLINT NOT NULL DEFAULT 0'],
+    ['cargas_invalidos',       'SMALLINT NOT NULL DEFAULT 0'],
+    ['salud_pactada_pesos',    'NUMERIC(10,0)'],
+    ['salud_pactada_uf',       'NUMERIC(8,2)'],
+    ['salud_pct',              'NUMERIC(5,2) DEFAULT 7.00'],
+    ['grat_modalidad',         "VARCHAR(30) DEFAULT 'SIN_GRATIFICACION'"],
+    ['grat_porcentaje',        'NUMERIC(5,2)'],
+    ['cuenta2_uf',             'NUMERIC(8,2) DEFAULT 0'],
+    // APV régimen A
+    ['apv_a_inst_id',          'INT REFERENCES rem_apv_institucion(apv_inst_id)'],
+    ['apv_a_num_contrato',     'VARCHAR(20)'],
+    ['apv_a_monto_uf',         'NUMERIC(8,2) DEFAULT 0'],
+    ['apv_a_monto_pesos',      'NUMERIC(10,0) DEFAULT 0'],
+    ['apv_a_porcent_renta',    'NUMERIC(5,2) DEFAULT 0'],
+    ['apv_a_tributa',          "CHAR(1) CHECK (apv_a_tributa IS NULL OR apv_a_tributa IN ('A','B'))"],
+    // APV régimen B
+    ['apv_b_inst_id',          'INT REFERENCES rem_apv_institucion(apv_inst_id)'],
+    ['apv_b_num_contrato',     'VARCHAR(20)'],
+    ['apv_b_aporte_trab',      'NUMERIC(10,0) DEFAULT 0'],
+    ['apv_b_aporte_empl',      'NUMERIC(10,0) DEFAULT 0'],
+    ['apv_b_porcent_renta',    'NUMERIC(5,2) DEFAULT 0'],
+    ['apv_b_tributa',          "CHAR(1) CHECK (apv_b_tributa IS NULL OR apv_b_tributa IN ('A','B'))"],
+    // Especiales
+    ['trabajo_pesado_pct',     'NUMERIC(5,2) DEFAULT 0'],
+    ['sub_trab_joven',         'BOOLEAN NOT NULL DEFAULT false'],
+    ['casa_particular',        'BOOLEAN NOT NULL DEFAULT false'],
+    ['empresarial',            'BOOLEAN NOT NULL DEFAULT false'],
+    ['teletrabajo',            'BOOLEAN NOT NULL DEFAULT false'],
+    ['bono_zona_pct',          'NUMERIC(5,2) DEFAULT 0'],
+    // Seguro adicional MCC (de tabla personalref del original)
+    ['mcc_capital_convenido',  'NUMERIC(12,4)'],
+    ['mcc_numero_poliza',      'VARCHAR(20)'],
+    ['mcc_tipo',               "CHAR(1) CHECK (mcc_tipo IS NULL OR mcc_tipo IN ('I','C'))"],
+    ['mcc_numero_fun',         'VARCHAR(20)'],
+    ['pensionado_cotiza_sis',  'BOOLEAN DEFAULT false'],
+    // Banca para depósito
+    ['banco_nombre',           'VARCHAR(60)'],
+    ['banco_tipo_cuenta',      "VARCHAR(20) DEFAULT 'corriente'"],
+    ['banco_numero_cuenta',    'VARCHAR(30)'],
+    // Configuración base remuneración
+    ['tipo_sueldo',            "CHAR(1) CHECK (tipo_sueldo IS NULL OR tipo_sueldo IN ('M','D','H')) DEFAULT 'M'"],
+    ['valor_hora',             'NUMERIC(10,0) DEFAULT 0'],
+    ['horas_semanales_jornada','NUMERIC(4,1) DEFAULT 44.0'],
+    ['dias_semana_jornada',    'SMALLINT DEFAULT 5'],
+    // Sincronización con campo afp VARCHAR existente
+    ['sueldo_uf',              'NUMERIC(8,2) DEFAULT 0']
+  ];
+  for(const [col,def] of personalCols){
+    try{ await q(`ALTER TABLE personal ADD COLUMN IF NOT EXISTS ${col} ${def}`); }catch(e){}
+  }
+
+  // ── 5. Período mensual de liquidación ────────────────────────────────────
+  await q(`CREATE TABLE IF NOT EXISTS rem_periodo (
+    periodo_id SERIAL PRIMARY KEY,
+    empresa_id INT NOT NULL REFERENCES empresas(empresa_id),
+    anio SMALLINT NOT NULL,
+    mes SMALLINT NOT NULL CHECK (mes BETWEEN 1 AND 12),
+    estado VARCHAR(20) NOT NULL DEFAULT 'ABIERTO' CHECK (estado IN ('ABIERTO','CALCULADO','CERRADO','PAGADO')),
+    uf_pago NUMERIC(10,2),
+    fecha_cierre DATE,
+    fecha_pago DATE,
+    cerrado_por INT REFERENCES usuarios(usuario_id),
+    observacion TEXT,
+    creado_en TIMESTAMP DEFAULT NOW(),
+    modificado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(empresa_id, anio, mes)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_rem_periodo_emp ON rem_periodo(empresa_id, anio, mes)`);
+
+  // ── 6. Movimientos del mes ───────────────────────────────────────────────
+  await q(`CREATE TABLE IF NOT EXISTS rem_movimiento (
+    movimiento_id SERIAL PRIMARY KEY,
+    periodo_id INT NOT NULL REFERENCES rem_periodo(periodo_id) ON DELETE CASCADE,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    tipo_mov_id INT NOT NULL REFERENCES rem_tipo_movimiento(tipo_mov_id),
+    fecha DATE NOT NULL,
+    monto NUMERIC(12,0) NOT NULL DEFAULT 0,
+    porcentaje NUMERIC(5,2),
+    glosa VARCHAR(80),
+    cuenta_contable VARCHAR(20),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    creado_por INT REFERENCES usuarios(usuario_id)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_rem_mov_periodo ON rem_movimiento(periodo_id)`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_rem_mov_persona ON rem_movimiento(persona_id)`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_horas_extra (
+    hrs_extra_id SERIAL PRIMARY KEY,
+    periodo_id INT NOT NULL REFERENCES rem_periodo(periodo_id) ON DELETE CASCADE,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    fecha DATE,
+    horas_50 NUMERIC(5,2) NOT NULL DEFAULT 0,
+    horas_75 NUMERIC(5,2) NOT NULL DEFAULT 0,
+    horas_100 NUMERIC(5,2) NOT NULL DEFAULT 0,
+    monto_calculado NUMERIC(10,0)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_rem_he_periodo ON rem_horas_extra(periodo_id)`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_inasistencia (
+    inasistencia_id SERIAL PRIMARY KEY,
+    periodo_id INT NOT NULL REFERENCES rem_periodo(periodo_id) ON DELETE CASCADE,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    fecha_desde DATE NOT NULL,
+    fecha_hasta DATE,
+    dias NUMERIC(5,2) NOT NULL DEFAULT 0,
+    minutos_atraso NUMERIC(7,2) NOT NULL DEFAULT 0,
+    tipo CHAR(1) CHECK (tipo IS NULL OR tipo IN ('A','I','L','P')),
+    codigo_motivo VARCHAR(4),
+    motivo_glosa VARCHAR(80)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_rem_ina_periodo ON rem_inasistencia(periodo_id)`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_anticipo (
+    anticipo_id SERIAL PRIMARY KEY,
+    periodo_id INT NOT NULL REFERENCES rem_periodo(periodo_id) ON DELETE CASCADE,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    fecha DATE NOT NULL,
+    monto NUMERIC(10,0) NOT NULL,
+    observacion VARCHAR(100)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_rem_ant_periodo ON rem_anticipo(periodo_id)`);
+
+  // ── 7. Préstamos con cuotas ─────────────────────────────────────────────
+  await q(`CREATE TABLE IF NOT EXISTS rem_prestamo (
+    prestamo_id SERIAL PRIMARY KEY,
+    empresa_id INT NOT NULL REFERENCES empresas(empresa_id),
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    fecha DATE NOT NULL,
+    monto_total NUMERIC(10,0) NOT NULL,
+    num_cuotas SMALLINT NOT NULL,
+    glosa VARCHAR(80),
+    tipo VARCHAR(20) NOT NULL DEFAULT 'NORMAL' CHECK (tipo IN ('NORMAL','CAJA','LEASING','REPACTACION')),
+    periodo_inicio CHAR(7),
+    cuotas_pagadas SMALLINT NOT NULL DEFAULT 0,
+    estado VARCHAR(20) NOT NULL DEFAULT 'VIGENTE' CHECK (estado IN ('VIGENTE','PAGADO','CONDONADO','CANCELADO')),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    creado_por INT REFERENCES usuarios(usuario_id)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_rem_prestamo_persona ON rem_prestamo(persona_id, estado)`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_prestamo_cuota (
+    cuota_id SERIAL PRIMARY KEY,
+    prestamo_id INT NOT NULL REFERENCES rem_prestamo(prestamo_id) ON DELETE CASCADE,
+    num_cuota SMALLINT NOT NULL,
+    periodo CHAR(7) NOT NULL,
+    monto NUMERIC(10,0) NOT NULL,
+    pagado BOOLEAN NOT NULL DEFAULT false,
+    periodo_id INT REFERENCES rem_periodo(periodo_id),
+    UNIQUE(prestamo_id, num_cuota)
+  )`);
+
+  // ── 8. Liquidación calculada (cabecera + detalle) ────────────────────────
+  await q(`CREATE TABLE IF NOT EXISTS rem_liquidacion (
+    liquidacion_id SERIAL PRIMARY KEY,
+    periodo_id INT NOT NULL REFERENCES rem_periodo(periodo_id) ON DELETE RESTRICT,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    dias_trabajados NUMERIC(5,2) NOT NULL DEFAULT 30,
+    dias_inasistencia NUMERIC(5,2) NOT NULL DEFAULT 0,
+    -- Bases
+    base_imponible_afp NUMERIC(12,0) NOT NULL DEFAULT 0,
+    base_imponible_salud NUMERIC(12,0) NOT NULL DEFAULT 0,
+    base_imponible_afc NUMERIC(12,0) NOT NULL DEFAULT 0,
+    base_imponible_iusc NUMERIC(12,0) NOT NULL DEFAULT 0,
+    -- Totales
+    total_haberes_imp NUMERIC(12,0) NOT NULL DEFAULT 0,
+    total_haberes_no_imp NUMERIC(12,0) NOT NULL DEFAULT 0,
+    total_haberes NUMERIC(12,0) NOT NULL DEFAULT 0,
+    -- Descuentos trabajador
+    desc_afp NUMERIC(10,0) NOT NULL DEFAULT 0,
+    desc_afp_comision NUMERIC(10,0) NOT NULL DEFAULT 0,
+    desc_salud NUMERIC(10,0) NOT NULL DEFAULT 0,
+    desc_salud_adicional NUMERIC(10,0) NOT NULL DEFAULT 0,
+    desc_afc_trab NUMERIC(10,0) NOT NULL DEFAULT 0,
+    desc_iusc NUMERIC(10,0) NOT NULL DEFAULT 0,
+    desc_apv_trab NUMERIC(10,0) NOT NULL DEFAULT 0,
+    desc_trabajo_pesado_trab NUMERIC(10,0) NOT NULL DEFAULT 0,
+    asignacion_familiar NUMERIC(10,0) NOT NULL DEFAULT 0,
+    total_desc_legales NUMERIC(10,0) NOT NULL DEFAULT 0,
+    total_desc_otros NUMERIC(10,0) NOT NULL DEFAULT 0,
+    total_descuentos NUMERIC(10,0) NOT NULL DEFAULT 0,
+    -- Aportes empleador (informativos)
+    apo_sis NUMERIC(10,0) NOT NULL DEFAULT 0,
+    apo_afc_empl NUMERIC(10,0) NOT NULL DEFAULT 0,
+    apo_mutual NUMERIC(10,0) NOT NULL DEFAULT 0,
+    apo_sanna NUMERIC(10,0) NOT NULL DEFAULT 0,
+    apo_trabajo_pesado_empl NUMERIC(10,0) NOT NULL DEFAULT 0,
+    apo_apv_empl NUMERIC(10,0) NOT NULL DEFAULT 0,
+    apo_ccaf NUMERIC(10,0) NOT NULL DEFAULT 0,
+    total_aportes_empleador NUMERIC(10,0) NOT NULL DEFAULT 0,
+    -- Resultado
+    liquido_pagar NUMERIC(12,0) NOT NULL DEFAULT 0,
+    estado VARCHAR(20) NOT NULL DEFAULT 'CALCULADA' CHECK (estado IN ('CALCULADA','APROBADA','PAGADA','ANULADA')),
+    forma_pago CHAR(1),
+    fecha_pago DATE,
+    impreso BOOLEAN NOT NULL DEFAULT false,
+    creado_en TIMESTAMP DEFAULT NOW(),
+    modificado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(periodo_id, persona_id)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_rem_liq_periodo ON rem_liquidacion(periodo_id)`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_rem_liq_persona ON rem_liquidacion(persona_id)`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_liquidacion_detalle (
+    detalle_id SERIAL PRIMARY KEY,
+    liquidacion_id INT NOT NULL REFERENCES rem_liquidacion(liquidacion_id) ON DELETE CASCADE,
+    tipo_mov_id INT REFERENCES rem_tipo_movimiento(tipo_mov_id),
+    seccion VARCHAR(20) NOT NULL CHECK (seccion IN ('HABER_IMP','HABER_NO_IMP','DESC_LEGAL','DESC_OTRO','INFO')),
+    glosa VARCHAR(80) NOT NULL,
+    monto NUMERIC(12,0) NOT NULL,
+    orden SMALLINT NOT NULL DEFAULT 0
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_rem_liq_det ON rem_liquidacion_detalle(liquidacion_id)`);
+
+  // ── 9. Resumen anual + reliquidación ─────────────────────────────────────
+  await q(`CREATE TABLE IF NOT EXISTS rem_resumen_anual (
+    resumen_id SERIAL PRIMARY KEY,
+    empresa_id INT NOT NULL REFERENCES empresas(empresa_id),
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    anio SMALLINT NOT NULL,
+    mes SMALLINT NOT NULL CHECK (mes BETWEEN 1 AND 12),
+    sueldo_imponible NUMERIC(12,0) NOT NULL DEFAULT 0,
+    descuento_prev NUMERIC(10,0) NOT NULL DEFAULT 0,
+    impuesto_unico NUMERIC(10,0) NOT NULL DEFAULT 0,
+    renta_exenta NUMERIC(12,0) NOT NULL DEFAULT 0,
+    renta_no_gravada NUMERIC(12,0) NOT NULL DEFAULT 0,
+    mayor_retencion NUMERIC(10,0) NOT NULL DEFAULT 0,
+    mes_completo BOOLEAN NOT NULL DEFAULT true,
+    vigente BOOLEAN NOT NULL DEFAULT true,
+    UNIQUE(empresa_id, persona_id, anio, mes)
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_reliquidacion (
+    reliq_id SERIAL PRIMARY KEY,
+    liquidacion_id INT NOT NULL REFERENCES rem_liquidacion(liquidacion_id),
+    periodo_origen CHAR(7) NOT NULL,
+    monto NUMERIC(12,0) NOT NULL,
+    glosa VARCHAR(120),
+    impuesto_recalc NUMERIC(10,0)
+  )`);
+
+  // ── 10. PreviRed (archivo plano de pago de cotizaciones) ─────────────────
+  await q(`CREATE TABLE IF NOT EXISTS rem_previred_archivo (
+    archivo_id SERIAL PRIMARY KEY,
+    periodo_id INT NOT NULL REFERENCES rem_periodo(periodo_id),
+    fecha_generado TIMESTAMP DEFAULT NOW(),
+    num_lineas INT NOT NULL DEFAULT 0,
+    archivo_url TEXT,
+    enviado BOOLEAN DEFAULT false,
+    generado_por INT REFERENCES usuarios(usuario_id)
+  )`);
+
+  await q(`CREATE TABLE IF NOT EXISTS rem_previred_linea (
+    linea_id SERIAL PRIMARY KEY,
+    archivo_id INT NOT NULL REFERENCES rem_previred_archivo(archivo_id) ON DELETE CASCADE,
+    num_linea INT NOT NULL,
+    persona_id INT NOT NULL REFERENCES personal(persona_id),
+    rut_numero INT NOT NULL,
+    rut_dv CHAR(1) NOT NULL,
+    ape_pat VARCHAR(30),
+    ape_mat VARCHAR(30),
+    nombres VARCHAR(30),
+    sexo CHAR(1),
+    tipo_pago SMALLINT,
+    periodo_desde CHAR(6),
+    periodo_hasta CHAR(6),
+    imponible NUMERIC(10,0),
+    tipo_trabajador SMALLINT,
+    dias_trab SMALLINT,
+    cod_movi SMALLINT,
+    fec_desde_mov CHAR(10),
+    fec_hasta_mov CHAR(10),
+    tramo_familiar CHAR(1),
+    num_cargas_simples SMALLINT DEFAULT 0,
+    num_cargas_maternas SMALLINT DEFAULT 0,
+    num_cargas_invalidos SMALLINT DEFAULT 0,
+    asig_fam NUMERIC(8,0) DEFAULT 0,
+    nom_afp SMALLINT,
+    cotiza_afp NUMERIC(10,0),
+    cod_inst_salud SMALLINT,
+    moneda_plan SMALLINT,
+    cotiza_isapre NUMERIC(10,0),
+    codigo_ccaf SMALLINT,
+    cod_mutual SMALLINT,
+    cotiza_mutual NUMERIC(10,0),
+    cod_inst_apv SMALLINT,
+    cotiza_apv NUMERIC(10,0),
+    imponible_seg_cesa NUMERIC(10,0),
+    aporte_trab_afc NUMERIC(10,0),
+    aporte_empl_afc NUMERIC(10,0),
+    sub_trab_jov CHAR(1),
+    impo_afp NUMERIC(10,0),
+    aporte_sis NUMERIC(10,0)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_rem_prev_linea_arch ON rem_previred_linea(archivo_id)`);
+
+  // ── 11. Comunicaciones masivas DT (Aviso Inicio/Cese, Cartas) ────────────
+  await q(`CREATE TABLE IF NOT EXISTS rem_comunicacion_dt (
+    comunicacion_id SERIAL PRIMARY KEY,
+    empresa_id INT NOT NULL REFERENCES empresas(empresa_id),
+    tipo VARCHAR(30) NOT NULL CHECK (tipo IN ('AVISO_INICIO','AVISO_CESE','AVISO_INICIO_CESE','CARTA_DESPIDO','CERTIFICADO_DT','F30','F30_1')),
+    persona_id INT REFERENCES personal(persona_id),
+    fecha DATE NOT NULL,
+    archivo_url TEXT,
+    folio_dt VARCHAR(40),
+    enviado BOOLEAN NOT NULL DEFAULT false,
+    fecha_envio TIMESTAMP,
+    observacion TEXT,
+    creado_en TIMESTAMP DEFAULT NOW(),
+    creado_por INT REFERENCES usuarios(usuario_id)
+  )`);
+  await q(`CREATE INDEX IF NOT EXISTS idx_rem_com_dt_emp ON rem_comunicacion_dt(empresa_id, tipo)`);
+
+  // ════════════════════════════════════════════════════════════════════════
+  // SEEDS — Catálogos PreviRed (códigos oficiales oct 2024)
+  // ════════════════════════════════════════════════════════════════════════
+
+  // Tipo trabajador
+  try{
+    const c=await q('SELECT COUNT(*) FROM rem_tipo_trabajador');
+    if(parseInt(c.rows[0].count)===0){
+      const tipos=[[0,'Activo (No Pensionado)'],[1,'Pensionado y Cotiza'],[2,'Pensionado y No Cotiza'],[3,'Nunca Pensionado']];
+      for(const [id,nom] of tipos){await q('INSERT INTO rem_tipo_trabajador(tipo_trab_id,nombre) VALUES($1,$2) ON CONFLICT DO NOTHING',[id,nom]);}
+    }
+  }catch(e){console.log('[WARN] seed tipo_trabajador:',e.message);}
+
+  // Tramo familiar
+  try{
+    const c=await q('SELECT COUNT(*) FROM rem_tramo_familiar');
+    if(parseInt(c.rows[0].count)===0){
+      const tramos=[[1,'A','Primer Tramo'],[2,'B','Segundo Tramo'],[3,'C','Tercer Tramo'],[4,'D','Sin Derecho']];
+      for(const [id,cod,nom] of tramos){await q('INSERT INTO rem_tramo_familiar(tramo_id,codigo,nombre) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[id,cod,nom]);}
+    }
+  }catch(e){console.log('[WARN] seed tramo_familiar:',e.message);}
+
+  // AFP
+  try{
+    const c=await q('SELECT COUNT(*) FROM rem_afp');
+    if(parseInt(c.rows[0].count)===0){
+      const afps=[['03','Cuprum'],['05','Habitat'],['08','Provida'],['29','Planvital'],['33','Capital'],['34','Modelo'],['35','Uno']];
+      for(const [cod,nom] of afps){await q('INSERT INTO rem_afp(codigo_previred,nombre) VALUES($1,$2) ON CONFLICT DO NOTHING',[cod,nom]);}
+      console.log('  [OK] AFPs cargadas ('+afps.length+')');
+    }
+  }catch(e){console.log('[WARN] seed afp:',e.message);}
+
+  // Isapres + Fonasa
+  try{
+    const c=await q('SELECT COUNT(*) FROM rem_isapre');
+    if(parseInt(c.rows[0].count)===0){
+      const isapres=[
+        ['01','Banmédica',false],['02','Consalud',false],['03','VidaTres',false],['04','Colmena',false],
+        ['05','Cruz Blanca',false],['07','Fonasa',true],['09','Chuquicamata',false],['10','Nueva Masvida',false],
+        ['11','Inst. Salud Prev. FUSAT',false],['12','Isapre Bco. Estado',false],['20','Río Blanco',false],
+        ['21','San Lorenzo',false],['25','Cruz del Norte',false],['28','Esencial',false]
+      ];
+      for(const [cod,nom,fonasa] of isapres){await q('INSERT INTO rem_isapre(codigo_previred,nombre,es_fonasa) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[cod,nom,fonasa]);}
+      console.log('  [OK] Isapres cargadas ('+isapres.length+')');
+    }
+  }catch(e){console.log('[WARN] seed isapre:',e.message);}
+
+  // CCAF
+  try{
+    const c=await q('SELECT COUNT(*) FROM rem_ccaf');
+    if(parseInt(c.rows[0].count)===0){
+      const ccafs=[['01','Los Andes'],['02','La Araucana'],['03','Los Héroes'],['04','18 de Septiembre'],['05','Gabriela Mistral']];
+      for(const [cod,nom] of ccafs){await q('INSERT INTO rem_ccaf(codigo_previred,nombre) VALUES($1,$2) ON CONFLICT DO NOTHING',[cod,nom]);}
+    }
+  }catch(e){console.log('[WARN] seed ccaf:',e.message);}
+
+  // Mutuales
+  try{
+    const c=await q('SELECT COUNT(*) FROM rem_mutual');
+    if(parseInt(c.rows[0].count)===0){
+      const muts=[['01','ACHS'],['02','Mutual CChC'],['03','IST']];
+      for(const [cod,nom] of muts){await q('INSERT INTO rem_mutual(codigo_previred,nombre) VALUES($1,$2) ON CONFLICT DO NOTHING',[cod,nom]);}
+    }
+  }catch(e){console.log('[WARN] seed mutual:',e.message);}
+
+  // Movimientos de personal PreviRed
+  try{
+    const c=await q('SELECT COUNT(*) FROM rem_movimiento_personal');
+    if(parseInt(c.rows[0].count)===0){
+      const movs=[
+        [0,0,'Sin Movimiento en el mes'],[1,1,'Contrato a plazo indefinido'],[2,2,'Retiro'],[3,3,'Subsidios'],
+        [4,4,'Permiso sin goce de sueldo'],[5,5,'Incorp. en el lugar de trabajo'],[6,6,'Accidente del trabajo'],
+        [7,7,'Contrato a plazo fijo'],[8,8,'Cambio plazo fijo a indefinido'],[9,11,'Ausentismo'],
+        [10,12,'Reliquidacion, Premio o Bono Posterior al Finiquito'],[11,13,'Suspension por Autoridad'],
+        [12,14,'Suspension por Pacto'],[13,15,'Reduccion de Jornada']
+      ];
+      for(const [id,cod,nom] of movs){await q('INSERT INTO rem_movimiento_personal(mov_pers_id,codigo_previred,nombre) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[id,cod,nom]);}
+    }
+  }catch(e){console.log('[WARN] seed mov_pers:',e.message);}
+
+  // Instituciones APV (subset principal, las más usadas)
+  try{
+    const c=await q('SELECT COUNT(*) FROM rem_apv_institucion');
+    if(parseInt(c.rows[0].count)===0){
+      const apvs=[
+        ['003','Cuprum','AFP'],['005','Habitat','AFP'],['008','Provida','AFP'],['029','Planvital','AFP'],['033','Capital','AFP'],['034','Modelo','AFP'],
+        ['101','AGF ALLIANZ Chile Cía. Seg. Vida S.A.','CIA_SEGUROS'],['106','Bice Vida','CIA_SEGUROS'],['107','Chilena Consolidada','CIA_SEGUROS'],['111','Consorcio Nacional','CIA_SEGUROS'],['117','Euroamérica','CIA_SEGUROS'],['127','Mutual del Ejercito y Aviación','CIA_SEGUROS'],['129','Principal','CIA_SEGUROS'],['131','Security Previsión','CIA_SEGUROS'],
+        ['205','BICE Adm. Fondos Mutuos','FONDOS_MUTUOS'],['208','Celfin Capital','FONDOS_MUTUOS'],['213','Larrain Vial','FONDOS_MUTUOS'],['215','Santander ASSET Management','FONDOS_MUTUOS'],['218','Security','FONDOS_MUTUOS'],['222','Banchile Fondos Mutuos','FONDOS_MUTUOS'],['225','ITAU Adm. Fondos','FONDOS_MUTUOS']
+      ];
+      for(const [cod,nom,tip] of apvs){await q('INSERT INTO rem_apv_institucion(codigo_previred,nombre,tipo) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[cod,nom,tip]);}
+    }
+  }catch(e){console.log('[WARN] seed apv:',e.message);}
+
+  // Tipos de movimiento base nacional (empresa_id NULL = todas)
+  try{
+    const c=await q("SELECT COUNT(*) FROM rem_tipo_movimiento WHERE empresa_id IS NULL");
+    if(parseInt(c.rows[0].count)===0){
+      const tipos=[
+        // Haberes imponibles
+        ['001','Sueldo Base','HABER_IMPONIBLE',false,true,true,false,'2101'],
+        ['002','Gratificación Legal Art. 50','HABER_IMPONIBLE',false,false,true,false,'2101'],
+        ['003','Bono Responsabilidad','HABER_IMPONIBLE',false,true,false,false,'2101'],
+        ['004','Bono Producción','HABER_IMPONIBLE',false,true,false,false,'2101'],
+        ['005','Horas Extra 50%','HABER_IMPONIBLE',true,false,false,false,'2102'],
+        ['006','Horas Extra 75%','HABER_IMPONIBLE',true,false,false,false,'2102'],
+        ['007','Horas Extra 100%','HABER_IMPONIBLE',true,false,false,false,'2102'],
+        ['008','Semana Corrida','HABER_IMPONIBLE',false,false,false,true,'2101'],
+        ['009','Comisiones','HABER_IMPONIBLE',false,true,false,false,'2101'],
+        ['010','Aguinaldo','HABER_IMPONIBLE',false,true,false,false,'2103'],
+        // Haberes no imponibles
+        ['101','Asignación Colación','HABER_NO_IMPONIBLE',false,false,false,false,'2110'],
+        ['102','Asignación Movilización','HABER_NO_IMPONIBLE',false,false,false,false,'2111'],
+        ['103','Viáticos','HABER_NO_IMPONIBLE',false,false,false,false,'2112'],
+        ['104','Asignación Familiar','HABER_NO_IMPONIBLE',false,false,false,false,'2113'],
+        ['105','Asignación Pérdida Caja','HABER_NO_IMPONIBLE',false,false,false,false,'2114'],
+        ['106','Asignación Desgaste Herramientas','HABER_NO_IMPONIBLE',false,false,false,false,'2115'],
+        // Descuentos legales (los calcula el motor, pero existen para mostrar)
+        ['201','Cotización AFP','DESCUENTO_LEGAL',false,false,false,false,'2201'],
+        ['202','Cotización Salud','DESCUENTO_LEGAL',false,false,false,false,'2202'],
+        ['203','Seguro Cesantía','DESCUENTO_LEGAL',false,false,false,false,'2203'],
+        ['204','Impuesto Único 2ª Categoría','DESCUENTO_LEGAL',false,false,false,false,'2204'],
+        ['205','APV','DESCUENTO_LEGAL',false,false,false,false,'2205'],
+        // Descuentos otros
+        ['301','Anticipo de Sueldo','DESCUENTO_OTRO',false,false,false,false,'2301'],
+        ['302','Préstamo Empresa','DESCUENTO_OTRO',false,false,false,false,'2302'],
+        ['303','Crédito Social CCAF','DESCUENTO_OTRO',false,false,false,false,'2303'],
+        ['304','Descuento Judicial','DESCUENTO_OTRO',false,false,false,false,'2304'],
+        ['305','Crédito Solidario CAE','DESCUENTO_OTRO',false,false,false,false,'2305'],
+        ['306','Otros Descuentos','DESCUENTO_OTRO',false,false,false,false,'2399']
+      ];
+      for(const [cod,nom,tip,he,gg,prop,sc,cta] of tipos){
+        await q(`INSERT INTO rem_tipo_movimiento(empresa_id,codigo,nombre,tipo,es_hrs_extras,grava_gratif,es_proporcional,semana_corrida,cuenta_contable)
+                 VALUES(NULL,$1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,[cod,nom,tip,he,gg,prop,sc,cta]);
+      }
+      console.log('  [OK] Tipos de movimiento base cargados ('+tipos.length+')');
+    }
+  }catch(e){console.log('[WARN] seed tipos_mov:',e.message);}
+
+  // Tramos IUSC 2025 (vigentes; el motor lee este registro para el cálculo)
+  // NOTA: los valores deben actualizarse cada año al publicar SII.
+  // Aquí se cargan los del 2025 como semilla mínima; para 2026 se agregan por UI.
+  try{
+    const c=await q('SELECT COUNT(*) FROM rem_iusc_tramo WHERE anio=2025');
+    if(parseInt(c.rows[0].count)===0){
+      // Tramos IUSC 2025 (consultar SII para confirmar al usar en producción)
+      const tramos2025=[
+        [1,    0.00,   13.50, 0.0000,  0.0000],
+        [2,   13.50,   30.00, 0.0400,  0.5400],
+        [3,   30.00,   50.00, 0.0800,  1.7400],
+        [4,   50.00,   70.00, 0.1350,  4.4900],
+        [5,   70.00,   90.00, 0.2300, 11.1400],
+        [6,   90.00,  120.00, 0.3040, 17.8000],
+        [7,  120.00,  310.00, 0.3500, 23.3200],
+        [8,  310.00, 9999.99, 0.4000, 38.8200]
+      ];
+      // Cargar para los 12 meses de 2025
+      for(let m=1; m<=12; m++){
+        for(const [tr,d,h,f,r] of tramos2025){
+          await q(`INSERT INTO rem_iusc_tramo(anio,mes,tramo,desde_utm,hasta_utm,factor,rebaja_utm)
+                   VALUES(2025,$1,$2,$3,$4,$5,$6) ON CONFLICT DO NOTHING`,[m,tr,d,h,f,r]);
+        }
+      }
+      console.log('  [OK] Tramos IUSC 2025 cargados');
+    }
+  }catch(e){console.log('[WARN] seed iusc:',e.message);}
+
+  console.log('[OK] Módulo Remuneraciones inicializado');
+}
+
+// Inicializar al cargar
+setupRemuneraciones(pool.query.bind(pool)).catch(function(e){console.log('[WARN] remuneraciones:',e.message);});
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// MOTOR DE CÁLCULO DE LIQUIDACIÓN
+// ════════════════════════════════════════════════════════════════════════════
+// Función pura: dado un período y una persona, calcula y persiste la
+// liquidación completa (cabecera + detalle línea por línea).
+//
+// Pasos:
+//   1) Leer parámetros legales del mes (UF, UTM, IMM, topes, IUSC, asig.fam)
+//   2) Leer trabajador (personal + extensiones previsionales + catálogos)
+//   3) Calcular días trabajados (30 - inasistencias)
+//   4) Sumar haberes imponibles y no imponibles del personal + movimientos
+//   5) Gratificación legal según modalidad
+//   6) Horas extra (valor hora * recargo)
+//   7) Asignación familiar
+//   8) Bases imponibles (con topes UF)
+//   9) Descuentos legales: AFP, Salud, AFC, IUSC, trabajo pesado, APV
+//  10) Aportes empleador: SIS, AFC empleador, Mutual, SANNA, APV B, CCAF
+//  11) Descuentos otros: anticipos, cuotas de préstamos del mes, judiciales
+//  12) Líquido a pagar
+//  13) Persistir en rem_liquidacion + rem_liquidacion_detalle
+// ════════════════════════════════════════════════════════════════════════════
+
+async function calcularLiquidacion(periodoId, personaId, q){
+  // 1) Período + parámetros
+  const periodoR = await q('SELECT * FROM rem_periodo WHERE periodo_id=$1',[periodoId]);
+  if(!periodoR.rows.length) throw new Error('Período no existe');
+  const periodo = periodoR.rows[0];
+  if(periodo.estado === 'CERRADO' || periodo.estado === 'PAGADO') throw new Error('Período cerrado, no se puede recalcular');
+
+  const paramR = await q('SELECT * FROM rem_parametro_mes WHERE anio=$1 AND mes=$2',[periodo.anio, periodo.mes]);
+  if(!paramR.rows.length) throw new Error('Faltan parámetros del mes ' + periodo.anio + '-' + periodo.mes + ' (cargar en rem_parametro_mes)');
+  const P = paramR.rows[0];
+  const UF = parseFloat(P.uf), UTM = parseFloat(P.utm);
+
+  // 2) Trabajador con joins a catálogos
+  const persR = await q(`
+    SELECT p.*,
+           afp.cotiza_pct AS afp_cotiza, afp.comision_pct AS afp_comision, afp.sis_pct AS afp_sis,
+           afp.codigo_previred AS afp_codigo_previred, afp.nombre AS afp_nombre,
+           isa.es_fonasa AS isapre_es_fonasa, isa.codigo_previred AS isapre_codigo_previred,
+           mut.cotiza_base_pct AS mutual_base_pct
+    FROM personal p
+    LEFT JOIN rem_afp afp ON p.afp_id = afp.afp_id
+    LEFT JOIN rem_isapre isa ON p.isapre_id = isa.isapre_id
+    LEFT JOIN rem_mutual mut ON p.mutual_id = mut.mutual_id
+    WHERE p.persona_id = $1`, [personaId]);
+  if(!persR.rows.length) throw new Error('Trabajador no existe');
+  const p = persR.rows[0];
+
+  // Helper para parsear números
+  const num = v => v === null || v === undefined ? 0 : parseFloat(v) || 0;
+  const round = v => Math.round(v);
+
+  // 3) Días trabajados
+  const inasR = await q('SELECT COALESCE(SUM(dias),0) AS dias FROM rem_inasistencia WHERE periodo_id=$1 AND persona_id=$2',[periodoId, personaId]);
+  const diasInasist = num(inasR.rows[0].dias);
+  const diasTrabajados = Math.max(0, 30 - diasInasist);
+
+  // Helper: aplicar proporcionalidad
+  const propor = (monto) => monto * diasTrabajados / 30;
+
+  // 4) Haberes desde personal (proporcionalizados los que aplican)
+  const sueldoBase = propor(num(p.sueldo_base));
+  const bonoResp = propor(num(p.bono_responsabilidad));
+  const bonoProdFijo = propor(num(p.bono_produccion_fijo));
+  const asigColacion = propor(num(p.asig_colacion));
+  const asigMovi = propor(num(p.asig_movilizacion));
+  const asigViatico = num(p.asig_viatico); // no proporcional típicamente
+
+  // 5) Movimientos del mes (haberes y descuentos manuales)
+  const movsR = await q(`
+    SELECT m.movimiento_id, m.monto, m.glosa, m.tipo_mov_id,
+           tm.codigo, tm.nombre, tm.tipo, tm.grava_gratif, tm.es_proporcional, tm.es_hrs_extras
+    FROM rem_movimiento m
+    JOIN rem_tipo_movimiento tm ON m.tipo_mov_id = tm.tipo_mov_id
+    WHERE m.periodo_id=$1 AND m.persona_id=$2
+    ORDER BY tm.codigo`, [periodoId, personaId]);
+  const movs = movsR.rows;
+
+  let movsHaberImp = 0, movsHaberNoImp = 0, movsDescOtros = 0;
+  const lineasMovs = [];
+  for(const m of movs){
+    const monto = m.es_proporcional ? propor(num(m.monto)) : num(m.monto);
+    const montoR = round(monto);
+    if(m.tipo === 'HABER_IMPONIBLE'){ movsHaberImp += montoR; lineasMovs.push({seccion:'HABER_IMP', glosa:m.glosa||m.nombre, monto:montoR, tipo_mov_id:m.tipo_mov_id}); }
+    else if(m.tipo === 'HABER_NO_IMPONIBLE'){ movsHaberNoImp += montoR; lineasMovs.push({seccion:'HABER_NO_IMP', glosa:m.glosa||m.nombre, monto:montoR, tipo_mov_id:m.tipo_mov_id}); }
+    else if(m.tipo === 'DESCUENTO_OTRO'){ movsDescOtros += montoR; lineasMovs.push({seccion:'DESC_OTRO', glosa:m.glosa||m.nombre, monto:montoR, tipo_mov_id:m.tipo_mov_id}); }
+  }
+
+  // 6) Horas extra
+  const heR = await q('SELECT * FROM rem_horas_extra WHERE periodo_id=$1 AND persona_id=$2',[periodoId, personaId]);
+  let montoHE = 0;
+  if(heR.rows.length){
+    const horasJornada = num(p.horas_semanales_jornada) || 44;
+    const valorHoraBase = num(p.sueldo_base) / (horasJornada * 4.33);
+    for(const h of heR.rows){
+      const m50 = num(h.horas_50) * valorHoraBase * 1.5;
+      const m75 = num(h.horas_75) * valorHoraBase * 1.75;
+      const m100 = num(h.horas_100) * valorHoraBase * 2;
+      montoHE += m50 + m75 + m100;
+    }
+    montoHE = round(montoHE);
+  }
+
+  // 7) Gratificación legal Art. 50
+  let gratificacion = 0;
+  if(p.grat_modalidad === 'ART_50_TOPE_LEGAL'){
+    const baseGrat = sueldoBase + bonoResp + bonoProdFijo + montoHE + movsHaberImp;
+    const topeMensual = (4.75 * num(P.sueldo_minimo)) / 12;
+    gratificacion = Math.min(round(baseGrat * 0.25), round(topeMensual));
+  } else if(p.grat_modalidad === 'ART_50_SIN_TOPE'){
+    const baseGrat = sueldoBase + bonoResp + bonoProdFijo + montoHE + movsHaberImp;
+    gratificacion = round(baseGrat * 0.25);
+  } else if(p.grat_modalidad === 'CONVENCIONAL'){
+    gratificacion = round(num(p.sueldo_base) * num(p.grat_porcentaje) / 100);
+  }
+
+  // 8) Asignación familiar (es haber no imponible, suma al líquido)
+  let asignacionFamiliar = 0;
+  if(p.tramo_familiar_id && p.tramo_familiar_id < 4){
+    const afpR = await q('SELECT monto_por_carga FROM rem_asig_familiar_param WHERE anio=$1 AND mes=$2 AND tramo_id=$3',[periodo.anio, periodo.mes, p.tramo_familiar_id]);
+    if(afpR.rows.length){
+      const m = num(afpR.rows[0].monto_por_carga);
+      asignacionFamiliar = round(num(p.cargas_simples) * m + num(p.cargas_maternales) * m * 2 + num(p.cargas_invalidos) * m * 2);
+    }
+  }
+
+  // 9) Totales y bases imponibles
+  const totalHaberesImp = round(sueldoBase + bonoResp + bonoProdFijo + montoHE + gratificacion + movsHaberImp);
+  const totalHaberesNoImp = round(asigColacion + asigMovi + asigViatico + asignacionFamiliar + movsHaberNoImp);
+  const totalHaberes = totalHaberesImp + totalHaberesNoImp;
+
+  const topeAFP = Math.round(num(P.tope_imponible_uf) * UF);
+  const topeSalud = Math.round(num(P.tope_imponible_salud_uf) * UF);
+  const topeAFC = Math.round(num(P.tope_seg_cesantia_uf) * UF);
+
+  const baseAFP = Math.min(totalHaberesImp, topeAFP);
+  const baseSalud = Math.min(totalHaberesImp, topeSalud);
+  const baseAFC = Math.min(totalHaberesImp, topeAFC);
+
+  // 10) Descuentos legales trabajador
+  // AFP: solo si no es pensionado-no-cotiza (tipo_trab = 2)
+  const cotizaAFP = p.tipo_trabajador_id !== 2 && p.afp_id;
+  const descAFP = cotizaAFP ? round(baseAFP * num(p.afp_cotiza) / 100) : 0;
+  const descAFPComision = cotizaAFP ? round(baseAFP * num(p.afp_comision) / 100) : 0;
+
+  // Salud
+  let descSalud = round(baseSalud * num(p.salud_pct || 7) / 100);
+  let descSaludAdicional = 0;
+  let descSaludPactada = 0;
+  if(num(p.salud_pactada_uf) > 0){
+    descSaludPactada = round(num(p.salud_pactada_uf) * UF);
+  } else if(num(p.salud_pactada_pesos) > 0){
+    descSaludPactada = round(num(p.salud_pactada_pesos));
+  }
+  if(descSaludPactada > descSalud){
+    descSaludAdicional = descSaludPactada - descSalud;
+  }
+
+  // AFC: depende de tipo de contrato del personal
+  let descAFCTrab = 0;
+  const tipoContrato = (p.tipo_contrato || '').toLowerCase();
+  if(tipoContrato.includes('indefinido')){
+    descAFCTrab = round(baseAFC * num(P.seg_cesantia_trab_pct) / 100);
+  }
+
+  // Trabajo pesado
+  const descTrabPesado = round(baseAFP * num(p.trabajo_pesado_pct) / 100);
+
+  // APV trabajador (en pesos del mes)
+  let descAPVA = 0, descAPVB = 0;
+  if(num(p.apv_a_monto_pesos) > 0) descAPVA += round(num(p.apv_a_monto_pesos));
+  if(num(p.apv_a_monto_uf) > 0) descAPVA += round(num(p.apv_a_monto_uf) * UF);
+  if(num(p.apv_b_aporte_trab) > 0) descAPVB += round(num(p.apv_b_aporte_trab));
+  const descAPVTrab = descAPVA + descAPVB;
+
+  // IUSC
+  // La rebaja imponible para IUSC es solo el APV tributa = B
+  const apvRebajaIUSC = ((p.apv_a_tributa === 'B') ? descAPVA : 0) + ((p.apv_b_tributa === 'B') ? descAPVB : 0);
+  const baseIUSC = Math.max(0, totalHaberesImp - descAFP - descAFPComision - descSalud - descSaludAdicional - descAFCTrab - apvRebajaIUSC);
+  const baseIUSC_UTM = baseIUSC / UTM;
+  let descIUSC = 0;
+  if(baseIUSC_UTM > 13.5){
+    const trR = await q(`SELECT * FROM rem_iusc_tramo
+                          WHERE anio=$1 AND mes=$2 AND $3 BETWEEN desde_utm AND hasta_utm
+                          LIMIT 1`,[periodo.anio, periodo.mes, baseIUSC_UTM]);
+    if(trR.rows.length){
+      const t = trR.rows[0];
+      descIUSC = Math.max(0, round(baseIUSC * num(t.factor) - num(t.rebaja_utm) * UTM));
+    }
+  }
+
+  const totalDescLegales = descAFP + descAFPComision + descSalud + descSaludAdicional + descAFCTrab + descIUSC + descAPVTrab + descTrabPesado;
+
+  // 11) Descuentos otros: anticipos + cuotas de préstamos vigentes
+  const antR = await q('SELECT COALESCE(SUM(monto),0) AS t FROM rem_anticipo WHERE periodo_id=$1 AND persona_id=$2',[periodoId, personaId]);
+  const totalAnticipos = round(num(antR.rows[0].t));
+
+  // Cuota préstamos del mes
+  const periodoStr = String(periodo.anio) + '-' + String(periodo.mes).padStart(2,'0');
+  const cuotR = await q(`
+    SELECT c.cuota_id, c.monto, p.glosa
+    FROM rem_prestamo_cuota c
+    JOIN rem_prestamo p ON c.prestamo_id = p.prestamo_id
+    WHERE p.persona_id=$1 AND c.periodo=$2 AND c.pagado=false AND p.estado='VIGENTE'`,
+    [personaId, periodoStr]);
+  let totalCuotasPrestamo = 0;
+  for(const c of cuotR.rows){ totalCuotasPrestamo += round(num(c.monto)); }
+
+  const totalDescOtros = totalAnticipos + totalCuotasPrestamo + movsDescOtros;
+  const totalDescuentos = totalDescLegales + totalDescOtros;
+
+  // 12) Aportes empleador (informativos, no descuentan al trabajador)
+  const apoSIS = round(baseAFP * num(p.afp_sis || 1.88) / 100);
+  let apoAFCEmpl = 0;
+  if(tipoContrato.includes('indefinido')){
+    apoAFCEmpl = round(baseAFC * num(P.seg_cesantia_empl_indef_pct) / 100);
+  } else if(tipoContrato.includes('plazo') || tipoContrato.includes('obra')){
+    apoAFCEmpl = round(baseAFC * num(P.seg_cesantia_empl_plazo_pct) / 100);
+  }
+  const apoMutual = round(baseAFP * num(p.mutual_base_pct || 0.95) / 100);
+  const apoSANNA = round(baseAFP * num(P.ley_sanna_pct) / 100);
+  const apoTrabPesadoEmpl = round(baseAFP * num(p.trabajo_pesado_pct) / 100); // mismo % empleador aporta
+  const apoAPVEmpl = num(p.apv_b_aporte_empl) > 0 ? round(num(p.apv_b_aporte_empl)) : 0;
+  // CCAF: si cotiza por CCAF (no es FONASA puro) y la empresa adhiere: 0.6% imponible
+  let apoCCAF = 0;
+  if(p.ccaf_id && p.isapre_es_fonasa){
+    apoCCAF = round(baseAFP * 0.6 / 100);
+  }
+  const totalAportesEmpl = apoSIS + apoAFCEmpl + apoMutual + apoSANNA + apoTrabPesadoEmpl + apoAPVEmpl + apoCCAF;
+
+  // 13) Líquido a pagar
+  const liquidoPagar = totalHaberes - totalDescuentos;
+
+  // ── Persistencia (transacción) ──
+  // Borra liquidación previa de este período-persona y reescribe
+  await q('DELETE FROM rem_liquidacion WHERE periodo_id=$1 AND persona_id=$2',[periodoId, personaId]);
+  const liqR = await q(`INSERT INTO rem_liquidacion(
+      periodo_id, persona_id, dias_trabajados, dias_inasistencia,
+      base_imponible_afp, base_imponible_salud, base_imponible_afc, base_imponible_iusc,
+      total_haberes_imp, total_haberes_no_imp, total_haberes,
+      desc_afp, desc_afp_comision, desc_salud, desc_salud_adicional, desc_afc_trab,
+      desc_iusc, desc_apv_trab, desc_trabajo_pesado_trab, asignacion_familiar,
+      total_desc_legales, total_desc_otros, total_descuentos,
+      apo_sis, apo_afc_empl, apo_mutual, apo_sanna, apo_trabajo_pesado_empl, apo_apv_empl, apo_ccaf,
+      total_aportes_empleador, liquido_pagar, estado
+    ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,'CALCULADA')
+    RETURNING liquidacion_id`,
+    [periodoId, personaId, diasTrabajados, diasInasist,
+     baseAFP, baseSalud, baseAFC, baseIUSC,
+     totalHaberesImp, totalHaberesNoImp, totalHaberes,
+     descAFP, descAFPComision, descSalud, descSaludAdicional, descAFCTrab,
+     descIUSC, descAPVTrab, descTrabPesado, asignacionFamiliar,
+     totalDescLegales, totalDescOtros, totalDescuentos,
+     apoSIS, apoAFCEmpl, apoMutual, apoSANNA, apoTrabPesadoEmpl, apoAPVEmpl, apoCCAF,
+     totalAportesEmpl, liquidoPagar]);
+  const liquidacionId = liqR.rows[0].liquidacion_id;
+
+  // Detalle línea por línea (lo que se imprime en la liquidación)
+  const detalle = [];
+  if(sueldoBase > 0) detalle.push(['HABER_IMP','Sueldo Base', round(sueldoBase), 1]);
+  if(bonoResp > 0) detalle.push(['HABER_IMP','Bono Responsabilidad', round(bonoResp), 2]);
+  if(bonoProdFijo > 0) detalle.push(['HABER_IMP','Bono Producción', round(bonoProdFijo), 3]);
+  if(gratificacion > 0) detalle.push(['HABER_IMP','Gratificación Legal', gratificacion, 4]);
+  if(montoHE > 0) detalle.push(['HABER_IMP','Horas Extra', montoHE, 5]);
+  for(const m of lineasMovs.filter(x=>x.seccion==='HABER_IMP')){
+    detalle.push([m.seccion, m.glosa, m.monto, 10]);
+  }
+  if(asigColacion > 0) detalle.push(['HABER_NO_IMP','Asignación Colación', round(asigColacion), 20]);
+  if(asigMovi > 0) detalle.push(['HABER_NO_IMP','Asignación Movilización', round(asigMovi), 21]);
+  if(asigViatico > 0) detalle.push(['HABER_NO_IMP','Viáticos', round(asigViatico), 22]);
+  if(asignacionFamiliar > 0) detalle.push(['HABER_NO_IMP','Asignación Familiar', asignacionFamiliar, 23]);
+  for(const m of lineasMovs.filter(x=>x.seccion==='HABER_NO_IMP')){
+    detalle.push([m.seccion, m.glosa, m.monto, 25]);
+  }
+  if(descAFP > 0) detalle.push(['DESC_LEGAL','Cotización AFP ' + (p.afp_nombre||''), descAFP, 30]);
+  if(descAFPComision > 0) detalle.push(['DESC_LEGAL','Comisión AFP', descAFPComision, 31]);
+  if(descSalud > 0) detalle.push(['DESC_LEGAL','Cotización Salud 7%', descSalud, 32]);
+  if(descSaludAdicional > 0) detalle.push(['DESC_LEGAL','Salud Adicional Pactada', descSaludAdicional, 33]);
+  if(descAFCTrab > 0) detalle.push(['DESC_LEGAL','Seguro Cesantía', descAFCTrab, 34]);
+  if(descTrabPesado > 0) detalle.push(['DESC_LEGAL','Cotización Trabajo Pesado', descTrabPesado, 35]);
+  if(descAPVTrab > 0) detalle.push(['DESC_LEGAL','APV', descAPVTrab, 36]);
+  if(descIUSC > 0) detalle.push(['DESC_LEGAL','Impuesto Único', descIUSC, 37]);
+  if(totalAnticipos > 0) detalle.push(['DESC_OTRO','Anticipos', totalAnticipos, 40]);
+  if(totalCuotasPrestamo > 0){
+    for(const c of cuotR.rows){
+      detalle.push(['DESC_OTRO', c.glosa || 'Cuota Préstamo', round(num(c.monto)), 41]);
+    }
+  }
+  for(const m of lineasMovs.filter(x=>x.seccion==='DESC_OTRO')){
+    detalle.push([m.seccion, m.glosa, m.monto, 45]);
+  }
+
+  for(const [seccion, glosa, monto, orden] of detalle){
+    await q(`INSERT INTO rem_liquidacion_detalle(liquidacion_id, seccion, glosa, monto, orden) VALUES($1,$2,$3,$4,$5)`,
+      [liquidacionId, seccion, glosa, monto, orden]);
+  }
+
+  return {
+    liquidacion_id: liquidacionId,
+    dias_trabajados: diasTrabajados,
+    total_haberes: totalHaberes,
+    total_descuentos: totalDescuentos,
+    liquido_pagar: liquidoPagar
+  };
+}
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// RUTAS API
+// ════════════════════════════════════════════════════════════════════════════
+
+// ── Catálogos previsionales (solo lectura para usuarios; admin puede editar) ──
+app.get('/api/rem/afp', auth, async(req,res)=>{
+  try{ res.json((await pool.query('SELECT * FROM rem_afp WHERE activo=true ORDER BY nombre')).rows); }
+  catch(e){ res.status(500).json({error:e.message}); }
+});
+app.put('/api/rem/afp/:id', auth, async(req,res)=>{
+  try{
+    const {cotiza_pct, comision_pct, sis_pct} = req.body;
+    const r = await pool.query(
+      'UPDATE rem_afp SET cotiza_pct=$1, comision_pct=$2, sis_pct=$3, modificado_en=NOW() WHERE afp_id=$4 RETURNING *',
+      [cotiza_pct, comision_pct, sis_pct, req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){ res.status(400).json({error:e.message}); }
+});
+app.get('/api/rem/isapre', auth, async(req,res)=>{
+  try{ res.json((await pool.query('SELECT * FROM rem_isapre WHERE activo=true ORDER BY nombre')).rows); }
+  catch(e){ res.status(500).json({error:e.message}); }
+});
+app.get('/api/rem/ccaf', auth, async(req,res)=>{
+  try{ res.json((await pool.query('SELECT * FROM rem_ccaf WHERE activo=true ORDER BY nombre')).rows); }
+  catch(e){ res.status(500).json({error:e.message}); }
+});
+app.get('/api/rem/mutual', auth, async(req,res)=>{
+  try{ res.json((await pool.query('SELECT * FROM rem_mutual WHERE activo=true ORDER BY nombre')).rows); }
+  catch(e){ res.status(500).json({error:e.message}); }
+});
+app.get('/api/rem/apv-instituciones', auth, async(req,res)=>{
+  try{ res.json((await pool.query('SELECT * FROM rem_apv_institucion WHERE activo=true ORDER BY tipo, nombre')).rows); }
+  catch(e){ res.status(500).json({error:e.message}); }
+});
+app.get('/api/rem/tramos-familiares', auth, async(req,res)=>{
+  try{ res.json((await pool.query('SELECT * FROM rem_tramo_familiar ORDER BY tramo_id')).rows); }
+  catch(e){ res.status(500).json({error:e.message}); }
+});
+
+// ── Parámetros legales del mes ──
+app.get('/api/rem/parametros', auth, async(req,res)=>{
+  try{
+    const r = await pool.query('SELECT * FROM rem_parametro_mes ORDER BY anio DESC, mes DESC');
+    res.json(r.rows);
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+app.get('/api/rem/parametros/:anio/:mes', auth, async(req,res)=>{
+  try{
+    const r = await pool.query('SELECT * FROM rem_parametro_mes WHERE anio=$1 AND mes=$2',[req.params.anio, req.params.mes]);
+    if(!r.rows.length) return res.status(404).json({error:'No hay parámetros para este mes'});
+    res.json(r.rows[0]);
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+app.post('/api/rem/parametros', auth, async(req,res)=>{
+  try{
+    const b = req.body;
+    const r = await pool.query(`INSERT INTO rem_parametro_mes(
+        anio, mes, uf, utm, sueldo_minimo, sueldo_minimo_18a65,
+        tope_imponible_uf, tope_imponible_salud_uf, tope_seg_cesantia_uf,
+        seg_cesantia_trab_pct, seg_cesantia_empl_indef_pct, seg_cesantia_empl_plazo_pct,
+        ley_sanna_pct, sub_trab_joven_renta_tope)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+      ON CONFLICT (anio, mes) DO UPDATE SET
+        uf=EXCLUDED.uf, utm=EXCLUDED.utm,
+        sueldo_minimo=EXCLUDED.sueldo_minimo, sueldo_minimo_18a65=EXCLUDED.sueldo_minimo_18a65,
+        tope_imponible_uf=EXCLUDED.tope_imponible_uf, tope_imponible_salud_uf=EXCLUDED.tope_imponible_salud_uf,
+        tope_seg_cesantia_uf=EXCLUDED.tope_seg_cesantia_uf,
+        modificado_en=NOW()
+      RETURNING *`,
+      [b.anio, b.mes, b.uf, b.utm, b.sueldo_minimo, b.sueldo_minimo_18a65 || b.sueldo_minimo,
+       b.tope_imponible_uf || 87.80, b.tope_imponible_salud_uf || 87.80, b.tope_seg_cesantia_uf || 131.90,
+       b.seg_cesantia_trab_pct || 0.6, b.seg_cesantia_empl_indef_pct || 2.4, b.seg_cesantia_empl_plazo_pct || 3.0,
+       b.ley_sanna_pct || 0.03, b.sub_trab_joven_renta_tope || null]);
+    res.json(r.rows[0]);
+  }catch(e){ res.status(400).json({error:e.message}); }
+});
+
+// ── Tipos de movimiento ──
+app.get('/api/rem/tipos-movimiento', auth, async(req,res)=>{
+  try{
+    const empresa = req.query.empresa_id;
+    const sql = empresa
+      ? `SELECT * FROM rem_tipo_movimiento WHERE activo=true AND (empresa_id IS NULL OR empresa_id=$1) ORDER BY codigo`
+      : `SELECT * FROM rem_tipo_movimiento WHERE activo=true ORDER BY empresa_id NULLS FIRST, codigo`;
+    const r = empresa ? await pool.query(sql,[empresa]) : await pool.query(sql);
+    res.json(r.rows);
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+app.post('/api/rem/tipos-movimiento', auth, async(req,res)=>{
+  try{
+    const b = req.body;
+    const r = await pool.query(`INSERT INTO rem_tipo_movimiento(
+        empresa_id, codigo, nombre, tipo, es_hrs_extras, grava_gratif, es_proporcional, semana_corrida, en_uf, porcentaje, codigo_lre, cuenta_contable)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
+      [b.empresa_id, b.codigo, b.nombre, b.tipo, b.es_hrs_extras||false, b.grava_gratif||false,
+       b.es_proporcional||false, b.semana_corrida||false, b.en_uf||false, b.porcentaje||false,
+       b.codigo_lre, b.cuenta_contable]);
+    res.json(r.rows[0]);
+  }catch(e){ res.status(400).json({error:e.message}); }
+});
+app.put('/api/rem/tipos-movimiento/:id', auth, async(req,res)=>{
+  try{
+    const b = req.body;
+    const r = await pool.query(`UPDATE rem_tipo_movimiento SET
+        nombre=$1, tipo=$2, es_hrs_extras=$3, grava_gratif=$4, es_proporcional=$5,
+        semana_corrida=$6, en_uf=$7, porcentaje=$8, codigo_lre=$9, cuenta_contable=$10
+      WHERE tipo_mov_id=$11 RETURNING *`,
+      [b.nombre, b.tipo, b.es_hrs_extras||false, b.grava_gratif||false, b.es_proporcional||false,
+       b.semana_corrida||false, b.en_uf||false, b.porcentaje||false, b.codigo_lre, b.cuenta_contable,
+       req.params.id]);
+    res.json(r.rows[0]);
+  }catch(e){ res.status(400).json({error:e.message}); }
+});
+
+// ── Configuración previsional del trabajador (campos en tabla personal) ──
+// Solo expone los campos previsionales; el resto de personal se gestiona desde
+// el módulo Maestro Personal existente.
+app.get('/api/rem/personal/:id/prevision', auth, async(req,res)=>{
+  try{
+    const r = await pool.query(`
+      SELECT persona_id, rut, nombre_completo, fecha_ingreso, tipo_contrato, sueldo_base, afp, salud,
+             afp_id, isapre_id, ccaf_id, mutual_id, tipo_trabajador_id, tramo_familiar_id,
+             cargas_simples, cargas_maternales, cargas_invalidos,
+             salud_pactada_pesos, salud_pactada_uf, salud_pct,
+             grat_modalidad, grat_porcentaje,
+             apv_a_inst_id, apv_a_num_contrato, apv_a_monto_uf, apv_a_monto_pesos, apv_a_porcent_renta, apv_a_tributa,
+             apv_b_inst_id, apv_b_num_contrato, apv_b_aporte_trab, apv_b_aporte_empl, apv_b_porcent_renta, apv_b_tributa,
+             trabajo_pesado_pct, sub_trab_joven, casa_particular, empresarial, teletrabajo, bono_zona_pct,
+             mcc_capital_convenido, mcc_numero_poliza, mcc_tipo, mcc_numero_fun, pensionado_cotiza_sis,
+             banco_nombre, banco_tipo_cuenta, banco_numero_cuenta,
+             tipo_sueldo, valor_hora, horas_semanales_jornada, dias_semana_jornada, sueldo_uf
+      FROM personal WHERE persona_id=$1`,[req.params.id]);
+    if(!r.rows.length) return res.status(404).json({error:'Trabajador no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+
+app.put('/api/rem/personal/:id/prevision', auth, async(req,res)=>{
+  try{
+    const b = req.body;
+    // Si llega afp_id, sincronizar el campo legacy 'afp' VARCHAR con el nombre
+    let afpVarchar = null;
+    if(b.afp_id){
+      const a = await pool.query('SELECT nombre FROM rem_afp WHERE afp_id=$1',[b.afp_id]);
+      if(a.rows.length) afpVarchar = a.rows[0].nombre;
+    }
+    let saludVarchar = null;
+    if(b.isapre_id){
+      const s = await pool.query('SELECT nombre FROM rem_isapre WHERE isapre_id=$1',[b.isapre_id]);
+      if(s.rows.length) saludVarchar = s.rows[0].nombre;
+    }
+    const sets = [], vals = [];
+    const set = (col, val) => { sets.push(col+'=$'+(sets.length+1)); vals.push(val); };
+    const campos = ['afp_id','isapre_id','ccaf_id','mutual_id','tipo_trabajador_id','tramo_familiar_id',
+      'cargas_simples','cargas_maternales','cargas_invalidos',
+      'salud_pactada_pesos','salud_pactada_uf','salud_pct',
+      'grat_modalidad','grat_porcentaje',
+      'apv_a_inst_id','apv_a_num_contrato','apv_a_monto_uf','apv_a_monto_pesos','apv_a_porcent_renta','apv_a_tributa',
+      'apv_b_inst_id','apv_b_num_contrato','apv_b_aporte_trab','apv_b_aporte_empl','apv_b_porcent_renta','apv_b_tributa',
+      'trabajo_pesado_pct','sub_trab_joven','casa_particular','empresarial','teletrabajo','bono_zona_pct',
+      'mcc_capital_convenido','mcc_numero_poliza','mcc_tipo','mcc_numero_fun','pensionado_cotiza_sis',
+      'banco_nombre','banco_tipo_cuenta','banco_numero_cuenta',
+      'tipo_sueldo','valor_hora','horas_semanales_jornada','dias_semana_jornada','sueldo_uf'];
+    for(const c of campos){
+      if(b[c] !== undefined) set(c, b[c] === '' ? null : b[c]);
+    }
+    if(afpVarchar) set('afp', afpVarchar);
+    if(saludVarchar) set('salud', saludVarchar);
+    if(!sets.length) return res.status(400).json({error:'Sin campos para actualizar'});
+    vals.push(req.params.id);
+    const r = await pool.query(`UPDATE personal SET ${sets.join(',')} WHERE persona_id=$${vals.length} RETURNING persona_id`,vals);
+    res.json({ok:true, persona_id:r.rows[0].persona_id});
+  }catch(e){ res.status(400).json({error:e.message}); }
+});
+
+// ── Períodos de liquidación ──
+app.get('/api/rem/periodos', auth, async(req,res)=>{
+  try{
+    const empresa = req.query.empresa_id;
+    const sql = empresa
+      ? 'SELECT p.*, e.razon_social AS empresa_nombre, u.nombre AS cerrado_por_nombre FROM rem_periodo p JOIN empresas e ON p.empresa_id=e.empresa_id LEFT JOIN usuarios u ON p.cerrado_por=u.usuario_id WHERE p.empresa_id=$1 ORDER BY p.anio DESC, p.mes DESC'
+      : 'SELECT p.*, e.razon_social AS empresa_nombre FROM rem_periodo p JOIN empresas e ON p.empresa_id=e.empresa_id ORDER BY p.anio DESC, p.mes DESC';
+    const r = empresa ? await pool.query(sql,[empresa]) : await pool.query(sql);
+    res.json(r.rows);
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+
+app.post('/api/rem/periodos', auth, async(req,res)=>{
+  try{
+    const {empresa_id, anio, mes} = req.body;
+    if(!empresa_id || !anio || !mes) return res.status(400).json({error:'Faltan datos: empresa_id, anio, mes'});
+    // Validar que existan parámetros del mes
+    const p = await pool.query('SELECT 1 FROM rem_parametro_mes WHERE anio=$1 AND mes=$2',[anio,mes]);
+    if(!p.rows.length) return res.status(400).json({error:'No hay parámetros legales cargados para '+anio+'-'+mes+'. Cárguelos primero en /api/rem/parametros'});
+    const r = await pool.query(`INSERT INTO rem_periodo(empresa_id, anio, mes) VALUES($1,$2,$3) RETURNING *`,[empresa_id, anio, mes]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){
+    if(e.code === '23505') return res.status(409).json({error:'Ya existe un período para esa empresa y mes'});
+    res.status(400).json({error:e.message});
+  }
+});
+
+app.get('/api/rem/periodos/:id', auth, async(req,res)=>{
+  try{
+    const r = await pool.query(`
+      SELECT p.*, e.razon_social AS empresa_nombre,
+        (SELECT COUNT(*) FROM rem_movimiento WHERE periodo_id=p.periodo_id) AS num_movimientos,
+        (SELECT COUNT(*) FROM rem_liquidacion WHERE periodo_id=p.periodo_id) AS num_liquidaciones
+      FROM rem_periodo p JOIN empresas e ON p.empresa_id=e.empresa_id
+      WHERE p.periodo_id=$1`,[req.params.id]);
+    if(!r.rows.length) return res.status(404).json({error:'Período no existe'});
+    res.json(r.rows[0]);
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+
+app.post('/api/rem/periodos/:id/cerrar', auth, async(req,res)=>{
+  try{
+    const r = await pool.query(`UPDATE rem_periodo SET estado='CERRADO', fecha_cierre=CURRENT_DATE, cerrado_por=$1, modificado_en=NOW()
+      WHERE periodo_id=$2 AND estado IN ('ABIERTO','CALCULADO') RETURNING *`,[req.user.id, req.params.id]);
+    if(!r.rows.length) return res.status(400).json({error:'Período no está en estado válido para cerrar'});
+    res.json(r.rows[0]);
+  }catch(e){ res.status(400).json({error:e.message}); }
+});
+
+app.post('/api/rem/periodos/:id/reabrir', auth, async(req,res)=>{
+  try{
+    const r = await pool.query(`UPDATE rem_periodo SET estado='ABIERTO', fecha_cierre=NULL, cerrado_por=NULL, modificado_en=NOW()
+      WHERE periodo_id=$1 AND estado='CERRADO' RETURNING *`,[req.params.id]);
+    if(!r.rows.length) return res.status(400).json({error:'Período no está cerrado'});
+    res.json(r.rows[0]);
+  }catch(e){ res.status(400).json({error:e.message}); }
+});
+
+// ── Movimientos del período ──
+app.get('/api/rem/periodos/:id/movimientos', auth, async(req,res)=>{
+  try{
+    const r = await pool.query(`
+      SELECT m.*, tm.codigo, tm.nombre AS tipo_nombre, tm.tipo,
+             p.nombre_completo, p.rut
+      FROM rem_movimiento m
+      JOIN rem_tipo_movimiento tm ON m.tipo_mov_id = tm.tipo_mov_id
+      JOIN personal p ON m.persona_id = p.persona_id
+      WHERE m.periodo_id=$1
+      ORDER BY p.nombre_completo, tm.codigo`,[req.params.id]);
+    res.json(r.rows);
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+
+app.post('/api/rem/periodos/:id/movimientos', auth, async(req,res)=>{
+  try{
+    const b = req.body;
+    const r = await pool.query(`INSERT INTO rem_movimiento(periodo_id, persona_id, tipo_mov_id, fecha, monto, porcentaje, glosa, creado_por)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [req.params.id, b.persona_id, b.tipo_mov_id, b.fecha || new Date(), b.monto, b.porcentaje, b.glosa, req.user.id]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){ res.status(400).json({error:e.message}); }
+});
+
+app.delete('/api/rem/movimientos/:id', auth, async(req,res)=>{
+  try{
+    await pool.query('DELETE FROM rem_movimiento WHERE movimiento_id=$1',[req.params.id]);
+    res.json({ok:true});
+  }catch(e){ res.status(400).json({error:e.message}); }
+});
+
+// ── Horas extra del período ──
+app.get('/api/rem/periodos/:id/horas-extra', auth, async(req,res)=>{
+  try{
+    const r = await pool.query(`
+      SELECT he.*, p.nombre_completo, p.rut
+      FROM rem_horas_extra he JOIN personal p ON he.persona_id=p.persona_id
+      WHERE he.periodo_id=$1 ORDER BY p.nombre_completo, he.fecha`,[req.params.id]);
+    res.json(r.rows);
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+
+app.post('/api/rem/periodos/:id/horas-extra', auth, async(req,res)=>{
+  try{
+    const b = req.body;
+    const r = await pool.query(`INSERT INTO rem_horas_extra(periodo_id, persona_id, fecha, horas_50, horas_75, horas_100)
+      VALUES($1,$2,$3,$4,$5,$6) RETURNING *`,
+      [req.params.id, b.persona_id, b.fecha, b.horas_50||0, b.horas_75||0, b.horas_100||0]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){ res.status(400).json({error:e.message}); }
+});
+
+// ── Inasistencias y anticipos (rutas simétricas) ──
+app.get('/api/rem/periodos/:id/inasistencias', auth, async(req,res)=>{
+  try{
+    const r = await pool.query(`
+      SELECT i.*, p.nombre_completo, p.rut
+      FROM rem_inasistencia i JOIN personal p ON i.persona_id=p.persona_id
+      WHERE i.periodo_id=$1 ORDER BY p.nombre_completo, i.fecha_desde`,[req.params.id]);
+    res.json(r.rows);
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+app.post('/api/rem/periodos/:id/inasistencias', auth, async(req,res)=>{
+  try{
+    const b = req.body;
+    const r = await pool.query(`INSERT INTO rem_inasistencia(periodo_id, persona_id, fecha_desde, fecha_hasta, dias, minutos_atraso, tipo, codigo_motivo, motivo_glosa)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [req.params.id, b.persona_id, b.fecha_desde, b.fecha_hasta, b.dias||0, b.minutos_atraso||0, b.tipo, b.codigo_motivo, b.motivo_glosa]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){ res.status(400).json({error:e.message}); }
+});
+
+app.get('/api/rem/periodos/:id/anticipos', auth, async(req,res)=>{
+  try{
+    const r = await pool.query(`
+      SELECT a.*, p.nombre_completo, p.rut
+      FROM rem_anticipo a JOIN personal p ON a.persona_id=p.persona_id
+      WHERE a.periodo_id=$1 ORDER BY a.fecha`,[req.params.id]);
+    res.json(r.rows);
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+app.post('/api/rem/periodos/:id/anticipos', auth, async(req,res)=>{
+  try{
+    const b = req.body;
+    const r = await pool.query(`INSERT INTO rem_anticipo(periodo_id, persona_id, fecha, monto, observacion)
+      VALUES($1,$2,$3,$4,$5) RETURNING *`,[req.params.id, b.persona_id, b.fecha, b.monto, b.observacion]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){ res.status(400).json({error:e.message}); }
+});
+
+// ── Préstamos (alta genera automáticamente las cuotas) ──
+app.get('/api/rem/prestamos', auth, async(req,res)=>{
+  try{
+    const persona = req.query.persona_id;
+    const sql = persona
+      ? 'SELECT pr.*, p.nombre_completo, p.rut FROM rem_prestamo pr JOIN personal p ON pr.persona_id=p.persona_id WHERE pr.persona_id=$1 ORDER BY pr.fecha DESC'
+      : 'SELECT pr.*, p.nombre_completo, p.rut FROM rem_prestamo pr JOIN personal p ON pr.persona_id=p.persona_id ORDER BY pr.fecha DESC LIMIT 200';
+    const r = persona ? await pool.query(sql,[persona]) : await pool.query(sql);
+    res.json(r.rows);
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+
+app.post('/api/rem/prestamos', auth, async(req,res)=>{
+  const client = await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const b = req.body;
+    const pr = await client.query(`INSERT INTO rem_prestamo(empresa_id, persona_id, fecha, monto_total, num_cuotas, glosa, tipo, periodo_inicio, creado_por)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+      [b.empresa_id, b.persona_id, b.fecha, b.monto_total, b.num_cuotas, b.glosa, b.tipo||'NORMAL', b.periodo_inicio, req.user.id]);
+    const prestamo = pr.rows[0];
+    // Generar cuotas
+    const cuotaBase = Math.floor(b.monto_total / b.num_cuotas);
+    const resto = b.monto_total - (cuotaBase * b.num_cuotas);
+    const [anioIni, mesIni] = b.periodo_inicio.split('-').map(Number);
+    for(let i=0; i<b.num_cuotas; i++){
+      const m = ((mesIni - 1 + i) % 12) + 1;
+      const a = anioIni + Math.floor((mesIni - 1 + i) / 12);
+      const periodo = a + '-' + String(m).padStart(2,'0');
+      const monto = i === b.num_cuotas - 1 ? cuotaBase + resto : cuotaBase;
+      await client.query('INSERT INTO rem_prestamo_cuota(prestamo_id, num_cuota, periodo, monto) VALUES($1,$2,$3,$4)',
+        [prestamo.prestamo_id, i+1, periodo, monto]);
+    }
+    await client.query('COMMIT');
+    res.status(201).json(prestamo);
+  }catch(e){
+    await client.query('ROLLBACK');
+    res.status(400).json({error:e.message});
+  }finally{
+    client.release();
+  }
+});
+
+app.get('/api/rem/prestamos/:id/cuotas', auth, async(req,res)=>{
+  try{
+    const r = await pool.query('SELECT * FROM rem_prestamo_cuota WHERE prestamo_id=$1 ORDER BY num_cuota',[req.params.id]);
+    res.json(r.rows);
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+
+// ── Motor de cálculo de liquidación ──
+app.post('/api/rem/periodos/:id/calcular', auth, async(req,res)=>{
+  try{
+    const periodoId = req.params.id;
+    // Soporta calcular para un trabajador específico o para todos
+    if(req.body.persona_id){
+      const r = await calcularLiquidacion(periodoId, req.body.persona_id, pool.query.bind(pool));
+      return res.json(r);
+    }
+    // Calcular todos los trabajadores activos de la empresa del período
+    const per = await pool.query('SELECT * FROM rem_periodo WHERE periodo_id=$1',[periodoId]);
+    if(!per.rows.length) return res.status(404).json({error:'Período no existe'});
+    const trabs = await pool.query('SELECT persona_id FROM personal WHERE empresa_id=$1 AND activo=true AND (fecha_termino IS NULL OR fecha_termino >= CURRENT_DATE)',[per.rows[0].empresa_id]);
+    const resultados = [];
+    const errores = [];
+    for(const t of trabs.rows){
+      try{
+        const r = await calcularLiquidacion(periodoId, t.persona_id, pool.query.bind(pool));
+        resultados.push({persona_id: t.persona_id, ...r});
+      }catch(e){
+        errores.push({persona_id: t.persona_id, error: e.message});
+      }
+    }
+    // Marcar período como CALCULADO
+    await pool.query('UPDATE rem_periodo SET estado=$1, modificado_en=NOW() WHERE periodo_id=$2',['CALCULADO', periodoId]);
+    res.json({calculadas: resultados.length, errores: errores.length, resultados, errores});
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+
+// ── Liquidaciones ──
+app.get('/api/rem/periodos/:id/liquidaciones', auth, async(req,res)=>{
+  try{
+    const r = await pool.query(`
+      SELECT l.*, p.nombre_completo, p.rut, p.cargo
+      FROM rem_liquidacion l JOIN personal p ON l.persona_id=p.persona_id
+      WHERE l.periodo_id=$1 ORDER BY p.nombre_completo`,[req.params.id]);
+    res.json(r.rows);
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+
+app.get('/api/rem/liquidaciones/:id', auth, async(req,res)=>{
+  try{
+    const cab = await pool.query(`
+      SELECT l.*, p.nombre_completo, p.rut, p.cargo, p.afp, p.salud,
+             p.sueldo_base, p.fecha_ingreso,
+             per.anio, per.mes, per.uf_pago,
+             e.empresa_id, e.razon_social AS empresa_nombre, e.rut AS empresa_rut,
+             e.direccion AS empresa_direccion, e.ciudad AS empresa_ciudad,
+             e.logo_base64 AS empresa_logo
+      FROM rem_liquidacion l
+      JOIN personal p ON l.persona_id=p.persona_id
+      JOIN rem_periodo per ON l.periodo_id=per.periodo_id
+      JOIN empresas e ON per.empresa_id=e.empresa_id
+      WHERE l.liquidacion_id=$1`,[req.params.id]);
+    if(!cab.rows.length) return res.status(404).json({error:'Liquidación no existe'});
+    const det = await pool.query('SELECT * FROM rem_liquidacion_detalle WHERE liquidacion_id=$1 ORDER BY orden',[req.params.id]);
+    res.json({...cab.rows[0], detalle: det.rows});
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+
+// ── Generación de archivo PreviRed (genera registros, no aún el .txt físico) ──
+app.post('/api/rem/periodos/:id/previred', auth, async(req,res)=>{
+  try{
+    const periodoId = req.params.id;
+    const per = (await pool.query('SELECT * FROM rem_periodo WHERE periodo_id=$1',[periodoId])).rows[0];
+    if(!per) return res.status(404).json({error:'Período no existe'});
+
+    // Crear cabecera de archivo
+    const arc = await pool.query('INSERT INTO rem_previred_archivo(periodo_id, generado_por) VALUES($1,$2) RETURNING archivo_id',[periodoId, req.user.id]);
+    const archivoId = arc.rows[0].archivo_id;
+
+    // Generar una línea por trabajador con liquidación
+    const liqs = await pool.query(`
+      SELECT l.*, p.rut, p.nombre_completo, p.afp_id, p.isapre_id, p.ccaf_id, p.mutual_id,
+             p.tipo_trabajador_id, p.tramo_familiar_id, p.cargas_simples, p.cargas_maternales, p.cargas_invalidos,
+             p.salud_pactada_uf, p.sub_trab_joven,
+             afp.codigo_previred AS afp_cod, isa.codigo_previred AS isa_cod,
+             ccaf.codigo_previred AS ccaf_cod, mut.codigo_previred AS mut_cod,
+             p.apv_a_inst_id, apvi.codigo_previred AS apv_cod
+      FROM rem_liquidacion l
+      JOIN personal p ON l.persona_id=p.persona_id
+      LEFT JOIN rem_afp afp ON p.afp_id=afp.afp_id
+      LEFT JOIN rem_isapre isa ON p.isapre_id=isa.isapre_id
+      LEFT JOIN rem_ccaf ccaf ON p.ccaf_id=ccaf.ccaf_id
+      LEFT JOIN rem_mutual mut ON p.mutual_id=mut.mutual_id
+      LEFT JOIN rem_apv_institucion apvi ON p.apv_a_inst_id=apvi.apv_inst_id
+      WHERE l.periodo_id=$1
+      ORDER BY p.nombre_completo`,[periodoId]);
+
+    let num = 0;
+    const periodoStr = String(per.anio) + String(per.mes).padStart(2,'0');
+    for(const L of liqs.rows){
+      num++;
+      // Parsear RUT
+      const rutLimpio = (L.rut||'').replace(/[.\-\s]/g,'');
+      const rutNum = parseInt(rutLimpio.slice(0,-1)) || 0;
+      const rutDv = rutLimpio.slice(-1).toUpperCase();
+      // Parsear nombre
+      const partes = (L.nombre_completo||'').split(' ');
+      const apePat = partes[partes.length-2] || '';
+      const apeMat = partes[partes.length-1] || '';
+      const nombres = partes.slice(0, -2).join(' ');
+
+      await pool.query(`INSERT INTO rem_previred_linea(
+          archivo_id, num_linea, persona_id, rut_numero, rut_dv, ape_pat, ape_mat, nombres,
+          tipo_pago, periodo_desde, periodo_hasta, imponible, tipo_trabajador, dias_trab,
+          tramo_familiar, num_cargas_simples, num_cargas_maternas, num_cargas_invalidos, asig_fam,
+          nom_afp, cotiza_afp, cod_inst_salud, cotiza_isapre, codigo_ccaf,
+          cod_mutual, cod_inst_apv, cotiza_apv,
+          imponible_seg_cesa, aporte_trab_afc, aporte_empl_afc, sub_trab_jov, impo_afp, aporte_sis)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)`,
+        [archivoId, num, L.persona_id, rutNum, rutDv, apePat, apeMat, nombres,
+         0, periodoStr, periodoStr, L.base_imponible_afp, L.tipo_trabajador_id||0, L.dias_trabajados,
+         (L.tramo_familiar_id===1?'A':L.tramo_familiar_id===2?'B':L.tramo_familiar_id===3?'C':'D'),
+         L.cargas_simples||0, L.cargas_maternales||0, L.cargas_invalidos||0, L.asignacion_familiar,
+         parseInt(L.afp_cod)||0, L.desc_afp, parseInt(L.isa_cod)||0, L.desc_salud,
+         parseInt(L.ccaf_cod)||0, parseInt(L.mut_cod)||0, parseInt(L.apv_cod)||0, L.desc_apv_trab,
+         L.base_imponible_afc, L.desc_afc_trab, L.apo_afc_empl, L.sub_trab_joven?'S':'N', L.base_imponible_afp, L.apo_sis]);
+    }
+
+    await pool.query('UPDATE rem_previred_archivo SET num_lineas=$1 WHERE archivo_id=$2',[num, archivoId]);
+    res.json({archivo_id: archivoId, num_lineas: num});
+  }catch(e){ res.status(500).json({error:e.message}); }
+});
+
+console.log('[OK] Rutas API Remuneraciones registradas');
+
+// ════════════════════════════════════════════════════════════════════════════
+// IMPORTADOR PreviRed — descarga indicadores previsionales desde
+// https://www.previred.com/indicadores-previsionales/  y los carga al sistema.
+//
+// Soporta:
+//   - Mes vigente: parsea HTML directo (rápido)
+//   - Meses anteriores: descarga el PDF de ese mes y lo parsea con pdf-parse
+//
+// Inserta/actualiza:
+//   - rem_parametro_mes (UF, UTM, IMM, topes UF, SIS)
+//   - rem_asig_familiar_param (4 tramos)
+//   - rem_afp (comision_pct y sis_pct si cambiaron)
+//
+// Ruta: POST /api/rem/parametros/importar-previred  body: {anio, mes}
+// ════════════════════════════════════════════════════════════════════════════
+
+const PREV_MESES_ES = {
+  enero:1, febrero:2, marzo:3, abril:4, mayo:5, junio:6,
+  julio:7, agosto:8, septiembre:9, octubre:10, noviembre:11, diciembre:12
+};
+const PREV_MES_NOMBRE = ['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+function previred_parsePesos(s){
+  if(!s)return null;
+  const c=String(s).replace(/\$|\s/g,'').replace(/\./g,'').replace(',','.');
+  const n=parseFloat(c);return isNaN(n)?null:n;
+}
+function previred_parsePct(s){
+  if(!s)return null;
+  const c=String(s).replace(/%/g,'').replace(',','.').trim();
+  const n=parseFloat(c);return isNaN(n)?null:n;
+}
+
+function previred_parsearTexto(txt, anio, mes){
+  const r={ afps:{}, asig_familiar:[], advertencias:[], anio:anio, mes:mes };
+  let m;
+
+  // UF al último día — toma el primero (es el del mes vigente)
+  m=txt.match(/Al\s+\d+\s+de\s+(\w+)\s+del?\s+(\d{4})[\s:]*\*?\*?\s*\$\s*([\d\.,]+)/i);
+  if(m){r.uf=previred_parsePesos(m[3]); r.uf_fecha=m[0];}
+
+  // Topes
+  m=txt.match(/Para afiliados a una AFP\s*\(([\d\.,]+)\s*UF\)\s*:?\s*\*?\*?\s*\$\s*([\d\.,]+)/i);
+  if(m){r.tope_imponible_uf=parseFloat(m[1].replace(',','.')); r.tope_imponible_pesos=previred_parsePesos(m[2]);}
+  m=txt.match(/Seguro\s+de\s+Cesant[ií]a\s*\(([\d\.,]+)\s*UF\)\s*:?\s*\*?\*?\s*\$\s*([\d\.,]+)/i);
+  if(m){r.tope_seg_cesantia_uf=parseFloat(m[1].replace(',','.')); r.tope_seg_cesantia_pesos=previred_parsePesos(m[2]);}
+  r.tope_imponible_salud_uf=r.tope_imponible_uf;
+
+  // UTM
+  const mesPat=PREV_MES_NOMBRE[mes];
+  if(mesPat){
+    const rgx=new RegExp(mesPat+'\\s+'+anio+'\\s+\\*?\\*?\\$\\s*([\\d\\.,]+)\\s*\\*?\\*?\\s*\\*?\\*?\\$\\s*([\\d\\.,]+)','i');
+    m=txt.match(rgx);
+    if(m){r.utm=previred_parsePesos(m[1]); r.uta=previred_parsePesos(m[2]);}
+  }
+
+  // Sueldo mínimo
+  m=txt.match(/Trab\.?\s+Dependientes.*?\$\s*([\d\.,]+)/i);
+  if(m)r.sueldo_minimo=previred_parsePesos(m[1]);
+  m=txt.match(/Menores\s+de\s+18.*?\$\s*([\d\.,]+)/i);
+  if(m)r.sueldo_minimo_menor18=previred_parsePesos(m[1]);
+
+  // SIS
+  m=txt.match(/Tasa\s+SIS\s*\*?\*?\s*([\d\.,]+)\s*%/i);
+  if(m)r.sis_pct=previred_parsePct(m[1]+'%');
+
+  // AFPs
+  const afps=['Capital','Cuprum','Habitat','PlanVital','ProVida','Modelo','Uno'];
+  for(const nom of afps){
+    const rgx=new RegExp(nom+'\\s+\\*?\\*?([\\d\\.,]+%)\\*?\\*?\\s+\\*?\\*?([\\d\\.,]+%)\\*?\\*?\\s+\\*?\\*?([\\d\\.,]+%)\\*?\\*?\\s+\\*?\\*?([\\d\\.,]+%)','i');
+    m=txt.match(rgx);
+    if(m){
+      const cargoTrab=previred_parsePct(m[1]);
+      r.afps[nom]={
+        cotiza_pct:10.0,
+        comision_pct:cargoTrab?+(cargoTrab-10).toFixed(2):0,
+        sis_pct:r.sis_pct||1.88
+      };
+    }
+  }
+
+  // Asignación familiar
+  m=txt.match(/1\s*\(A\)\s*\*?\*?\$\s*([\d\.,]+).*?<\s*[óo]\s*=\s*\*?\*?\$\s*([\d\.,]+)/i);
+  if(m)r.asig_familiar.push({tramo_id:1,monto_por_carga:previred_parsePesos(m[1]),renta_promedio_hasta:previred_parsePesos(m[2])});
+  m=txt.match(/2\s*\(B\)\s*\*?\*?\$\s*([\d\.,]+).*?<\s*=\s*\*?\*?\$\s*([\d\.,]+)/i);
+  if(m)r.asig_familiar.push({tramo_id:2,monto_por_carga:previred_parsePesos(m[1]),renta_promedio_hasta:previred_parsePesos(m[2])});
+  m=txt.match(/3\s*\(C\)\s*\*?\*?\$\s*([\d\.,]+).*?<\s*=\s*\*?\*?\$\s*([\d\.,]+)/i);
+  if(m)r.asig_familiar.push({tramo_id:3,monto_por_carga:previred_parsePesos(m[1]),renta_promedio_hasta:previred_parsePesos(m[2])});
+  if(r.asig_familiar.length===3){
+    r.asig_familiar.push({tramo_id:4,monto_por_carga:0,renta_promedio_hasta:99999999});
+  }
+
+  if(!r.uf)r.advertencias.push('UF no detectada');
+  if(!r.utm)r.advertencias.push('UTM no detectada');
+  if(!r.sueldo_minimo)r.advertencias.push('Sueldo mínimo no detectado');
+  if(!r.tope_imponible_uf)r.advertencias.push('Tope AFP no detectado');
+  if(!r.sis_pct)r.advertencias.push('SIS no detectado');
+  if(Object.keys(r.afps).length<7)r.advertencias.push('AFPs detectadas: '+Object.keys(r.afps).length+'/7');
+  if(r.asig_familiar.length<4)r.advertencias.push('Tramos asig.familiar: '+r.asig_familiar.length+'/4');
+  return r;
+}
+
+// Convertir HTML a texto plano para parsear (quita tags, normaliza espacios)
+function previred_htmlAtexto(html){
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi,'')
+    .replace(/<style[\s\S]*?<\/style>/gi,'')
+    .replace(/<strong>|<\/strong>|<b>|<\/b>/gi,'**')
+    .replace(/<br\s*\/?>/gi,'\n')
+    .replace(/<\/(p|li|tr|td|th|h\d|div)>/gi,'\n')
+    .replace(/<[^>]+>/g,' ')
+    .replace(/&lt;/g,'<').replace(/&gt;/g,'>')
+    .replace(/&nbsp;/g,' ').replace(/&amp;/g,'&')
+    .replace(/&oacute;/g,'ó').replace(/&aacute;/g,'á').replace(/&eacute;/g,'é')
+    .replace(/&iacute;/g,'í').replace(/&uacute;/g,'ú').replace(/&ntilde;/g,'ñ')
+    .replace(/[ \t]+/g,' ');
+}
+
+// Descargar URL con fetch nativo (Node 18+)
+async function previred_descargar(url, esBinario){
+  const resp=await fetch(url,{headers:{'User-Agent':'Mozilla/5.0 EmpresasPoo'}});
+  if(!resp.ok)throw new Error('HTTP '+resp.status+' al descargar '+url);
+  if(esBinario)return Buffer.from(await resp.arrayBuffer());
+  return resp.text();
+}
+
+// Detectar mes vigente y buscar link del PDF del mes solicitado
+function previred_buscarLinkPdf(html, anio, mes){
+  // El HTML contiene <a href="...Indicadores-Previsionales-Previred-{Mes}-{Año}...pdf">
+  const mesNom=PREV_MES_NOMBRE[mes];
+  // Patrón laxo: que contenga el mes y el año
+  const rgx=new RegExp('href=["\']([^"\']*?'+mesNom+'[^"\']*?'+anio+'[^"\']*\\.pdf)["\']','i');
+  const m=html.match(rgx);
+  return m?m[1]:null;
+}
+
+// Pipeline principal: obtiene datos para anio/mes desde PreviRed
+async function previred_importar(anio, mes){
+  // 1) Fetch página índice
+  const html=await previred_descargar('https://www.previred.com/indicadores-previsionales/', false);
+  const txtPagina=previred_htmlAtexto(html);
+
+  // 2) ¿El mes solicitado es el vigente en la página?
+  const vigenteMatch=txtPagina.match(/remuneraciones\s+(\w+)\s+(\d{4})/i);
+  let vigenteAnio, vigenteMes;
+  if(vigenteMatch){
+    vigenteMes=PREV_MESES_ES[vigenteMatch[1].toLowerCase()];
+    vigenteAnio=parseInt(vigenteMatch[2]);
+  }
+  if(vigenteAnio===anio && vigenteMes===mes){
+    // Parsear directo del HTML
+    return { ...previred_parsearTexto(txtPagina, anio, mes), fuente:'HTML página índice' };
+  }
+
+  // 3) Mes histórico: buscar PDF
+  const linkPdf=previred_buscarLinkPdf(html, anio, mes);
+  if(!linkPdf)throw new Error('No se encontró PDF para '+PREV_MES_NOMBRE[mes]+' '+anio+' en la página de PreviRed');
+
+  // 4) Descargar PDF y parsear con pdf-parse (debe estar instalado en el server)
+  let pdfParse;
+  try{ pdfParse=require('pdf-parse'); }
+  catch(e){ throw new Error('pdf-parse no instalado: '+e.message); }
+  const pdfBuf=await previred_descargar(linkPdf, true);
+  const pdfData=await pdfParse(pdfBuf);
+  const txtPdf=pdfData.text;
+  return { ...previred_parsearTexto(txtPdf, anio, mes), fuente:'PDF '+linkPdf };
+}
+
+// Persistir en BD (transacción)
+async function previred_persistir(datos, q, usuarioId){
+  // 1) rem_parametro_mes (UPSERT)
+  await q(`INSERT INTO rem_parametro_mes(
+      anio, mes, uf, utm, sueldo_minimo, sueldo_minimo_18a65,
+      tope_imponible_uf, tope_imponible_salud_uf, tope_seg_cesantia_uf,
+      seg_cesantia_trab_pct, seg_cesantia_empl_indef_pct, seg_cesantia_empl_plazo_pct, ley_sanna_pct)
+    VALUES($1,$2,$3,$4,$5,$5,$6,$7,$8,0.6,2.4,3.0,0.03)
+    ON CONFLICT (anio, mes) DO UPDATE SET
+      uf=EXCLUDED.uf, utm=EXCLUDED.utm,
+      sueldo_minimo=EXCLUDED.sueldo_minimo, sueldo_minimo_18a65=EXCLUDED.sueldo_minimo_18a65,
+      tope_imponible_uf=EXCLUDED.tope_imponible_uf,
+      tope_imponible_salud_uf=EXCLUDED.tope_imponible_salud_uf,
+      tope_seg_cesantia_uf=EXCLUDED.tope_seg_cesantia_uf,
+      modificado_en=NOW()`,
+    [datos.anio, datos.mes, datos.uf, datos.utm, datos.sueldo_minimo,
+     datos.tope_imponible_uf, datos.tope_imponible_salud_uf, datos.tope_seg_cesantia_uf]);
+
+  // 2) rem_asig_familiar_param (UPSERT)
+  for(const t of datos.asig_familiar){
+    await q(`INSERT INTO rem_asig_familiar_param(anio, mes, tramo_id, renta_promedio_hasta, monto_por_carga)
+      VALUES($1,$2,$3,$4,$5)
+      ON CONFLICT (anio, mes, tramo_id) DO UPDATE SET
+        renta_promedio_hasta=EXCLUDED.renta_promedio_hasta,
+        monto_por_carga=EXCLUDED.monto_por_carga`,
+      [datos.anio, datos.mes, t.tramo_id, t.renta_promedio_hasta, t.monto_por_carga]);
+  }
+
+  // 3) Tasas AFP — solo si difieren de lo almacenado (las tasas no cambian todos los meses)
+  let afpsActualizadas=0;
+  for(const [nombre, vals] of Object.entries(datos.afps)){
+    const r=await q('UPDATE rem_afp SET comision_pct=$1, sis_pct=$2, modificado_en=NOW() WHERE LOWER(nombre)=LOWER($3) AND (comision_pct<>$1 OR sis_pct<>$2)',
+      [vals.comision_pct, vals.sis_pct, nombre]);
+    if(r.rowCount>0)afpsActualizadas++;
+  }
+
+  // 4) Tramos IUSC del mes si no existen (los rangos en UTM son fijos, copiamos de 2025)
+  const iuscCheck=await q('SELECT COUNT(*) FROM rem_iusc_tramo WHERE anio=$1 AND mes=$2',[datos.anio, datos.mes]);
+  if(parseInt(iuscCheck.rows[0].count)===0){
+    await q(`INSERT INTO rem_iusc_tramo(anio, mes, tramo, desde_utm, hasta_utm, factor, rebaja_utm)
+      SELECT $1, $2, tramo, desde_utm, hasta_utm, factor, rebaja_utm
+      FROM rem_iusc_tramo WHERE anio=2025 AND mes=1
+      ON CONFLICT DO NOTHING`,[datos.anio, datos.mes]);
+  }
+
+  return { afps_actualizadas: afpsActualizadas };
+}
+
+// ── Ruta API ─────────────────────────────────────────────────────────────────
+app.post('/api/rem/parametros/importar-previred', auth, async (req,res) => {
+  try{
+    const { anio, mes } = req.body;
+    if(!anio || !mes || mes<1 || mes>12) return res.status(400).json({error:'anio y mes (1-12) son requeridos'});
+    const datos = await previred_importar(anio, mes);
+    if(datos.advertencias.length > 0 && !datos.uf){
+      return res.status(422).json({error:'No se pudo extraer datos de PreviRed', advertencias:datos.advertencias, fuente:datos.fuente});
+    }
+    const resultado = await previred_persistir(datos, pool.query.bind(pool), req.user.id);
+    res.json({
+      ok: true,
+      fuente: datos.fuente,
+      datos_importados: {
+        uf: datos.uf, utm: datos.utm, sueldo_minimo: datos.sueldo_minimo,
+        tope_imponible_uf: datos.tope_imponible_uf, tope_seg_cesantia_uf: datos.tope_seg_cesantia_uf,
+        sis_pct: datos.sis_pct,
+        afps: Object.keys(datos.afps).length,
+        asig_familiar: datos.asig_familiar.length
+      },
+      advertencias: datos.advertencias,
+      afps_actualizadas: resultado.afps_actualizadas
+    });
+  }catch(e){
+    res.status(500).json({error:e.message});
+  }
+});
+
+console.log('[OK] Importador PreviRed registrado');
+
+
+
 app.listen(PORT,'0.0.0.0', async()=>{
   console.log('\n============================================================');
   console.log('  Empresas Poo — Sistema de Gestión — Puerto', PORT);
