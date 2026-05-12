@@ -12056,42 +12056,91 @@ function MobileOC(p){
     var prov=proveedores.find(function(p2){return p2.proveedor_id===oc.proveedor_id;});
     var cond=condiciones.find(function(c){return c.condicion_id===oc.condicion_id;});
     var y=M;
-    // ── Encabezado ──
-    doc.setFillColor(30,58,45);doc.rect(0,0,W,28,'F');
-    doc.setTextColor(252,211,77);doc.setFont('helvetica','bold');doc.setFontSize(16);
-    doc.text(emp?emp.razon_social:'EMPRESA',M,12);
+    // ── Encabezado verde corporativo (altura aumentada a 32mm) ──
+    var HEAD_H=32;
+    doc.setFillColor(30,58,45);doc.rect(0,0,W,HEAD_H,'F');
+    // Caja blanca OC arriba derecha (más ancha: 62mm)
+    var OC_BOX_W=62, OC_BOX_X=W-OC_BOX_W-M, OC_BOX_Y=5, OC_BOX_H=22;
+    doc.setFillColor(255,255,255);doc.rect(OC_BOX_X,OC_BOX_Y,OC_BOX_W,OC_BOX_H,'F');
+    doc.setTextColor(30,58,45);doc.setFont('helvetica','bold');doc.setFontSize(10);
+    doc.text('ORDEN DE COMPRA',OC_BOX_X+OC_BOX_W/2,OC_BOX_Y+5,{align:'center'});
+    doc.setFontSize(14);doc.setTextColor(220,38,38);
+    doc.text(oc.numero_oc||'—',OC_BOX_X+OC_BOX_W/2,OC_BOX_Y+13,{align:'center'});
+    doc.setFontSize(8);doc.setTextColor(0,0,0);doc.setFont('helvetica','normal');
+    doc.text('Fecha: '+(oc.fecha_emision?(oc.fecha_emision+'').slice(0,10).split('-').reverse().join('/'):'—'),OC_BOX_X+OC_BOX_W/2,OC_BOX_Y+19,{align:'center'});
+    // Datos empresa a la izquierda — ancho limitado para no cruzarse con la caja OC
+    var EMP_MAX_W=OC_BOX_X-M-3; // espacio disponible antes de la caja blanca
+    doc.setTextColor(252,211,77);doc.setFont('helvetica','bold');
+    // Razón social ajustada según ancho disponible (auto-reducir tamaño si es muy larga)
+    var nombreEmp=emp?emp.razon_social:'EMPRESA';
+    var fontEmp=14;doc.setFontSize(fontEmp);
+    while(doc.getTextWidth(nombreEmp)>EMP_MAX_W&&fontEmp>9){fontEmp--;doc.setFontSize(fontEmp);}
+    doc.text(nombreEmp,M,11);
     doc.setFontSize(8);doc.setTextColor(255,255,255);doc.setFont('helvetica','normal');
     if(emp){
-      doc.text('RUT: '+(emp.rut||'—'),M,17);
-      if(emp.giro)doc.text('Giro: '+emp.giro,M,21);
-      if(emp.direccion)doc.text('Dir: '+emp.direccion,M,25);
+      // RUT y Giro en la misma línea, separados por punto
+      var rutGiro='RUT: '+(emp.rut||'—')+(emp.giro?'  ·  Giro: '+emp.giro:'');
+      var rutGiroL=doc.splitTextToSize(rutGiro,EMP_MAX_W);
+      doc.text(rutGiroL[0]||'',M,17);
+      // Dirección con wrap (máximo 2 líneas)
+      if(emp.direccion){
+        var dirL=doc.splitTextToSize('Dir: '+emp.direccion,EMP_MAX_W);
+        doc.text(dirL[0]||'',M,22);
+        if(dirL[1])doc.text(dirL[1],M,26);
+      }
     }
-    // Caja OC arriba derecha
-    doc.setFillColor(255,255,255);doc.rect(W-58,5,52,20,'F');
-    doc.setTextColor(30,58,45);doc.setFont('helvetica','bold');doc.setFontSize(11);
-    doc.text('ORDEN DE COMPRA',W-56,11);
-    doc.setFontSize(14);doc.setTextColor(220,38,38);
-    doc.text(oc.numero_oc||'—',W-56,18);
-    doc.setFontSize(8);doc.setTextColor(0,0,0);doc.setFont('helvetica','normal');
-    doc.text('Fecha: '+(oc.fecha_emision?(oc.fecha_emision+'').slice(0,10).split('-').reverse().join('/'):'—'),W-56,23);
-    y=34;
-    // ── Proveedor + condiciones ──
-    doc.setFillColor(241,245,249);doc.rect(M,y,W-2*M,22,'F');
-    doc.setTextColor(0,0,0);doc.setFont('helvetica','bold');doc.setFontSize(9);
+    y=HEAD_H+4;
+    // ── Proveedor + condiciones (altura aumentada a 26mm para mejor espacio) ──
+    var SEC_H=26;
+    doc.setFillColor(241,245,249);doc.rect(M,y,W-2*M,SEC_H,'F');
+    // Línea divisoria vertical entre Proveedor y Condiciones
+    doc.setDrawColor(203,213,225);doc.line(W/2+5,y+2,W/2+5,y+SEC_H-2);
+    var PROV_MAX_W=W/2-M-3; // ancho columna proveedor
+    var COND_MAX_W=W/2-M-8; // ancho columna condiciones
+    doc.setTextColor(30,58,45);doc.setFont('helvetica','bold');doc.setFontSize(8);
     doc.text('PROVEEDOR',M+2,y+5);
-    doc.setFont('helvetica','normal');doc.setFontSize(9);
-    doc.text(prov?prov.nombre:'—',M+2,y+10);
-    doc.setFontSize(8);
+    doc.setFont('helvetica','normal');doc.setFontSize(9);doc.setTextColor(0,0,0);
+    var nomProv=prov?prov.nombre:'—';
+    var nomProvL=doc.splitTextToSize(nomProv,PROV_MAX_W);
+    doc.setFont('helvetica','bold');
+    doc.text(nomProvL[0]||'',M+2,y+10);
+    doc.setFont('helvetica','normal');doc.setFontSize(7.5);
     if(prov){
-      doc.text('RUT: '+(prov.rut||'—')+'  ·  Giro: '+(prov.giro||'—'),M+2,y+14);
-      if(prov.direccion)doc.text('Dir: '+prov.direccion,M+2,y+18);
+      // RUT y Giro: en líneas separadas si juntos no caben
+      var rutLabel='RUT: '+(prov.rut||'—');
+      var giroLabel=prov.giro?'Giro: '+prov.giro:'';
+      var combined=rutLabel+(giroLabel?'  ·  '+giroLabel:'');
+      if(doc.getTextWidth(combined)<=PROV_MAX_W){
+        doc.text(combined,M+2,y+14);
+        if(prov.direccion){
+          var dirL=doc.splitTextToSize('Dir: '+prov.direccion,PROV_MAX_W);
+          doc.text(dirL[0]||'',M+2,y+18);
+          if(dirL[1])doc.text(dirL[1],M+2,y+22);
+        }
+      }else{
+        // separar en 2 líneas
+        doc.text(rutLabel,M+2,y+14);
+        if(giroLabel){
+          var giroL=doc.splitTextToSize(giroLabel,PROV_MAX_W);
+          doc.text(giroL[0]||'',M+2,y+18);
+        }
+        if(prov.direccion){
+          var dirL2=doc.splitTextToSize('Dir: '+prov.direccion,PROV_MAX_W);
+          doc.text(dirL2[0]||'',M+2,y+22);
+        }
+      }
     }
-    doc.setFont('helvetica','bold');doc.text('CONDICIONES',W/2+10,y+5);
-    doc.setFont('helvetica','normal');doc.setFontSize(8);
-    doc.text('Solicitante: '+(oc.solicitante||'—'),W/2+10,y+10);
-    doc.text('Retira: '+(oc.retira||'—'),W/2+10,y+14);
-    doc.text('Pago: '+(cond?cond.nombre:'—'),W/2+10,y+18);
-    y+=26;
+    // Condiciones columna derecha
+    doc.setFont('helvetica','bold');doc.setFontSize(8);doc.setTextColor(30,58,45);
+    doc.text('CONDICIONES',W/2+10,y+5);
+    doc.setFont('helvetica','normal');doc.setFontSize(8);doc.setTextColor(0,0,0);
+    var solL=doc.splitTextToSize('Solicitante: '+(oc.solicitante||'—'),COND_MAX_W);
+    doc.text(solL[0]||'',W/2+10,y+10);
+    var retL=doc.splitTextToSize('Retira: '+(oc.retira||'—'),COND_MAX_W);
+    doc.text(retL[0]||'',W/2+10,y+15);
+    var pagoL=doc.splitTextToSize('Pago: '+(cond?cond.nombre:'—'),COND_MAX_W);
+    doc.text(pagoL[0]||'',W/2+10,y+20);
+    y+=SEC_H+4;
     // ── Tabla líneas ──
     doc.setFillColor(30,58,45);doc.rect(M,y,W-2*M,7,'F');
     doc.setTextColor(255,255,255);doc.setFont('helvetica','bold');doc.setFontSize(8);
