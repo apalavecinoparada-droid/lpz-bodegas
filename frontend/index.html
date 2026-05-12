@@ -12108,15 +12108,27 @@ function MobileOC(p){
       var pu=parseFloat(l.precio_unitario)||0;
       var tot=cant*pu;
       if(l.exenta)subTotalExento+=tot;else subTotalAfecto+=tot;
-      if(i%2===1){doc.setFillColor(248,250,252);doc.rect(M,y,W-2*M,6,'F');}
-      doc.text(String(i+1),M+2,y+4);
-      // Descripción con auto-wrap
+      // Construir línea secundaria con clasif/faena/equipo si existen
+      var extras=[];
+      if(l.subcategoria_nombre)extras.push(l.subcategoria_nombre);
+      if(l.faena_nombre)extras.push(l.faena_nombre);
+      if(l.equipo_nombre)extras.push((l.equipo_codigo||'')+(l.equipo_codigo?' — ':'')+l.equipo_nombre);
+      var hasExtras=extras.length>0;
       var descLines=doc.splitTextToSize(l.descripcion||'—',W-78);
+      var rowH=Math.max(6,Math.min(descLines.length,2)*4)+(hasExtras?4:0);
+      if(i%2===1){doc.setFillColor(248,250,252);doc.rect(M,y,W-2*M,rowH,'F');}
+      doc.setTextColor(0,0,0);doc.setFont('helvetica','normal');doc.setFontSize(8);
+      doc.text(String(i+1),M+2,y+4);
       doc.text(descLines.slice(0,2).join('\n'),M+10,y+4);
       doc.text(cant.toLocaleString('es-CL',{maximumFractionDigits:2}),W-58,y+4,{align:'right'});
       doc.text('$'+pu.toLocaleString('es-CL',{maximumFractionDigits:0}),W-38,y+4,{align:'right'});
       doc.text('$'+tot.toLocaleString('es-CL',{maximumFractionDigits:0}),W-M-2,y+4,{align:'right'});
-      var rowH=Math.max(6,Math.min(descLines.length,2)*4);
+      // Línea secundaria con extras (clasif/faena/equipo)
+      if(hasExtras){
+        doc.setFontSize(7);doc.setTextColor(15,118,110);
+        doc.text(extras.join(' · '),M+10,y+rowH-1);
+        doc.setTextColor(0,0,0);doc.setFontSize(8);
+      }
       y+=rowH;
       if(y>260){doc.addPage();y=M;}
     });
@@ -12277,6 +12289,9 @@ function MobileOC(p){
               h('div',{style:{fontSize:11,color:'#64748B'}},
                 (parseFloat(l.cantidad)||0)+' x $'+Math.round(parseFloat(l.precio_unitario)||0).toLocaleString('es-CL'),
                 l.exenta&&h('span',{style:{marginLeft:6,padding:'1px 6px',background:'#FEF3C7',color:'#92400E',borderRadius:8,fontSize:9,fontWeight:600}},'EXENTA')
+              ),
+              (l.subcategoria_nombre||l.faena_nombre||l.equipo_nombre)&&h('div',{style:{fontSize:10,color:'#0F766E',marginTop:3}},
+                [l.subcategoria_nombre&&'🏷 '+l.subcategoria_nombre,l.faena_nombre&&'📍 '+l.faena_nombre,l.equipo_nombre&&'🚜 '+(l.equipo_codigo||'')+(l.equipo_codigo?' — ':'')+l.equipo_nombre].filter(function(x){return x;}).join(' · ')
               )
             );
           })
@@ -12384,6 +12399,37 @@ function MobileOC(p){
             h('div',{style:{textAlign:'right',fontSize:13,fontWeight:700,color:subt>0?'#16A34A':'#94A3B8',marginBottom:6}},
               '$'+Math.round(subt).toLocaleString('es-CL')
             ),
+            // Toggle para expandir/colapsar campos secundarios
+            h('button',{onClick:function(){updLinea(idx,'_expand',!l._expand);},style:{width:'100%',padding:'8px',background:'#F8FAFC',border:'1px dashed #CBD5E1',borderRadius:6,fontSize:11,fontWeight:600,color:'#475569',cursor:'pointer',marginBottom:l._expand?8:6,display:'flex',alignItems:'center',justifyContent:'space-between'}},
+              h('span',null,(l._expand?'▼':'▶')+' Clasificación · Faena · Cargo'),
+              h('span',{style:{fontSize:10,color:'#94A3B8'}},
+                [l.subcategoria_id?'✓':'',l.faena_id?'✓':'',l.equipo_id?'✓':''].filter(function(x){return x;}).length+'/3'
+              )
+            ),
+            l._expand&&h('div',{style:{background:'#F8FAFC',borderRadius:6,padding:8,marginBottom:6}},
+              // Clasificación (subcategoría)
+              h('label',{style:{fontSize:11,color:'#64748B',display:'block',marginBottom:3}},'Clasificación'),
+              h('select',{value:l.subcategoria_id||'',onChange:function(e){updLinea(idx,'subcategoria_id',e.target.value);},style:Object.assign({},inpStyle,{marginBottom:6,fontSize:13})},
+                h('option',{value:''},'— Sin clasificar —'),
+                subcats.map(function(s){return h('option',{key:s.subcategoria_id,value:s.subcategoria_id},s.nombre);})
+              ),
+              // Faena
+              h('label',{style:{fontSize:11,color:'#64748B',display:'block',marginBottom:3}},'Faena'),
+              h('select',{value:l.faena_id||'',onChange:function(e){updLinea(idx,'faena_id',e.target.value);updLinea(idx,'equipo_id','');},style:Object.assign({},inpStyle,{marginBottom:6,fontSize:13})},
+                h('option',{value:''},'— Sin faena —'),
+                faenas.filter(function(f){return !form.empresa_id||String(f.empresa_id)===String(form.empresa_id);}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})
+              ),
+              // Cargo / Equipo
+              h('label',{style:{fontSize:11,color:'#64748B',display:'block',marginBottom:3}},'Cargo / Equipo'),
+              h('select',{value:l.equipo_id||'',onChange:function(e){updLinea(idx,'equipo_id',e.target.value);},style:Object.assign({},inpStyle,{fontSize:13})},
+                h('option',{value:''},'— Sin equipo —'),
+                equipos.filter(function(eq){
+                  if(l.faena_id&&String(eq.faena_id)!==String(l.faena_id))return false;
+                  if(!l.faena_id&&form.empresa_id&&!equipoEnEmpresa(eq,form.empresa_id))return false;
+                  return true;
+                }).sort(function(a,b){return (a.codigo||'').localeCompare(b.codigo||'');}).map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);})
+              )
+            ),
             h('label',{style:{display:'flex',alignItems:'center',gap:6,fontSize:12,color:'#475569'}},
               h('input',{type:'checkbox',checked:!!l.exenta,onChange:function(e){updLinea(idx,'exenta',e.target.checked);}}),
               'Línea exenta de IVA'
@@ -12414,9 +12460,19 @@ function MobileOC(p){
           h('div',{style:{fontSize:11,color:'#64748B',fontWeight:600,marginBottom:6}},'LÍNEAS ('+form.lineas.filter(function(l){return l.descripcion;}).length+')'),
           form.lineas.filter(function(l){return l.descripcion;}).map(function(l,i){
             var st=(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0);
-            return h('div',{key:i,style:{display:'flex',justifyContent:'space-between',padding:'6px 0',borderBottom:'1px solid #F1F5F9',fontSize:12}},
-              h('div',{style:{flex:1}},h('div',{style:{fontWeight:600}},(i+1)+'. '+l.descripcion),h('div',{style:{color:'#64748B',fontSize:11}},(parseFloat(l.cantidad)||0)+' x $'+Math.round(parseFloat(l.precio_unitario)||0).toLocaleString('es-CL'))),
-              h('div',{style:{fontWeight:700,color:'#1E3A2D'}},'$'+Math.round(st).toLocaleString('es-CL'))
+            var sub=subcats.find(function(s){return String(s.subcategoria_id)===String(l.subcategoria_id);});
+            var fae=faenas.find(function(f){return String(f.faena_id)===String(l.faena_id);});
+            var eqL=equipos.find(function(e){return String(e.equipo_id)===String(l.equipo_id);});
+            var extras=[sub&&'🏷 '+sub.nombre,fae&&'📍 '+fae.nombre,eqL&&'🚜 '+eqL.codigo].filter(function(x){return x;}).join(' · ');
+            return h('div',{key:i,style:{padding:'8px 0',borderBottom:'1px solid #F1F5F9'}},
+              h('div',{style:{display:'flex',justifyContent:'space-between',gap:6}},
+                h('div',{style:{flex:1}},
+                  h('div',{style:{fontWeight:600,fontSize:12}},(i+1)+'. '+l.descripcion),
+                  h('div',{style:{color:'#64748B',fontSize:11,marginTop:2}},(parseFloat(l.cantidad)||0)+' x $'+Math.round(parseFloat(l.precio_unitario)||0).toLocaleString('es-CL')),
+                  extras&&h('div',{style:{color:'#0F766E',fontSize:10,marginTop:3}},extras)
+                ),
+                h('div',{style:{fontWeight:700,color:'#1E3A2D',fontSize:13}},'$'+Math.round(st).toLocaleString('es-CL'))
+              )
             );
           })
         ),
