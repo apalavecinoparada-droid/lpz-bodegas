@@ -1086,8 +1086,15 @@ function IngresoView(p){
 }
 
 // ── SALIDA VIEW ──
-// ── Ticket de salida térmico 80mm ────────────────────────────────────────────
-function imprimirTicketSalida(mov, lineas, empresa){
+// ── Ticket de salida térmico (80mm o 58mm) ───────────────────────────────────
+function imprimirTicketSalida(mov, lineas, empresa, ancho){
+  ancho=ancho||'80';
+  var w=ancho==='58'?'58mm':'80mm';
+  var wBody=ancho==='58'?'50mm':'72mm';
+  var fontSize=ancho==='58'?'11px':'12px';
+  var smSize=ancho==='58'?'10px':'11px';
+  var lgSize=ancho==='58'?'12px':'14px';
+  var xlSize=ancho==='58'?'14px':'16px';
   var fmt=function(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));};
   var fmtQty=function(n){var v=parseFloat(n)||0; return v%1===0?String(v):v.toFixed(2);};
   var fmtD=function(d){if(!d)return ''; var s=String(d).slice(0,10); var p=s.split('-'); return p.length===3?p[2]+'-'+p[1]+'-'+p[0]:s;};
@@ -1100,19 +1107,19 @@ function imprimirTicketSalida(mov, lineas, empresa){
 
   var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Ticket Salida #'+mov.movimiento_id+'</title>'+
     '<style>'+
-    '@page{size:80mm auto;margin:0}'+
+    '@page{size:'+w+' auto;margin:0}'+
     '*{box-sizing:border-box}'+
-    'body{margin:0 auto;padding:2mm;font-family:"Consolas","Lucida Console","Courier New",monospace;font-size:12px;font-weight:500;color:#000;line-height:1.5;width:72mm;background:#fff}'+
+    'body{margin:0 auto;padding:2mm;font-family:"Consolas","Lucida Console","Courier New",monospace;font-size:'+fontSize+';font-weight:500;color:#000;line-height:1.5;width:'+wBody+';background:#fff}'+
     '.c{text-align:center}.r{text-align:right}.l{text-align:left}'+
-    '.b{font-weight:bold}.sm{font-size:11px;font-weight:500}.lg{font-size:14px}.xl{font-size:16px}'+
+    '.b{font-weight:bold}.sm{font-size:'+smSize+';font-weight:500}.lg{font-size:'+lgSize+'}.xl{font-size:'+xlSize+'}'+
     '.sep{border-top:1px dashed #000;margin:5px 0;height:0}'+
     '.dsep{border-top:2px solid #000;margin:5px 0;height:0}'+
     '.row{display:flex;justify-content:space-between;gap:6px}'+
     '.linea{margin-bottom:5px;padding-bottom:4px;border-bottom:1px dotted #555}'+
     '.linea:last-child{border-bottom:none}'+
-    '.cod{font-size:11px;font-weight:600;color:#000}'+
-    '.firma{margin-top:24px;border-top:1px solid #000;padding-top:3px;text-align:center;font-size:11px;font-weight:600}'+
-    '@media print{body{margin:0;padding:3mm}}'+
+    '.cod{font-size:'+smSize+';font-weight:600;color:#000}'+
+    '.firma{margin-top:24px;border-top:1px solid #000;padding-top:3px;text-align:center;font-size:'+smSize+';font-weight:600}'+
+    '@media print{body{margin:0 auto;padding:2mm}}'+
     '</style></head><body>'+
     // Header empresa
     '<div class="c b lg">'+empNombre.toUpperCase()+'</div>'+
@@ -1120,7 +1127,7 @@ function imprimirTicketSalida(mov, lineas, empresa){
     (empDir?'<div class="c sm">'+empDir+'</div>':'')+
     '<div class="sep"></div>'+
     // Título y número
-    '<div class="c b" style="font-size:13px;letter-spacing:1px">TICKET DE SALIDA</div>'+
+    '<div class="c b lg" style="letter-spacing:1px">TICKET DE SALIDA</div>'+
     '<div class="c b xl">N° '+mov.movimiento_id+'</div>'+
     '<div class="sep"></div>'+
     // Datos del movimiento
@@ -1159,9 +1166,9 @@ function imprimirTicketSalida(mov, lineas, empresa){
     '<script>window.onload=function(){setTimeout(function(){window.print();},400);};<\/script>'+
     '</body></html>';
 
-  var w=window.open('','_blank','width=400,height=700');
-  if(!w){alert('Permita ventanas emergentes para imprimir');return;}
-  w.document.write(html);w.document.close();w.focus();
+  var w2=window.open('','_blank','width=400,height=700');
+  if(!w2){alert('Permita ventanas emergentes para imprimir');return;}
+  w2.document.write(html);w2.document.close();w2.focus();
 }
 
 function SalidaView(p){
@@ -1222,16 +1229,25 @@ function SalidaView(p){
       {lbl:'Detalle',render:function(r){return h('span',{style:{fontSize:11,color:'#475569',maxWidth:250,display:'inline-block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},title:r.detalle_productos||''},r.detalle_productos||'—');}},
       {lbl:'Total CPP',r:true,render:r=>CLP(r.total||0)},
       {lbl:'Estado',render:r=>h(Bg,{c:r.estado==='ACTIVO'?'g':'r'},r.estado)},
-      {lbl:'',c:true,render:r=>h('div',{style:{display:'flex',gap:4}},
+      {lbl:'',c:true,render:r=>h('div',{style:{display:'flex',gap:4,alignItems:'center'}},
         h('button',{className:'btn btn-blue btn-xs',onClick:function(){
           var emp=(p.m&&p.m.empresas||[]).find(function(e){
             var f=(p.m&&p.m.faenas||[]).find(function(fx){return fx.faena_id===r.faena_id;});
             return f && e.empresa_id===f.empresa_id;
           });
           api('/movimientos/'+r.movimiento_id+'/detalles','GET',null,p.tok).then(function(lineas){
-            imprimirTicketSalida(r,lineas||[],emp||{});
+            imprimirTicketSalida(r,lineas||[],emp||{},'80');
           }).catch(function(e){alert('Error: '+e.message);});
-        },title:'Imprimir ticket de salida'},'🖨'),
+        },title:'Imprimir ticket 80mm'},'🖨 80'),
+        h('button',{className:'btn btn-blue btn-xs',onClick:function(){
+          var emp=(p.m&&p.m.empresas||[]).find(function(e){
+            var f=(p.m&&p.m.faenas||[]).find(function(fx){return fx.faena_id===r.faena_id;});
+            return f && e.empresa_id===f.empresa_id;
+          });
+          api('/movimientos/'+r.movimiento_id+'/detalles','GET',null,p.tok).then(function(lineas){
+            imprimirTicketSalida(r,lineas||[],emp||{},'58');
+          }).catch(function(e){alert('Error: '+e.message);});
+        },title:'Imprimir ticket 58mm'},'🖨 58'),
         r.estado==='ACTIVO'&&h('button',{className:'btn btn-teal btn-xs',onClick:function(){openLinkOTSalida(r);},title:'Enlazar a Orden de Trabajo'},'🔗 OT'),
         r.estado==='ACTIVO'&&h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular')
       )}
