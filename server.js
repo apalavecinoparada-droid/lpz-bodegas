@@ -1891,6 +1891,8 @@ ocR.patch('/:id/reabrir', auth, async(req,res)=>{
         }
       }
       await client.query('DELETE FROM movimiento_detalle WHERE movimiento_id=$1',[oc.movimiento_id]);
+      // Liberar FK de la OC antes de borrar el encabezado
+      await client.query('UPDATE ordenes_compra SET movimiento_id=NULL WHERE oc_id=$1',[req.params.id]);
       await client.query('DELETE FROM movimiento_encabezado WHERE movimiento_id=$1',[oc.movimiento_id]);
       infoRevert.mov_inventario=true;
     }
@@ -1965,6 +1967,8 @@ ocR.delete('/:id', auth, async(req,res)=>{
         }
       }
       await client.query('DELETE FROM movimiento_detalle WHERE movimiento_id=$1',[oc.movimiento_id]);
+      // Liberar FK de la OC antes de borrar el encabezado
+      await client.query('UPDATE ordenes_compra SET movimiento_id=NULL WHERE oc_id=$1',[req.params.id]);
       await client.query('DELETE FROM movimiento_encabezado WHERE movimiento_id=$1',[oc.movimiento_id]);
     }
     // 2) Revertir movimientos de combustible si hay
