@@ -1853,6 +1853,65 @@ ocR.patch('/:id/cerrar', auth, async(req,res)=>{
     res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
 });
+ocR.patch('/:id/reabrir', auth, async(req,res)=>{
+  // Reabre una OC CERRADA, revirtiendo el ingreso a inventario si lo hubo.
+  // Solo administradores. Permite reabrir aunque haya salidas posteriores
+  // (el stock puede quedar negativo y el admin lo ajusta manualmente).
+  const client=await pool.connect();
+  try{
+    // Validación de rol admin
+    const rol=(req.user.rol||'').toUpperCase();
+    if(rol!=='ADMINISTRADOR') return res.status(403).json({error:'Solo administradores pueden reabrir órdenes de compra'});
+    await client.query('BEGIN');
+    const chk=await client.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
+    if(!chk.rows.length){ await client.query('ROLLBACK'); return res.status(404).json({error:'OC no encontrada'}); }
+    const oc=chk.rows[0];
+    if(oc.estado==='PENDIENTE'){ await client.query('ROLLBACK'); return res.status(400).json({error:'La OC ya está en estado PENDIENTE'}); }
+    if(oc.estado==='ANULADA'){ await client.query('ROLLBACK'); return res.status(400).json({error:'No se puede reabrir una OC anulada'}); }
+    let infoRevert={mov_inventario:false,mov_combustible:0,salidas_posteriores:0};
+    // 1) Revertir movimientos de inventario (bodega) si los hay
+    if(oc.movimiento_id){
+      // Detectar si hubo salidas/transferencias posteriores con esos productos (informativo)
+      const dets=await client.query('SELECT producto_id FROM movimiento_detalle WHERE movimiento_id=$1',[oc.movimiento_id]);
+      if(dets.rows.length){
+        const pids=dets.rows.map(function(d){return d.producto_id;});
+        const sal=await client.query("SELECT COUNT(*)::int AS n FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE me.tipo_movimiento IN ('SALIDA','TRANSFER') AND me.estado='ACTIVO' AND md.producto_id=ANY($1) AND me.movimiento_id>$2",[pids,oc.movimiento_id]);
+        infoRevert.salidas_posteriores=sal.rows[0].n||0;
+      }
+      const detsFull=await client.query('SELECT * FROM movimiento_detalle WHERE movimiento_id=$1',[oc.movimiento_id]);
+      const enc=await client.query('SELECT * FROM movimiento_encabezado WHERE movimiento_id=$1',[oc.movimiento_id]);
+      const bodegaId=enc.rows.length?enc.rows[0].bodega_id:null;
+      for(const d of detsFull.rows){
+        const pid=d.producto_id,qty=parseFloat(d.cantidad)||0;
+        const lineaDet=await client.query('SELECT bodega_destino_id FROM ordenes_compra_detalle WHERE oc_id=$1 AND producto_id=$2 LIMIT 1',[req.params.id,pid]);
+        const bodDest=(lineaDet.rows[0]||{}).bodega_destino_id||bodegaId;
+        if(bodDest){
+          // Restar del stock (puede quedar negativo si ya se distribuyó - admin lo sabrá)
+          await client.query('UPDATE stock_actual SET cantidad_disponible=cantidad_disponible-$1,ultima_actualizacion=NOW() WHERE producto_id=$2 AND bodega_id=$3',[qty,pid,bodDest]);
+        }
+      }
+      await client.query('DELETE FROM movimiento_detalle WHERE movimiento_id=$1',[oc.movimiento_id]);
+      await client.query('DELETE FROM movimiento_encabezado WHERE movimiento_id=$1',[oc.movimiento_id]);
+      infoRevert.mov_inventario=true;
+    }
+    // 2) Revertir movimientos de combustible si los hay
+    if(oc.numero_oc){
+      const combMovs=await client.query("SELECT * FROM comb_movimientos WHERE oc_referencia=$1 AND estado='ACTIVO'",[oc.numero_oc]);
+      for(const mv of combMovs.rows){
+        if(mv.estanque_destino_id&&mv.tipo_id){
+          await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles-$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[parseFloat(mv.litros),mv.estanque_destino_id,mv.tipo_id]);
+        }
+        await client.query("UPDATE comb_movimientos SET estado='ANULADO',anulado_en=NOW(),anulado_por=$1,motivo_anulacion='OC reabierta por administrador' WHERE mov_id=$2",[req.user.email,mv.mov_id]);
+      }
+      infoRevert.mov_combustible=combMovs.rows.length;
+    }
+    // 3) Volver a PENDIENTE y limpiar campos de cierre/recepción
+    await client.query("UPDATE ordenes_compra SET estado='PENDIENTE',tipo_doc_id=NULL,numero_documento=NULL,fecha_documento=NULL,movimiento_id=NULL,recibido_en=NULL,bodega_ingreso_id=NULL,modificado_en=NOW() WHERE oc_id=$1",[req.params.id]);
+    await client.query('COMMIT');
+    res.json({ok:true,info:infoRevert});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
 ocR.patch('/:id/anular', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
