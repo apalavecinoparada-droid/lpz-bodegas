@@ -4169,7 +4169,7 @@ function OCView(p){
           r.estado==='CERRADA'&&!r.recibido_en&&!r.movimiento_id&&h('button',{className:'btn btn-teal btn-xs',onClick:function(){
             api('/ordenes-compra/'+r.oc_id,'GET',null,p.tok).then(function(full){setRecibirOC(full);}).catch(function(ex){alert(ex.message);});
           }},'Recibir'),
-          r.estado==='CERRADA'&&!r.recibido_en&&!r.movimiento_id&&h('button',{className:'btn btn-a btn-xs',onClick:function(){setReabrirOC(r);}},null,'↩ Reabrir'),
+          r.estado==='CERRADA'&&p.user&&(p.user.es_admin||p.user.rol==='ADMINISTRADOR'||p.user.rol==='Administrador')&&h('button',{className:'btn btn-a btn-xs',onClick:function(){setReabrirOC(r);},title:r.movimiento_id||r.recibido_en?'Reabrir OC recibida (revierte stock)':'Reabrir OC cerrada'},null,'↩ Reabrir'),
           r.estado==='CERRADA'&&(r.movimiento_id||r.recibido_en)&&h(Bg,{c:'teal'},'Recibida'),
           r.estado==='CERRADA'&&h('button',{className:'btn btn-teal btn-xs',onClick:function(){openLinkOT(r);},title:'Vincular líneas de esta OC a Órdenes de Trabajo de mantención'},'🔗 OT'),
           (r.estado==='CERRADA'||r.estado==='PENDIENTE')&&h('button',{className:'btn btn-g btn-xs',onClick:function(){openDoc(r);}},'Ver')
@@ -4213,14 +4213,26 @@ function OCView(p){
 // ── OC REABRIR MODAL ──
 function OCReabrirModal(p){
   const[motivo,setMotivo]=useState('');const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
+  const yaRecibida=!!(p.oc.movimiento_id||p.oc.recibido_en);
   function save(){
     setErr('');if(!motivo.trim()){setErr('Ingrese el motivo');return;}setSaving(true);
-    api('/ordenes-compra/'+p.oc.oc_id+'/reabrir','PATCH',{motivo:motivo},p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
+    api('/ordenes-compra/'+p.oc.oc_id+'/reabrir','PATCH',{motivo:motivo},p.tok).then(function(r){
+      var inf=r&&r.info;
+      if(inf&&inf.salidas_posteriores>0){
+        alert('OC reabierta. ATENCIÓN: hubo '+inf.salidas_posteriores+' salida(s)/transferencia(s) posterior(es) con esos productos. El stock puede haber quedado negativo en algunas bodegas — revíselo y ajuste manualmente.');
+      }
+      p.onSave();
+    }).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
   }
   return h(Modal,{title:'Reabrir OC '+str(p.oc.numero_oc),onClose:p.onClose},
     h(EB,null,
       h('div',{className:'mb'},
-        h('div',{className:'al al-w',style:{marginBottom:12}},'La OC volvera a estado PENDIENTE. Los datos del documento tributario seran eliminados. Si ya genero ingreso a bodega, no se puede reabrir.'),
+        yaRecibida
+          ? h('div',{className:'al al-w',style:{marginBottom:12}},
+              h('div',{style:{fontWeight:700,marginBottom:4}},'⚠ Esta OC ya fue recibida en bodega'),
+              h('div',null,'Al reabrir: la OC vuelve a PENDIENTE, se eliminan los datos del documento tributario, se revierte el ingreso al inventario (stock se descuenta) y se anulan los movimientos de combustible asociados. Si ya hubo salidas o transferencias posteriores con esos productos, el stock puede quedar negativo y debe ajustarlo manualmente.')
+            )
+          : h('div',{className:'al al-w',style:{marginBottom:12}},'La OC volverá a estado PENDIENTE. Los datos del documento tributario serán eliminados.'),
         err&&h('div',{className:'al al-e'},err),
         h(FR,{label:'Motivo de reapertura',req:true},h('textarea',{value:motivo,onChange:function(e){setMotivo(e.target.value);},rows:3,style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,resize:'vertical'},placeholder:'Describa el motivo...'}))
       ),
