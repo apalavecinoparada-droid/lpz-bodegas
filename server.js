@@ -255,11 +255,33 @@ app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'frontend')));
 
-function auth(req, res, next) {
+async function auth(req, res, next) {
   const h = req.headers.authorization;
   if (!h) return res.status(401).json({ error: 'No autorizado' });
-  try { req.user = jwt.verify(h.split(' ')[1], JWT_SECRET); next(); }
-  catch { res.status(401).json({ error: 'Token invalido' }); }
+  try {
+    req.user = jwt.verify(h.split(' ')[1], JWT_SECRET);
+    // Compatibilidad: tokens emitidos antes del cambio que agregó "modulos" al JWT
+    // pueden venir sin esa propiedad. En ese caso, refrescamos desde la BD para
+    // que los middlewares de requireModulo() funcionen correctamente sin forzar
+    // a todos los usuarios a relogarse.
+    if (req.user.modulos === undefined || req.user.modulos === null) {
+      try {
+        const r = await pool.query(
+          'SELECT ro.modulos, ro.es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',
+          [req.user.id]
+        );
+        if (r.rows.length) {
+          req.user.modulos = r.rows[0].modulos || [];
+          if (r.rows[0].es_admin) req.user.es_admin = true;
+        } else {
+          req.user.modulos = [];
+        }
+      } catch (e) {
+        req.user.modulos = [];
+      }
+    }
+    next();
+  } catch { res.status(401).json({ error: 'Token invalido' }); }
 }
 
 // Middleware que valida que el usuario tenga acceso a un módulo específico
