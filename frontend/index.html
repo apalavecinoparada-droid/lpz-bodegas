@@ -7609,6 +7609,8 @@ function MantOTDetalle(p){
             return h('div',{style:{padding:'8px 12px',fontSize:11,color:'#94A3B8'}},'Se calcula automáticamente (',hrsProd,'h/día)');
           })()
         ),
+        h('div',{style:{gridColumn:'1/-1',borderTop:'1px dashed #CBD5E1',paddingTop:8,marginTop:4}},h('div',{style:{fontWeight:600,fontSize:12,color:'#475569',marginBottom:6}},'📝 Diagnóstico y trabajo')),
+        h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Síntoma reportado'),h('textarea',{value:form.sintoma_reportado||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{sintoma_reportado:e.target.value});});},rows:2,style:Object.assign({},inpS,{resize:'vertical'}),placeholder:'Descripción del problema reportado al momento de abrir la OT'})),
         h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Diagnóstico'),h('textarea',{value:form.diagnostico||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{diagnostico:e.target.value});});},rows:2,style:Object.assign({},inpS,{resize:'vertical'})})),
         h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Trabajo realizado'),h('textarea',{value:form.trabajo_realizado||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{trabajo_realizado:e.target.value});});},rows:2,style:Object.assign({},inpS,{resize:'vertical'})}))
       )
@@ -12054,7 +12056,7 @@ function MobileHome(p){
     {id:'solicitudes',icon:'📋',label:'Solicitudes',sub:'Nueva solicitud',mod:'solicitudes'},
     {id:'rendiciones',icon:'💰',label:'Rendiciones',sub:'Registrar gasto',mod:'rendiciones'}
   ];
-  function canSee(mod){if(!p.user)return false;if(p.user.es_admin)return true;if(!p.user.modulos||p.user.modulos.length===0)return true;return p.user.modulos.indexOf(mod)>=0;}
+  function canSee(mod){if(!p.user)return false;if(p.user.es_admin)return true;if(!p.user.modulos||p.user.modulos.length===0)return false;return p.user.modulos.indexOf(mod)>=0;}
   var accesibles=ACCIONES.filter(function(a){return canSee(a.mod);});
   return h('div',{className:'mob-home'},
     h('div',{className:'mob-header'},
@@ -12505,6 +12507,7 @@ function MobileOC(p){
           h('button',{onClick:descargarPDF,style:{flex:1,padding:'12px',background:'#1E40AF',color:'#fff',border:'none',borderRadius:8,fontSize:13,fontWeight:700,cursor:'pointer'}},'⬇ Descargar')
         ),
         h('button',{onClick:function(){setModo('detalle');},style:{width:'100%',padding:'10px',background:'#F1F5F9',color:'#1E3A2D',border:'1px solid #CBD5E1',borderRadius:8,fontSize:13,cursor:'pointer'}},'Ver detalle completo'),
+        h('button',{onClick:function(){setOcSel(null);abrirWizard();},style:{width:'100%',padding:'12px',background:'#1E3A2D',color:'#D4C5A9',border:'none',borderRadius:8,fontSize:14,fontWeight:700,cursor:'pointer',marginTop:4}},'➕ Crear otra OC'),
         h('button',{onClick:function(){setModo('lista');setOcSel(null);},style:{width:'100%',padding:'10px',background:'transparent',color:'#64748B',border:'none',fontSize:12,cursor:'pointer'}},'Volver al inicio')
       )
     );
@@ -14823,7 +14826,25 @@ function App(){
   // Check token expiration on load
   if(st){try{var payload=JSON.parse(atob(st.split('.')[1]));if(payload.exp&&payload.exp*1000<Date.now()){st=null;su=null;localStorage.removeItem('lpz_token');localStorage.removeItem('lpz_user');}}catch(e){st=null;su=null;localStorage.removeItem('lpz_token');localStorage.removeItem('lpz_user');}}
   const[tok,setTok]=useState(st);const[user,setUser]=useState(su);
-  const[view,setView]=useState('ordenes');
+  const[view,setView]=useState(function(){
+    // Default view inteligente: si el usuario no es admin y no tiene 'ordenes' en sus módulos,
+    // arrancar en la primera vista permitida. Usa los datos del localStorage (su).
+    if(!su)return 'ordenes';
+    if(su.es_admin)return 'ordenes';
+    var mods=su.modulos||[];
+    if(mods.indexOf('ordenes')>=0)return 'ordenes';
+    if(mods.indexOf('inventario')>=0)return 'panel';
+    if(mods.indexOf('rendiciones')>=0)return 'rendiciones';
+    if(mods.indexOf('terreno')>=0)return 'terreno';
+    if(mods.indexOf('solicitudes')>=0)return 'solicitudes';
+    if(mods.indexOf('mantencion')>=0)return 'mant-panel';
+    if(mods.indexOf('combustibles')>=0)return 'comb-panel';
+    if(mods.indexOf('personal')>=0)return 'personal';
+    if(mods.indexOf('transporte')>=0)return 'transporte';
+    if(mods.indexOf('mantenedores')>=0)return 'mantenedores';
+    if(mods.indexOf('finanzas')>=0)return 'finanzas';
+    return 'sin-permiso';
+  });
   const[m,setM]=useState({bodegas:[],cats:[],subcats:[],prods:[],faenas:[],equipos:[],provs:[],tdocs:[],motivos:[],empresas:[],conds:[]});
   const[alerts,setAlerts]=useState(0);const[refresh,setRefresh]=useState(0);
   const[grp,setGrp]=useState({oc:false,comb:false,inv:false,mant:false,man:false,sys:false,sol:false,fin:false,terr:false,rend:false,pers:false,trans:false,rem:false});
@@ -14960,7 +14981,53 @@ function App(){
   // ── DESKTOP MODE ──
   function navI(id,icon,label,sub){return h('div',{key:id,className:'nav '+(view===id?'on':''),style:{paddingLeft:sub?22:12},onClick:function(){setView(id);setMenuOpen(false);}},h('span',{style:{fontSize:11}},icon),' ',label,(id==='stock'&&alerts>0)?h('span',{className:'cnt'},alerts):null);}
   const grpHdr=(k,label)=>h('div',{className:'sb-grp',onClick:function(){toggleGrp(k);}},label,h('span',{className:'sb-grp-arrow '+(grp[k]?'open':'')},'>'));
-  function canSee(mod){if(!user)return false;if(user.es_admin)return true;if(!user.modulos||user.modulos.length===0)return true;return user.modulos.indexOf(mod)>=0;}
+  function canSee(mod){if(!user)return false;if(user.es_admin)return true;if(!user.modulos||user.modulos.length===0)return false;return user.modulos.indexOf(mod)>=0;}
+  // Mapa view → módulo requerido. Si la view no está aquí, no requiere módulo.
+  const VIEW_MOD={
+    'ordenes':'ordenes','oc-guias':'ordenes','dte-recibidos':'ordenes',
+    'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
+    'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-reportes':'inventario',
+    'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion',
+    'rendiciones':'rendiciones',
+    'terreno':'terreno','terreno-equipos':'terreno','terreno-faena':'terreno','terreno-reportes':'terreno',
+    'solicitudes':'solicitudes',
+    'transporte':'transporte',
+    'personal':'personal','contratos':'personal','vacaciones':'personal','finiquitos':'personal','cartas':'personal',
+    'mantenedores':'mantenedores',
+    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas',
+    'rem-parametros':'remuneraciones','rem-periodos':'remuneraciones','rem-movimientos':'remuneraciones','rem-liquidaciones':'remuneraciones','rem-prestamos':'remuneraciones','rem-previred':'remuneraciones','rem-prevision':'remuneraciones'
+  };
+  function viewAllowed(v){
+    if(!user)return false;
+    if(user.es_admin)return true;
+    var m=VIEW_MOD[v];
+    if(!m)return true;
+    return canSee(m);
+  }
+  function firstAllowedView(){
+    if(!user)return 'ordenes';
+    if(user.es_admin)return 'ordenes';
+    var mods=user.modulos||[];
+    if(mods.indexOf('ordenes')>=0)return 'ordenes';
+    if(mods.indexOf('inventario')>=0)return 'panel';
+    if(mods.indexOf('rendiciones')>=0)return 'rendiciones';
+    if(mods.indexOf('terreno')>=0)return 'terreno';
+    if(mods.indexOf('solicitudes')>=0)return 'solicitudes';
+    if(mods.indexOf('mantencion')>=0)return 'mant-panel';
+    if(mods.indexOf('combustibles')>=0)return 'comb-panel';
+    if(mods.indexOf('personal')>=0)return 'personal';
+    if(mods.indexOf('transporte')>=0)return 'transporte';
+    if(mods.indexOf('mantenedores')>=0)return 'mantenedores';
+    if(mods.indexOf('finanzas')>=0)return 'finanzas';
+    return 'sin-permiso';
+  }
+  // Si la vista actual no es permitida, redirigir a la primera permitida
+  useEffect(function(){
+    if(user&&!viewAllowed(view)){
+      var v=firstAllowedView();
+      if(v!==view)setView(v);
+    }
+  },[user,view]);
 
   return h('div',{id:'root'},
     h('button',{className:'hamburger',onClick:function(){setMenuOpen(!menuOpen);}},'☰'),
@@ -15072,6 +15139,15 @@ function App(){
       ),
       h('div',{className:'content'},
         h(EB,null,
+          view==='sin-permiso'?h('div',{style:{textAlign:'center',padding:60,color:'#64748B'}},
+            h('div',{style:{fontSize:48,marginBottom:16}},'🔒'),
+            h('h3',{style:{fontSize:18,color:'#334155',marginBottom:8}},'Sin permisos asignados'),
+            h('p',null,'Tu usuario no tiene módulos habilitados. Contacta a un administrador.')
+          ):!viewAllowed(view)?h('div',{style:{textAlign:'center',padding:60,color:'#64748B'}},
+            h('div',{style:{fontSize:48,marginBottom:16}},'🔒'),
+            h('h3',{style:{fontSize:18,color:'#334155',marginBottom:8}},'Acceso restringido'),
+            h('p',null,'No tienes permiso para acceder a esta sección.')
+          ):h(React.Fragment,null,
           view==='comb-tipos'&&h(CombTiposAdmin,{tok,m}),
           view==='comb-kardex'&&h(CombKardex,{tok,m}),
           view==='comb-panel'&&h(CombPanel,{tok,m}),
@@ -15157,7 +15233,8 @@ function App(){
           view==='condpago'&&h(MasterV,{tok,onMov,titulo:'Condicion de Pago',ep:'condiciones-pago',pk:'condicion_id',Form:CondPagoForm,importKey:'condpago',blank:{nombre:'',descripcion:'',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
           view==='tdocs'&&h(MasterV,{tok,onMov,titulo:'Tipo de Documento',ep:'tipos-documento',pk:'tipo_doc_id',Form:p=>h('div',{className:'g2'},h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange,ph:'FAC,GD...'}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange})),blank:{codigo:'',nombre:'',activo:true},cols:[{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'}]}),
           view==='motivos'&&h(MasterV,{tok,onMov,titulo:'Motivo',ep:'motivos',pk:'motivo_id',Form:p=>h('div',{className:'g2'},h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FS,{k:'tipo',l:'Tipo',req:true,item:p.item,onChange:p.onChange,opts:[{v:'SALIDA',l:'SALIDA'},{v:'INGRESO',l:'INGRESO'},{v:'AJUSTE',l:'AJUSTE'}]})),blank:{nombre:'',tipo:'SALIDA',activo:true},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Tipo',k:'tipo'}]}),
-          view==='usuarios'&&h(UsuariosView,{tok,m}),
+          view==='usuarios'&&h(UsuariosView,{tok,m})
+          )
         )
       )
     )
