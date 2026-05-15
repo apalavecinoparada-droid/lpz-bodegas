@@ -6796,6 +6796,168 @@ app.delete('/api/dte-recibidos/:id', auth, async(req,res)=>{
   }catch(e){res.status(400).json({error:e.message});}
 });
 
+// ════════════════════════════════════════════════════════════════════
+// BANDEJA DTE-OC: pantalla unificada de revisión y vinculación masiva
+// ════════════════════════════════════════════════════════════════════
+
+// GET: todo lo necesario para la bandeja en una sola llamada
+//      Retorna 3 grupos: dtes_con_candidatos, ocs_incompletas, dtes_sin_candidatos
+app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
+  try{
+    // ❶ DTEs sin vincular CON al menos una OC candidata (sugerencias para vincular)
+    var sql1 = `
+      SELECT 
+        dte.dte_id, dte.folio, dte.tipo_dte, dte.fecha_emision, dte.total::numeric(14,0) AS dte_total,
+        dte.proveedor_id, dte.empresa_id,
+        pr.nombre AS proveedor_nombre,
+        emp.razon_social AS empresa_nombre,
+        json_agg(
+          json_build_object(
+            'oc_id', oc.oc_id,
+            'numero_oc', oc.numero_oc,
+            'fecha_emision', oc.fecha_emision,
+            'total', oc.total::numeric(14,0),
+            'diferencia', ABS(oc.total - dte.total)::numeric(14,0),
+            'dias_oc_a_dte', (dte.fecha_emision - oc.fecha_emision)::int,
+            'confianza', CASE 
+              WHEN ABS(oc.total - dte.total) < 1 THEN 'ALTO'
+              WHEN ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.01 THEN 'MEDIO'
+              ELSE 'BAJO' END,
+            'lineas_completas', NOT EXISTS (
+              SELECT 1 FROM ordenes_compra_detalle d 
+              WHERE d.oc_id=oc.oc_id 
+                AND (d.subcategoria_id IS NULL OR d.faena_id IS NULL OR d.equipo_id IS NULL)
+            )
+          )
+          ORDER BY ABS(oc.total - dte.total)
+        ) AS candidatos
+      FROM dte_recibidos dte
+      LEFT JOIN proveedores pr ON dte.proveedor_id=pr.proveedor_id
+      LEFT JOIN empresas emp ON dte.empresa_id=emp.empresa_id
+      JOIN ordenes_compra oc ON oc.proveedor_id = dte.proveedor_id
+        AND oc.estado = 'PENDIENTE'
+        AND ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.05
+        AND dte.fecha_emision >= oc.fecha_emision
+        AND dte.fecha_emision <= oc.fecha_emision + INTERVAL '180 days'
+      WHERE NOT EXISTS (SELECT 1 FROM dte_oc WHERE dte_id=dte.dte_id)
+        AND (dte.observaciones IS NULL OR dte.observaciones NOT LIKE '%[GASTO SIN OC]%')
+      GROUP BY dte.dte_id, dte.folio, dte.tipo_dte, dte.fecha_emision, dte.total, dte.proveedor_id, dte.empresa_id, pr.nombre, emp.razon_social
+      ORDER BY dte.fecha_emision DESC NULLS LAST
+      LIMIT 200`;
+    var r1 = await pool.query(sql1);
+
+    // ❷ OCs vinculadas con DTE pero con datos incompletos (faltan faena/equipo/subcat)
+    var sql2 = `
+      SELECT 
+        oc.oc_id, oc.numero_oc, oc.fecha_emision, oc.total::numeric(14,0) AS oc_total, oc.estado,
+        pr.nombre AS proveedor_nombre,
+        emp.razon_social AS empresa_nombre,
+        dte.folio AS dte_folio, dte.tipo_dte,
+        COUNT(d.detalle_id) AS n_lineas,
+        COUNT(*) FILTER (WHERE d.subcategoria_id IS NULL) AS sin_subcat,
+        COUNT(*) FILTER (WHERE d.faena_id IS NULL) AS sin_faena,
+        COUNT(*) FILTER (WHERE d.equipo_id IS NULL) AS sin_equipo
+      FROM ordenes_compra oc
+      JOIN dte_oc lnk ON lnk.oc_id=oc.oc_id
+      JOIN dte_recibidos dte ON dte.dte_id=lnk.dte_id
+      LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
+      LEFT JOIN empresas emp ON oc.empresa_id=emp.empresa_id
+      JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
+      WHERE oc.estado='PENDIENTE'
+      GROUP BY oc.oc_id, oc.numero_oc, oc.fecha_emision, oc.total, oc.estado, pr.nombre, emp.razon_social, dte.folio, dte.tipo_dte
+      HAVING COUNT(*) FILTER (WHERE d.subcategoria_id IS NULL OR d.faena_id IS NULL OR d.equipo_id IS NULL) > 0
+      ORDER BY oc.fecha_emision DESC
+      LIMIT 200`;
+    var r2 = await pool.query(sql2);
+
+    // ❸ DTEs sin ninguna OC candidata (gastos directos sin OC previa)
+    var sql3 = `
+      SELECT 
+        dte.dte_id, dte.folio, dte.tipo_dte, dte.fecha_emision, dte.total::numeric(14,0) AS dte_total,
+        dte.proveedor_id, dte.empresa_id, dte.observaciones,
+        pr.nombre AS proveedor_nombre,
+        emp.razon_social AS empresa_nombre
+      FROM dte_recibidos dte
+      LEFT JOIN proveedores pr ON dte.proveedor_id=pr.proveedor_id
+      LEFT JOIN empresas emp ON dte.empresa_id=emp.empresa_id
+      WHERE NOT EXISTS (SELECT 1 FROM dte_oc WHERE dte_id=dte.dte_id)
+        AND (dte.observaciones IS NULL OR dte.observaciones NOT LIKE '%[GASTO SIN OC]%')
+        AND NOT EXISTS (
+          SELECT 1 FROM ordenes_compra oc
+          WHERE oc.proveedor_id=dte.proveedor_id AND oc.estado='PENDIENTE'
+            AND ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.05
+            AND dte.fecha_emision BETWEEN oc.fecha_emision AND oc.fecha_emision + INTERVAL '180 days'
+        )
+      ORDER BY dte.fecha_emision DESC NULLS LAST
+      LIMIT 300`;
+    var r3 = await pool.query(sql3);
+
+    res.json({
+      dtes_con_candidatos: r1.rows,
+      ocs_incompletas: r2.rows,
+      dtes_sin_candidatos: r3.rows
+    });
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// POST: vincular un DTE a una o varias OCs (caso N:M)
+// Body: { dte_id, vinculos: [{oc_id, monto_aplicado, observacion?}] }
+app.post('/api/bandeja-dte-oc/vincular', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    var b=req.body;
+    if(!b.dte_id || !Array.isArray(b.vinculos) || !b.vinculos.length){
+      return res.status(400).json({error:'Se requiere dte_id y vinculos[]'});
+    }
+    await client.query('BEGIN');
+    // Verificar que el DTE exista
+    var dte=await client.query('SELECT * FROM dte_recibidos WHERE dte_id=$1',[b.dte_id]);
+    if(!dte.rows.length){await client.query('ROLLBACK');return res.status(404).json({error:'DTE no encontrado'});}
+    var creados=[];
+    for(var i=0;i<b.vinculos.length;i++){
+      var v=b.vinculos[i];
+      if(!v.oc_id||!v.monto_aplicado||parseFloat(v.monto_aplicado)<=0){
+        await client.query('ROLLBACK');
+        return res.status(400).json({error:'Cada vinculo requiere oc_id y monto_aplicado > 0'});
+      }
+      // Verificar OC y que no esté ya vinculada a este DTE
+      var oc=await client.query('SELECT oc_id, total FROM ordenes_compra WHERE oc_id=$1',[v.oc_id]);
+      if(!oc.rows.length){await client.query('ROLLBACK');return res.status(404).json({error:'OC '+v.oc_id+' no existe'});}
+      var dup=await client.query('SELECT rel_id FROM dte_oc WHERE dte_id=$1 AND oc_id=$2',[b.dte_id,v.oc_id]);
+      if(dup.rows.length){await client.query('ROLLBACK');return res.status(400).json({error:'OC '+v.oc_id+' ya está vinculada a este DTE'});}
+      var ins=await client.query(
+        'INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5) RETURNING *',
+        [b.dte_id, v.oc_id, parseFloat(v.monto_aplicado), v.observacion||'Vinculación desde bandeja', req.user.email]
+      );
+      creados.push(ins.rows[0]);
+    }
+    await client.query('COMMIT');
+    res.json({ok:true, vinculos_creados:creados.length, detalle:creados});
+  }catch(e){
+    await client.query('ROLLBACK');
+    res.status(400).json({error:e.message});
+  }finally{client.release();}
+});
+
+// POST: marcar un DTE como gasto directo sin OC (caso COPEC, peajes, telecom, etc)
+// Agrega una observación al DTE para que no vuelva a aparecer en la bandeja como "pendiente de vincular"
+app.post('/api/bandeja-dte-oc/marcar-sin-oc', auth, async(req,res)=>{
+  try{
+    if(!req.body.dte_id)return res.status(400).json({error:'dte_id requerido'});
+    var motivo=(req.body.motivo||'').trim();
+    var marca='[GASTO SIN OC] '+(motivo||'Gasto operativo directo')+' — '+req.user.email+' '+new Date().toISOString().slice(0,10);
+    var r=await pool.query(
+      `UPDATE dte_recibidos SET observaciones = CASE 
+         WHEN observaciones IS NULL OR observaciones = '' THEN $1 
+         ELSE observaciones || E'\n' || $1 END
+       WHERE dte_id=$2 RETURNING *`,
+      [marca, req.body.dte_id]
+    );
+    if(!r.rows.length)return res.status(404).json({error:'DTE no encontrado'});
+    res.json({ok:true, dte:r.rows[0]});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 // POST: re-detectar empresa de DTEs por RUT del receptor (útil para DTEs ya importados sin empresa)
 app.post('/api/dte-recibidos/redetectar-empresa', auth, async(req,res)=>{
   try{
