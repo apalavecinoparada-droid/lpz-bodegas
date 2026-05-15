@@ -6729,6 +6729,52 @@ app.post('/api/dte-recibidos/import', auth, async(req,res)=>{
       }
     }
     await client.query('COMMIT');
+    // Tras importar exitosamente, calcular OCs candidatas para los DTEs NUEVOS
+    // (esto permite vincularlos en el flujo de importación sin pasar por la bandeja)
+    if(resumen.importados>0){
+      var idsImportados=resumen.detalles.filter(function(x){return x.status==='importado';}).map(function(x){return x.dte_id;});
+      if(idsImportados.length){
+        var cand=await pool.query(`
+          SELECT 
+            dte.dte_id, dte.folio, dte.tipo_dte, dte.fecha_emision,
+            dte.total::numeric(14,0) AS dte_total,
+            pr.nombre AS proveedor_nombre,
+            emp.razon_social AS empresa_nombre,
+            json_agg(
+              json_build_object(
+                'oc_id', oc.oc_id,
+                'numero_oc', oc.numero_oc,
+                'fecha_emision', oc.fecha_emision,
+                'total', oc.total::numeric(14,0),
+                'diferencia', ABS(oc.total - dte.total)::numeric(14,0),
+                'dias_oc_a_dte', (dte.fecha_emision - oc.fecha_emision)::int,
+                'confianza', CASE 
+                  WHEN ABS(oc.total - dte.total) < 1 THEN 'ALTO'
+                  WHEN ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.01 THEN 'MEDIO'
+                  ELSE 'BAJO' END,
+                'lineas_completas', NOT EXISTS (
+                  SELECT 1 FROM ordenes_compra_detalle d 
+                  WHERE d.oc_id=oc.oc_id 
+                    AND (d.subcategoria_id IS NULL OR d.faena_id IS NULL OR d.equipo_id IS NULL)
+                )
+              )
+              ORDER BY ABS(oc.total - dte.total)
+            ) AS candidatos
+          FROM dte_recibidos dte
+          LEFT JOIN proveedores pr ON dte.proveedor_id=pr.proveedor_id
+          LEFT JOIN empresas emp ON dte.empresa_id=emp.empresa_id
+          JOIN ordenes_compra oc ON oc.proveedor_id = dte.proveedor_id
+            AND oc.estado = 'PENDIENTE'
+            AND ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.05
+            AND dte.fecha_emision >= oc.fecha_emision
+            AND dte.fecha_emision <= oc.fecha_emision + INTERVAL '180 days'
+          WHERE dte.dte_id = ANY($1)
+          GROUP BY dte.dte_id, dte.folio, dte.tipo_dte, dte.fecha_emision, dte.total, pr.nombre, emp.razon_social
+          ORDER BY dte.fecha_emision DESC NULLS LAST`, [idsImportados]);
+        resumen.dtes_con_candidatos=cand.rows;
+        resumen.dtes_sin_candidatos_count=resumen.importados - cand.rows.length;
+      }
+    }
     res.json(resumen);
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
