@@ -1867,13 +1867,41 @@ ocR.put('/:id', auth, async(req,res)=>{
     const chk=await client.query('SELECT estado FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length) throw new Error('OC no encontrada');
     if(chk.rows[0].estado!=='PENDIENTE') throw new Error('Solo se pueden editar ordenes PENDIENTES');
-    const{empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,observaciones,lineas}=req.body;
+    const{empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,observaciones,lineas,tipo_doc_id,numero_documento,fecha_documento}=req.body;
     const netoAfecto=lineas.filter(l=>!l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
     const netoExento=lineas.filter(l=>l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
     const neto=Math.round(netoAfecto+netoExento);const iva=Math.round(netoAfecto*0.19);const imp=Math.round(parseFloat(impuesto_adicional)||0);const total=neto+iva+imp;
-    await client.query('UPDATE ordenes_compra SET empresa_id=$1,proveedor_id=$2,fecha_emision=$3,solicitante=$4,retira=$5,condicion_id=$6,impuesto_adicional=$7,neto=$8,iva=$9,total=$10,observaciones=$11,modificado_en=NOW() WHERE oc_id=$12',[empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,req.params.id]);
+    // Normalizar campos DTE: si vienen vacíos, guardar NULL para no contaminar
+    const _tipoDoc = tipo_doc_id || null;
+    const _numDoc = (numero_documento && String(numero_documento).trim()) ? String(numero_documento).trim() : null;
+    const _fechaDoc = fecha_documento || null;
+    await client.query('UPDATE ordenes_compra SET empresa_id=$1,proveedor_id=$2,fecha_emision=$3,solicitante=$4,retira=$5,condicion_id=$6,impuesto_adicional=$7,neto=$8,iva=$9,total=$10,observaciones=$11,tipo_doc_id=$12,numero_documento=$13,fecha_documento=$14,modificado_en=NOW() WHERE oc_id=$15',[empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,_tipoDoc,_numDoc,_fechaDoc,req.params.id]);
     await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
     for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[req.params.id,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
+    // Si se asignó un DTE manualmente y existe en dte_recibidos del mismo proveedor → vincular automáticamente en dte_oc
+    if(_numDoc && _tipoDoc && proveedor_id){
+      try{
+        const dteMatch=await client.query(
+          `SELECT d.dte_id FROM dte_recibidos d 
+             JOIN tipos_documento t ON t.tipo_doc_id=$1
+             WHERE d.proveedor_id=$2 AND d.folio=$3
+               AND (UPPER(d.tipo_doc)=UPPER(t.codigo) OR UPPER(d.tipo_dte)=UPPER(t.codigo))
+             LIMIT 1`,
+          [_tipoDoc, proveedor_id, _numDoc]
+        );
+        if(dteMatch.rows.length){
+          const dteId=dteMatch.rows[0].dte_id;
+          // Verificar que no exista ya el vínculo
+          const ex=await client.query('SELECT rel_id FROM dte_oc WHERE dte_id=$1 AND oc_id=$2',[dteId,req.params.id]);
+          if(!ex.rows.length){
+            await client.query(
+              'INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5)',
+              [dteId, req.params.id, total, 'Vinculación automática al editar OC con DTE', req.user.email]
+            );
+          }
+        }
+      }catch(_){/* no bloquear el update si falla la vinculación */}
+    }
     await client.query('COMMIT');res.json({ok:true});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
@@ -1881,11 +1909,40 @@ ocR.put('/:id', auth, async(req,res)=>{
 ocR.patch('/:id/cerrar', auth, async(req,res)=>{
   try{
     const{tipo_doc_id,numero_documento,fecha_documento}=req.body;
-    if(!tipo_doc_id||!numero_documento||!fecha_documento) return res.status(400).json({error:'Tipo documento, folio y fecha son obligatorios'});
-    const chk=await pool.query('SELECT estado FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
+    const chk=await pool.query('SELECT estado,tipo_doc_id AS curr_tipo,numero_documento AS curr_num,fecha_documento AS curr_fecha,proveedor_id,total FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length) return res.status(404).json({error:'OC no encontrada'});
     if(chk.rows[0].estado!=='PENDIENTE') return res.status(400).json({error:'Solo se pueden cerrar ordenes PENDIENTES'});
-    await pool.query("UPDATE ordenes_compra SET estado='CERRADA',tipo_doc_id=$1,numero_documento=$2,fecha_documento=$3,modificado_en=NOW() WHERE oc_id=$4",[tipo_doc_id,numero_documento,fecha_documento,req.params.id]);
+    // Aceptar valores ya guardados en la OC si no se mandan en el body
+    const oc=chk.rows[0];
+    const _tipoDoc=tipo_doc_id||oc.curr_tipo;
+    const _numDoc=(numero_documento && String(numero_documento).trim())||oc.curr_num;
+    const _fechaDoc=fecha_documento||oc.curr_fecha;
+    // 1) Validar datos del DTE
+    if(!_tipoDoc||!_numDoc||!_fechaDoc){
+      return res.status(400).json({error:'No se puede cerrar: falta asociar el DTE (tipo, folio y fecha de documento)'});
+    }
+    // 2) Validar que TODAS las líneas tengan faena + equipo + subcategoría
+    const incompletas=await pool.query(
+      `SELECT linea_num, descripcion,
+         (subcategoria_id IS NULL) AS sin_subcat,
+         (faena_id IS NULL) AS sin_faena,
+         (equipo_id IS NULL) AS sin_equipo
+       FROM ordenes_compra_detalle
+       WHERE oc_id=$1 AND (subcategoria_id IS NULL OR faena_id IS NULL OR equipo_id IS NULL)
+       ORDER BY linea_num`,
+      [req.params.id]
+    );
+    if(incompletas.rows.length){
+      const detalle=incompletas.rows.map(function(r){
+        var faltan=[];
+        if(r.sin_subcat)faltan.push('subcategoría');
+        if(r.sin_faena)faltan.push('faena');
+        if(r.sin_equipo)faltan.push('equipo');
+        return 'Línea '+r.linea_num+': falta '+faltan.join(', ');
+      }).join('; ');
+      return res.status(400).json({error:'No se puede cerrar: hay '+incompletas.rows.length+' línea(s) incompleta(s). '+detalle});
+    }
+    await pool.query("UPDATE ordenes_compra SET estado='CERRADA',tipo_doc_id=$1,numero_documento=$2,fecha_documento=$3,modificado_en=NOW() WHERE oc_id=$4",[_tipoDoc,_numDoc,_fechaDoc,req.params.id]);
     res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -6701,12 +6758,43 @@ app.post('/api/dte-recibidos/import', auth, async(req,res)=>{
   try{
     await client.query('BEGIN');
     var dtes=Array.isArray(req.body.dtes)?req.body.dtes:[];
-    var resumen={importados:0,duplicados:0,errores:0,detalles:[]};
+    var resumen={importados:0,duplicados:0,ya_en_oc:0,errores:0,detalles:[]};
     for(var i=0;i<dtes.length;i++){
       var d=dtes[i];
       try{
+        // ❶ Verificar duplicado dentro de dte_recibidos (folio+proveedor+tipo)
         var dup=await client.query('SELECT dte_id FROM dte_recibidos WHERE proveedor_rut=$1 AND tipo_dte=$2 AND folio=$3',[d.proveedor_rut,d.tipo_dte,String(d.folio)]);
         if(dup.rows.length){resumen.duplicados++;resumen.detalles.push({folio:d.folio,status:'duplicado',dte_id:dup.rows[0].dte_id});continue;}
+        // ❷ Verificar si ese folio ya está asignado a una OC del mismo proveedor (caso clave)
+        //    Compara por proveedor_id + numero_documento + tipo_doc (vía tipos_documento.codigo)
+        var ocAsignada=null;
+        if(d.proveedor_id){
+          var qOc=await client.query(
+            `SELECT oc.oc_id, oc.numero_oc, oc.estado, oc.total
+               FROM ordenes_compra oc
+               LEFT JOIN tipos_documento td ON td.tipo_doc_id=oc.tipo_doc_id
+               WHERE oc.proveedor_id=$1 AND oc.numero_documento=$2
+                 AND (
+                   UPPER(td.codigo) IN ($3, $4)
+                   OR UPPER(td.nombre) ILIKE '%FACTURA%'
+                 )
+               LIMIT 1`,
+            [d.proveedor_id, String(d.folio), String(d.tipo_dte).toUpperCase(), String(d.tipo_doc||'').toUpperCase()]
+          );
+          if(qOc.rows.length) ocAsignada=qOc.rows[0];
+        }
+        if(ocAsignada){
+          resumen.ya_en_oc++;
+          resumen.detalles.push({
+            folio:d.folio,
+            status:'ya_en_oc',
+            oc_id:ocAsignada.oc_id,
+            numero_oc:ocAsignada.numero_oc,
+            estado_oc:ocAsignada.estado
+          });
+          continue;  // NO importar: el DTE ya está asignado a una OC del sistema
+        }
+        // ❸ Si pasa los dos filtros → insertar normalmente
         var ins=await client.query(`INSERT INTO dte_recibidos
           (tipo_dte,tipo_doc,folio,fecha_emision,proveedor_rut,proveedor_nombre,proveedor_giro,proveedor_direccion,proveedor_id,
            cliente_rut,cliente_nombre,empresa_id,neto,iva,total,xml_completo,importado_por)
