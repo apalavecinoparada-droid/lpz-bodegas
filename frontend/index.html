@@ -13909,6 +13909,254 @@ function DTERecibidosView(p){
   );
 }
 
+// ════════════════════════════════════════════════════════════════════
+// BANDEJA DTE-OC: pantalla de revisión y vinculación masiva DTE↔OC
+// 3 tabs: DTEs con candidatos, OCs incompletas, DTEs sin OC
+// ════════════════════════════════════════════════════════════════════
+function BandejaDTEOC(p){
+  var[data,setData]=useState({dtes_con_candidatos:[],ocs_incompletas:[],dtes_sin_candidatos:[]});
+  var[tab,setTab]=useState('candidatos');
+  var[loading,setLoading]=useState(true);
+  var[msg,setMsg]=useState('');var[err,setErr]=useState('');
+  var[selDte,setSelDte]=useState(null); // DTE expandido para vincular
+  var[selOcs,setSelOcs]=useState({}); // {oc_id: monto_aplicado}
+  var[showMarcarSinOC,setShowMarcarSinOC]=useState(null);
+  var[motivoSinOC,setMotivoSinOC]=useState('');
+
+  function load2(){
+    setLoading(true);setErr('');
+    api('/bandeja-dte-oc','GET',null,p.tok).then(function(r){
+      setData(r||{dtes_con_candidatos:[],ocs_incompletas:[],dtes_sin_candidatos:[]});
+    }).catch(function(e){setErr(e.message);}).finally(function(){setLoading(false);});
+  }
+  useEffect(load2,[p.tok]);
+
+  function fmtN(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+  function fmtDate(d){if(!d)return '—';var s=String(d).slice(0,10);var pp=s.split('-');return pp.length===3?pp[2]+'/'+pp[1]+'/'+pp[0]:s;}
+
+  function expandirDte(dte){
+    if(selDte&&selDte.dte_id===dte.dte_id){setSelDte(null);setSelOcs({});return;}
+    setSelDte(dte);
+    // Inicialmente seleccionar solo el primer candidato con monto exacto si lo hay
+    var inicial={};
+    var exacto=(dte.candidatos||[]).find(function(c){return c.confianza==='ALTO';});
+    if(exacto)inicial[exacto.oc_id]=parseFloat(exacto.total);
+    setSelOcs(inicial);
+  }
+
+  function toggleOC(oc){
+    setSelOcs(function(s){
+      var ns=Object.assign({},s);
+      if(ns[oc.oc_id]!==undefined){delete ns[oc.oc_id];}
+      else{ns[oc.oc_id]=parseFloat(oc.total);}
+      return ns;
+    });
+  }
+  function setMonto(oc_id,monto){
+    setSelOcs(function(s){var ns=Object.assign({},s);ns[oc_id]=monto;return ns;});
+  }
+  function totalAplicado(){
+    return Object.values(selOcs).reduce(function(s,v){return s+(parseFloat(v)||0);},0);
+  }
+
+  function vincularSeleccionados(){
+    if(!selDte)return;
+    var vinculos=Object.keys(selOcs).map(function(k){return{oc_id:parseInt(k),monto_aplicado:parseFloat(selOcs[k])};}).filter(function(v){return v.monto_aplicado>0;});
+    if(!vinculos.length){setErr('Seleccione al menos una OC con monto válido');return;}
+    var totApl=vinculos.reduce(function(s,v){return s+v.monto_aplicado;},0);
+    if(Math.abs(totApl-parseFloat(selDte.dte_total))>1){
+      if(!confirm('El total aplicado ('+fmtN(totApl)+') difiere del total del DTE ('+fmtN(selDte.dte_total)+'). ¿Continuar igual?'))return;
+    }
+    setErr('');
+    api('/bandeja-dte-oc/vincular','POST',{dte_id:selDte.dte_id,vinculos:vinculos},p.tok).then(function(r){
+      setMsg('✓ Vinculados '+r.vinculos_creados+' OCs al DTE '+selDte.folio);
+      setSelDte(null);setSelOcs({});load2();
+    }).catch(function(e){setErr(e.message);});
+  }
+
+  function marcarSinOC(){
+    if(!showMarcarSinOC)return;
+    api('/bandeja-dte-oc/marcar-sin-oc','POST',{dte_id:showMarcarSinOC.dte_id,motivo:motivoSinOC},p.tok).then(function(){
+      setMsg('✓ DTE '+showMarcarSinOC.folio+' marcado como gasto sin OC');
+      setShowMarcarSinOC(null);setMotivoSinOC('');load2();
+    }).catch(function(e){setErr(e.message);});
+  }
+
+  if(loading)return h('div',{style:{padding:40,textAlign:'center',color:'#94A3B8'}},'Cargando bandeja...');
+
+  var nCand=data.dtes_con_candidatos.length;
+  var nInc=data.ocs_incompletas.length;
+  var nSinOC=data.dtes_sin_candidatos.length;
+
+  return h('div',null,
+    h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:12}},
+      h('div',null,
+        h('h2',{style:{fontSize:18,fontWeight:700,marginBottom:2}},'Bandeja DTE-OC'),
+        h('p',{style:{fontSize:12,color:'#64748B'}},'Vinculación de facturas con órdenes de compra pendientes')
+      ),
+      h('button',{className:'btn btn-g btn-sm',onClick:load2},'🔄 Refrescar')
+    ),
+    msg&&h('div',{className:'al al-s',style:{marginBottom:8}},msg),
+    err&&h('div',{className:'al al-e',style:{marginBottom:8}},err),
+    // Tabs
+    h('div',{style:{display:'flex',gap:4,marginBottom:12,borderBottom:'2px solid #E2E8F0'}},
+      h('button',{onClick:function(){setTab('candidatos');},style:{padding:'8px 14px',background:tab==='candidatos'?'#1E3A2D':'transparent',color:tab==='candidatos'?'#fff':'#475569',border:'none',borderRadius:'6px 6px 0 0',cursor:'pointer',fontSize:13,fontWeight:600}},
+        '📥 DTEs con candidatos ',h('span',{style:{background:tab==='candidatos'?'#D4C5A9':'#E2E8F0',color:tab==='candidatos'?'#1E3A2D':'#475569',padding:'1px 8px',borderRadius:10,marginLeft:4,fontSize:11}},nCand)
+      ),
+      h('button',{onClick:function(){setTab('incompletas');},style:{padding:'8px 14px',background:tab==='incompletas'?'#1E3A2D':'transparent',color:tab==='incompletas'?'#fff':'#475569',border:'none',borderRadius:'6px 6px 0 0',cursor:'pointer',fontSize:13,fontWeight:600}},
+        '⚠️ OCs incompletas ',h('span',{style:{background:tab==='incompletas'?'#D4C5A9':'#E2E8F0',color:tab==='incompletas'?'#1E3A2D':'#475569',padding:'1px 8px',borderRadius:10,marginLeft:4,fontSize:11}},nInc)
+      ),
+      h('button',{onClick:function(){setTab('sin-oc');},style:{padding:'8px 14px',background:tab==='sin-oc'?'#1E3A2D':'transparent',color:tab==='sin-oc'?'#fff':'#475569',border:'none',borderRadius:'6px 6px 0 0',cursor:'pointer',fontSize:13,fontWeight:600}},
+        '🚫 DTEs sin OC ',h('span',{style:{background:tab==='sin-oc'?'#D4C5A9':'#E2E8F0',color:tab==='sin-oc'?'#1E3A2D':'#475569',padding:'1px 8px',borderRadius:10,marginLeft:4,fontSize:11}},nSinOC)
+      )
+    ),
+
+    // ─── TAB 1: DTEs con candidatos ───
+    tab==='candidatos'&&(nCand===0
+      ? h('div',{style:{padding:40,textAlign:'center',color:'#94A3B8',background:'#F8FAFC',borderRadius:8}},
+          h('div',{style:{fontSize:36,marginBottom:8}},'✨'),
+          h('div',null,'No hay DTEs pendientes de vincular con candidatos disponibles.')
+        )
+      : h('div',null,
+          h('div',{className:'al al-i',style:{marginBottom:8,fontSize:12}},'💡 Click en un DTE para ver sus OCs candidatas y vincular. Puedes seleccionar varias OCs si la factura paga más de una.'),
+          h('table',{className:'tb',style:{fontSize:12}},
+            h('thead',null,h('tr',null,h('th',null,'Folio'),h('th',null,'Tipo'),h('th',null,'Fecha'),h('th',null,'Proveedor'),h('th',null,'Empresa'),h('th',{className:'r'},'Total'),h('th',{className:'c'},'OCs candidatas'),h('th',null,''))),
+            h('tbody',null,
+              data.dtes_con_candidatos.map(function(d){
+                var expanded=selDte&&selDte.dte_id===d.dte_id;
+                return h(React.Fragment,{key:d.dte_id},
+                  h('tr',{style:{background:expanded?'#FEF3C7':'',cursor:'pointer'},onClick:function(){expandirDte(d);}},
+                    h('td',{className:'mono'},d.folio),
+                    h('td',null,d.tipo_dte),
+                    h('td',null,fmtDate(d.fecha_emision)),
+                    h('td',null,d.proveedor_nombre||'—'),
+                    h('td',null,d.empresa_nombre||'—'),
+                    h('td',{className:'r mono b'},fmtN(d.dte_total)),
+                    h('td',{className:'c'},h(Bg,{c:d.candidatos.length===1?'g':'a'},d.candidatos.length)),
+                    h('td',null,h('span',{style:{fontSize:14}},expanded?'▼':'▶'))
+                  ),
+                  expanded&&h('tr',null,h('td',{colSpan:8,style:{background:'#FFFBEB',padding:12}},
+                    h('div',{style:{marginBottom:8,fontSize:12,fontWeight:600,color:'#92400E'}},'OCs candidatas para vincular a este DTE ($'+new Intl.NumberFormat('es-CL').format(d.dte_total)+'):'),
+                    h('table',{className:'tb',style:{fontSize:11,marginBottom:8}},
+                      h('thead',null,h('tr',null,h('th',{style:{width:30}},''),h('th',null,'N° OC'),h('th',null,'Fecha'),h('th',{className:'r'},'Total OC'),h('th',{className:'r'},'Diferencia'),h('th',{className:'c'},'Confianza'),h('th',{className:'c'},'Datos'),h('th',null,'Días'),h('th',{className:'r'},'Monto a aplicar'))),
+                      h('tbody',null,
+                        d.candidatos.map(function(c){
+                          var sel=selOcs[c.oc_id]!==undefined;
+                          var cc=c.confianza==='ALTO'?'g':c.confianza==='MEDIO'?'y':'r';
+                          return h('tr',{key:c.oc_id,style:{background:sel?'#DCFCE7':''}},
+                            h('td',null,h('input',{type:'checkbox',checked:sel,onChange:function(){toggleOC(c);}})),
+                            h('td',{className:'mono'},c.numero_oc),
+                            h('td',null,fmtDate(c.fecha_emision)),
+                            h('td',{className:'r mono'},fmtN(c.total)),
+                            h('td',{className:'r mono',style:{color:c.diferencia>0?'#DC2626':'#10B981'}},fmtN(c.diferencia)),
+                            h('td',{className:'c'},h(Bg,{c:cc},c.confianza)),
+                            h('td',{className:'c'},c.lineas_completas?h(Bg,{c:'g'},'✓ Completa'):h(Bg,{c:'a'},'⚠ Incompleta')),
+                            h('td',null,c.dias_oc_a_dte+'d'),
+                            h('td',{className:'r'},sel?h('input',{type:'number',value:selOcs[c.oc_id]||'',onChange:function(e){setMonto(c.oc_id,e.target.value);},style:{width:100,padding:'2px 6px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:11,textAlign:'right'}}):'—')
+                          );
+                        })
+                      )
+                    ),
+                    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'8px 0',borderTop:'1px solid #FCD34D'}},
+                      h('div',{style:{fontSize:12}},
+                        h('span',{style:{color:'#64748B'}},'Total aplicado: '),
+                        h('span',{className:'mono b',style:{color:Math.abs(totalAplicado()-parseFloat(d.dte_total))<1?'#166534':'#DC2626'}},fmtN(totalAplicado())),
+                        h('span',{style:{color:'#64748B',marginLeft:6}},'/ '+fmtN(d.dte_total))
+                      ),
+                      h('div',{style:{display:'flex',gap:6}},
+                        h('button',{className:'btn btn-d btn-sm',onClick:function(){setSelDte(null);setSelOcs({});}},'Cancelar'),
+                        h('button',{className:'btn btn-blue btn-sm',disabled:Object.keys(selOcs).length===0,onClick:vincularSeleccionados},'✓ Vincular '+Object.keys(selOcs).length+' OC(s)')
+                      )
+                    )
+                  ))
+                );
+              })
+            )
+          )
+        )
+    ),
+
+    // ─── TAB 2: OCs incompletas ───
+    tab==='incompletas'&&(nInc===0
+      ? h('div',{style:{padding:40,textAlign:'center',color:'#94A3B8',background:'#F8FAFC',borderRadius:8}},
+          h('div',{style:{fontSize:36,marginBottom:8}},'✅'),
+          h('div',null,'No hay OCs vinculadas con datos faltantes.')
+        )
+      : h('div',null,
+          h('div',{className:'al al-i',style:{marginBottom:8,fontSize:12}},'💡 Estas OCs ya están vinculadas con un DTE, pero les faltan datos (faena, equipo o subcategoría) en algunas líneas. Click en "Editar" para completarlas y cerrarlas.'),
+          h('table',{className:'tb',style:{fontSize:12}},
+            h('thead',null,h('tr',null,h('th',null,'N° OC'),h('th',null,'Proveedor'),h('th',null,'Empresa'),h('th',{className:'r'},'Total'),h('th',null,'DTE asoc.'),h('th',{className:'c'},'Líneas'),h('th',{className:'c'},'Sin subcat'),h('th',{className:'c'},'Sin faena'),h('th',{className:'c'},'Sin equipo'),h('th',null,''))),
+            h('tbody',null,
+              data.ocs_incompletas.map(function(o){
+                return h('tr',{key:o.oc_id},
+                  h('td',{className:'mono b'},o.numero_oc),
+                  h('td',null,o.proveedor_nombre||'—'),
+                  h('td',null,o.empresa_nombre||'—'),
+                  h('td',{className:'r mono'},fmtN(o.oc_total)),
+                  h('td',{className:'mono',style:{fontSize:11}},o.dte_folio||'—'),
+                  h('td',{className:'c'},o.n_lineas),
+                  h('td',{className:'c'},o.sin_subcat>0?h(Bg,{c:'r'},o.sin_subcat):'—'),
+                  h('td',{className:'c'},o.sin_faena>0?h(Bg,{c:'r'},o.sin_faena):'—'),
+                  h('td',{className:'c'},o.sin_equipo>0?h(Bg,{c:'r'},o.sin_equipo):'—'),
+                  h('td',null,h('button',{className:'btn btn-blue btn-xs',onClick:function(){p.setView&&p.setView('ordenes');setTimeout(function(){alert('Busca la OC '+o.numero_oc+' en el listado y complétala');},100);}},'✎ Ir a OC'))
+                );
+              })
+            )
+          )
+        )
+    ),
+
+    // ─── TAB 3: DTEs sin OC candidata ───
+    tab==='sin-oc'&&(nSinOC===0
+      ? h('div',{style:{padding:40,textAlign:'center',color:'#94A3B8',background:'#F8FAFC',borderRadius:8}},
+          h('div',{style:{fontSize:36,marginBottom:8}},'✨'),
+          h('div',null,'No hay DTEs sueltos sin candidatos.')
+        )
+      : h('div',null,
+          h('div',{className:'al al-w',style:{marginBottom:8,fontSize:12}},'💡 Estos DTEs no tienen ninguna OC pendiente que coincida. Son típicamente gastos directos sin OC previa (combustible COPEC, peajes, telefonía, etc). Marcalos como "Gasto sin OC" para que no vuelvan a aparecer aquí.'),
+          h('table',{className:'tb',style:{fontSize:12}},
+            h('thead',null,h('tr',null,h('th',null,'Folio'),h('th',null,'Tipo'),h('th',null,'Fecha'),h('th',null,'Proveedor'),h('th',null,'Empresa'),h('th',{className:'r'},'Total'),h('th',null,''))),
+            h('tbody',null,
+              data.dtes_sin_candidatos.map(function(d){
+                return h('tr',{key:d.dte_id},
+                  h('td',{className:'mono'},d.folio),
+                  h('td',null,d.tipo_dte),
+                  h('td',null,fmtDate(d.fecha_emision)),
+                  h('td',null,d.proveedor_nombre||'—'),
+                  h('td',null,d.empresa_nombre||'—'),
+                  h('td',{className:'r mono b'},fmtN(d.dte_total)),
+                  h('td',null,h('button',{className:'btn btn-g btn-xs',onClick:function(){setShowMarcarSinOC(d);setMotivoSinOC('');}},'✓ Marcar sin OC'))
+                );
+              })
+            )
+          )
+        )
+    ),
+
+    // ─── Modal: marcar sin OC ───
+    showMarcarSinOC&&h(Modal,{title:'Marcar DTE como gasto sin OC',onClose:function(){setShowMarcarSinOC(null);setMotivoSinOC('');}},
+      h(EB,null,
+        h('div',{className:'mb'},
+          h('div',{className:'al al-w',style:{marginBottom:10,fontSize:12}},
+            'Este DTE se marcará como gasto directo (sin OC previa). No volverá a aparecer en la bandeja como pendiente de vincular.'
+          ),
+          h('div',{style:{padding:10,background:'#F8FAFC',borderRadius:6,marginBottom:10,fontSize:12}},
+            h('div',null,h('b',null,'DTE: '),showMarcarSinOC.tipo_dte+' '+showMarcarSinOC.folio),
+            h('div',null,h('b',null,'Proveedor: '),showMarcarSinOC.proveedor_nombre||'—'),
+            h('div',null,h('b',null,'Total: '),fmtN(showMarcarSinOC.dte_total))
+          ),
+          h('label',{style:{fontSize:12,fontWeight:600,display:'block',marginBottom:3}},'Motivo (opcional)'),
+          h('textarea',{value:motivoSinOC,onChange:function(e){setMotivoSinOC(e.target.value);},rows:2,style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:12,resize:'vertical'},placeholder:'Ej: Combustible operativo, peaje, telefonía...'})
+        ),
+        h('div',{className:'mf'},
+          h(Btn,{v:'g',onClick:function(){setShowMarcarSinOC(null);setMotivoSinOC('');}},'Cancelar'),
+          h(Btn,{v:'blue',onClick:marcarSinOC},'✓ Confirmar')
+        )
+      )
+    )
+  );
+}
+
 // ── Modal: Detalle de un DTE (vista tipo factura + PDF) ──
 function DTEDetalleModal(p){
   var[dte,setDte]=useState(null);var[load,setLoad]=useState(true);
@@ -14272,7 +14520,7 @@ function ImportZipDTEBandeja(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -14918,7 +15166,7 @@ function App(){
   function canSee(mod){if(!user)return false;if(user.es_admin)return true;if(!user.modulos||user.modulos.length===0)return false;return user.modulos.indexOf(mod)>=0;}
   // Mapa view → módulo requerido. Si la view no está aquí, no requiere módulo.
   var VIEW_MOD={
-    'ordenes':'ordenes','oc-guias':'ordenes','dte-recibidos':'ordenes',
+    'ordenes':'ordenes','oc-guias':'ordenes','dte-recibidos':'ordenes','bandeja-dte-oc':'ordenes',
     'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
     'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-reportes':'inventario',
     'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion',
@@ -15067,7 +15315,7 @@ function App(){
       h('div',{className:'sb-logo'},h('h1',null,'Empresas Poo'),h('p',null,'Sistema de Gestión')),
       h('div',{style:{padding:'4px 0',flex:1}},
         canSee('ordenes')&&grpHdr('oc','ORDENES DE COMPRA'),
-        canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true),navI('oc-guias','📋','Guías de Despacho',true),navI('dte-recibidos','📥','DTE Recibidos',true)),
+        canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true),navI('oc-guias','📋','Guías de Despacho',true),navI('dte-recibidos','📥','DTE Recibidos',true),navI('bandeja-dte-oc','🔗','Bandeja DTE-OC',true)),
         canSee('ordenes')&&h('div',{className:'sb-sep'}),
         canSee('combustibles')&&grpHdr('comb','CONTROL DE COMBUSTIBLES'),
         canSee('combustibles')&&grp.comb&&h('div',null,
@@ -15207,6 +15455,7 @@ function App(){
           view==='ordenes'&&h(OCView,{tok,m,user,setView}),
           view==='oc-guias'&&h(OCGuiasView,{tok,m}),
           view==='dte-recibidos'&&h(DTERecibidosView,{tok,m,user,setView}),
+          view==='bandeja-dte-oc'&&h(BandejaDTEOC,{tok,m,user,setView}),
           view==='rendiciones'&&h(RendicionesView,{tok,m}),
           view==='vacaciones'&&h(VacacionesView,{tok,m}),
           view==='solicitudes'&&h(SolicitudesView,{tok,m,user}),
