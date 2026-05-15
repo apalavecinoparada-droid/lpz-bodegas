@@ -262,6 +262,20 @@ function auth(req, res, next) {
   catch { res.status(401).json({ error: 'Token invalido' }); }
 }
 
+// Middleware que valida que el usuario tenga acceso a un módulo específico
+// Uso: app.use('/api/ordenes-compra', requireModulo('ordenes'), ocR);
+function requireModulo(mod) {
+  return function(req, res, next) {
+    if (!req.user) return res.status(401).json({ error: 'No autorizado' });
+    if (req.user.es_admin) return next();
+    const mods = req.user.modulos || [];
+    if (!mods.length || mods.indexOf(mod) < 0) {
+      return res.status(403).json({ error: 'Sin permiso para módulo '+mod });
+    }
+    next();
+  };
+}
+
 async function audit(tabla, id, accion, antes, despues, usr) {
   try { await pool.query('INSERT INTO auditoria(tabla_afectada,registro_id,accion,datos_anteriores,datos_nuevos,usuario) VALUES($1,$2,$3,$4,$5,$6)',[tabla,id,accion,antes?JSON.stringify(antes):null,despues?JSON.stringify(despues):null,usr]); } catch {}
 }
@@ -1161,7 +1175,7 @@ app.post('/api/auth/login', async(req,res)=>{
     const u=r.rows[0];
     const modulos=u.modulos||[];
     const esAdmin=u.es_admin||u.rol==='ADMINISTRADOR';
-    const token=jwt.sign({id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin},JWT_SECRET,{expiresIn:'8h'});
+    const token=jwt.sign({id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos},JWT_SECRET,{expiresIn:'8h'});
     res.json({token,usuario:{id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos,empresa_id:u.empresa_id||null,faena_id:u.faena_id||null}});
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -2138,7 +2152,7 @@ ocR.get('/buscar/filtros', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
-app.use('/api/ordenes-compra', ocR);
+app.use('/api/ordenes-compra', auth, requireModulo('ordenes'), ocR);
 
 // ══ IMPORTACIÓN MASIVA DE PROVEEDORES DESDE XML ══
 app.post('/api/import/proveedores-xml', auth, async(req,res)=>{
