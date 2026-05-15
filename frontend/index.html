@@ -14508,13 +14508,150 @@ function ImportZipDTEBandeja(p){
           h(Btn,{onClick:importar,disabled:status==='saving'||totalSel===0},status==='saving'?'Importando...':'📥 Importar '+totalSel+' DTE')
         )
       ),
-      status==='done'&&results&&h('div',null,
-        h('div',{style:{background:'#DCFCE7',border:'1px solid #86EFAC',borderRadius:6,padding:14,marginBottom:10}},
-          h('div',{style:{fontWeight:700,color:'#15803D'}},'✓ Importación completada'),
-          h('div',{style:{marginTop:6,fontSize:12}},'Importados: ',h('strong',null,results.importados),' · Duplicados (ya existían): ',h('strong',null,results.duplicados),' · Errores: ',h('strong',null,results.errores))
-        ),
-        h(Btn,{onClick:function(){p.onRefresh();p.onClose();}},'Cerrar y ver bandeja')
+      status==='done'&&results&&h(ImportDTERevision,{
+        results:results,tok:p.tok,
+        onClose:function(){p.onRefresh();p.onClose();}
+      })
+    )
+  );
+}
+
+// ── Sub-componente: revisión inline post-importación con vinculación a OCs candidatas ──
+function ImportDTERevision(p){
+  var r=p.results;
+  var dtesConCand=Array.isArray(r.dtes_con_candidatos)?r.dtes_con_candidatos:[];
+  var sinCandidatos=Math.max(0,(r.importados||0)-dtesConCand.length);
+  var[selDte,setSelDte]=useState(null);
+  var[selOcs,setSelOcs]=useState({});
+  var[vinculados,setVinculados]=useState({}); // dte_id -> n_ocs_vinculadas
+  var[msg,setMsg]=useState('');var[err,setErr]=useState('');
+  
+  function fmtN(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+  function fmtDate(d){if(!d)return '—';var s=String(d).slice(0,10);var pp=s.split('-');return pp.length===3?pp[2]+'/'+pp[1]+'/'+pp[0]:s;}
+  
+  function expandir(dte){
+    if(selDte&&selDte.dte_id===dte.dte_id){setSelDte(null);setSelOcs({});return;}
+    setSelDte(dte);
+    var inicial={};
+    var exacto=(dte.candidatos||[]).find(function(c){return c.confianza==='ALTO';});
+    if(exacto)inicial[exacto.oc_id]=parseFloat(exacto.total);
+    setSelOcs(inicial);
+  }
+  function toggleOC(c){
+    setSelOcs(function(s){var ns=Object.assign({},s);if(ns[c.oc_id]!==undefined)delete ns[c.oc_id];else ns[c.oc_id]=parseFloat(c.total);return ns;});
+  }
+  function setMonto(oc_id,m){setSelOcs(function(s){var ns=Object.assign({},s);ns[oc_id]=m;return ns;});}
+  function totApl(){return Object.values(selOcs).reduce(function(s,v){return s+(parseFloat(v)||0);},0);}
+  function vincular(){
+    if(!selDte)return;
+    var v=Object.keys(selOcs).map(function(k){return{oc_id:parseInt(k),monto_aplicado:parseFloat(selOcs[k])};}).filter(function(x){return x.monto_aplicado>0;});
+    if(!v.length){setErr('Seleccione al menos una OC');return;}
+    if(Math.abs(totApl()-parseFloat(selDte.dte_total))>1){
+      if(!confirm('Total aplicado ('+fmtN(totApl())+') ≠ total DTE ('+fmtN(selDte.dte_total)+'). ¿Continuar?'))return;
+    }
+    setErr('');
+    api('/bandeja-dte-oc/vincular','POST',{dte_id:selDte.dte_id,vinculos:v},p.tok).then(function(r2){
+      setVinculados(function(x){var n=Object.assign({},x);n[selDte.dte_id]=r2.vinculos_creados;return n;});
+      setMsg('✓ DTE '+selDte.folio+' vinculado a '+r2.vinculos_creados+' OC(s)');
+      setSelDte(null);setSelOcs({});
+    }).catch(function(e){setErr(e.message);});
+  }
+  
+  return h('div',null,
+    // Resumen superior
+    h('div',{style:{background:'#DCFCE7',border:'1px solid #86EFAC',borderRadius:6,padding:14,marginBottom:10}},
+      h('div',{style:{fontWeight:700,color:'#15803D',marginBottom:4}},'✓ Importación completada'),
+      h('div',{style:{fontSize:12}},
+        h('span',null,'Importados: '),h('strong',null,r.importados),h('span',null,' · '),
+        h('span',null,'Duplicados (ya existían): '),h('strong',null,r.duplicados),h('span',null,' · '),
+        h('span',null,'Errores: '),h('strong',null,r.errores)
       )
+    ),
+    // Si hay candidatos → mostrar revisión inline
+    dtesConCand.length>0&&h('div',null,
+      h('div',{className:'al al-i',style:{marginBottom:8,fontSize:12}},
+        h('strong',null,'🎯 ',dtesConCand.length,' DTE(s) tienen OCs candidatas en el sistema. '),
+        'Revisa y vincula ahora para evitar duplicación en reportes. ',
+        h('strong',null,'Una factura puede vincularse a varias OCs.')
+      ),
+      msg&&h('div',{className:'al al-s',style:{marginBottom:6,fontSize:12}},msg),
+      err&&h('div',{className:'al al-e',style:{marginBottom:6,fontSize:12}},err),
+      h('div',{style:{maxHeight:'45vh',overflowY:'auto',border:'1px solid #E2E8F0',borderRadius:6,marginBottom:10}},
+        h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
+          h('thead',null,h('tr',{style:{background:'#F1F5F9',position:'sticky',top:0,zIndex:1}},
+            h('th',{style:{padding:6,textAlign:'left'}},'Folio'),
+            h('th',{style:{padding:6,textAlign:'left'}},'Fecha'),
+            h('th',{style:{padding:6,textAlign:'left'}},'Proveedor'),
+            h('th',{style:{padding:6,textAlign:'right'}},'Total'),
+            h('th',{style:{padding:6,textAlign:'center'}},'Candidatos'),
+            h('th',{style:{padding:6,textAlign:'center'}},'Estado')
+          )),
+          h('tbody',null,dtesConCand.map(function(d){
+            var exp=selDte&&selDte.dte_id===d.dte_id;
+            var vincN=vinculados[d.dte_id];
+            return h(React.Fragment,{key:d.dte_id},
+              h('tr',{style:{borderTop:'1px solid #E2E8F0',background:exp?'#FEF3C7':vincN?'#DCFCE7':'',cursor:vincN?'default':'pointer'},onClick:function(){if(!vincN)expandir(d);}},
+                h('td',{style:{padding:6,fontWeight:600,color:'#1E40AF'}},'#'+d.folio),
+                h('td',{style:{padding:6}},fmtDate(d.fecha_emision)),
+                h('td',{style:{padding:6}},d.proveedor_nombre||'—'),
+                h('td',{style:{padding:6,textAlign:'right',fontWeight:600}},fmtN(d.dte_total)),
+                h('td',{style:{padding:6,textAlign:'center'}},h('span',{style:{background:d.candidatos.length===1?'#DCFCE7':'#FEF3C7',color:d.candidatos.length===1?'#166534':'#92400E',padding:'2px 8px',borderRadius:4,fontSize:10,fontWeight:600}},d.candidatos.length)),
+                h('td',{style:{padding:6,textAlign:'center'}},vincN?h('span',{style:{color:'#166534',fontSize:10,fontWeight:700}},'✓ Vinculado ('+vincN+')'):h('span',{style:{fontSize:14}},exp?'▼':'▶'))
+              ),
+              exp&&h('tr',null,h('td',{colSpan:6,style:{background:'#FFFBEB',padding:10}},
+                h('div',{style:{marginBottom:6,fontSize:11,fontWeight:600,color:'#92400E'}},'OCs candidatas para '+fmtN(d.dte_total)+' (selecciona y ajusta montos):'),
+                h('table',{style:{width:'100%',fontSize:10,borderCollapse:'collapse',marginBottom:8}},
+                  h('thead',null,h('tr',{style:{background:'#FEF3C7'}},
+                    h('th',{style:{padding:4,width:30}}),
+                    h('th',{style:{padding:4,textAlign:'left'}},'N° OC'),h('th',{style:{padding:4,textAlign:'left'}},'Fecha'),
+                    h('th',{style:{padding:4,textAlign:'right'}},'Total'),h('th',{style:{padding:4,textAlign:'right'}},'Dif.'),
+                    h('th',{style:{padding:4,textAlign:'center'}},'Confianza'),
+                    h('th',{style:{padding:4,textAlign:'center'}},'Datos'),
+                    h('th',{style:{padding:4,textAlign:'right'}},'Monto')
+                  )),
+                  h('tbody',null,d.candidatos.map(function(c){
+                    var sel=selOcs[c.oc_id]!==undefined;
+                    var cc=c.confianza==='ALTO'?['#DCFCE7','#166534']:c.confianza==='MEDIO'?['#FEF3C7','#92400E']:['#FEE2E2','#991B1B'];
+                    return h('tr',{key:c.oc_id,style:{background:sel?'#DCFCE7':'',borderTop:'1px solid #FDE68A'}},
+                      h('td',{style:{padding:4,textAlign:'center'}},h('input',{type:'checkbox',checked:sel,onChange:function(){toggleOC(c);}})),
+                      h('td',{style:{padding:4,fontWeight:600}},c.numero_oc),
+                      h('td',{style:{padding:4}},fmtDate(c.fecha_emision)),
+                      h('td',{style:{padding:4,textAlign:'right'}},fmtN(c.total)),
+                      h('td',{style:{padding:4,textAlign:'right',color:c.diferencia>0?'#DC2626':'#10B981'}},fmtN(c.diferencia)),
+                      h('td',{style:{padding:4,textAlign:'center'}},h('span',{style:{background:cc[0],color:cc[1],padding:'1px 6px',borderRadius:4,fontSize:9,fontWeight:600}},c.confianza)),
+                      h('td',{style:{padding:4,textAlign:'center'}},c.lineas_completas?h('span',{style:{color:'#16A34A',fontSize:11}},'✓'):h('span',{style:{color:'#F59E0B',fontSize:11}},'⚠')),
+                      h('td',{style:{padding:4,textAlign:'right'}},sel?h('input',{type:'number',value:selOcs[c.oc_id]||'',onChange:function(e){setMonto(c.oc_id,e.target.value);},style:{width:90,padding:'2px 4px',border:'1px solid #CBD5E1',borderRadius:3,fontSize:10,textAlign:'right'}}):'—')
+                    );
+                  }))
+                ),
+                h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',paddingTop:6,borderTop:'1px solid #FCD34D'}},
+                  h('div',{style:{fontSize:11}},
+                    h('span',{style:{color:'#64748B'}},'Total aplicado: '),
+                    h('strong',{style:{color:Math.abs(totApl()-parseFloat(d.dte_total))<1?'#166534':'#DC2626'}},fmtN(totApl())),
+                    h('span',{style:{color:'#64748B',marginLeft:4}},'/ '+fmtN(d.dte_total))
+                  ),
+                  h('div',{style:{display:'flex',gap:4}},
+                    h('button',{onClick:function(){setSelDte(null);setSelOcs({});},style:{padding:'4px 10px',fontSize:11,border:'1px solid #CBD5E1',borderRadius:4,cursor:'pointer'}},'Cancelar'),
+                    h('button',{onClick:vincular,disabled:Object.keys(selOcs).length===0,style:{padding:'4px 10px',fontSize:11,background:'#1E40AF',color:'#fff',border:'none',borderRadius:4,cursor:'pointer',fontWeight:600,opacity:Object.keys(selOcs).length===0?0.5:1}},'✓ Vincular '+Object.keys(selOcs).length+' OC(s)')
+                  )
+                )
+              ))
+            );
+          }))
+        )
+      )
+    ),
+    // Si no hay candidatos
+    dtesConCand.length===0&&r.importados>0&&h('div',{className:'al al-i',style:{marginBottom:10,fontSize:12}},
+      'Ningún DTE importado coincide con OCs pendientes en el sistema. Quedaron disponibles en la bandeja para revisión posterior.'
+    ),
+    // Resumen sin candidatos
+    sinCandidatos>0&&dtesConCand.length>0&&h('div',{style:{fontSize:11,color:'#64748B',marginBottom:10,padding:8,background:'#F8FAFC',borderRadius:4}},
+      'ℹ️ ',sinCandidatos,' DTE(s) adicionales se importaron sin OCs candidatas. Quedan en la bandeja para revisión posterior.'
+    ),
+    // Botones finales
+    h('div',{style:{display:'flex',gap:6,justifyContent:'flex-end',marginTop:8,borderTop:'1px solid #E2E8F0',paddingTop:10}},
+      h(Btn,{onClick:p.onClose},'Cerrar y volver a bandeja')
     )
   );
 }
