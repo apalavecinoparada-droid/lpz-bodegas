@@ -14887,6 +14887,57 @@ function App(){
     resetTimer();
     return function(){if(timer)clearTimeout(timer);events.forEach(function(ev){document.removeEventListener(ev,resetTimer,true);});};
   },[tok]);
+  // ── Permisos y vistas (funciones helper + redirect) ──
+  function canSee(mod){if(!user)return false;if(user.es_admin)return true;if(!user.modulos||user.modulos.length===0)return false;return user.modulos.indexOf(mod)>=0;}
+  // Mapa view → módulo requerido. Si la view no está aquí, no requiere módulo.
+  var VIEW_MOD={
+    'ordenes':'ordenes','oc-guias':'ordenes','dte-recibidos':'ordenes',
+    'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
+    'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-reportes':'inventario',
+    'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion',
+    'rendiciones':'rendiciones',
+    'terreno':'terreno','terreno-equipos':'terreno','terreno-faena':'terreno','terreno-reportes':'terreno',
+    'solicitudes':'solicitudes',
+    'transporte':'transporte',
+    'personal':'personal','contratos':'personal','vacaciones':'personal','finiquitos':'personal','cartas':'personal',
+    'mantenedores':'mantenedores',
+    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas',
+    'rem-parametros':'remuneraciones','rem-periodos':'remuneraciones','rem-movimientos':'remuneraciones','rem-liquidaciones':'remuneraciones','rem-prestamos':'remuneraciones','rem-previred':'remuneraciones','rem-prevision':'remuneraciones'
+  };
+  function viewAllowed(v){
+    if(!user)return false;
+    if(user.es_admin)return true;
+    var m=VIEW_MOD[v];
+    if(!m)return true;
+    return canSee(m);
+  }
+  function firstAllowedView(){
+    if(!user)return 'ordenes';
+    if(user.es_admin)return 'ordenes';
+    var mods=user.modulos||[];
+    if(mods.indexOf('ordenes')>=0)return 'ordenes';
+    if(mods.indexOf('inventario')>=0)return 'panel';
+    if(mods.indexOf('rendiciones')>=0)return 'rendiciones';
+    if(mods.indexOf('terreno')>=0)return 'terreno';
+    if(mods.indexOf('solicitudes')>=0)return 'solicitudes';
+    if(mods.indexOf('mantencion')>=0)return 'mant-panel';
+    if(mods.indexOf('combustibles')>=0)return 'comb-panel';
+    if(mods.indexOf('personal')>=0)return 'personal';
+    if(mods.indexOf('transporte')>=0)return 'transporte';
+    if(mods.indexOf('mantenedores')>=0)return 'mantenedores';
+    if(mods.indexOf('finanzas')>=0)return 'finanzas';
+    return 'sin-permiso';
+  }
+  // Si la vista actual no es permitida, redirigir a la primera permitida.
+  // IMPORTANTE: este useEffect debe estar antes de cualquier return condicional
+  // (login, mobile mode) para no violar las reglas de hooks de React.
+  useEffect(function(){
+    if(user&&!mobileMode&&!viewAllowed(view)){
+      var v=firstAllowedView();
+      if(v!==view)setView(v);
+    }
+  },[user,view,mobileMode]);
+
   if(!tok)return h(LoginPage,{onLogin:handleLogin});
 
   // ── MOBILE MODE ──
@@ -14981,53 +15032,6 @@ function App(){
   // ── DESKTOP MODE ──
   function navI(id,icon,label,sub){return h('div',{key:id,className:'nav '+(view===id?'on':''),style:{paddingLeft:sub?22:12},onClick:function(){setView(id);setMenuOpen(false);}},h('span',{style:{fontSize:11}},icon),' ',label,(id==='stock'&&alerts>0)?h('span',{className:'cnt'},alerts):null);}
   const grpHdr=(k,label)=>h('div',{className:'sb-grp',onClick:function(){toggleGrp(k);}},label,h('span',{className:'sb-grp-arrow '+(grp[k]?'open':'')},'>'));
-  function canSee(mod){if(!user)return false;if(user.es_admin)return true;if(!user.modulos||user.modulos.length===0)return false;return user.modulos.indexOf(mod)>=0;}
-  // Mapa view → módulo requerido. Si la view no está aquí, no requiere módulo.
-  const VIEW_MOD={
-    'ordenes':'ordenes','oc-guias':'ordenes','dte-recibidos':'ordenes',
-    'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
-    'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-reportes':'inventario',
-    'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion',
-    'rendiciones':'rendiciones',
-    'terreno':'terreno','terreno-equipos':'terreno','terreno-faena':'terreno','terreno-reportes':'terreno',
-    'solicitudes':'solicitudes',
-    'transporte':'transporte',
-    'personal':'personal','contratos':'personal','vacaciones':'personal','finiquitos':'personal','cartas':'personal',
-    'mantenedores':'mantenedores',
-    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas',
-    'rem-parametros':'remuneraciones','rem-periodos':'remuneraciones','rem-movimientos':'remuneraciones','rem-liquidaciones':'remuneraciones','rem-prestamos':'remuneraciones','rem-previred':'remuneraciones','rem-prevision':'remuneraciones'
-  };
-  function viewAllowed(v){
-    if(!user)return false;
-    if(user.es_admin)return true;
-    var m=VIEW_MOD[v];
-    if(!m)return true;
-    return canSee(m);
-  }
-  function firstAllowedView(){
-    if(!user)return 'ordenes';
-    if(user.es_admin)return 'ordenes';
-    var mods=user.modulos||[];
-    if(mods.indexOf('ordenes')>=0)return 'ordenes';
-    if(mods.indexOf('inventario')>=0)return 'panel';
-    if(mods.indexOf('rendiciones')>=0)return 'rendiciones';
-    if(mods.indexOf('terreno')>=0)return 'terreno';
-    if(mods.indexOf('solicitudes')>=0)return 'solicitudes';
-    if(mods.indexOf('mantencion')>=0)return 'mant-panel';
-    if(mods.indexOf('combustibles')>=0)return 'comb-panel';
-    if(mods.indexOf('personal')>=0)return 'personal';
-    if(mods.indexOf('transporte')>=0)return 'transporte';
-    if(mods.indexOf('mantenedores')>=0)return 'mantenedores';
-    if(mods.indexOf('finanzas')>=0)return 'finanzas';
-    return 'sin-permiso';
-  }
-  // Si la vista actual no es permitida, redirigir a la primera permitida
-  useEffect(function(){
-    if(user&&!viewAllowed(view)){
-      var v=firstAllowedView();
-      if(v!==view)setView(v);
-    }
-  },[user,view]);
 
   return h('div',{id:'root'},
     h('button',{className:'hamburger',onClick:function(){setMenuOpen(!menuOpen);}},'☰'),
