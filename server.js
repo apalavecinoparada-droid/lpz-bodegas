@@ -1921,14 +1921,19 @@ ocR.patch('/:id/cerrar', auth, async(req,res)=>{
     if(!_tipoDoc||!_numDoc||!_fechaDoc){
       return res.status(400).json({error:'No se puede cerrar: falta asociar el DTE (tipo, folio y fecha de documento)'});
     }
-    // 2) Validar que TODAS las líneas tengan faena + equipo + subcategoría
+    // 2) Validar que TODAS las líneas tengan los datos necesarios:
+    //    - subcategoría siempre obligatoria
+    //    - faena + equipo solo obligatorios si NO entra a bodega (consumo directo)
     const incompletas=await pool.query(
-      `SELECT linea_num, descripcion,
+      `SELECT linea_num, descripcion, ingresa_bodega,
          (subcategoria_id IS NULL) AS sin_subcat,
-         (faena_id IS NULL) AS sin_faena,
-         (equipo_id IS NULL) AS sin_equipo
+         (NOT COALESCE(ingresa_bodega,false) AND faena_id IS NULL) AS sin_faena,
+         (NOT COALESCE(ingresa_bodega,false) AND equipo_id IS NULL) AS sin_equipo
        FROM ordenes_compra_detalle
-       WHERE oc_id=$1 AND (subcategoria_id IS NULL OR faena_id IS NULL OR equipo_id IS NULL)
+       WHERE oc_id=$1 AND (
+         subcategoria_id IS NULL
+         OR (NOT COALESCE(ingresa_bodega,false) AND (faena_id IS NULL OR equipo_id IS NULL))
+       )
        ORDER BY linea_num`,
       [req.params.id]
     );
@@ -6843,7 +6848,7 @@ app.post('/api/dte-recibidos/import', auth, async(req,res)=>{
                 'lineas_completas', NOT EXISTS (
                   SELECT 1 FROM ordenes_compra_detalle d 
                   WHERE d.oc_id=oc.oc_id 
-                    AND (d.subcategoria_id IS NULL OR d.faena_id IS NULL OR d.equipo_id IS NULL)
+                    AND (d.subcategoria_id IS NULL OR (NOT COALESCE(d.ingresa_bodega,false) AND (d.faena_id IS NULL OR d.equipo_id IS NULL)))
                 )
               )
               ORDER BY ABS(oc.total - dte.total)
@@ -6960,7 +6965,7 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
             'lineas_completas', NOT EXISTS (
               SELECT 1 FROM ordenes_compra_detalle d 
               WHERE d.oc_id=oc.oc_id 
-                AND (d.subcategoria_id IS NULL OR d.faena_id IS NULL OR d.equipo_id IS NULL)
+                AND (d.subcategoria_id IS NULL OR (NOT COALESCE(d.ingresa_bodega,false) AND (d.faena_id IS NULL OR d.equipo_id IS NULL)))
             )
           )
           ORDER BY ABS(oc.total - dte.total)
@@ -6989,8 +6994,8 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
         dte.folio AS dte_folio, dte.tipo_dte,
         COUNT(d.detalle_id) AS n_lineas,
         COUNT(*) FILTER (WHERE d.subcategoria_id IS NULL) AS sin_subcat,
-        COUNT(*) FILTER (WHERE d.faena_id IS NULL) AS sin_faena,
-        COUNT(*) FILTER (WHERE d.equipo_id IS NULL) AS sin_equipo
+        COUNT(*) FILTER (WHERE NOT COALESCE(d.ingresa_bodega,false) AND d.faena_id IS NULL) AS sin_faena,
+        COUNT(*) FILTER (WHERE NOT COALESCE(d.ingresa_bodega,false) AND d.equipo_id IS NULL) AS sin_equipo
       FROM ordenes_compra oc
       JOIN dte_oc lnk ON lnk.oc_id=oc.oc_id
       JOIN dte_recibidos dte ON dte.dte_id=lnk.dte_id
@@ -6999,7 +7004,7 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
       JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
       WHERE oc.estado='PENDIENTE'
       GROUP BY oc.oc_id, oc.numero_oc, oc.fecha_emision, oc.total, oc.estado, pr.nombre, emp.razon_social, dte.folio, dte.tipo_dte
-      HAVING COUNT(*) FILTER (WHERE d.subcategoria_id IS NULL OR d.faena_id IS NULL OR d.equipo_id IS NULL) > 0
+      HAVING COUNT(*) FILTER (WHERE d.subcategoria_id IS NULL OR (NOT COALESCE(d.ingresa_bodega,false) AND (d.faena_id IS NULL OR d.equipo_id IS NULL))) > 0
       ORDER BY oc.fecha_emision DESC
       LIMIT 200`;
     var r2 = await pool.query(sql2);
