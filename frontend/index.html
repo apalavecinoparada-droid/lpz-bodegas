@@ -2375,11 +2375,276 @@ function TerrenoView(p){
 
 // ══ FINANZAS — REGISTRO DE CHEQUES ══
 var CONCEPTOS_CHEQUE=[{v:'pago_factura',l:'Pago factura'},{v:'pago_remuneraciones',l:'Pago remuneraciones'},{v:'pago_finiquito',l:'Pago finiquito'},{v:'traspaso',l:'Traspaso entre cuentas'},{v:'pago_otros',l:'Pago otros servicios'},{v:'manual',l:'Otro (manual)'}];
+// ═══════════════════════════════════════════════════════════════════════
+// MODAL DE IMPORTACIÓN MASIVA DE CHEQUES desde Excel
+// 1) Descargar plantilla con columnas + ejemplo
+// 2) Subir Excel → parsing + validación local (preview)
+// 3) Enviar a backend → mostrar resumen con detalle de errores
+// ═══════════════════════════════════════════════════════════════════════
+function FinChequesImportModal(p){
+  var[step,setStep]=useState('upload'); // upload | preview | done
+  var[parsed,setParsed]=useState([]);
+  var[errors,setErrors]=useState([]);
+  var[result,setResult]=useState(null);
+  var[loading,setLoading]=useState(false);
+  var[msg,setMsg]=useState('');
+
+  // Normaliza una fecha que viene de Excel (number, Date, o string DD/MM/YYYY)
+  function parseDate(v){
+    if(!v&&v!==0)return null;
+    if(v instanceof Date && !isNaN(v.getTime())){
+      var y=v.getFullYear();var m=String(v.getMonth()+1).padStart(2,'0');var d=String(v.getDate()).padStart(2,'0');
+      return y+'-'+m+'-'+d;
+    }
+    if(typeof v==='number'){
+      // Excel serial date
+      var date=XLSX.SSF.parse_date_code(v);
+      if(date)return date.y+'-'+String(date.m).padStart(2,'0')+'-'+String(date.d).padStart(2,'0');
+    }
+    if(typeof v==='string'){
+      var s=v.trim();
+      if(/^\d{4}-\d{2}-\d{2}$/.test(s))return s;
+      var m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+      if(m)return m[3]+'-'+String(m[2]).padStart(2,'0')+'-'+String(m[1]).padStart(2,'0');
+    }
+    return null;
+  }
+  // Normaliza monto
+  function parseMoney(v){
+    if(v===null||v===undefined||v==='')return null;
+    if(typeof v==='number')return v;
+    var s=String(v).trim().replace(/\$/g,'').replace(/\s/g,'');
+    // Si tiene punto y coma: punto=miles, coma=decimal → "1.234.567,50"
+    if(/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(s))return parseFloat(s.replace(/\./g,'').replace(',','.'));
+    // Si solo tiene punto y son 3 dígitos: miles → "38.000"
+    if(/^-?\d{1,3}(\.\d{3})+$/.test(s))return parseFloat(s.replace(/\./g,''));
+    // Si solo tiene coma: decimal → "1234,5"
+    if(/^-?\d+,\d+$/.test(s))return parseFloat(s.replace(',','.'));
+    var n=parseFloat(s);
+    return isNaN(n)?null:n;
+  }
+
+  function descargarPlantilla(){
+    var headers=['Empresa','Banco','N° Cuenta','N° Cheque','Fecha Emisión','Fecha Cobro','Monto','Tipo Beneficiario','RUT Proveedor','Nombre Beneficiario','Concepto','Detalle/Glosa','Estado','Fecha Pago','Observaciones'];
+    var ejemplo=[
+      ['Leonidas Poo Zenteno y Cia. Ltda.','BICE','12345678','001234','15/01/2026','30/01/2026',850000,'proveedor','77.123.456-7','','pago_factura','Factura N° 5421','emitido','','Pago abono mensual'],
+      ['Leonidas Poo Zenteno y Cia. Ltda.','BANCO DE CHILE','98765432','001235','20/01/2026','05/02/2026',1250000,'otro','','SERVICIOS GENERALES SPA','gastos_generales','Arriendo galpón','cobrado','05/02/2026','']
+    ];
+    var ws=XLSX.utils.aoa_to_sheet([headers,...ejemplo]);
+    // Anchos
+    ws['!cols']=[{wch:35},{wch:14},{wch:14},{wch:10},{wch:13},{wch:13},{wch:12},{wch:14},{wch:14},{wch:30},{wch:18},{wch:30},{wch:12},{wch:13},{wch:30}];
+    var wb=XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb,ws,'Cheques');
+    // Hoja de ayuda con valores aceptados
+    var ayuda=[
+      ['Campo','Valores aceptados / Notas'],
+      ['Empresa','Razón social EXACTA o RUT'],
+      ['Banco','Nombre del banco como está en la cuenta'],
+      ['N° Cuenta','Solo dígitos (se ignoran guiones y puntos)'],
+      ['Fecha Emisión','DD/MM/YYYY (opcional - si vacía usa fecha cobro)'],
+      ['Fecha Cobro','DD/MM/YYYY (OBLIGATORIA)'],
+      ['Monto','Número (1234567) o con separadores (1.234.567)'],
+      ['Tipo Beneficiario','"proveedor" (busca por RUT) o "otro" (texto libre)'],
+      ['RUT Proveedor','Si Tipo=proveedor, ingresar RUT (con o sin puntos/guión)'],
+      ['Nombre Beneficiario','Si Tipo=otro, ingresar nombre del beneficiario'],
+      ['Concepto','pago_factura | remuneracion | anticipo_proveedor | gastos_generales | impuesto | otro'],
+      ['Estado','emitido | cobrado | anulado | protestado'],
+      ['Fecha Pago','DD/MM/YYYY (solo si Estado=cobrado)']
+    ];
+    var wsA=XLSX.utils.aoa_to_sheet(ayuda);
+    wsA['!cols']=[{wch:22},{wch:70}];
+    XLSX.utils.book_append_sheet(wb,wsA,'Ayuda');
+    XLSX.writeFile(wb,'plantilla_importar_cheques.xlsx');
+  }
+
+  function onFile(e){
+    var f=e.target.files[0];if(!f)return;
+    setMsg('Leyendo archivo...');
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      try{
+        var wb=XLSX.read(ev.target.result,{type:'binary',cellDates:true});
+        var ws=wb.Sheets[wb.SheetNames[0]];
+        var rows=XLSX.utils.sheet_to_json(ws,{defval:''});
+        if(!rows.length){setMsg('El archivo no tiene datos');return;}
+        var items=[];var errs=[];
+        rows.forEach(function(r,i){
+          var fila=i+2;
+          var item={
+            _fila:fila,
+            empresa:String(r['Empresa']||'').trim(),
+            banco:String(r['Banco']||'').trim(),
+            numero_cuenta:String(r['N° Cuenta']||r['N° Cuenta']||r['Numero Cuenta']||'').trim(),
+            numero_cheque:String(r['N° Cheque']||r['Numero Cheque']||r['N° Cheque ']||'').trim(),
+            fecha_emision:parseDate(r['Fecha Emisión']||r['Fecha Emision']),
+            fecha_cobro:parseDate(r['Fecha Cobro']),
+            monto:parseMoney(r['Monto']),
+            tipo_beneficiario:String(r['Tipo Beneficiario']||'proveedor').trim().toLowerCase(),
+            proveedor_rut:String(r['RUT Proveedor']||'').trim(),
+            beneficiario_nombre:String(r['Nombre Beneficiario']||'').trim(),
+            concepto:String(r['Concepto']||'pago_factura').trim().toLowerCase(),
+            concepto_detalle:String(r['Detalle/Glosa']||'').trim(),
+            estado:String(r['Estado']||'emitido').trim().toLowerCase(),
+            fecha_pago:parseDate(r['Fecha Pago']),
+            observaciones:String(r['Observaciones']||'').trim()
+          };
+          // Validaciones locales
+          var rowErrs=[];
+          if(!item.empresa)rowErrs.push('falta Empresa');
+          if(!item.banco)rowErrs.push('falta Banco');
+          if(!item.numero_cuenta)rowErrs.push('falta N° Cuenta');
+          if(!item.numero_cheque)rowErrs.push('falta N° Cheque');
+          if(!item.fecha_cobro)rowErrs.push('falta o inválida Fecha Cobro');
+          if(!item.monto||item.monto<=0)rowErrs.push('Monto inválido');
+          if(item.tipo_beneficiario==='proveedor'&&!item.proveedor_rut&&!item.beneficiario_nombre)rowErrs.push('falta RUT o nombre del proveedor');
+          if(item.tipo_beneficiario==='otro'&&!item.beneficiario_nombre)rowErrs.push('falta Nombre Beneficiario');
+          item._errors=rowErrs;
+          items.push(item);
+          if(rowErrs.length)errs.push({fila:fila, errores:rowErrs.join(', ')});
+        });
+        setParsed(items);
+        setErrors(errs);
+        setStep('preview');
+        setMsg('');
+      }catch(ex){setMsg('Error al leer Excel: '+ex.message);}
+    };
+    reader.readAsBinaryString(f);
+  }
+
+  function confirmar(){
+    var validos=parsed.filter(function(x){return !x._errors.length;});
+    if(!validos.length){setMsg('No hay filas válidas para importar');return;}
+    setLoading(true);setMsg('');
+    api('/fin/cheques/importar','POST',{cheques:validos},p.tok).then(function(r){
+      setResult(r);setStep('done');
+    }).catch(function(e){setMsg('Error: '+e.message);}).finally(function(){setLoading(false);});
+  }
+
+  function fmtN(v){return new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(v)||0));}
+  var validos=parsed.filter(function(x){return !x._errors.length;}).length;
+  var invalidos=parsed.length-validos;
+
+  return h(Modal,{title:'📥 Importar Cheques desde Excel',onClose:p.onClose,xl:true},
+    h('div',null,
+      // ═══════════ STEP 1: UPLOAD ═══════════
+      step==='upload'&&h('div',null,
+        h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6,padding:14,marginBottom:14,fontSize:12}},
+          h('div',{style:{fontWeight:700,color:'#1D4ED8',marginBottom:6}},'📋 Cómo usar el importador'),
+          h('ol',{style:{margin:0,paddingLeft:20,lineHeight:1.8}},
+            h('li',null,'Descarga la plantilla Excel'),
+            h('li',null,'Completa una fila por cheque siguiendo el formato del ejemplo'),
+            h('li',null,'Sube el archivo. El sistema validará los datos antes de importar'),
+            h('li',null,'Confirma para insertar los cheques en bloque')
+          )
+        ),
+        h('div',{style:{display:'flex',gap:12,justifyContent:'center',padding:30,background:'#F8FAFC',borderRadius:6,marginBottom:14}},
+          h('button',{onClick:descargarPlantilla,style:{padding:'12px 18px',background:'#10B981',color:'#fff',border:'none',borderRadius:6,cursor:'pointer',fontSize:13,fontWeight:600}},'⬇ Descargar plantilla'),
+          h('label',{style:{padding:'12px 18px',background:'#1E40AF',color:'#fff',border:'none',borderRadius:6,cursor:'pointer',fontSize:13,fontWeight:600,display:'inline-flex',alignItems:'center'}},
+            '📁 Subir archivo .xlsx',
+            h('input',{type:'file',accept:'.xlsx,.xls',onChange:onFile,style:{display:'none'}})
+          )
+        ),
+        msg&&h('div',{className:'al al-i'},msg)
+      ),
+      // ═══════════ STEP 2: PREVIEW ═══════════
+      step==='preview'&&h('div',null,
+        h('div',{style:{display:'flex',gap:8,marginBottom:10}},
+          h('div',{style:{flex:1,padding:10,background:'#DCFCE7',borderRadius:6,textAlign:'center'}},
+            h('div',{style:{fontSize:20,fontWeight:700,color:'#15803D'}},validos),
+            h('div',{style:{fontSize:11,color:'#15803D'}},'filas válidas')
+          ),
+          invalidos>0&&h('div',{style:{flex:1,padding:10,background:'#FEE2E2',borderRadius:6,textAlign:'center'}},
+            h('div',{style:{fontSize:20,fontWeight:700,color:'#991B1B'}},invalidos),
+            h('div',{style:{fontSize:11,color:'#991B1B'}},'filas con error (se omiten)')
+          ),
+          h('div',{style:{flex:1,padding:10,background:'#FEF3C7',borderRadius:6,textAlign:'center'}},
+            h('div',{style:{fontSize:14,fontWeight:700,color:'#92400E'}},'$'+fmtN(parsed.reduce(function(s,r){return s+(r._errors.length?0:(parseFloat(r.monto)||0));},0))),
+            h('div',{style:{fontSize:11,color:'#92400E'}},'monto total a importar')
+          )
+        ),
+        h('div',{style:{maxHeight:'45vh',overflowY:'auto',border:'1px solid #E2E8F0',borderRadius:6,marginBottom:10}},
+          h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
+            h('thead',null,h('tr',{style:{background:'#F1F5F9',position:'sticky',top:0}},
+              h('th',{style:{padding:6,width:30}},'#'),
+              h('th',{style:{padding:6,textAlign:'left'}},'Empresa'),
+              h('th',{style:{padding:6,textAlign:'left'}},'Banco / Cta'),
+              h('th',{style:{padding:6,textAlign:'left'}},'N° Cheque'),
+              h('th',{style:{padding:6,textAlign:'right'}},'Monto'),
+              h('th',{style:{padding:6,textAlign:'left'}},'Beneficiario'),
+              h('th',{style:{padding:6,textAlign:'left'}},'F. Cobro'),
+              h('th',{style:{padding:6,textAlign:'left'}},'Estado / Error')
+            )),
+            h('tbody',null,parsed.map(function(r,i){
+              var hasErr=r._errors.length>0;
+              return h('tr',{key:i,style:{borderTop:'1px solid #E2E8F0',background:hasErr?'#FEE2E2':''}},
+                h('td',{style:{padding:6,textAlign:'center',fontWeight:600,color:hasErr?'#991B1B':'#16A34A'}},r._fila),
+                h('td',{style:{padding:6}},r.empresa.length>30?r.empresa.slice(0,30)+'…':r.empresa),
+                h('td',{style:{padding:6}},r.banco+' / '+r.numero_cuenta),
+                h('td',{style:{padding:6,fontWeight:600}},r.numero_cheque),
+                h('td',{style:{padding:6,textAlign:'right',fontWeight:600}},r.monto?'$'+fmtN(r.monto):'—'),
+                h('td',{style:{padding:6}},r.tipo_beneficiario==='proveedor'?(r.proveedor_rut||'—'):(r.beneficiario_nombre||'—')),
+                h('td',{style:{padding:6}},r.fecha_cobro||'—'),
+                h('td',{style:{padding:6,color:hasErr?'#991B1B':'#475569'}},hasErr?'❌ '+r._errors.join(', '):r.estado)
+              );
+            }))
+          )
+        ),
+        msg&&h('div',{className:'al al-e',style:{marginBottom:8}},msg),
+        h('div',{style:{display:'flex',gap:8,justifyContent:'space-between'}},
+          h('button',{onClick:function(){setStep('upload');setParsed([]);setErrors([]);},style:{padding:'8px 14px',border:'1px solid #CBD5E1',borderRadius:5,background:'#F8FAFC',cursor:'pointer',fontSize:12}},'← Subir otro archivo'),
+          h('div',{style:{display:'flex',gap:6}},
+            h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),
+            h(Btn,{onClick:confirmar,disabled:loading||validos===0},loading?'Importando...':'✓ Importar '+validos+' cheque(s)')
+          )
+        )
+      ),
+      // ═══════════ STEP 3: DONE ═══════════
+      step==='done'&&result&&h('div',null,
+        h('div',{style:{background:'#DCFCE7',border:'1px solid #86EFAC',borderRadius:6,padding:14,marginBottom:10}},
+          h('div',{style:{fontWeight:700,color:'#15803D',marginBottom:6,fontSize:14}},'✓ Importación completada'),
+          h('div',{style:{fontSize:12}},
+            h('span',null,'Importados: '),h('strong',null,result.importados),h('span',null,' · '),
+            h('span',null,'Duplicados: '),h('strong',null,result.duplicados),h('span',null,' · '),
+            h('span',null,'Errores: '),h('strong',null,result.errores)
+          )
+        ),
+        // Detalle de errores (si los hubo)
+        result.errores>0&&h('details',{style:{marginBottom:10},open:true},
+          h('summary',{style:{cursor:'pointer',fontWeight:600,color:'#991B1B',marginBottom:6}},'Ver detalle de '+result.errores+' error(es)'),
+          h('div',{style:{maxHeight:200,overflowY:'auto',background:'#FEE2E2',padding:8,borderRadius:4,fontSize:11}},
+            result.detalles.filter(function(d){return d.status==='error';}).map(function(d,i){
+              return h('div',{key:i,style:{padding:'3px 0',borderBottom:'1px solid #FCA5A5'}},
+                h('strong',null,'Fila '+d.fila),
+                h('span',{style:{marginLeft:6}},'(cheque '+d.numero_cheque+'): '),
+                h('span',{style:{color:'#991B1B'}},d.mensaje)
+              );
+            })
+          )
+        ),
+        result.duplicados>0&&h('details',{style:{marginBottom:10}},
+          h('summary',{style:{cursor:'pointer',fontWeight:600,color:'#92400E',marginBottom:6}},'Ver detalle de '+result.duplicados+' duplicado(s)'),
+          h('div',{style:{maxHeight:200,overflowY:'auto',background:'#FEF3C7',padding:8,borderRadius:4,fontSize:11}},
+            result.detalles.filter(function(d){return d.status==='duplicado';}).map(function(d,i){
+              return h('div',{key:i,style:{padding:'3px 0',borderBottom:'1px solid #FDE68A'}},
+                h('strong',null,'Fila '+d.fila),
+                h('span',{style:{marginLeft:6}},': cheque '+d.numero_cheque+' ya existe')
+              );
+            })
+          )
+        ),
+        h('div',{style:{display:'flex',justifyContent:'flex-end'}},
+          h(Btn,{onClick:p.onDone},'Cerrar y ver cheques')
+        )
+      )
+    )
+  );
+}
+
 function FinChequesView(p){
   var provs=(p.m.provs||[]);
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   var[cuentas,setCuentas]=useState([]);var[cheques,setCheques]=useState([]);var[dash,setDash]=useState(null);
-  var[tab,setTab]=useState('dashboard');var[showForm,setShowForm]=useState(false);var[editCh,setEditCh]=useState(null);var[msg,setMsg]=useState('');
+  var[tab,setTab]=useState('dashboard');var[showForm,setShowForm]=useState(false);var[editCh,setEditCh]=useState(null);var[msg,setMsg]=useState('');var[showImport,setShowImport]=useState(false);
   var[filtEmpresa,setFiltEmpresa]=useState('');var[filtBanco,setFiltBanco]=useState('');var[filtEstado,setFiltEstado]=useState('emitido');
   var[sortF,setSortF]=useState('numero_cheque');var[sortD,setSortD]=useState('asc');
   var emptyForm={cuenta_id:'',numero_cheque:'',fecha_emision:new Date().toISOString().slice(0,10),fecha_cobro:'',monto:'',tipo_beneficiario:'proveedor',proveedor_id:'',beneficiario_nombre:'',concepto:'pago_factura',concepto_detalle:'',observaciones:''};
@@ -2560,9 +2825,16 @@ function FinChequesView(p){
       h('div',{style:{display:'flex',gap:4}},tabs.map(function(t){return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'6px 14px',borderRadius:5,fontSize:12,cursor:'pointer',border:'1px solid #CBD5E1',background:tab===t.k?'#1E3A2D':'#F8FAFC',color:tab===t.k?'#fff':'#475569',fontWeight:tab===t.k?600:400}},t.l);})),
       h('div',{style:{display:'flex',gap:6,alignItems:'center'}},
         h('select',{value:filtEmpresa,onChange:function(e){setFiltEmpresa(e.target.value);},style:Object.assign({},inpS,{width:180})},h('option',{value:''},'Todas las empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})),
+        tab==='registro'&&h('button',{onClick:function(){setShowImport(true);},style:{padding:'6px 12px',background:'#10B981',color:'#fff',border:'none',borderRadius:5,fontSize:12,cursor:'pointer',fontWeight:600}},'📥 Importar Excel'),
         tab==='registro'&&h(Btn,{onClick:function(){setEditCh(null);setForm(emptyForm);setShowForm(!showForm);}},showForm?'Cancelar':'+ Nuevo Cheque')
       )
     ),
+    // Modal de importación masiva
+    showImport&&h(FinChequesImportModal,{
+      tok:p.tok,m:p.m,cuentas:cuentas,
+      onClose:function(){setShowImport(false);},
+      onDone:function(){setShowImport(false);loadCheques();loadDash();}
+    }),
     msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
     // ── DASHBOARD ──
     tab==='dashboard'&&h('div',null,
@@ -15359,7 +15631,7 @@ function App(){
     'terreno':'terreno','terreno-equipos':'terreno','terreno-faena':'terreno','terreno-reportes':'terreno',
     'solicitudes':'solicitudes',
     'transporte':'transporte',
-    'personal':'personal','contratos':'personal','vacaciones':'personal','finiquitos':'personal','cartas':'personal',
+    'personal':'contratos','contratos':'contratos','vacaciones':'contratos','finiquitos':'contratos','cartas':'contratos',
     'mantenedores':'mantenedores',
     'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas',
     'rem-parametros':'remuneraciones','rem-periodos':'remuneraciones','rem-movimientos':'remuneraciones','rem-liquidaciones':'remuneraciones','rem-prestamos':'remuneraciones','rem-previred':'remuneraciones','rem-prevision':'remuneraciones'
@@ -15555,14 +15827,14 @@ function App(){
         canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
         canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
         canSee('rendiciones')&&h('div',{className:'sb-sep'}),
-        grpHdr('pers','PERSONAL'),
-        grp.pers&&h('div',null,
+        canSee('contratos')&&grpHdr('pers','PERSONAL'),
+        canSee('contratos')&&grp.pers&&h('div',null,
           navI('personal','👥','Maestro Personal',true),
           navI('vacaciones','🏖','Control de Vacaciones',true),
           navI('contratos','📄','Contratos de Trabajo',true),
           navI('finiquitos','🧾','Cálculo de Finiquitos',true)
         ),
-        h('div',{className:'sb-sep'}),
+        canSee('contratos')&&h('div',{className:'sb-sep'}),
         grpHdr('rem','REMUNERACIONES'),
         grp.rem&&h('div',null,
           navI('rem-parametros','📊','Parámetros Legales',true),
