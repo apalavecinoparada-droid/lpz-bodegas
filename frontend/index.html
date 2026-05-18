@@ -6264,7 +6264,16 @@ function CombMovForm(p){
   const faenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
   const equipos=(p.m.equipos||[]).filter(function(e){return e.activo;});
   const provs=(p.m.provs||[]).filter(function(p2){return p2.activo;});
-  const[form,setForm]=useState(Object.assign({fecha:TODAY,litros:'',precio_unitario:'',empresa_id:'',tipo_id:'',faena_id:'',equipo_id:'',proveedor_id:'',estanque_origen_id:'',estanque_destino_id:'',numero_documento:'',oc_referencia:'',observaciones:'',horometro:'',kilometraje:'',responsable:'',es_provisorio:true},p.defaults||{}));
+  const[form,setForm]=useState(function(){
+    var base={fecha:TODAY,hora_carga:'',litros:'',precio_unitario:'',empresa_id:'',tipo_id:'',faena_id:'',equipo_id:'',proveedor_id:'',estanque_origen_id:'',estanque_destino_id:'',numero_documento:'',oc_referencia:'',observaciones:'',horometro:'',kilometraje:'',responsable:'',es_provisorio:true};
+    var d=p.defaults||{};
+    var merged=Object.assign(base,d);
+    // Normalizar hora_carga: la BD devuelve TIME como "HH:MM:SS", input type="time" quiere "HH:MM"
+    if(merged.hora_carga)merged.hora_carga=String(merged.hora_carga).slice(0,5);
+    // Misma normalización para fecha por si llega como timestamp ISO
+    if(merged.fecha)merged.fecha=String(merged.fecha).slice(0,10);
+    return merged;
+  });
   const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
   function sf(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
   function total(){return (parseFloat(form.litros)||0)*(parseFloat(form.precio_unitario)||0);}
@@ -6303,6 +6312,7 @@ function CombMovForm(p){
           esMulti&&h('div',{style:{fontSize:10,color:'#7C3AED',marginTop:3,fontStyle:'italic'}},'💡 Verás equipos de todas las empresas. La empresa se asigna automáticamente según el equipo elegido.')
         ),
         h(FI,{k:'fecha',l:'Fecha',req:true,type:'date',item:form,onChange:setForm}),
+        p.campos.includes('hora')&&h(FI,{k:'hora_carga',l:'Hora carga (opcional)',type:'time',item:form,onChange:setForm}),
         p.campos.includes('tipo')&&h(FS,{k:'tipo_id',l:'Combustible',req:true,item:form,onChange:setForm,opts:tipos.map(function(t){return{v:t.tipo_id,l:t.nombre};})}),
         p.campos.includes('proveedor')&&h(FS,{k:'proveedor_id',l:'Proveedor',item:form,onChange:setForm,opts:provs.map(function(p2){return{v:p2.proveedor_id,l:p2.nombre};})}),
         p.campos.includes('estanque_origen')&&h('div',null,
@@ -6463,9 +6473,9 @@ function CombTraspasos(p){
 
 function CombDistribuciones(p){
   return h(CombMovView,{m:p.m,tok:p.tok,tipoMov:'DISTRIBUCION',endpoint:'distribucion',btnLabel:'+ Distribución',modalTitle:'Registrar Carga/Distribución a Equipo',
-    campos:['empresa','tipo','estanque_origen','faena','equipo','litros','horometro','kilometraje','responsable'],
+    campos:['empresa','tipo','estanque_origen','faena','equipo','litros','hora','horometro','kilometraje','responsable'],
     exFile:'distribuciones_combustible',
-    cols:[{lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},{lbl:'Combustible',k:'tipo_nombre'},{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Estanque',k:'estanque_origen'},{lbl:'Equipo',k:'equipo_nombre'},{lbl:'Faena',render:function(r){return r.faena_nombre||'—';}},{lbl:'Litros',r:true,mono:true,render:function(r){return parseFloat(r.litros||0).toFixed(1);}},{lbl:'Costo',r:true,render:function(r){return CLP(Math.round(r.costo_total||0));}},{lbl:'Horóm.',render:function(r){return r.horometro||'—';}},{lbl:'Km',render:function(r){return r.kilometraje||'—';}},{lbl:'Responsable',render:function(r){return r.responsable||'—';}}]
+    cols:[{lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},{lbl:'Hora',render:function(r){return r.hora_carga?String(r.hora_carga).slice(0,5):'—';}},{lbl:'Combustible',k:'tipo_nombre'},{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Estanque',k:'estanque_origen'},{lbl:'Equipo',k:'equipo_nombre'},{lbl:'Faena',render:function(r){return r.faena_nombre||'—';}},{lbl:'Litros',r:true,mono:true,render:function(r){return parseFloat(r.litros||0).toFixed(1);}},{lbl:'Costo',r:true,render:function(r){return CLP(Math.round(r.costo_total||0));}},{lbl:'Horóm.',render:function(r){return r.horometro||'—';}},{lbl:'Km',render:function(r){return r.kilometraje||'—';}},{lbl:'Responsable',render:function(r){return r.responsable||'—';}}]
   });
 }
 
