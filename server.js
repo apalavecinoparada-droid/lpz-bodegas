@@ -557,6 +557,9 @@ async function setupMantenciones(q){
   // ── ALTER movimiento_detalle: enlace a OT ──
   try{await q('ALTER TABLE movimiento_detalle ADD COLUMN IF NOT EXISTS ot_id INT');}catch(e){}
 
+  // ── ALTER comb_movimientos: agregar hora de carga (para soportar múltiples cargas/día) ──
+  try{await q('ALTER TABLE comb_movimientos ADD COLUMN IF NOT EXISTS hora_carga TIME');}catch(e){}
+
   // ── ALTER mant_ot: traslado details ──
   try{await q('ALTER TABLE mant_ot ADD COLUMN IF NOT EXISTS vehiculo_traslado VARCHAR(100)');}catch(e){}
   try{await q('ALTER TABLE mant_ot ADD COLUMN IF NOT EXISTS distancia_km NUMERIC(8,1) DEFAULT 0');}catch(e){}
@@ -1953,13 +1956,11 @@ ocR.patch('/:id/cerrar', auth, async(req,res)=>{
 });
 ocR.patch('/:id/reabrir', auth, async(req,res)=>{
   // Reabre una OC CERRADA, revirtiendo el ingreso a inventario si lo hubo.
-  // Solo administradores. Permite reabrir aunque haya salidas posteriores
-  // (el stock puede quedar negativo y el admin lo ajusta manualmente).
+  // Cualquier usuario con acceso al módulo de OC puede reabrir.
+  // Permite reabrir aunque haya salidas posteriores (el stock puede quedar negativo
+  // y se ajusta manualmente).
   const client=await pool.connect();
   try{
-    // Validación de rol admin
-    const rol=(req.user.rol||'').toUpperCase();
-    if(rol!=='ADMINISTRADOR') return res.status(403).json({error:'Solo administradores pueden reabrir órdenes de compra'});
     await client.query('BEGIN');
     const chk=await client.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length){ await client.query('ROLLBACK'); return res.status(404).json({error:'OC no encontrada'}); }
@@ -2594,7 +2595,7 @@ app.post('/api/comb/distribucion', auth, async(req,res)=>{
   const numOrNull=function(v){if(v===''||v===undefined||v===null)return null;var n=parseFloat(v);return isNaN(n)?null:n;};
   try{
     await client.query('BEGIN');
-    const{empresa_id,fecha,tipo_id,estanque_origen_id,equipo_id,faena_id,litros,horometro,kilometraje,responsable,observaciones}=req.body;
+    const{empresa_id,fecha,hora_carga,tipo_id,estanque_origen_id,equipo_id,faena_id,litros,horometro,kilometraje,responsable,observaciones}=req.body;
     if(!equipo_id) throw new Error('Debe seleccionar el equipo o vehículo');
     if(!estanque_origen_id) throw new Error('Debe seleccionar el estanque de origen');
     const lts=parseFloat(litros);
@@ -2606,9 +2607,9 @@ app.post('/api/comb/distribucion', auth, async(req,res)=>{
     const costo_total=lts*cpp;
     // Descontar stock
     await client.query('UPDATE comb_stock SET litros_disponibles=litros_disponibles-$1,ultima_actualizacion=NOW() WHERE estanque_id=$2 AND tipo_id=$3',[lts,estanque_origen_id,tipo_id]);
-    const r=await client.query(`INSERT INTO comb_movimientos(tipo_mov,empresa_id,fecha,tipo_id,estanque_origen_id,equipo_id,faena_id,litros,precio_unitario,costo_total,horometro,kilometraje,responsable,observaciones,usuario)
-      VALUES('DISTRIBUCION',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING *`,
-      [empresa_id||null,fecha,tipo_id,estanque_origen_id,equipo_id,faena_id||null,lts,cpp,costo_total,numOrNull(horometro),numOrNull(kilometraje),responsable||null,observaciones||null,req.user.email]);
+    const r=await client.query(`INSERT INTO comb_movimientos(tipo_mov,empresa_id,fecha,hora_carga,tipo_id,estanque_origen_id,equipo_id,faena_id,litros,precio_unitario,costo_total,horometro,kilometraje,responsable,observaciones,usuario)
+      VALUES('DISTRIBUCION',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+      [empresa_id||null,fecha,hora_carga||null,tipo_id,estanque_origen_id,equipo_id,faena_id||null,lts,cpp,costo_total,numOrNull(horometro),numOrNull(kilometraje),responsable||null,observaciones||null,req.user.email]);
     await client.query('COMMIT');
     res.status(201).json(r.rows[0]);
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
@@ -2671,7 +2672,8 @@ app.put('/api/comb/movimientos/:id', auth, async(req,res)=>{
       kilometraje:b.kilometraje!==undefined?numOrNull(b.kilometraje):old.kilometraje,
       responsable:b.responsable!==undefined?(b.responsable||null):old.responsable,
       numero_documento:b.numero_documento!==undefined?(b.numero_documento||null):old.numero_documento,
-      observaciones:b.observaciones!==undefined?(b.observaciones||null):old.observaciones
+      observaciones:b.observaciones!==undefined?(b.observaciones||null):old.observaciones,
+      hora_carga:b.hora_carga!==undefined?(b.hora_carga||null):old.hora_carga
     };
     nuevo.costo_total=parseFloat((nuevo.litros*nuevo.precio_unitario).toFixed(2));
     // 1) Revertir stock con valores VIEJOS
@@ -2703,11 +2705,11 @@ app.put('/api/comb/movimientos/:id', auth, async(req,res)=>{
     const upd=await client.query(`UPDATE comb_movimientos SET
       empresa_id=$1,fecha=$2,tipo_id=$3,estanque_origen_id=$4,estanque_destino_id=$5,
       equipo_id=$6,faena_id=$7,proveedor_id=$8,litros=$9,precio_unitario=$10,costo_total=$11,
-      horometro=$12,kilometraje=$13,responsable=$14,numero_documento=$15,observaciones=$16
-      WHERE mov_id=$17 RETURNING *`,
+      horometro=$12,kilometraje=$13,responsable=$14,numero_documento=$15,observaciones=$16,hora_carga=$17
+      WHERE mov_id=$18 RETURNING *`,
       [nuevo.empresa_id,nuevo.fecha,nuevo.tipo_id,nuevo.estanque_origen_id,nuevo.estanque_destino_id,
        nuevo.equipo_id,nuevo.faena_id,nuevo.proveedor_id,nuevo.litros,nuevo.precio_unitario,nuevo.costo_total,
-       nuevo.horometro,nuevo.kilometraje,nuevo.responsable,nuevo.numero_documento,nuevo.observaciones,req.params.id]);
+       nuevo.horometro,nuevo.kilometraje,nuevo.responsable,nuevo.numero_documento,nuevo.observaciones,nuevo.hora_carga,req.params.id]);
     await client.query('COMMIT');
     res.json(upd.rows[0]);
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
@@ -4712,6 +4714,98 @@ app.patch('/api/fin/cheques/:id/estado', auth, async(req,res)=>{
 });
 app.delete('/api/fin/cheques/:id', auth, async(req,res)=>{
   try{await pool.query('DELETE FROM fin_cheques WHERE cheque_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// IMPORTACIÓN MASIVA DE CHEQUES desde Excel
+// Recibe array de cheques ya parseados desde el frontend.
+// Resuelve referencias (empresa, cuenta, proveedor) por nombre/RUT.
+// ═══════════════════════════════════════════════════════════════════════
+app.post('/api/fin/cheques/importar', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    var cheques=Array.isArray(req.body.cheques)?req.body.cheques:[];
+    if(!cheques.length) return res.status(400).json({error:'No se recibieron cheques para importar'});
+    // Pre-cargar catálogos para resolver referencias
+    var empresas=(await pool.query('SELECT empresa_id, razon_social, rut FROM empresas')).rows;
+    var cuentas=(await pool.query('SELECT cuenta_id, empresa_id, banco, numero_cuenta FROM fin_cuentas_bancarias')).rows;
+    var provs=(await pool.query('SELECT proveedor_id, nombre, rut FROM proveedores')).rows;
+    var resumen={importados:0, duplicados:0, errores:0, detalles:[]};
+    var norm=function(s){return String(s||'').trim().toUpperCase().replace(/\s+/g,' ');};
+    var normRut=function(s){return String(s||'').replace(/[.\s-]/g,'').toUpperCase();};
+    await client.query('BEGIN');
+    for(var i=0;i<cheques.length;i++){
+      var ch=cheques[i];
+      var fila=i+2; // fila en Excel (header en fila 1)
+      try{
+        // ─── Resolver empresa ───
+        var empMatch=empresas.find(function(e){
+          return norm(e.razon_social)===norm(ch.empresa) || normRut(e.rut)===normRut(ch.empresa);
+        });
+        if(!empMatch) throw new Error('Empresa no encontrada: "'+ch.empresa+'"');
+        // ─── Resolver cuenta bancaria ───
+        var ctaMatch=cuentas.find(function(c){
+          return c.empresa_id===empMatch.empresa_id 
+            && norm(c.banco)===norm(ch.banco)
+            && String(c.numero_cuenta).replace(/\D/g,'')===String(ch.numero_cuenta||'').replace(/\D/g,'');
+        });
+        if(!ctaMatch) throw new Error('Cuenta no encontrada: '+ch.banco+' '+ch.numero_cuenta+' (empresa '+empMatch.razon_social+')');
+        // ─── Validaciones básicas ───
+        if(!ch.numero_cheque) throw new Error('Falta número de cheque');
+        if(!ch.fecha_cobro) throw new Error('Falta fecha de cobro');
+        var monto=parseFloat(String(ch.monto||'').toString().replace(/\./g,'').replace(',','.'));
+        if(!monto||monto<=0) throw new Error('Monto inválido: '+ch.monto);
+        // ─── Detección de duplicados (misma cuenta + mismo nº cheque) ───
+        var dup=await client.query('SELECT cheque_id FROM fin_cheques WHERE cuenta_id=$1 AND numero_cheque=$2',[ctaMatch.cuenta_id, String(ch.numero_cheque).trim()]);
+        if(dup.rows.length){
+          resumen.duplicados++;
+          resumen.detalles.push({fila:fila, numero_cheque:ch.numero_cheque, status:'duplicado', mensaje:'Ya existe en la cuenta'});
+          continue;
+        }
+        // ─── Resolver beneficiario ───
+        var tipoBen=(ch.tipo_beneficiario||'').toLowerCase().trim();
+        if(!tipoBen||tipoBen==='proveedor')tipoBen='proveedor';else tipoBen='otro';
+        var provId=null, benNombre=null;
+        if(tipoBen==='proveedor'){
+          if(ch.proveedor_rut){
+            var prMatch=provs.find(function(p){return normRut(p.rut)===normRut(ch.proveedor_rut);});
+            if(prMatch){provId=prMatch.proveedor_id; benNombre=prMatch.nombre;}
+            else throw new Error('Proveedor con RUT '+ch.proveedor_rut+' no encontrado');
+          }else if(ch.beneficiario_nombre){
+            var prMatch2=provs.find(function(p){return norm(p.nombre)===norm(ch.beneficiario_nombre);});
+            if(prMatch2){provId=prMatch2.proveedor_id; benNombre=prMatch2.nombre;}
+            else throw new Error('Proveedor "'+ch.beneficiario_nombre+'" no encontrado. Use RUT o cambie tipo a "otro"');
+          }else throw new Error('Falta RUT o nombre del proveedor');
+        }else{
+          benNombre=ch.beneficiario_nombre||null;
+          if(!benNombre) throw new Error('Falta nombre del beneficiario');
+        }
+        // ─── Normalizar fechas ───
+        var fechaEm=ch.fecha_emision||ch.fecha_cobro;
+        var concepto=String(ch.concepto||'pago_factura').toLowerCase().trim();
+        if(['pago_factura','remuneracion','anticipo_proveedor','gastos_generales','impuesto','otro'].indexOf(concepto)<0)concepto='pago_factura';
+        var estado=String(ch.estado||'emitido').toLowerCase().trim();
+        if(['emitido','cobrado','anulado','protestado','pagado'].indexOf(estado)<0)estado='emitido';
+        // ─── Insertar ───
+        var ins=await client.query(
+          `INSERT INTO fin_cheques(empresa_id,cuenta_id,numero_cheque,fecha_emision,fecha_cobro,monto,tipo_beneficiario,proveedor_id,beneficiario_nombre,concepto,concepto_detalle,estado,fecha_pago,observaciones,usuario)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING cheque_id`,
+          [empMatch.empresa_id, ctaMatch.cuenta_id, String(ch.numero_cheque).trim(), fechaEm, ch.fecha_cobro, monto,
+           tipoBen, provId, benNombre, concepto, ch.concepto_detalle||null, estado, ch.fecha_pago||null, ch.observaciones||null, req.user.email]
+        );
+        resumen.importados++;
+        resumen.detalles.push({fila:fila, numero_cheque:ch.numero_cheque, status:'importado', cheque_id:ins.rows[0].cheque_id});
+      }catch(e){
+        resumen.errores++;
+        resumen.detalles.push({fila:fila, numero_cheque:ch.numero_cheque||'?', status:'error', mensaje:e.message});
+      }
+    }
+    await client.query('COMMIT');
+    res.json(resumen);
+  }catch(e){
+    await client.query('ROLLBACK');
+    res.status(500).json({error:e.message});
+  }finally{client.release();}
 });
 app.get('/api/fin/dashboard', auth, async(req,res)=>{
   try{
