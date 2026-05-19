@@ -4764,7 +4764,10 @@ app.post('/api/fin/cheques/importar', auth, async(req,res)=>{
         }
         // ─── Resolver beneficiario ───
         var tipoBen=(ch.tipo_beneficiario||'').toLowerCase().trim();
-        if(!tipoBen||tipoBen==='proveedor')tipoBen='proveedor';else tipoBen='otro';
+        // Tipos válidos: proveedor (requiere proveedor_id), o variantes con texto libre
+        var tiposValidos=['proveedor','acreedor','otro','traspaso_bancario','prestamo_interempresa'];
+        if(tiposValidos.indexOf(tipoBen)<0)tipoBen='proveedor';
+        if(tipoBen==='otro')tipoBen='acreedor'; // alias retrocompat
         var provId=null, benNombre=null;
         if(tipoBen==='proveedor'){
           if(ch.proveedor_rut){
@@ -4774,11 +4777,11 @@ app.post('/api/fin/cheques/importar', auth, async(req,res)=>{
           }else if(ch.beneficiario_nombre){
             var prMatch2=provs.find(function(p){return norm(p.nombre)===norm(ch.beneficiario_nombre);});
             if(prMatch2){provId=prMatch2.proveedor_id; benNombre=prMatch2.nombre;}
-            else throw new Error('Proveedor "'+ch.beneficiario_nombre+'" no encontrado. Use RUT o cambie tipo a "otro"');
+            else throw new Error('Proveedor "'+ch.beneficiario_nombre+'" no encontrado. Use RUT o cambie tipo a "acreedor"');
           }else throw new Error('Falta RUT o nombre del proveedor');
         }else{
           benNombre=ch.beneficiario_nombre||null;
-          if(!benNombre) throw new Error('Falta nombre del beneficiario');
+          if(!benNombre) throw new Error('Falta nombre del beneficiario para tipo "'+tipoBen+'"');
         }
         // ─── Normalizar fechas ───
         var fechaEm=ch.fecha_emision||ch.fecha_cobro;
