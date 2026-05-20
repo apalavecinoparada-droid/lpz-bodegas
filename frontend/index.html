@@ -2131,7 +2131,8 @@ function TerrenoInforme(p){
 // ═══════════════════════════════════════════════════════════════════════
 function TerrenoAuditoriaModal(p){
   var hoy=new Date().toISOString().slice(0,10);
-  var[fecha,setFecha]=useState(hoy);
+  var[desde,setDesde]=useState(hoy);
+  var[hasta,setHasta]=useState(hoy);
   var[empresaFilt,setEmpresaFilt]=useState('');
   var[data,setData]=useState(null);
   var[loading,setLoading]=useState(false);
@@ -2141,46 +2142,76 @@ function TerrenoAuditoriaModal(p){
 
   function cargar(){
     setLoading(true);setErr('');
-    var qs='?fecha='+fecha+(empresaFilt?'&empresa_id='+empresaFilt:'');
+    var qs='?desde='+desde+'&hasta='+hasta+(empresaFilt?'&empresa_id='+empresaFilt:'');
     api('/terreno/auditoria-diaria'+qs,'GET',null,p.tok)
       .then(function(r){setData(r);})
       .catch(function(e){setErr(e.message);})
       .finally(function(){setLoading(false);});
   }
-  useEffect(cargar,[fecha,empresaFilt]);
+  useEffect(cargar,[desde,hasta,empresaFilt]);
+
+  // Presets rápidos de rango
+  function aplicarPreset(p){
+    var h=new Date();
+    var hStr=h.toISOString().slice(0,10);
+    if(p==='hoy'){setDesde(hStr);setHasta(hStr);}
+    else if(p==='ayer'){var a=new Date(h);a.setDate(a.getDate()-1);var aStr=a.toISOString().slice(0,10);setDesde(aStr);setHasta(aStr);}
+    else if(p==='semana'){var s=new Date(h);s.setDate(s.getDate()-6);setDesde(s.toISOString().slice(0,10));setHasta(hStr);}
+    else if(p==='mes'){var m=new Date(h.getFullYear(),h.getMonth(),1);setDesde(m.toISOString().slice(0,10));setHasta(hStr);}
+    else if(p==='mes_pasado'){var mp=new Date(h.getFullYear(),h.getMonth()-1,1);var mpFin=new Date(h.getFullYear(),h.getMonth(),0);setDesde(mp.toISOString().slice(0,10));setHasta(mpFin.toISOString().slice(0,10));}
+  }
 
   function fmtN(n){return new Intl.NumberFormat('es-CL',{maximumFractionDigits:1}).format(parseFloat(n)||0);}
   function fmtDate(d){if(!d)return '—';var s=String(d).slice(0,10);var pp=s.split('-');return pp.length===3?pp[2]+'/'+pp[1]+'/'+pp[0]:s;}
 
-  // Para botón "+ Registrar" — abre el form de nuevo registro con el equipo precargado
   function registrarRapido(r){
-    // Por simplicidad, copiamos info útil al portapapeles y avisamos
-    var txt='Equipo '+r.codigo+' ('+r.nombre+') — Litros distribuidos: '+fmtN(r.litros_distribuidos)+' L';
+    var txt='Equipo '+r.codigo+' ('+r.nombre+') — Fecha: '+fmtDate(r.fecha)+' — Litros distribuidos: '+fmtN(r.litros_distribuidos)+' L';
     if(navigator.clipboard)navigator.clipboard.writeText(txt);
-    alert('Info copiada al portapapeles. Cierra este panel y crea el registro de '+r.codigo+' manualmente.\n\n'+txt);
+    alert('Info copiada al portapapeles:\n\n'+txt+'\n\nCierra este panel y crea el registro de '+r.codigo+' manualmente.');
   }
 
   var res=data&&data.resumen||{};
+  var diasRango=data?Math.round((new Date(data.hasta)-new Date(data.desde))/86400000)+1:1;
 
-  return h(Modal,{title:'🔍 Auditoría Diaria — Terreno vs Combustibles',onClose:p.onClose,xl:true},
+  return h(Modal,{title:'🔍 Auditoría — Terreno vs Combustibles',onClose:p.onClose,xl:true},
     h('div',null,
-      // Filtros
-      h('div',{style:{display:'flex',gap:10,alignItems:'center',marginBottom:14,padding:12,background:'#F8FAFC',borderRadius:6}},
-        h('div',null,
-          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha a auditar'),
-          h('input',{type:'date',value:fecha,onChange:function(e){setFecha(e.target.value);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}})
+      // Filtros con rango de fechas
+      h('div',{style:{padding:12,background:'#F8FAFC',borderRadius:6,marginBottom:14}},
+        h('div',{style:{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap'}},
+          h('div',null,
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Desde'),
+            h('input',{type:'date',value:desde,onChange:function(e){setDesde(e.target.value);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}})
+          ),
+          h('div',null,
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Hasta'),
+            h('input',{type:'date',value:hasta,onChange:function(e){setHasta(e.target.value);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}})
+          ),
+          h('div',{style:{flex:1,minWidth:200}},
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa (opcional)'),
+            h('select',{value:empresaFilt,onChange:function(e){setEmpresaFilt(e.target.value);},style:{width:'100%',padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
+              h('option',{value:''},'Todas las empresas'),
+              empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})
+            )
+          ),
+          h('button',{onClick:cargar,disabled:loading,style:{padding:'8px 14px',background:'#1E40AF',color:'#fff',border:'none',borderRadius:5,fontSize:12,cursor:loading?'not-allowed':'pointer',fontWeight:600}},loading?'⏳ Cargando...':'🔄 Refrescar')
         ),
-        h('div',{style:{flex:1}},
-          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa (opcional)'),
-          h('select',{value:empresaFilt,onChange:function(e){setEmpresaFilt(e.target.value);},style:{width:'100%',padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
-            h('option',{value:''},'Todas las empresas'),
-            empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})
-          )
+        // Presets de rango
+        h('div',{style:{display:'flex',gap:4,marginTop:8,flexWrap:'wrap'}},
+          h('span',{style:{fontSize:10,color:'#64748B',marginRight:4,alignSelf:'center'}},'Presets:'),
+          ['hoy','Hoy','ayer','Ayer','semana','Últimos 7 días','mes','Este mes','mes_pasado','Mes pasado'].reduce(function(a,v,i){
+            if(i%2===0)a.push({k:v});else a[a.length-1].l=v;
+            return a;
+          },[]).map(function(pr){
+            return h('button',{key:pr.k,onClick:function(){aplicarPreset(pr.k);},style:{padding:'3px 9px',fontSize:10,border:'1px solid #CBD5E1',background:'#fff',borderRadius:12,cursor:'pointer',color:'#475569'}},pr.l);
+          })
         ),
-        h('button',{onClick:cargar,disabled:loading,style:{padding:'8px 14px',background:'#1E40AF',color:'#fff',border:'none',borderRadius:5,fontSize:12,cursor:loading?'not-allowed':'pointer',marginTop:18,fontWeight:600}},loading?'⏳ Cargando...':'🔄 Refrescar')
+        data&&h('div',{style:{marginTop:6,fontSize:11,color:'#64748B'}},
+          'Período: ',h('strong',null,fmtDate(data.desde)),' → ',h('strong',null,fmtDate(data.hasta)),
+          ' (',diasRango,' día'+(diasRango>1?'s':'')+')'
+        )
       ),
       err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
-      // Cards resumen
+      // Cards resumen (clickables)
       data&&!loading&&h('div',{style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:6,marginBottom:14}},
         h('div',{className:'card',style:{padding:10,textAlign:'center',borderLeft:'4px solid #DC2626',cursor:'pointer'},onClick:function(){setTab('sin_terreno');}},
           h('div',{style:{fontSize:22,fontWeight:700,color:'#DC2626'}},res.con_combustible_sin_terreno||0),
@@ -2200,13 +2231,13 @@ function TerrenoAuditoriaModal(p){
         ),
         h('div',{className:'card',style:{padding:10,textAlign:'center',borderLeft:'4px solid #94A3B8',cursor:'pointer'},onClick:function(){setTab('sin_registro');}},
           h('div',{style:{fontSize:22,fontWeight:700,color:'#94A3B8'}},res.sin_registro_alguno||0),
-          h('div',{style:{fontSize:10,color:'#64748B',marginTop:2}},'Sin registro',h('br'),'alguno')
+          h('div',{style:{fontSize:10,color:'#64748B',marginTop:2}},'Sin registro',h('br'),'en todo el rango')
         )
       ),
       // Tabs
-      data&&!loading&&h('div',{style:{display:'flex',gap:4,marginBottom:10,borderBottom:'2px solid #E2E8F0'}},
+      data&&!loading&&h('div',{style:{display:'flex',gap:4,marginBottom:10,borderBottom:'2px solid #E2E8F0',flexWrap:'wrap'}},
         h('button',{onClick:function(){setTab('sin_terreno');},style:{padding:'7px 12px',background:tab==='sin_terreno'?'#DC2626':'transparent',color:tab==='sin_terreno'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'🚨 Con combustible sin terreno ('+(data.con_combustible_sin_terreno||[]).length+')'),
-        h('button',{onClick:function(){setTab('discrepancia');},style:{padding:'7px 12px',background:tab==='discrepancia'?'#F59E0B':'transparent',color:tab==='discrepancia'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'⚠️ Discrepancia litros ('+(data.discrepancias_litros||[]).length+')'),
+        h('button',{onClick:function(){setTab('discrepancia');},style:{padding:'7px 12px',background:tab==='discrepancia'?'#F59E0B':'transparent',color:tab==='discrepancia'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'⚠️ Discrepancia ('+(data.discrepancias_litros||[]).length+')'),
         h('button',{onClick:function(){setTab('ok');},style:{padding:'7px 12px',background:tab==='ok'?'#10B981':'transparent',color:tab==='ok'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'✓ OK ('+(data.ok||[]).length+')'),
         h('button',{onClick:function(){setTab('terreno_sin_comb');},style:{padding:'7px 12px',background:tab==='terreno_sin_comb'?'#3B82F6':'transparent',color:tab==='terreno_sin_comb'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'🔵 Terreno sin combustible ('+(data.terreno_sin_combustible||[]).length+')'),
         h('button',{onClick:function(){setTab('sin_registro');},style:{padding:'7px 12px',background:tab==='sin_registro'?'#94A3B8':'transparent',color:tab==='sin_registro'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'🔘 Sin registro ('+(data.sin_registro_alguno||[]).length+')')
@@ -2214,13 +2245,14 @@ function TerrenoAuditoriaModal(p){
       // Contenido por tab
       data&&!loading&&h('div',{style:{maxHeight:'50vh',overflowY:'auto'}},
         tab==='sin_terreno'&&(data.con_combustible_sin_terreno.length===0
-          ? h('div',{className:'al al-s',style:{padding:20,textAlign:'center'}},'✓ No hay equipos con combustible distribuido sin reporte de terreno.')
+          ? h('div',{className:'al al-s',style:{padding:20,textAlign:'center'}},'✓ No hay equipos con combustible distribuido sin reporte de terreno en este rango.')
           : h('table',{className:'tb',style:{fontSize:12}},
               h('thead',null,h('tr',null,
-                h('th',null,'Equipo'),h('th',null,'Empresa'),h('th',{className:'r'},'Litros distribuidos'),h('th',{className:'c'},'Cargas'),h('th',null,'Horas carga'),h('th',null,'Estanques'),h('th',null,'')
+                h('th',null,'Fecha'),h('th',null,'Equipo'),h('th',null,'Empresa'),h('th',{className:'r'},'Litros'),h('th',{className:'c'},'Cargas'),h('th',null,'Horas'),h('th',null,'Estanques'),h('th',null,'')
               )),
-              h('tbody',null,data.con_combustible_sin_terreno.map(function(r){
-                return h('tr',{key:r.equipo_id,style:{background:'#FEF2F2'}},
+              h('tbody',null,data.con_combustible_sin_terreno.map(function(r,i){
+                return h('tr',{key:r.equipo_id+'_'+r.fecha+'_'+i,style:{background:'#FEF2F2'}},
+                  h('td',{style:{fontSize:11,fontWeight:600}},fmtDate(r.fecha)),
                   h('td',null,h('strong',null,r.codigo),h('br'),h('span',{style:{fontSize:10,color:'#64748B'}},r.nombre)),
                   h('td',{style:{fontSize:11}},r.empresa||'—'),
                   h('td',{className:'r mono',style:{color:'#DC2626',fontWeight:600}},fmtN(r.litros_distribuidos)+' L'),
@@ -2236,11 +2268,12 @@ function TerrenoAuditoriaModal(p){
           ? h('div',{className:'al al-s',style:{padding:20,textAlign:'center'}},'✓ Los litros informados en terreno coinciden con los distribuidos en combustibles.')
           : h('table',{className:'tb',style:{fontSize:12}},
               h('thead',null,h('tr',null,
-                h('th',null,'Equipo'),h('th',null,'Faena'),h('th',{className:'r'},'Combustibles'),h('th',{className:'r'},'Terreno'),h('th',{className:'r'},'Diferencia'),h('th',null,'')
+                h('th',null,'Fecha'),h('th',null,'Equipo'),h('th',null,'Faena'),h('th',{className:'r'},'Combustibles'),h('th',{className:'r'},'Terreno'),h('th',{className:'r'},'Diferencia'),h('th',null,'')
               )),
-              h('tbody',null,data.discrepancias_litros.map(function(r){
+              h('tbody',null,data.discrepancias_litros.map(function(r,i){
                 var diff=(parseFloat(r.litros_terreno)||0)-(parseFloat(r.litros_distribuidos)||0);
-                return h('tr',{key:r.equipo_id,style:{background:'#FFFBEB'}},
+                return h('tr',{key:r.equipo_id+'_'+r.fecha+'_'+i,style:{background:'#FFFBEB'}},
+                  h('td',{style:{fontSize:11,fontWeight:600}},fmtDate(r.fecha)),
                   h('td',null,h('strong',null,r.codigo),h('br'),h('span',{style:{fontSize:10,color:'#64748B'}},r.nombre)),
                   h('td',{style:{fontSize:11}},r.faena_terreno||'—'),
                   h('td',{className:'r mono'},fmtN(r.litros_distribuidos)+' L'),
@@ -2252,11 +2285,12 @@ function TerrenoAuditoriaModal(p){
             )
         ),
         tab==='ok'&&(data.ok.length===0
-          ? h('div',{className:'al al-i',style:{padding:20,textAlign:'center'}},'No hay equipos con datos cruzados correctamente para este día.')
+          ? h('div',{className:'al al-i',style:{padding:20,textAlign:'center'}},'No hay equipos con datos cruzados correctamente para este rango.')
           : h('table',{className:'tb',style:{fontSize:12}},
-              h('thead',null,h('tr',null,h('th',null,'Equipo'),h('th',null,'Faena'),h('th',{className:'r'},'Litros'),h('th',{className:'r'},'Horómetro'))),
-              h('tbody',null,data.ok.map(function(r){
-                return h('tr',{key:r.equipo_id,style:{background:'#F0FDF4'}},
+              h('thead',null,h('tr',null,h('th',null,'Fecha'),h('th',null,'Equipo'),h('th',null,'Faena'),h('th',{className:'r'},'Litros'),h('th',{className:'r'},'Horómetro'))),
+              h('tbody',null,data.ok.map(function(r,i){
+                return h('tr',{key:r.equipo_id+'_'+r.fecha+'_'+i,style:{background:'#F0FDF4'}},
+                  h('td',{style:{fontSize:11,fontWeight:600}},fmtDate(r.fecha)),
                   h('td',null,h('strong',null,r.codigo)),h('td',{style:{fontSize:11}},r.faena_terreno||'—'),
                   h('td',{className:'r mono'},fmtN(r.litros_terreno)+' L'),
                   h('td',{className:'r mono'},r.horometro_inicial!=null?fmtN(r.horometro_inicial)+' → '+fmtN(r.horometro_final):'—')
@@ -2265,13 +2299,14 @@ function TerrenoAuditoriaModal(p){
             )
         ),
         tab==='terreno_sin_comb'&&(data.terreno_sin_combustible.length===0
-          ? h('div',{className:'al al-i',style:{padding:20,textAlign:'center'}},'No hay equipos con terreno informado que no hayan tenido combustible (normal).')
+          ? h('div',{className:'al al-i',style:{padding:20,textAlign:'center'}},'No hay equipos con terreno informado que no hayan tenido combustible.')
           : h('div',null,
               h('div',{className:'al al-i',style:{marginBottom:8,fontSize:12}},'ℹ️ Equipos que reportaron terreno pero no recibieron combustible ese día (normal si no consumieron o si recargaron en días anteriores).'),
               h('table',{className:'tb',style:{fontSize:12}},
-                h('thead',null,h('tr',null,h('th',null,'Equipo'),h('th',null,'Faena'),h('th',{className:'r'},'Litros terreno'),h('th',{className:'r'},'Horómetro'))),
-                h('tbody',null,data.terreno_sin_combustible.map(function(r){
-                  return h('tr',{key:r.equipo_id},
+                h('thead',null,h('tr',null,h('th',null,'Fecha'),h('th',null,'Equipo'),h('th',null,'Faena'),h('th',{className:'r'},'Litros terreno'),h('th',{className:'r'},'Horómetro'))),
+                h('tbody',null,data.terreno_sin_combustible.map(function(r,i){
+                  return h('tr',{key:r.equipo_id+'_'+r.fecha+'_'+i},
+                    h('td',{style:{fontSize:11,fontWeight:600}},fmtDate(r.fecha)),
                     h('td',null,h('strong',null,r.codigo),' ',h('span',{style:{fontSize:10,color:'#64748B'}},r.nombre)),
                     h('td',{style:{fontSize:11}},r.faena_terreno||'—'),
                     h('td',{className:'r mono'},fmtN(r.litros_terreno||0)+' L'),
@@ -2282,9 +2317,9 @@ function TerrenoAuditoriaModal(p){
             )
         ),
         tab==='sin_registro'&&(data.sin_registro_alguno.length===0
-          ? h('div',{className:'al al-s',style:{padding:20,textAlign:'center'}},'✓ Todos los equipos activos tienen al menos un registro (terreno o combustible) este día.')
+          ? h('div',{className:'al al-s',style:{padding:20,textAlign:'center'}},'✓ Todos los equipos activos tienen al menos un registro (terreno o combustible) en el rango.')
           : h('div',null,
-              h('div',{className:'al al-w',style:{marginBottom:8,fontSize:12}},'⚠️ Estos equipos están activos pero no tienen ningún registro (ni terreno ni combustible). Si trabajaron, falta cargar información.'),
+              h('div',{className:'al al-w',style:{marginBottom:8,fontSize:12}},'⚠️ Estos equipos están activos pero no tienen ningún registro (ni terreno ni combustible) en TODO el rango seleccionado.'),
               h('table',{className:'tb',style:{fontSize:12}},
                 h('thead',null,h('tr',null,h('th',null,'Código'),h('th',null,'Nombre'),h('th',null,'Empresa'))),
                 h('tbody',null,data.sin_registro_alguno.map(function(r){
@@ -2395,7 +2430,7 @@ function TerrenoView(p){
           h('strong',{style:{color:'#166534'}},'Rend: '),rendimiento.rendimiento?rendimiento.rendimiento.toFixed(2)+' L/h':'\u2014',' (',rendimiento.horas.toFixed(1)+'h / ',rendimiento.litros.toFixed(1)+'L)')
       ),
       h('div',{style:{display:'flex',gap:6}},
-        h('button',{onClick:function(){setShowAuditoria(true);},style:{padding:'6px 12px',background:'#F59E0B',color:'#fff',border:'none',borderRadius:5,fontSize:12,cursor:'pointer',fontWeight:600},title:'Detectar equipos sin reporte de terreno y cruzar con combustibles'},'🔍 Auditoría del día'),
+        h('button',{onClick:function(){setShowAuditoria(true);},style:{padding:'6px 12px',background:'#F59E0B',color:'#fff',border:'none',borderRadius:5,fontSize:12,cursor:'pointer',fontWeight:600},title:'Detectar equipos sin reporte de terreno y cruzar con combustibles en un rango de fechas'},'🔍 Auditoría'),
         h(Btn,{onClick:function(){setEditReg(null);var f=Object.assign({},emptyForm);if(filtEquipo){f.equipo_id=filtEquipo;var eq=allEquipos.find(function(e){return String(e.equipo_id)===String(filtEquipo);});if(eq)f.faena_id=eq.faena_id;api('/terreno/ultimo-horometro/'+filtEquipo,'GET',null,p.tok).then(function(r){if(r.horometro_final!=null){setForm(function(ff){return Object.assign({},ff,{horometro_inicial:r.horometro_final});});}}).catch(function(){});}setForm(f);setShowForm(!showForm);setShowTOB(false);}},showForm?'Cancelar':'+ Nuevo Registro')
       )
     ),
