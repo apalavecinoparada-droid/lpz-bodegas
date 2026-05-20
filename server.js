@@ -557,6 +557,10 @@ async function setupMantenciones(q){
   // ── ALTER movimiento_detalle: enlace a OT ──
   try{await q('ALTER TABLE movimiento_detalle ADD COLUMN IF NOT EXISTS ot_id INT');}catch(e){}
 
+  // ── ALTER ordenes_compra: trazabilidad del cierre ──
+  try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS cerrada_por VARCHAR(100)');}catch(e){}
+  try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS fecha_cierre TIMESTAMP');}catch(e){}
+
   // ── ALTER comb_movimientos: agregar hora de carga (para soportar múltiples cargas/día) ──
   try{await q('ALTER TABLE comb_movimientos ADD COLUMN IF NOT EXISTS hora_carga TIME');}catch(e){}
 
@@ -1950,7 +1954,7 @@ ocR.patch('/:id/cerrar', auth, async(req,res)=>{
       }).join('; ');
       return res.status(400).json({error:'No se puede cerrar: hay '+incompletas.rows.length+' línea(s) incompleta(s). '+detalle});
     }
-    await pool.query("UPDATE ordenes_compra SET estado='CERRADA',tipo_doc_id=$1,numero_documento=$2,fecha_documento=$3,modificado_en=NOW() WHERE oc_id=$4",[_tipoDoc,_numDoc,_fechaDoc,req.params.id]);
+    await pool.query("UPDATE ordenes_compra SET estado='CERRADA',tipo_doc_id=$1,numero_documento=$2,fecha_documento=$3,cerrada_por=$4,fecha_cierre=NOW(),modificado_en=NOW() WHERE oc_id=$5",[_tipoDoc,_numDoc,_fechaDoc,req.user.email,req.params.id]);
     res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -2007,7 +2011,7 @@ ocR.patch('/:id/reabrir', auth, async(req,res)=>{
       infoRevert.mov_combustible=combMovs.rows.length;
     }
     // 3) Volver a PENDIENTE y limpiar campos de cierre/recepción
-    await client.query("UPDATE ordenes_compra SET estado='PENDIENTE',tipo_doc_id=NULL,numero_documento=NULL,fecha_documento=NULL,movimiento_id=NULL,recibido_en=NULL,bodega_ingreso_id=NULL,modificado_en=NOW() WHERE oc_id=$1",[req.params.id]);
+    await client.query("UPDATE ordenes_compra SET estado='PENDIENTE',tipo_doc_id=NULL,numero_documento=NULL,fecha_documento=NULL,movimiento_id=NULL,recibido_en=NULL,bodega_ingreso_id=NULL,cerrada_por=NULL,fecha_cierre=NULL,modificado_en=NOW() WHERE oc_id=$1",[req.params.id]);
     await client.query('COMMIT');
     res.json({ok:true,info:infoRevert});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
