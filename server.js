@@ -4733,6 +4733,17 @@ app.post('/api/fin/cheques/importar', auth, async(req,res)=>{
     var resumen={importados:0, duplicados:0, errores:0, detalles:[]};
     var norm=function(s){return String(s||'').trim().toUpperCase().replace(/\s+/g,' ');};
     var normRut=function(s){return String(s||'').replace(/[.\s-]/g,'').toUpperCase();};
+    // Normaliza nombres de banco: quita "Banco", "Banco de", acentos, espacios extra
+    // Así "Banco BICE" === "BICE" === "BANCO BICE", y "Banco de Chile" === "Chile"
+    var normBanco=function(s){
+      return String(s||'').trim().toUpperCase()
+        .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+        .replace(/^BANCO\s*(DE\s+)?/,'')
+        .replace(/\s+/g,' ').trim();
+    };
+    // Normaliza número de cuenta: solo dígitos, sin ceros a la izquierda
+    // Así "06002897" === "6002897" === "06.002.897"
+    var normCta=function(s){return String(s||'').replace(/\D/g,'').replace(/^0+/,'')||'0';};
     await client.query('BEGIN');
     for(var i=0;i<cheques.length;i++){
       var ch=cheques[i];
@@ -4746,8 +4757,8 @@ app.post('/api/fin/cheques/importar', auth, async(req,res)=>{
         // ─── Resolver cuenta bancaria ───
         var ctaMatch=cuentas.find(function(c){
           return c.empresa_id===empMatch.empresa_id 
-            && norm(c.banco)===norm(ch.banco)
-            && String(c.numero_cuenta).replace(/\D/g,'')===String(ch.numero_cuenta||'').replace(/\D/g,'');
+            && normBanco(c.banco)===normBanco(ch.banco)
+            && normCta(c.numero_cuenta)===normCta(ch.numero_cuenta);
         });
         if(!ctaMatch) throw new Error('Cuenta no encontrada: '+ch.banco+' '+ch.numero_cuenta+' (empresa '+empMatch.razon_social+')');
         // ─── Validaciones básicas ───
@@ -5197,6 +5208,98 @@ app.get('/api/terreno/rendimiento-mensual', auth, async(req,res)=>{
 app.get('/api/terreno/ultimo-horometro/:equipo_id', auth, async(req,res)=>{
   try{const r=await pool.query('SELECT horometro_final FROM terreno_registros WHERE equipo_id=$1 ORDER BY fecha DESC, registro_id DESC LIMIT 1',[req.params.equipo_id]);
   res.json({horometro_final:r.rows.length?parseFloat(r.rows[0].horometro_final):null});}catch(e){res.status(500).json({error:e.message});}
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// AUDITORÍA DIARIA: cruce terreno ↔ combustibles
+// Identifica equipos sin reporte de terreno, y discrepancias entre
+// litros distribuidos en comb_movimientos y litros informados en terreno
+// ═══════════════════════════════════════════════════════════════════
+app.get('/api/terreno/auditoria-diaria', auth, async(req,res)=>{
+  try{
+    var fecha=req.query.fecha||new Date().toISOString().slice(0,10);
+    var empresaFiltro=req.query.empresa_id?'AND e.empresa_id='+parseInt(req.query.empresa_id):'';
+    // ─── 1) Equipos con DISTRIBUCIÓN de combustible ese día (con/sin reporte de terreno y discrepancias) ───
+    var sqlCruce=`
+      WITH dist_dia AS (
+        SELECT 
+          cm.equipo_id,
+          SUM(cm.litros)::numeric(12,2) AS litros_distribuidos,
+          COUNT(*) AS cargas,
+          STRING_AGG(DISTINCT TO_CHAR(cm.hora_carga,'HH24:MI'),', ' ORDER BY TO_CHAR(cm.hora_carga,'HH24:MI')) AS horas_carga,
+          STRING_AGG(DISTINCT es.codigo,', ') AS estanques
+        FROM comb_movimientos cm
+        LEFT JOIN comb_estanques es ON cm.estanque_origen_id=es.estanque_id
+        WHERE cm.tipo_mov='DISTRIBUCION' AND cm.estado='ACTIVO' AND cm.fecha=$1
+        GROUP BY cm.equipo_id
+      ),
+      terr_dia AS (
+        SELECT 
+          tr.equipo_id,
+          tr.registro_id,
+          tr.litros_combustible::numeric(12,2) AS litros_terreno,
+          tr.horometro_inicial,
+          tr.horometro_final,
+          tr.faena_id
+        FROM terreno_registros tr
+        WHERE tr.fecha=$1
+      )
+      SELECT 
+        e.equipo_id, e.codigo, e.nombre, e.empresa_id,
+        emp.razon_social AS empresa,
+        d.litros_distribuidos, d.cargas, d.horas_carga, d.estanques,
+        t.registro_id, t.litros_terreno, t.horometro_inicial, t.horometro_final,
+        f.nombre AS faena_terreno,
+        CASE
+          WHEN d.equipo_id IS NOT NULL AND t.registro_id IS NULL THEN 'sin_terreno'
+          WHEN d.equipo_id IS NOT NULL AND t.registro_id IS NOT NULL 
+               AND ABS(COALESCE(t.litros_terreno,0)-d.litros_distribuidos)>0.5 THEN 'discrepancia_litros'
+          WHEN d.equipo_id IS NOT NULL AND t.registro_id IS NOT NULL THEN 'ok'
+          ELSE 'sin_combustible'
+        END AS estado
+      FROM equipos e
+      LEFT JOIN dist_dia d ON d.equipo_id=e.equipo_id
+      LEFT JOIN terr_dia t ON t.equipo_id=e.equipo_id
+      LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
+      LEFT JOIN faenas f ON t.faena_id=f.faena_id
+      WHERE e.activo=true AND (d.equipo_id IS NOT NULL OR t.registro_id IS NOT NULL)
+      ${empresaFiltro}
+      ORDER BY e.codigo`;
+    var cruce=await pool.query(sqlCruce,[fecha]);
+    // ─── 2) Equipos activos SIN reporte alguno (ni terreno ni combustible) ese día ───
+    //     Útil para detectar máquinas que probablemente trabajaron pero no se reportó nada
+    var sqlSinRegistro=`
+      SELECT e.equipo_id, e.codigo, e.nombre, e.empresa_id,
+             emp.razon_social AS empresa
+      FROM equipos e
+      LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
+      WHERE e.activo=true 
+        AND NOT EXISTS (SELECT 1 FROM terreno_registros tr WHERE tr.equipo_id=e.equipo_id AND tr.fecha=$1)
+        AND NOT EXISTS (SELECT 1 FROM comb_movimientos cm WHERE cm.equipo_id=e.equipo_id AND cm.fecha=$1 AND cm.estado='ACTIVO')
+        ${empresaFiltro}
+      ORDER BY e.codigo`;
+    var sinRegistro=await pool.query(sqlSinRegistro,[fecha]);
+    // Clasificar los resultados del cruce
+    var sinTerreno=cruce.rows.filter(function(r){return r.estado==='sin_terreno';});
+    var discrepancias=cruce.rows.filter(function(r){return r.estado==='discrepancia_litros';});
+    var ok=cruce.rows.filter(function(r){return r.estado==='ok';});
+    var terrenoSinComb=cruce.rows.filter(function(r){return r.estado==='sin_combustible';});
+    res.json({
+      fecha:fecha,
+      resumen:{
+        con_combustible_sin_terreno:sinTerreno.length,
+        discrepancias_litros:discrepancias.length,
+        ok:ok.length,
+        terreno_sin_combustible:terrenoSinComb.length,
+        sin_registro_alguno:sinRegistro.rows.length
+      },
+      con_combustible_sin_terreno:sinTerreno,
+      discrepancias_litros:discrepancias,
+      ok:ok,
+      terreno_sin_combustible:terrenoSinComb,
+      sin_registro_alguno:sinRegistro.rows
+    });
+  }catch(e){res.status(500).json({error:e.message});}
 });
 
 // ══ SOLICITUDES ══
