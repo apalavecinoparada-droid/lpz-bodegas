@@ -1045,6 +1045,13 @@ function IngresoView(p){
   const[form,setForm]=useState(blank);
   function load(){api('/movimientos?tipo=INGRESO','GET',null,p.tok).then(function(r){setMovs(Array.isArray(r)?r:[]);}).catch(function(){});}
   useEffect(function(){load();},[p.tok]);
+  function canEditInv(){
+    if(!p.user)return false;
+    if(p.user.es_admin)return true;
+    var mods=p.user.modulos||[];
+    if(!mods.length)return true;
+    return mods.indexOf('inventario-editar')>=0;
+  }
   function sf(k,v){setForm(function(f){var x=Object.assign({},f);x[k]=v;return x;});}
   function addL(){setForm(function(f){return Object.assign({},f,{lineas:f.lineas.concat([{prod_id:'',qty:'1',cu:'0'}])});});}
   function remL(i){setForm(function(f){return Object.assign({},f,{lineas:f.lineas.filter(function(_,j){return j!==i;})});});}
@@ -1073,7 +1080,7 @@ function IngresoView(p){
       {lbl:'Items',k:'num_lineas',r:true},{lbl:'Total',r:true,render:r=>CLP(r.total_ingreso||0)},
       {lbl:'Usuario',render:function(r){return h('span',{style:{fontSize:10,color:'#64748B'},title:r.usuario||''},r.usuario_nombre||r.usuario||'—');}},
       {lbl:'Estado',render:r=>h(Bg,{c:r.estado==='ACTIVO'?'g':'r'},r.estado)},
-      {lbl:'',c:true,render:r=>r.estado==='ACTIVO'?h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular'):''}
+      {lbl:'',c:true,render:r=>r.estado==='ACTIVO'&&canEditInv()?h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular'):''}
     ],rows:movs,empty:'Sin ingresos'})),
     anularId&&h(AnularMovModal,{tok:p.tok,movId:anularId,onClose:function(){setAnularId(null);},onDone:function(){load();p.onMov&&p.onMov();}}),
     modal&&h(Modal,{title:'Registrar Ingreso',onClose:function(){setModal(false);},lg:true},
@@ -1199,6 +1206,109 @@ function imprimirTicketSalida(mov, lineas, empresa, ancho){
   w2.document.write(html);w2.document.close();w2.focus();
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// MovEditModal: editar SOLO metadata de un movimiento de inventario
+// (fecha, faena, equipo, motivo, observaciones, responsables, doc)
+// No permite cambiar productos/cantidades/bodegas — para eso, anular y crear nuevo.
+// ═══════════════════════════════════════════════════════════════════════
+function MovEditModal(p){
+  var mov=p.mov||{};
+  var faenas=(p.m&&p.m.faenas||[]).filter(function(f){return f.activo;});
+  var equipos=(p.m&&p.m.equipos||[]).filter(function(e){return e.activo;});
+  var motivos=(p.m&&p.m.motivos||[]).filter(function(m){return m.activo;});
+  var[form,setForm]=useState({
+    fecha:(mov.fecha||'').slice(0,10),
+    faena_id:mov.faena_id||'',
+    equipo_id:mov.equipo_id||'',
+    motivo_id:mov.motivo_id||'',
+    observaciones:mov.observaciones||'',
+    responsable_entrega:mov.responsable_entrega||'',
+    responsable_recepcion:mov.responsable_recepcion||'',
+    numero_documento:mov.numero_documento||'',
+    fecha_documento:(mov.fecha_documento||'').slice(0,10)
+  });
+  var[err,setErr]=useState('');var[saving,setSaving]=useState(false);
+  function sf(k,v){setForm(function(f){var x=Object.assign({},f);x[k]=v;return x;});}
+  function save(){
+    setErr('');setSaving(true);
+    var body={
+      fecha:form.fecha||null,
+      observaciones:form.observaciones||null,
+      responsable_entrega:form.responsable_entrega||null,
+      responsable_recepcion:form.responsable_recepcion||null,
+      numero_documento:form.numero_documento||null,
+      fecha_documento:form.fecha_documento||null
+    };
+    // Solo enviar faena/equipo/motivo si NO es traspaso (los traspasos no usan esos campos)
+    if(mov.tipo_movimiento!=='TRASPASO_SALIDA'&&mov.tipo_movimiento!=='TRASPASO_INGRESO'){
+      body.faena_id=form.faena_id||null;
+      body.equipo_id=form.equipo_id||null;
+      body.motivo_id=form.motivo_id||null;
+    }
+    api('/movimientos/'+mov.movimiento_id,'PUT',body,p.tok).then(function(){
+      p.onSave&&p.onSave();
+    }).catch(function(e){setErr(e.message);}).finally(function(){setSaving(false);});
+  }
+  var esTraspaso=mov.tipo_movimiento==='TRASPASO_SALIDA'||mov.tipo_movimiento==='TRASPASO_INGRESO';
+  var equiposFilt=form.faena_id?equipos.filter(function(e){return String(e.faena_id)===String(form.faena_id);}):equipos;
+  return h(Modal,{title:'✏ Editar '+(esTraspaso?'Traspaso':'Salida')+' #'+mov.movimiento_id,onClose:p.onClose,lg:true},
+    h('div',{style:{padding:14}},
+      err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+      h('div',{className:'al al-i',style:{marginBottom:12,fontSize:12}},
+        '💡 Solo se pueden editar metadatos (fecha, faena, equipo, motivo, observaciones). ',
+        h('strong',null,'Para cambiar productos o cantidades'),', anula este movimiento y crea uno nuevo.'
+      ),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha *'),
+          h('input',{type:'date',value:form.fecha,onChange:function(e){sf('fecha',e.target.value);},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}})
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Bodega'),
+          h('input',{type:'text',value:mov.bodega_nombre||'—',disabled:true,style:{width:'100%',padding:'7px 10px',border:'1px solid #E2E8F0',borderRadius:5,fontSize:12,boxSizing:'border-box',background:'#F8FAFC',color:'#94A3B8'}})
+        ),
+        !esTraspaso&&h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena'),
+          h('select',{value:form.faena_id,onChange:function(e){sf('faena_id',e.target.value);sf('equipo_id','');},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}},
+            h('option',{value:''},'Sin faena'),
+            faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.codigo+' — '+f.nombre);})
+          )
+        ),
+        !esTraspaso&&h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Equipo / Cargo'),
+          h('select',{value:form.equipo_id,onChange:function(e){sf('equipo_id',e.target.value);},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}},
+            h('option',{value:''},'Sin equipo'),
+            equiposFilt.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);})
+          )
+        ),
+        !esTraspaso&&h('div',{style:{gridColumn:'span 2'}},
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Motivo'),
+          h('select',{value:form.motivo_id,onChange:function(e){sf('motivo_id',e.target.value);},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}},
+            h('option',{value:''},'Sin motivo'),
+            motivos.map(function(m){return h('option',{key:m.motivo_id,value:m.motivo_id},m.nombre);})
+          )
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Responsable entrega'),
+          h('input',{type:'text',value:form.responsable_entrega,onChange:function(e){sf('responsable_entrega',e.target.value);},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}})
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Responsable recepción'),
+          h('input',{type:'text',value:form.responsable_recepcion,onChange:function(e){sf('responsable_recepcion',e.target.value);},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}})
+        ),
+        h('div',{style:{gridColumn:'span 2'}},
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observaciones'),
+          h('textarea',{value:form.observaciones,onChange:function(e){sf('observaciones',e.target.value);},rows:2,style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box',resize:'vertical'}})
+        )
+      ),
+      h('div',{style:{display:'flex',gap:8,justifyContent:'flex-end',marginTop:12,paddingTop:10,borderTop:'1px solid #E2E8F0'}},
+        h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),
+        h(Btn,{onClick:save,disabled:saving||!form.fecha},saving?'Guardando...':'💾 Guardar cambios')
+      )
+    )
+  );
+}
+
 function SalidaView(p){
   const bodegas=p.m&&Array.isArray(p.m.bodegas)?p.m.bodegas:[];
   const prods=p.m&&Array.isArray(p.m.prods)?p.m.prods:[];
@@ -1210,15 +1320,33 @@ function SalidaView(p){
   const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
   const[otsAbiertas,setOtsAbiertas]=useState([]);
   const[linkOTMov,setLinkOTMov]=useState(null);const[otsSalida,setOtsSalida]=useState([]);
+  // Filtros: faena, equipo, rango de fechas
+  const[filtFaena,setFiltFaena]=useState('');const[filtEquipo,setFiltEquipo]=useState('');
+  const[filtDesde,setFiltDesde]=useState('');const[filtHasta,setFiltHasta]=useState('');
+  // Edición de salida existente
+  const[editMov,setEditMov]=useState(null);
   const blank={fecha:TODAY,empresa_id:'',bodega_id:'',faena_id:'',eq_id:'',mot_id:'',re:'',rr:'',obs:'',ot_id:'',lineas:[{prod_id:'',qty:'1'}]};
   const[form,setForm]=useState(blank);
   const empresas=p.m&&Array.isArray(p.m.empresas)?p.m.empresas:[];
   function load(){
-    api('/movimientos?tipo=SALIDA','GET',null,p.tok).then(function(r){setMovs(Array.isArray(r)?r:[]);}).catch(function(){});
+    var qs='?tipo=SALIDA';
+    if(filtFaena)qs+='&faena_id='+filtFaena;
+    if(filtEquipo)qs+='&equipo_id='+filtEquipo;
+    if(filtDesde)qs+='&desde='+filtDesde;
+    if(filtHasta)qs+='&hasta='+filtHasta;
+    api('/movimientos'+qs,'GET',null,p.tok).then(function(r){setMovs(Array.isArray(r)?r:[]);}).catch(function(){});
     api('/stock','GET',null,p.tok).then(function(rows){var m={};(rows||[]).forEach(function(r){m[r.producto_id+'_'+r.bodega_id]={q:parseFloat(r.cantidad_disponible),cpp:parseFloat(r.costo_promedio_actual)};});setStock(m);}).catch(function(){});
     api('/mant/ot','GET',null,p.tok).then(function(r){setOtsAbiertas(Array.isArray(r)?r.filter(function(o){return o.estado==='abierta'||o.estado==='en_ejecucion'||o.estado==='programada';}):[]); }).catch(function(){});
   }
-  useEffect(function(){load();},[p.tok]);
+  useEffect(function(){load();},[p.tok,filtFaena,filtEquipo,filtDesde,filtHasta]);
+  // Permiso para editar/anular: requiere módulo 'inventario-editar' o ser admin
+  function canEditInv(){
+    if(!p.user)return false;
+    if(p.user.es_admin)return true;
+    var mods=p.user.modulos||[];
+    if(!mods.length)return true; // sin módulos = acceso total (consistente con backend)
+    return mods.indexOf('inventario-editar')>=0;
+  }
   function sf(k,v){setForm(function(f){var x=Object.assign({},f);x[k]=v;return x;});}
   function addL(){setForm(function(f){return Object.assign({},f,{lineas:f.lineas.concat([{prod_id:'',qty:'1'}])});});}
   function remL(i){setForm(function(f){return Object.assign({},f,{lineas:f.lineas.filter(function(_,j){return j!==i;})});});}
@@ -1247,8 +1375,26 @@ function SalidaView(p){
   }
   return h('div',null,
     h('div',{className:'tb'},
-      h(Btn,{onClick:function(){setErr('');setForm(blank);setModal(true);}},'+ Nueva Salida'),
+      h(Btn,{onClick:function(){setErr('');setEditMov(null);setForm(blank);setModal(true);}},'+ Nueva Salida'),
       h(Btn,{v:'g',onClick:function(){exportXLSX(movs,[{header:'N°',value:r=>r.movimiento_id},{header:'Fecha',value:r=>r.fecha},{header:'Bodega',value:r=>r.bodega_nombre},{header:'Faena',value:r=>r.faena_nombre},{header:'Equipo',value:r=>r.equipo_nombre},{header:'Motivo',value:r=>r.motivo_nombre},{header:'Total CPP',value:r=>r.total},{header:'Usuario',value:r=>r.usuario_nombre||r.usuario},{header:'Estado',value:r=>r.estado}],'salidas');}},null,'Exportar Excel')
+    ),
+    // ── Barra de filtros ──
+    h('div',{style:{display:'flex',gap:8,marginBottom:10,padding:10,background:'#F8FAFC',borderRadius:6,flexWrap:'wrap',alignItems:'center'}},
+      h('span',{style:{fontSize:11,fontWeight:600,color:'#475569'}},'🔍 Filtros:'),
+      h('select',{value:filtFaena,onChange:function(e){setFiltFaena(e.target.value);setFiltEquipo('');},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:160,fontWeight:filtFaena?600:400,background:filtFaena?'#EFF6FF':'#fff'}},
+        h('option',{value:''},'Todas las faenas'),
+        faenas.filter(function(f){return f.activo;}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.codigo+' — '+f.nombre);})
+      ),
+      h('select',{value:filtEquipo,onChange:function(e){setFiltEquipo(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:180,fontWeight:filtEquipo?600:400,background:filtEquipo?'#EFF6FF':'#fff'}},
+        h('option',{value:''},'Todos los equipos / cargos'),
+        equipos.filter(function(e){return e.activo&&(!filtFaena||String(e.faena_id)===String(filtFaena));}).map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);})
+      ),
+      h('label',{style:{fontSize:11,color:'#64748B'}},'Desde:'),
+      h('input',{type:'date',value:filtDesde,onChange:function(e){setFiltDesde(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,fontWeight:filtDesde?600:400,background:filtDesde?'#EFF6FF':'#fff'}}),
+      h('label',{style:{fontSize:11,color:'#64748B'}},'Hasta:'),
+      h('input',{type:'date',value:filtHasta,onChange:function(e){setFiltHasta(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,fontWeight:filtHasta?600:400,background:filtHasta?'#EFF6FF':'#fff'}}),
+      (filtFaena||filtEquipo||filtDesde||filtHasta)&&h('button',{onClick:function(){setFiltFaena('');setFiltEquipo('');setFiltDesde('');setFiltHasta('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
+      h('span',{style:{fontSize:11,color:'#64748B',marginLeft:'auto',fontWeight:600}},movs.length+' salida(s)')
     ),
     h('div',{className:'card'},h(TBL,{cols:[
       {lbl:'N°',k:'movimiento_id',w:50},{lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},{lbl:'Bodega',k:'bodega_nombre'},
@@ -1278,9 +1424,11 @@ function SalidaView(p){
           }).catch(function(e){alert('Error: '+e.message);});
         },title:'Imprimir ticket 58mm'},'🖨 58'),
         r.estado==='ACTIVO'&&h('button',{className:'btn btn-teal btn-xs',onClick:function(){openLinkOTSalida(r);},title:'Enlazar a Orden de Trabajo'},'🔗 OT'),
-        r.estado==='ACTIVO'&&h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular')
+        r.estado==='ACTIVO'&&canEditInv()&&h('button',{className:'btn btn-blue btn-xs',onClick:function(){setEditMov(r);},title:'Editar fecha, faena, equipo, motivo u observaciones'},'✏'),
+        r.estado==='ACTIVO'&&canEditInv()&&h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular')
       )}
     ],rows:movs,empty:'Sin salidas'})),
+    editMov&&h(MovEditModal,{tok:p.tok,m:p.m,mov:editMov,onClose:function(){setEditMov(null);},onSave:function(){setEditMov(null);load();}}),
     anularId&&h(AnularMovModal,{tok:p.tok,movId:anularId,onClose:function(){setAnularId(null);},onDone:function(){load();p.onMov&&p.onMov();}}),
     linkOTMov&&h(Modal,{title:'Enlazar Salida #'+linkOTMov.movimiento_id+' a Orden de Trabajo',onClose:function(){setLinkOTMov(null);}},
       h('div',{style:{padding:12}},
@@ -1355,6 +1503,7 @@ function TraspasoView(p){
   const[modal,setModal]=useState(false);
   const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
   const[anularId,setAnularId]=useState(null);
+  const[editMov,setEditMov]=useState(null);
   const blank={fecha:TODAY,bodega_origen_id:'',bodega_destino_id:'',re:'',rr:'',obs:'',lineas:[{prod_id:'',qty:'1'}]};
   const[form,setForm]=useState(blank);
   function load(){
@@ -1362,6 +1511,14 @@ function TraspasoView(p){
     api('/stock','GET',null,p.tok).then(function(rows){var m={};(rows||[]).forEach(function(r){m[r.producto_id+'_'+r.bodega_id]={q:parseFloat(r.cantidad_disponible),cpp:parseFloat(r.costo_promedio_actual)};});setStock(m);}).catch(function(){});
   }
   useEffect(function(){load();},[p.tok]);
+  // Permiso para editar/anular: requiere módulo 'inventario-editar' o ser admin
+  function canEditInv(){
+    if(!p.user)return false;
+    if(p.user.es_admin)return true;
+    var mods=p.user.modulos||[];
+    if(!mods.length)return true;
+    return mods.indexOf('inventario-editar')>=0;
+  }
   function sf(k,v){setForm(function(f){var x=Object.assign({},f);x[k]=v;return x;});}
   function addL(){setForm(function(f){return Object.assign({},f,{lineas:f.lineas.concat([{prod_id:'',qty:'1'}])});});}
   function remL(i){setForm(function(f){return Object.assign({},f,{lineas:f.lineas.filter(function(_,j){return j!==i;})});});}
@@ -1419,8 +1576,12 @@ function TraspasoView(p){
       {lbl:'Total CPP',r:true,render:r=>CLP(r.total||0)},
       {lbl:'Usuario',render:function(r){return h('span',{style:{fontSize:10,color:'#64748B'},title:r.usuario||''},r.usuario_nombre||r.usuario||'—');}},
       {lbl:'Estado',render:r=>h(Bg,{c:r.estado==='ACTIVO'?'g':'r'},r.estado)},
-      {lbl:'',c:true,render:r=>r.estado==='ACTIVO'&&h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular')}
+      {lbl:'',c:true,render:r=>r.estado==='ACTIVO'&&canEditInv()&&h('div',{style:{display:'flex',gap:4}},
+        h('button',{className:'btn btn-blue btn-xs',onClick:function(){setEditMov(r);},title:'Editar fecha y observaciones'},'✏'),
+        h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular')
+      )}
     ],rows:movs,empty:'Sin traspasos registrados'})),
+    editMov&&h(MovEditModal,{tok:p.tok,m:p.m,mov:editMov,onClose:function(){setEditMov(null);},onSave:function(){setEditMov(null);load();}}),
     anularId&&h(AnularMovModal,{tok:p.tok,movId:anularId,onClose:function(){setAnularId(null);},onDone:function(){load();p.onMov&&p.onMov();}}),
     modal&&h(Modal,{title:'Registrar Traspaso entre Bodegas',onClose:function(){setModal(false);},lg:true},
       h('div',{style:{padding:14}},
@@ -1627,7 +1788,12 @@ function KardexView(p){
       h('div',{className:'card'},h(TBL,{cols:[
         {lbl:'N°',render:r=>r.movimiento_id,w:60},{lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},
         {lbl:'Tipo',render:r=>h(Bg,{c:r.tipo_movimiento==='INGRESO'?'g':'r'},r.tipo_movimiento)},
-        {lbl:'Bodega',k:'bodega_nombre'},{lbl:'Faena',k:'faena_nombre'},{lbl:'Equipo',k:'equipo_nombre'},
+        {lbl:'Bodega',render:function(r){
+          if(r.tipo_movimiento==='TRASPASO_SALIDA'&&r.bodega_destino_nombre)
+            return h('span',null,r.bodega_nombre,h('span',{style:{color:'#94A3B8',margin:'0 4px'}},'→'),h('strong',{style:{color:'#1E40AF'}},r.bodega_destino_nombre));
+          return r.bodega_nombre;
+        }},
+        {lbl:'Faena',k:'faena_nombre'},{lbl:'Equipo',k:'equipo_nombre'},
         {lbl:'Entrada',r:true,render:r=>r.entrada>0?h('span',{className:'ep'},'+'+N(r.entrada)):'—'},
         {lbl:'Salida',r:true,render:r=>r.salida>0?h('span',{className:'em'},'-'+N(r.salida)):'—'},
         {lbl:'Saldo',r:true,render:r=>h('strong',null,N(r.saldo))},
@@ -9729,6 +9895,7 @@ var MODULOS_SISTEMA=[
   {k:'terreno',l:'Terreno'},
   {k:'combustibles',l:'Combustibles'},
   {k:'inventario',l:'Inventario'},
+  {k:'inventario-editar',l:'Editar Inventario',hint:'Permite editar y anular salidas/traspasos'},
   {k:'mantencion',l:'Mantención'},
   {k:'solicitudes',l:'Solicitudes'},
   {k:'finanzas',l:'Finanzas'},
@@ -9846,9 +10013,10 @@ function UsuariosView(p){
             h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6}},
               MODULOS_SISTEMA.map(function(mod){
                 var checked=rolForm.modulos.indexOf(mod.k)>=0;
-                return h('label',{key:mod.k,style:{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,fontSize:11,padding:'10px 8px',borderRadius:6,background:checked?'#EFF6FF':'#F8FAFC',border:'1px solid '+(checked?'#93C5FD':'#E2E8F0'),cursor:'pointer',transition:'all .15s',textAlign:'center',minHeight:52}},
+                return h('label',{key:mod.k,title:mod.hint||'',style:{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:4,fontSize:11,padding:'10px 8px',borderRadius:6,background:checked?'#EFF6FF':'#F8FAFC',border:'1px solid '+(checked?'#93C5FD':'#E2E8F0'),cursor:'pointer',transition:'all .15s',textAlign:'center',minHeight:52}},
                   h('input',{type:'checkbox',checked:checked,onChange:function(){toggleModulo(mod.k);},style:{accentColor:'#3B82F6',width:16,height:16}}),
-                  h('span',null,mod.l)
+                  h('span',null,mod.l),
+                  mod.hint&&h('span',{style:{fontSize:9,color:'#94A3B8',fontStyle:'italic',marginTop:2,lineHeight:1.2}},mod.hint)
                 );
               })
             ),
@@ -16140,9 +16308,9 @@ function App(){
           view==='mant-prog'&&h(MantProgView,{tok,m}),
           view==='personal'&&h(Personal,{tok,m,onMov}),
           view==='dashboard'&&h(Dashboard,{tok,alerts,setView}),
-          view==='ingresos'&&h(IngresoView,{tok,m,onMov}),
-          view==='salidas'&&h(SalidaView,{tok,m,onMov}),
-          view==='traspasos'&&h(TraspasoView,{tok,m,onMov}),
+          view==='ingresos'&&h(IngresoView,{tok,m,user,onMov}),
+          view==='salidas'&&h(SalidaView,{tok,m,user,onMov}),
+          view==='traspasos'&&h(TraspasoView,{tok,m,user,onMov}),
           view==='stock'&&h(StockView,{tok,m}),
           view==='kardex'&&h(KardexView,{tok,m}),
           view==='reportes'&&h(ReportesView,{tok,m}),
