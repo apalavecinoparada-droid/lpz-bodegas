@@ -1665,7 +1665,49 @@ mvR.post('/', auth, async(req,res)=>{
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
-mvR.patch('/:id/anular', auth, async(req,res)=>{
+// PUT: editar metadata de un movimiento (fecha, faena, equipo, motivo, observaciones, responsables, doc)
+// No permite cambiar productos/cantidades/bodegas: para eso, anular y crear uno nuevo.
+// Requiere módulo "inventario-editar" (los admin siempre pueden)
+mvR.put('/:id', auth, requireModulo('inventario-editar'), async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const r=await client.query("SELECT * FROM movimiento_encabezado WHERE movimiento_id=$1",[req.params.id]);
+    if(!r.rows.length){await client.query('ROLLBACK');return res.status(404).json({error:'Movimiento no encontrado'});}
+    const mov=r.rows[0];
+    if(mov.estado!=='ACTIVO'){await client.query('ROLLBACK');return res.status(400).json({error:'Solo se pueden editar movimientos ACTIVOS'});}
+    const b=req.body||{};
+    // Campos editables (no afectan stock)
+    const fields=['fecha','faena_id','equipo_id','motivo_id','observaciones','responsable_entrega','responsable_recepcion','numero_documento','fecha_documento','oc_referencia','tipo_doc_id','proveedor_id'];
+    var sets=[],vals=[];
+    fields.forEach(function(f){
+      if(b[f]!==undefined){
+        vals.push(b[f]||null);
+        sets.push(f+'=$'+vals.length);
+      }
+    });
+    if(!sets.length){await client.query('ROLLBACK');return res.status(400).json({error:'No hay campos para actualizar'});}
+    vals.push(req.params.id);
+    await client.query('UPDATE movimiento_encabezado SET '+sets.join(',')+' WHERE movimiento_id=$'+vals.length,vals);
+    // Para traspasos, sincronizar fecha y observaciones con el otro lado
+    if((mov.tipo_movimiento==='TRASPASO_SALIDA'||mov.tipo_movimiento==='TRASPASO_INGRESO')&&mov.referencia_transfer_id){
+      var syncFields=['fecha','observaciones','responsable_entrega','responsable_recepcion'];
+      var syncSets=[],syncVals=[];
+      syncFields.forEach(function(f){
+        if(b[f]!==undefined){syncVals.push(b[f]||null);syncSets.push(f+'=$'+syncVals.length);}
+      });
+      if(syncSets.length){
+        syncVals.push(mov.referencia_transfer_id);
+        await client.query('UPDATE movimiento_encabezado SET '+syncSets.join(',')+' WHERE movimiento_id=$'+syncVals.length,syncVals);
+      }
+    }
+    await client.query('COMMIT');
+    res.json({ok:true});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+mvR.patch('/:id/anular', auth, requireModulo('inventario-editar'), async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
@@ -1777,7 +1819,7 @@ app.get('/api/kardex', auth, async(req,res)=>{
     if(!producto_id) return res.status(400).json({error:'producto_id requerido'});
     let where='md.producto_id=$1',vals=[producto_id];
     if(bodega_id){vals.push(bodega_id);where+=` AND me.bodega_id=$${vals.length}`;}
-    const r=await pool.query(`SELECT me.movimiento_id,me.tipo_movimiento,me.fecha,me.bodega_id,b.nombre AS bodega_nombre,md.producto_id,p.codigo AS producto_codigo,p.nombre AS producto_nombre,p.unidad_medida,CASE WHEN me.tipo_movimiento IN ('INGRESO','TRASPASO_INGRESO') THEN md.cantidad ELSE 0 END AS entrada,CASE WHEN me.tipo_movimiento IN ('SALIDA','TRASPASO_SALIDA') THEN md.cantidad ELSE 0 END AS salida,md.costo_unitario,md.costo_total,me.faena_id,f.nombre AS faena_nombre,me.equipo_id,e.nombre AS equipo_nombre,me.observaciones,me.estado FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id JOIN bodegas b ON me.bodega_id=b.bodega_id JOIN productos p ON md.producto_id=p.producto_id LEFT JOIN faenas f ON me.faena_id=f.faena_id LEFT JOIN equipos e ON me.equipo_id=e.equipo_id WHERE ${where} AND me.estado='ACTIVO' ORDER BY me.movimiento_id`,vals);
+    const r=await pool.query(`SELECT me.movimiento_id,me.tipo_movimiento,me.fecha,me.bodega_id,b.nombre AS bodega_nombre,me.bodega_destino_id,bd.nombre AS bodega_destino_nombre,md.producto_id,p.codigo AS producto_codigo,p.nombre AS producto_nombre,p.unidad_medida,CASE WHEN me.tipo_movimiento IN ('INGRESO','TRASPASO_INGRESO') THEN md.cantidad ELSE 0 END AS entrada,CASE WHEN me.tipo_movimiento IN ('SALIDA','TRASPASO_SALIDA') THEN md.cantidad ELSE 0 END AS salida,md.costo_unitario,md.costo_total,me.faena_id,f.nombre AS faena_nombre,me.equipo_id,e.nombre AS equipo_nombre,me.observaciones,me.estado FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id JOIN bodegas b ON me.bodega_id=b.bodega_id LEFT JOIN bodegas bd ON me.bodega_destino_id=bd.bodega_id JOIN productos p ON md.producto_id=p.producto_id LEFT JOIN faenas f ON me.faena_id=f.faena_id LEFT JOIN equipos e ON me.equipo_id=e.equipo_id WHERE ${where} AND me.estado='ACTIVO' ORDER BY me.movimiento_id`,vals);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
