@@ -5217,35 +5217,42 @@ app.get('/api/terreno/ultimo-horometro/:equipo_id', auth, async(req,res)=>{
 // ═══════════════════════════════════════════════════════════════════
 app.get('/api/terreno/auditoria-diaria', auth, async(req,res)=>{
   try{
-    var fecha=req.query.fecha||new Date().toISOString().slice(0,10);
+    // Acepta `desde` y `hasta` (rango). Compatibilidad: si viene solo `fecha`, se trata como día único.
+    var desde=req.query.desde||req.query.fecha||new Date().toISOString().slice(0,10);
+    var hasta=req.query.hasta||req.query.fecha||desde;
     var empresaFiltro=req.query.empresa_id?'AND e.empresa_id='+parseInt(req.query.empresa_id):'';
-    // ─── 1) Equipos con DISTRIBUCIÓN de combustible ese día (con/sin reporte de terreno y discrepancias) ───
+    // ─── 1) Cruce por (equipo, fecha) en el rango ───
     var sqlCruce=`
       WITH dist_dia AS (
         SELECT 
-          cm.equipo_id,
+          cm.equipo_id, cm.fecha,
           SUM(cm.litros)::numeric(12,2) AS litros_distribuidos,
           COUNT(*) AS cargas,
           STRING_AGG(DISTINCT TO_CHAR(cm.hora_carga,'HH24:MI'),', ' ORDER BY TO_CHAR(cm.hora_carga,'HH24:MI')) AS horas_carga,
           STRING_AGG(DISTINCT es.codigo,', ') AS estanques
         FROM comb_movimientos cm
         LEFT JOIN comb_estanques es ON cm.estanque_origen_id=es.estanque_id
-        WHERE cm.tipo_mov='DISTRIBUCION' AND cm.estado='ACTIVO' AND cm.fecha=$1
-        GROUP BY cm.equipo_id
+        WHERE cm.tipo_mov='DISTRIBUCION' AND cm.estado='ACTIVO' 
+          AND cm.fecha BETWEEN $1 AND $2
+        GROUP BY cm.equipo_id, cm.fecha
       ),
       terr_dia AS (
         SELECT 
-          tr.equipo_id,
+          tr.equipo_id, tr.fecha,
           tr.registro_id,
           tr.litros_combustible::numeric(12,2) AS litros_terreno,
-          tr.horometro_inicial,
-          tr.horometro_final,
-          tr.faena_id
+          tr.horometro_inicial, tr.horometro_final, tr.faena_id
         FROM terreno_registros tr
-        WHERE tr.fecha=$1
+        WHERE tr.fecha BETWEEN $1 AND $2
+      ),
+      pares AS (
+        SELECT equipo_id, fecha FROM dist_dia
+        UNION
+        SELECT equipo_id, fecha FROM terr_dia
       )
       SELECT 
         e.equipo_id, e.codigo, e.nombre, e.empresa_id,
+        p.fecha,
         emp.razon_social AS empresa,
         d.litros_distribuidos, d.cargas, d.horas_carga, d.estanques,
         t.registro_id, t.litros_terreno, t.horometro_inicial, t.horometro_final,
@@ -5257,35 +5264,34 @@ app.get('/api/terreno/auditoria-diaria', auth, async(req,res)=>{
           WHEN d.equipo_id IS NOT NULL AND t.registro_id IS NOT NULL THEN 'ok'
           ELSE 'sin_combustible'
         END AS estado
-      FROM equipos e
-      LEFT JOIN dist_dia d ON d.equipo_id=e.equipo_id
-      LEFT JOIN terr_dia t ON t.equipo_id=e.equipo_id
+      FROM pares p
+      JOIN equipos e ON e.equipo_id=p.equipo_id AND e.activo=true
+      LEFT JOIN dist_dia d ON d.equipo_id=p.equipo_id AND d.fecha=p.fecha
+      LEFT JOIN terr_dia t ON t.equipo_id=p.equipo_id AND t.fecha=p.fecha
       LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
       LEFT JOIN faenas f ON t.faena_id=f.faena_id
-      WHERE e.activo=true AND (d.equipo_id IS NOT NULL OR t.registro_id IS NOT NULL)
-      ${empresaFiltro}
-      ORDER BY e.codigo`;
-    var cruce=await pool.query(sqlCruce,[fecha]);
-    // ─── 2) Equipos activos SIN reporte alguno (ni terreno ni combustible) ese día ───
-    //     Útil para detectar máquinas que probablemente trabajaron pero no se reportó nada
+      WHERE 1=1 ${empresaFiltro}
+      ORDER BY p.fecha DESC, e.codigo`;
+    var cruce=await pool.query(sqlCruce,[desde,hasta]);
+    // ─── 2) Equipos activos sin NINGÚN registro en TODO el rango ───
+    //    (no aparecen ni en comb_movimientos ni en terreno_registros)
     var sqlSinRegistro=`
       SELECT e.equipo_id, e.codigo, e.nombre, e.empresa_id,
              emp.razon_social AS empresa
       FROM equipos e
       LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
       WHERE e.activo=true 
-        AND NOT EXISTS (SELECT 1 FROM terreno_registros tr WHERE tr.equipo_id=e.equipo_id AND tr.fecha=$1)
-        AND NOT EXISTS (SELECT 1 FROM comb_movimientos cm WHERE cm.equipo_id=e.equipo_id AND cm.fecha=$1 AND cm.estado='ACTIVO')
+        AND NOT EXISTS (SELECT 1 FROM terreno_registros tr WHERE tr.equipo_id=e.equipo_id AND tr.fecha BETWEEN $1 AND $2)
+        AND NOT EXISTS (SELECT 1 FROM comb_movimientos cm WHERE cm.equipo_id=e.equipo_id AND cm.fecha BETWEEN $1 AND $2 AND cm.estado='ACTIVO')
         ${empresaFiltro}
       ORDER BY e.codigo`;
-    var sinRegistro=await pool.query(sqlSinRegistro,[fecha]);
-    // Clasificar los resultados del cruce
+    var sinRegistro=await pool.query(sqlSinRegistro,[desde,hasta]);
     var sinTerreno=cruce.rows.filter(function(r){return r.estado==='sin_terreno';});
     var discrepancias=cruce.rows.filter(function(r){return r.estado==='discrepancia_litros';});
     var ok=cruce.rows.filter(function(r){return r.estado==='ok';});
     var terrenoSinComb=cruce.rows.filter(function(r){return r.estado==='sin_combustible';});
     res.json({
-      fecha:fecha,
+      desde:desde, hasta:hasta,
       resumen:{
         con_combustible_sin_terreno:sinTerreno.length,
         discrepancias_litros:discrepancias.length,
