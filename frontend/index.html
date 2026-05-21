@@ -2298,7 +2298,12 @@ function TerrenoInforme(p){
 // AUDITORÍA DIARIA: cruce terreno ↔ combustibles
 // Detecta equipos sin reporte de terreno y discrepancias en litros
 // ═══════════════════════════════════════════════════════════════════════
-function TerrenoAuditoriaModal(p){
+// ═══════════════════════════════════════════════════════════════════════
+// AUDITORÍA DE COMBUSTIBLES: cruce terreno ↔ combustibles
+// Detecta equipos sin reporte de terreno y discrepancias en litros
+// Submódulo del módulo Combustibles
+// ═══════════════════════════════════════════════════════════════════════
+function CombAuditoriaView(p){
   var hoy=new Date().toISOString().slice(0,10);
   var[desde,setDesde]=useState(hoy);
   var[hasta,setHasta]=useState(hoy);
@@ -2342,8 +2347,13 @@ function TerrenoAuditoriaModal(p){
   var res=data&&data.resumen||{};
   var diasRango=data?Math.round((new Date(data.hasta)-new Date(data.desde))/86400000)+1:1;
 
-  return h(Modal,{title:'🔍 Auditoría — Terreno vs Combustibles',onClose:p.onClose,xl:true},
-    h('div',null,
+  return h('div',null,
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
+      h('div',null,
+        h('h2',{style:{fontSize:18,fontWeight:700,marginBottom:2}},'🔍 Auditoría de Combustibles'),
+        h('p',{style:{fontSize:12,color:'#64748B'}},'Cruce de distribuciones de combustible vs reportes de terreno')
+      )
+    ),
       // Filtros con rango de fechas
       h('div',{style:{padding:12,background:'#F8FAFC',borderRadius:6,marginBottom:14}},
         h('div',{style:{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap'}},
@@ -2501,11 +2511,7 @@ function TerrenoAuditoriaModal(p){
               )
             )
         )
-      ),
-      h('div',{style:{marginTop:14,display:'flex',justifyContent:'flex-end'}},
-        h(Btn,{onClick:p.onClose},'Cerrar')
       )
-    )
   );
 }
 
@@ -2523,7 +2529,6 @@ function TerrenoView(p){
   var[filtEquipo,setFiltEquipo]=useState('');var[filtMes,setFiltMes]=useState(new Date().toISOString().slice(0,7));
   var[rendimiento,setRendimiento]=useState(null);
   var[showTOB,setShowTOB]=useState(false);
-  var[showAuditoria,setShowAuditoria]=useState(false);
   // Ordenamiento por columna
   var[sortBy,setSortBy]=useState('fecha');
   var[sortDir,setSortDir]=useState('desc');
@@ -2598,12 +2603,8 @@ function TerrenoView(p){
         filtEquipo&&rendimiento&&h('div',{style:{fontSize:11,padding:'6px 10px',background:'#F0FDF4',border:'1px solid #86EFAC',borderRadius:5}},
           h('strong',{style:{color:'#166534'}},'Rend: '),rendimiento.rendimiento?rendimiento.rendimiento.toFixed(2)+' L/h':'\u2014',' (',rendimiento.horas.toFixed(1)+'h / ',rendimiento.litros.toFixed(1)+'L)')
       ),
-      h('div',{style:{display:'flex',gap:6}},
-        h('button',{onClick:function(){setShowAuditoria(true);},style:{padding:'6px 12px',background:'#F59E0B',color:'#fff',border:'none',borderRadius:5,fontSize:12,cursor:'pointer',fontWeight:600},title:'Detectar equipos sin reporte de terreno y cruzar con combustibles en un rango de fechas'},'🔍 Auditoría'),
-        h(Btn,{onClick:function(){setEditReg(null);var f=Object.assign({},emptyForm);if(filtEquipo){f.equipo_id=filtEquipo;var eq=allEquipos.find(function(e){return String(e.equipo_id)===String(filtEquipo);});if(eq)f.faena_id=eq.faena_id;api('/terreno/ultimo-horometro/'+filtEquipo,'GET',null,p.tok).then(function(r){if(r.horometro_final!=null){setForm(function(ff){return Object.assign({},ff,{horometro_inicial:r.horometro_final});});}}).catch(function(){});}setForm(f);setShowForm(!showForm);setShowTOB(false);}},showForm?'Cancelar':'+ Nuevo Registro')
-      )
+      h(Btn,{onClick:function(){setEditReg(null);var f=Object.assign({},emptyForm);if(filtEquipo){f.equipo_id=filtEquipo;var eq=allEquipos.find(function(e){return String(e.equipo_id)===String(filtEquipo);});if(eq)f.faena_id=eq.faena_id;api('/terreno/ultimo-horometro/'+filtEquipo,'GET',null,p.tok).then(function(r){if(r.horometro_final!=null){setForm(function(ff){return Object.assign({},ff,{horometro_inicial:r.horometro_final});});}}).catch(function(){});}setForm(f);setShowForm(!showForm);setShowTOB(false);}},showForm?'Cancelar':'+ Nuevo Registro')
     ),
-    showAuditoria&&h(TerrenoAuditoriaModal,{tok:p.tok,user:p.user,m:p.m,onClose:function(){setShowAuditoria(false);loadReg();}}),
     msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
     showForm&&h('div',{className:'card',style:{marginBottom:12}},
       h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},editReg?'Editar registro':'Nuevo registro diario'),
@@ -15382,7 +15383,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','comb-auditoria':'Combustibles — Auditoría vs Terreno','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -16029,7 +16030,7 @@ function App(){
   // Mapa view → módulo requerido. Si la view no está aquí, no requiere módulo.
   var VIEW_MOD={
     'ordenes':'ordenes','oc-guias':'ordenes','dte-recibidos':'ordenes','bandeja-dte-oc':'ordenes',
-    'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
+    'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-auditoria':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
     'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-reportes':'inventario',
     'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion',
     'rendiciones':'rendiciones',
@@ -16185,6 +16186,7 @@ function App(){
           navI('comb-ingresos','↓','Ingresos a Stock',true),
           navI('comb-traspasos','⇄','Traspasos Estanques',true),
           navI('comb-distribuciones','↑','Distribuciones',true),
+          navI('comb-auditoria','🔍','Auditoría vs Terreno',true),
           navI('comb-reportes','◈','Reportes',true),
           navI('comb-kardex','≡','Kardex Estanque',true)
         ),
@@ -16295,6 +16297,7 @@ function App(){
           view==='comb-ingresos'&&h(CombIngresosStock,{tok,m}),
           view==='comb-traspasos'&&h(CombTraspasos,{tok,m}),
           view==='comb-distribuciones'&&h(CombDistribuciones,{tok,m}),
+          view==='comb-auditoria'&&h(CombAuditoriaView,{tok,m,user}),
           view==='comb-reportes'&&h(CombReportes,{tok,m}),
           view==='comb-estanques'&&h(CombEstanques,{tok,m}),
           view==='mant-panel'&&h(MantPanel,{tok,m,onNav:setView}),
