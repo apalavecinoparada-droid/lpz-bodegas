@@ -1899,7 +1899,7 @@ app.get('/api/inv/auditoria', auth, async(req,res)=>{
     // 6) Movimientos anulados que pudieron afectar el stock antes
     const anuladosRec=await pool.query(`
       SELECT me.movimiento_id, me.tipo_movimiento, me.fecha, me.usuario, b.nombre AS bodega_nombre,
-             p.codigo AS proveedor_codigo, p.nombre AS proveedor_nombre,
+             p.nombre AS proveedor_nombre,
              (SELECT COUNT(*) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS lineas,
              (SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS valor_total
       FROM movimiento_encabezado me
