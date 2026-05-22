@@ -355,6 +355,21 @@ async function setupMantenciones(q){
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
 
+  // ── Tareas detalladas del Plan Maestro (carga desde Excel del rescate) ──
+  await q(`CREATE TABLE IF NOT EXISTS mant_plan_tareas (
+    tarea_plan_id SERIAL PRIMARY KEY,
+    plan_id INT NOT NULL REFERENCES mant_planes(plan_id) ON DELETE CASCADE,
+    orden INT DEFAULT 0,
+    sistema VARCHAR(60),
+    descripcion VARCHAR(500) NOT NULL,
+    tipo VARCHAR(20) DEFAULT 'inspeccion',
+    insumo_sugerido VARCHAR(300),
+    cantidad_sugerida VARCHAR(50),
+    activo BOOLEAN DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  try{await q('CREATE INDEX IF NOT EXISTS idx_mant_plan_tareas_plan ON mant_plan_tareas(plan_id)');}catch(e){}
+
   await q(`CREATE TABLE IF NOT EXISTS mant_avisos (
     aviso_id SERIAL PRIMARY KEY,
     empresa_id INT REFERENCES empresas(empresa_id),
@@ -3506,12 +3521,23 @@ app.get('/api/facto/test', auth, async(req,res)=>{
 // ── PLANES MAESTROS ──
 app.get('/api/mant/planes', auth, async(req,res)=>{
   try{
-    const{empresa_id,tipo_activo,activo}=req.query;
+    const{empresa_id,tipo_activo,activo,equipo_id,tipo_mantencion}=req.query;
     let where=['1=1'],vals=[];
     if(empresa_id){vals.push(empresa_id);where.push(`p.empresa_id=$${vals.length}`);}
+    if(equipo_id){vals.push(equipo_id);where.push(`p.equipo_id=$${vals.length}`);}
+    if(tipo_mantencion){vals.push(tipo_mantencion);where.push(`p.tipo_mantencion=$${vals.length}`);}
     if(tipo_activo&&tipo_activo!=='todos'){vals.push(tipo_activo);where.push(`(p.tipo_activo=$${vals.length} OR p.tipo_activo='todos')`);}
     if(activo!==undefined){vals.push(activo==='true');where.push(`p.activo=$${vals.length}`);}
-    const r=await pool.query(`SELECT p.*,e.razon_social AS empresa_nombre FROM mant_planes p LEFT JOIN empresas e ON p.empresa_id=e.empresa_id WHERE ${where.join(' AND ')} ORDER BY p.nombre`,vals);
+    const r=await pool.query(`
+      SELECT p.*,e.razon_social AS empresa_nombre,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,
+             (SELECT COUNT(*) FROM mant_plan_tareas pt WHERE pt.plan_id=p.plan_id) AS num_tareas,
+             (SELECT COUNT(*) FROM mant_plan_tareas pt WHERE pt.plan_id=p.plan_id AND pt.tipo='trabajo') AS num_trabajos,
+             (SELECT COUNT(*) FROM mant_plan_tareas pt WHERE pt.plan_id=p.plan_id AND pt.tipo='inspeccion') AS num_inspecciones
+      FROM mant_planes p 
+      LEFT JOIN empresas e ON p.empresa_id=e.empresa_id 
+      LEFT JOIN equipos eq ON p.equipo_id=eq.equipo_id
+      WHERE ${where.join(' AND ')} 
+      ORDER BY eq.codigo NULLS LAST, p.intervalo_horas NULLS LAST, p.nombre`,vals);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -3531,6 +3557,174 @@ app.put('/api/mant/planes/:id', auth, async(req,res)=>{
       [nombre,descripcion||null,tipo_activo||'todos',familia||null,marca||null,modelo_filtro||null,equipo_id||null,sistema||null,componente||null,tipo_mantencion||'preventivo',intervalo_horas||null,intervalo_km||null,intervalo_dias||null,tolerancia_horas||10,tolerancia_km||200,tolerancia_dias||5,tiempo_estimado_hrs||null,prioridad||'normal',JSON.stringify(checklist_items||[]),JSON.stringify(repuestos_sugeridos||[]),JSON.stringify(lubricantes_sugeridos||[]),activo!==false,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.delete('/api/mant/planes/:id', auth, async(req,res)=>{
+  try{
+    await pool.query('DELETE FROM mant_planes WHERE plan_id=$1',[req.params.id]);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ─── TAREAS DEL PLAN (detalle del Plan Maestro) ───
+app.get('/api/mant/planes/:id/tareas', auth, async(req,res)=>{
+  try{
+    const r=await pool.query('SELECT * FROM mant_plan_tareas WHERE plan_id=$1 ORDER BY orden,tarea_plan_id',[req.params.id]);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.post('/api/mant/planes/:id/tareas', auth, async(req,res)=>{
+  try{
+    const{descripcion,sistema,tipo,insumo_sugerido,cantidad_sugerida,orden}=req.body;
+    if(!descripcion) return res.status(400).json({error:'Descripción requerida'});
+    const r=await pool.query(
+      `INSERT INTO mant_plan_tareas(plan_id,orden,sistema,descripcion,tipo,insumo_sugerido,cantidad_sugerida) 
+       VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *`,
+      [req.params.id,orden||0,sistema||null,descripcion,tipo||'inspeccion',insumo_sugerido||null,cantidad_sugerida||null]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.put('/api/mant/plan-tareas/:id', auth, async(req,res)=>{
+  try{
+    const{descripcion,sistema,tipo,insumo_sugerido,cantidad_sugerida,orden,activo}=req.body;
+    const r=await pool.query(
+      `UPDATE mant_plan_tareas SET descripcion=COALESCE($1,descripcion),sistema=$2,tipo=COALESCE($3,tipo),insumo_sugerido=$4,cantidad_sugerida=$5,orden=COALESCE($6,orden),activo=COALESCE($7,activo) 
+       WHERE tarea_plan_id=$8 RETURNING *`,
+      [descripcion||null,sistema||null,tipo||null,insumo_sugerido||null,cantidad_sugerida||null,orden||null,activo,req.params.id]);
+    if(!r.rows.length) return res.status(404).json({error:'No encontrada'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.delete('/api/mant/plan-tareas/:id', auth, async(req,res)=>{
+  try{
+    await pool.query('DELETE FROM mant_plan_tareas WHERE tarea_plan_id=$1',[req.params.id]);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ═══════════════════════════════════════════════════════════════
+// IMPORTACIÓN MASIVA DE PAUTA DESDE EXCEL DE RESCATE
+// ───────────────────────────────────────────────────────────────
+// Recibe JSON con filas del Excel actualizado y crea planes + tareas.
+// Estructura del body:
+// {
+//   filas: [
+//     { equipo_nombre, empresa_nombre, sistema, descripcion, intervalo_horas,
+//       insumo_sugerido, cantidad_sugerida },
+//     ...
+//   ],
+//   modo: 'reemplazar' | 'agregar'   (default: 'reemplazar')
+// }
+// Lógica:
+// 1) Agrupa por (equipo, intervalo). Cada grupo es un Plan.
+// 2) Si modo='reemplazar', elimina planes existentes del equipo+intervalo antes.
+// 3) Crea el plan con nombre "Equipo - 250h" y los registros de tareas.
+// 4) Resuelve equipo_id por nombre o código exacto.
+// ═══════════════════════════════════════════════════════════════
+app.post('/api/mant/planes/importar-pauta', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const filas=Array.isArray(req.body.filas)?req.body.filas:[];
+    const modo=req.body.modo||'reemplazar';
+    if(!filas.length) return res.status(400).json({error:'No hay filas para importar'});
+
+    // Pre-cargar catálogos
+    const eqRes=await client.query('SELECT equipo_id,codigo,nombre,empresa_id FROM equipos');
+    const equipos=eqRes.rows;
+    function buscarEquipoId(nombre,empresaHint){
+      if(!nombre) return null;
+      const n=String(nombre).trim().toLowerCase();
+      // Match exacto por nombre o código (case insensitive)
+      let m=equipos.find(e=>String(e.nombre).trim().toLowerCase()===n||String(e.codigo).trim().toLowerCase()===n);
+      if(m) return m;
+      // Match contiene (ej. "E 11" matches "E-11" si quitamos separadores)
+      const norm=n.replace(/[\s\-_]/g,'');
+      m=equipos.find(e=>{
+        const ne=String(e.nombre).trim().toLowerCase().replace(/[\s\-_]/g,'');
+        const ce=String(e.codigo).trim().toLowerCase().replace(/[\s\-_]/g,'');
+        return ne===norm||ce===norm;
+      });
+      return m||null;
+    }
+
+    await client.query('BEGIN');
+
+    // Agrupar filas por (equipo_nombre, intervalo_horas)
+    const grupos={};
+    let filasIgnoradas=0;
+    const equiposNoEncontrados=new Set();
+
+    for(const f of filas){
+      const eqNom=f.equipo_nombre||f.equipo;
+      if(!eqNom){filasIgnoradas++;continue;}
+      const eq=buscarEquipoId(eqNom);
+      if(!eq){equiposNoEncontrados.add(eqNom);filasIgnoradas++;continue;}
+      const intervalo=parseFloat(f.intervalo_horas||f.intervalo)||null;
+      if(!intervalo){filasIgnoradas++;continue;}
+      const k=eq.equipo_id+'__'+intervalo;
+      if(!grupos[k]) grupos[k]={equipo:eq,intervalo:intervalo,tareas:[]};
+      grupos[k].tareas.push({
+        descripcion:String(f.descripcion||'').trim().slice(0,500),
+        sistema:f.sistema||null,
+        insumo_sugerido:f.insumo_sugerido?String(f.insumo_sugerido).trim().slice(0,300):null,
+        cantidad_sugerida:f.cantidad_sugerida?String(f.cantidad_sugerida).trim().slice(0,50):null,
+        tipo:f.insumo_sugerido?'trabajo':'inspeccion'
+      });
+    }
+
+    let planesCreados=0,tareasCreadas=0,planesEliminados=0;
+
+    for(const k of Object.keys(grupos)){
+      const g=grupos[k];
+      const nombrePlan=g.equipo.nombre+' — '+g.intervalo+' hrs';
+
+      // Si modo reemplazar: eliminar planes existentes para este equipo+intervalo
+      if(modo==='reemplazar'){
+        const old=await client.query(
+          "SELECT plan_id FROM mant_planes WHERE equipo_id=$1 AND intervalo_horas=$2 AND tipo_mantencion='programada'",
+          [g.equipo.equipo_id,g.intervalo]);
+        for(const p of old.rows){
+          await client.query('DELETE FROM mant_planes WHERE plan_id=$1',[p.plan_id]);
+          planesEliminados++;
+        }
+      }
+
+      // Crear plan
+      const planRes=await client.query(
+        `INSERT INTO mant_planes(empresa_id,nombre,equipo_id,tipo_mantencion,intervalo_horas,tipo_activo,prioridad,activo) 
+         VALUES($1,$2,$3,'programada',$4,'maquinaria','normal',true) RETURNING plan_id`,
+        [g.equipo.empresa_id,nombrePlan,g.equipo.equipo_id,g.intervalo]);
+      const planId=planRes.rows[0].plan_id;
+      planesCreados++;
+
+      // Crear tareas
+      for(let i=0;i<g.tareas.length;i++){
+        const t=g.tareas[i];
+        await client.query(
+          `INSERT INTO mant_plan_tareas(plan_id,orden,sistema,descripcion,tipo,insumo_sugerido,cantidad_sugerida) 
+           VALUES($1,$2,$3,$4,$5,$6,$7)`,
+          [planId,i+1,t.sistema,t.descripcion,t.tipo,t.insumo_sugerido,t.cantidad_sugerida]);
+        tareasCreadas++;
+      }
+    }
+
+    await client.query('COMMIT');
+
+    res.json({
+      ok:true,
+      planes_creados:planesCreados,
+      tareas_creadas:tareasCreadas,
+      planes_eliminados:planesEliminados,
+      filas_ignoradas:filasIgnoradas,
+      equipos_no_encontrados:Array.from(equiposNoEncontrados)
+    });
+  }catch(e){
+    await client.query('ROLLBACK');
+    res.status(400).json({error:e.message});
+  }finally{client.release();}
 });
 
 // ── AVISOS DE FALLA ──
