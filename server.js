@@ -1822,6 +1822,210 @@ app.post('/api/movimientos/traspaso', auth, async(req,res)=>{
 });
 
 // STOCK
+// ═══════════════════════════════════════════════════════════════════════
+// AUDITORÍA DE INVENTARIO
+// Detecta inconsistencias entre stock_actual y movimientos:
+// 1) CPP negativo o cero con stock disponible
+// 2) Stock negativo
+// 3) Desincronización: stock_actual.cantidad ≠ SUM(entradas) - SUM(salidas)
+// 4) Productos duplicados por código o nombre
+// 5) Movimientos sin detalle (cabecera huérfana)
+// ═══════════════════════════════════════════════════════════════════════
+app.get('/api/inv/auditoria', auth, async(req,res)=>{
+  try{
+    // 1) CPP negativo o cero con stock disponible
+    const cppRaro=await pool.query(`
+      SELECT sa.producto_id, sa.bodega_id, p.codigo, p.nombre, b.nombre AS bodega_nombre,
+             sa.cantidad_disponible, sa.costo_promedio_actual,
+             (sa.cantidad_disponible * sa.costo_promedio_actual) AS valor_calculado
+      FROM stock_actual sa
+      JOIN productos p ON sa.producto_id=p.producto_id
+      JOIN bodegas b ON sa.bodega_id=b.bodega_id
+      WHERE (sa.costo_promedio_actual < 0 OR (sa.costo_promedio_actual = 0 AND sa.cantidad_disponible > 0))
+      ORDER BY ABS(sa.cantidad_disponible * sa.costo_promedio_actual) DESC`);
+
+    // 2) Stock negativo
+    const stockNeg=await pool.query(`
+      SELECT sa.producto_id, sa.bodega_id, p.codigo, p.nombre, b.nombre AS bodega_nombre,
+             sa.cantidad_disponible, sa.costo_promedio_actual
+      FROM stock_actual sa
+      JOIN productos p ON sa.producto_id=p.producto_id
+      JOIN bodegas b ON sa.bodega_id=b.bodega_id
+      WHERE sa.cantidad_disponible < 0
+      ORDER BY sa.cantidad_disponible`);
+
+    // 3) DESINCRONIZACIÓN: stock_actual ≠ SUM(movimientos)
+    //    Calcula entradas - salidas - traspasos_salida + traspasos_ingreso por (producto, bodega)
+    const desync=await pool.query(`
+      WITH calc AS (
+        SELECT md.producto_id, me.bodega_id,
+               SUM(CASE WHEN me.tipo_movimiento IN ('INGRESO','TRASPASO_INGRESO') THEN md.cantidad ELSE 0 END) AS entradas,
+               SUM(CASE WHEN me.tipo_movimiento IN ('SALIDA','TRASPASO_SALIDA') THEN md.cantidad ELSE 0 END) AS salidas
+        FROM movimiento_detalle md
+        JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
+        WHERE me.estado='ACTIVO'
+        GROUP BY md.producto_id, me.bodega_id
+      )
+      SELECT sa.producto_id, sa.bodega_id, p.codigo, p.nombre, b.nombre AS bodega_nombre,
+             sa.cantidad_disponible AS stock_sistema,
+             COALESCE(calc.entradas,0) - COALESCE(calc.salidas,0) AS stock_calculado,
+             sa.cantidad_disponible - (COALESCE(calc.entradas,0) - COALESCE(calc.salidas,0)) AS diferencia,
+             sa.costo_promedio_actual,
+             COALESCE(calc.entradas,0) AS entradas, COALESCE(calc.salidas,0) AS salidas
+      FROM stock_actual sa
+      JOIN productos p ON sa.producto_id=p.producto_id
+      JOIN bodegas b ON sa.bodega_id=b.bodega_id
+      LEFT JOIN calc ON calc.producto_id=sa.producto_id AND calc.bodega_id=sa.bodega_id
+      WHERE ABS(sa.cantidad_disponible - (COALESCE(calc.entradas,0) - COALESCE(calc.salidas,0))) > 0.001
+      ORDER BY ABS(sa.cantidad_disponible - (COALESCE(calc.entradas,0) - COALESCE(calc.salidas,0))) DESC`);
+
+    // 4) Productos duplicados por código
+    const dupCodigos=await pool.query(`
+      SELECT codigo, COUNT(*) AS cant, STRING_AGG(nombre || ' (ID ' || producto_id || ')', ' | ') AS detalle
+      FROM productos
+      GROUP BY codigo
+      HAVING COUNT(*) > 1
+      ORDER BY codigo`);
+
+    // 5) Productos duplicados por nombre (sospechosos)
+    const dupNombres=await pool.query(`
+      SELECT LOWER(TRIM(nombre)) AS nombre_norm, COUNT(*) AS cant,
+             STRING_AGG(codigo || ' (' || nombre || ')', ' | ') AS detalle
+      FROM productos
+      GROUP BY LOWER(TRIM(nombre))
+      HAVING COUNT(*) > 1
+      ORDER BY nombre_norm`);
+
+    // 6) Movimientos anulados que pudieron afectar el stock antes
+    const anuladosRec=await pool.query(`
+      SELECT me.movimiento_id, me.tipo_movimiento, me.fecha, me.usuario, b.nombre AS bodega_nombre,
+             p.codigo AS proveedor_codigo, p.nombre AS proveedor_nombre,
+             (SELECT COUNT(*) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS lineas,
+             (SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS valor_total
+      FROM movimiento_encabezado me
+      LEFT JOIN bodegas b ON me.bodega_id=b.bodega_id
+      LEFT JOIN proveedores p ON me.proveedor_id=p.proveedor_id
+      WHERE me.estado='ANULADO' AND me.fecha >= CURRENT_DATE - INTERVAL '90 days'
+      ORDER BY me.fecha DESC
+      LIMIT 50`);
+
+    // 7) Stock_actual sin movimientos pero con cantidad > 0
+    const stockSinMov=await pool.query(`
+      SELECT sa.producto_id, sa.bodega_id, p.codigo, p.nombre, b.nombre AS bodega_nombre,
+             sa.cantidad_disponible, sa.costo_promedio_actual
+      FROM stock_actual sa
+      JOIN productos p ON sa.producto_id=p.producto_id
+      JOIN bodegas b ON sa.bodega_id=b.bodega_id
+      WHERE sa.cantidad_disponible > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM movimiento_detalle md
+          JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
+          WHERE md.producto_id=sa.producto_id AND me.bodega_id=sa.bodega_id AND me.estado='ACTIVO'
+        )
+      ORDER BY sa.cantidad_disponible DESC`);
+
+    res.json({
+      resumen:{
+        cpp_raro: cppRaro.rows.length,
+        stock_negativo: stockNeg.rows.length,
+        desincronizacion: desync.rows.length,
+        cod_duplicados: dupCodigos.rows.length,
+        nom_duplicados: dupNombres.rows.length,
+        anulados_recientes: anuladosRec.rows.length,
+        stock_sin_mov: stockSinMov.rows.length
+      },
+      cpp_raro: cppRaro.rows,
+      stock_negativo: stockNeg.rows,
+      desincronizacion: desync.rows,
+      cod_duplicados: dupCodigos.rows,
+      nom_duplicados: dupNombres.rows,
+      anulados_recientes: anuladosRec.rows,
+      stock_sin_mov: stockSinMov.rows
+    });
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ─── RECALCULAR STOCK desde movimientos (operación de reparación) ───
+// Sobrescribe stock_actual.cantidad_disponible con la suma de movimientos
+// Útil cuando hay desincronización por bugs históricos
+app.post('/api/inv/recalcular-stock', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const{producto_id,bodega_id}=req.body||{};
+    var w='', vals=[];
+    if(producto_id&&bodega_id){w='WHERE md.producto_id=$1 AND me.bodega_id=$2';vals=[producto_id,bodega_id];}
+    await client.query('BEGIN');
+    const sql=`
+      WITH calc AS (
+        SELECT md.producto_id, me.bodega_id,
+               SUM(CASE WHEN me.tipo_movimiento IN ('INGRESO','TRASPASO_INGRESO') THEN md.cantidad ELSE 0 END) AS entradas,
+               SUM(CASE WHEN me.tipo_movimiento IN ('SALIDA','TRASPASO_SALIDA') THEN md.cantidad ELSE 0 END) AS salidas
+        FROM movimiento_detalle md
+        JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
+        WHERE me.estado='ACTIVO' ${w}
+        GROUP BY md.producto_id, me.bodega_id
+      )
+      UPDATE stock_actual sa
+      SET cantidad_disponible = GREATEST(0, calc.entradas - calc.salidas),
+          ultima_actualizacion = NOW()
+      FROM calc
+      WHERE sa.producto_id=calc.producto_id AND sa.bodega_id=calc.bodega_id
+      RETURNING sa.producto_id, sa.bodega_id, sa.cantidad_disponible`;
+    const r=await client.query(sql,vals);
+    await client.query('COMMIT');
+    res.json({ok:true,filas_actualizadas:r.rows.length});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// ─── RECALCULAR CPP desde movimientos (operación de reparación) ───
+// Recorre los INGRESOS en orden cronológico y reconstruye el CPP línea por línea
+// (las salidas no modifican CPP, los ingresos sí: CPP = (stock*cpp_ant + cant*cu) / (stock+cant))
+app.post('/api/inv/recalcular-cpp', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const{producto_id,bodega_id}=req.body||{};
+    var w='1=1', vals=[];
+    if(producto_id&&bodega_id){w='md.producto_id=$1 AND me.bodega_id=$2';vals=[producto_id,bodega_id];}
+    await client.query('BEGIN');
+    // Recorre por (producto, bodega) en orden cronológico, recalcula CPP
+    const movs=await client.query(`
+      SELECT md.producto_id, me.bodega_id, me.tipo_movimiento, md.cantidad, md.costo_unitario,
+             me.movimiento_id, me.fecha, me.creado_en
+      FROM movimiento_detalle md
+      JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
+      WHERE me.estado='ACTIVO' AND ${w}
+      ORDER BY md.producto_id, me.bodega_id, me.fecha, me.creado_en, me.movimiento_id`,vals);
+    // Acumulador por (prod,bod)
+    var acc={};
+    for(const m of movs.rows){
+      const k=m.producto_id+'_'+m.bodega_id;
+      if(!acc[k]) acc[k]={stock:0, cpp:0};
+      const cant=parseFloat(m.cantidad)||0;
+      if(m.tipo_movimiento==='INGRESO'||m.tipo_movimiento==='TRASPASO_INGRESO'){
+        const cu=parseFloat(m.costo_unitario)||0;
+        const newStock=acc[k].stock+cant;
+        if(newStock>0) acc[k].cpp=(acc[k].stock*acc[k].cpp + cant*cu)/newStock;
+        acc[k].stock=newStock;
+      } else {
+        acc[k].stock=Math.max(0,acc[k].stock-cant);
+      }
+    }
+    // Actualizar stock_actual con los CPPs recalculados
+    var actualizados=0;
+    for(const k of Object.keys(acc)){
+      const[pid,bid]=k.split('_');
+      const r=await client.query(
+        'UPDATE stock_actual SET costo_promedio_actual=$1, ultima_actualizacion=NOW() WHERE producto_id=$2 AND bodega_id=$3',
+        [Math.max(0,acc[k].cpp), pid, bid]);
+      actualizados+=r.rowCount;
+    }
+    await client.query('COMMIT');
+    res.json({ok:true,filas_actualizadas:actualizados});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
 app.get('/api/stock', auth, async(req,res)=>{
   try{const r=await pool.query('SELECT sa.producto_id,p.codigo,p.nombre AS producto_nombre,p.unidad_medida,p.stock_minimo,sc.nombre AS subcategoria,ca.nombre AS categoria,ca.categoria_id,sa.bodega_id,b.nombre AS bodega_nombre,b.codigo AS bodega_codigo,sa.cantidad_disponible,sa.costo_promedio_actual,ROUND(sa.cantidad_disponible*sa.costo_promedio_actual,0) AS valor_total,CASE WHEN sa.cantidad_disponible<=p.stock_minimo THEN true ELSE false END AS bajo_minimo FROM stock_actual sa JOIN productos p ON sa.producto_id=p.producto_id JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id JOIN categorias ca ON sc.categoria_id=ca.categoria_id JOIN bodegas b ON sa.bodega_id=b.bodega_id WHERE p.activo=true AND b.activo=true ORDER BY ca.nombre,sc.nombre,p.nombre');res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
 });
