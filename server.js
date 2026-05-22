@@ -576,6 +576,11 @@ async function setupMantenciones(q){
   try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS cerrada_por VARCHAR(100)');}catch(e){}
   try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS fecha_cierre TIMESTAMP');}catch(e){}
 
+  // ── ALTER mant_planes: último servicio conocido (semilla para cálculo de vencimientos) ──
+  try{await q('ALTER TABLE mant_planes ADD COLUMN IF NOT EXISTS ultimo_servicio_hrs NUMERIC(10,1)');}catch(e){}
+  try{await q('ALTER TABLE mant_planes ADD COLUMN IF NOT EXISTS ultimo_servicio_km INT');}catch(e){}
+  try{await q('ALTER TABLE mant_planes ADD COLUMN IF NOT EXISTS ultimo_servicio_fecha DATE');}catch(e){}
+
   // ── ALTER comb_movimientos: agregar hora de carga (para soportar múltiples cargas/día) ──
   try{await q('ALTER TABLE comb_movimientos ADD COLUMN IF NOT EXISTS hora_carga TIME');}catch(e){}
 
@@ -2671,6 +2676,13 @@ app.post('/api/comb/distribucion', auth, async(req,res)=>{
     const r=await client.query(`INSERT INTO comb_movimientos(tipo_mov,empresa_id,fecha,hora_carga,tipo_id,estanque_origen_id,equipo_id,faena_id,litros,precio_unitario,costo_total,horometro,kilometraje,responsable,observaciones,usuario)
       VALUES('DISTRIBUCION',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
       [empresa_id||null,fecha,hora_carga||null,tipo_id,estanque_origen_id,equipo_id,faena_id||null,lts,cpp,costo_total,numOrNull(horometro),numOrNull(kilometraje),responsable||null,observaciones||null,req.user.email]);
+    // ── Auto-actualizar horómetro/kilometraje del equipo (siempre que el nuevo valor sea mayor) ──
+    if(horometro){
+      await client.query("UPDATE equipos SET horometro_actual=GREATEST(COALESCE(horometro_actual,0),$1) WHERE equipo_id=$2",[parseFloat(horometro),equipo_id]);
+    }
+    if(kilometraje){
+      await client.query("UPDATE equipos SET kilometraje_actual=GREATEST(COALESCE(kilometraje_actual,0),$1) WHERE equipo_id=$2",[parseFloat(kilometraje),equipo_id]);
+    }
     await client.query('COMMIT');
     res.status(201).json(r.rows[0]);
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
@@ -3564,6 +3576,161 @@ app.delete('/api/mant/planes/:id', auth, async(req,res)=>{
     await pool.query('DELETE FROM mant_planes WHERE plan_id=$1',[req.params.id]);
     res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ═══════════════════════════════════════════════════════════════
+// PRÓXIMOS VENCIMIENTOS — CÁLCULO POR EQUIPO Y PLAN
+// ───────────────────────────────────────────────────────────────
+// Lógica:
+// 1) Para cada plan programado activo con intervalo_horas o intervalo_km
+// 2) último servicio = MAX(MAX(OT cerradas), ultimo_servicio_hrs del plan)
+// 3) próximo = último + intervalo
+// 4) compara con equipo.horometro_actual / kilometraje_actual
+// 5) Estado: vencida / proxima / vigente / sin_referencia
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/mant/vencimientos', auth, async(req,res)=>{
+  try{
+    const{equipo_id,empresa_id,estado}=req.query;
+    let where=["p.activo=true AND p.tipo_mantencion='programada'"];
+    let vals=[];
+    if(equipo_id){vals.push(equipo_id);where.push(`p.equipo_id=$${vals.length}`);}
+    if(empresa_id){vals.push(empresa_id);where.push(`p.empresa_id=$${vals.length}`);}
+
+    const sql=`
+      WITH ult_ot AS (
+        SELECT plan_id, MAX(horometro_servicio) AS ult_hrs_ot, MAX(kilometraje_servicio) AS ult_km_ot, MAX(fecha_termino) AS ult_fecha_ot
+        FROM mant_ot
+        WHERE estado IN ('cerrada','completada') AND plan_id IS NOT NULL
+        GROUP BY plan_id
+      )
+      SELECT 
+        p.plan_id, p.nombre AS plan_nombre, p.intervalo_horas, p.intervalo_km, p.intervalo_dias,
+        p.tolerancia_horas, p.tolerancia_km, p.tolerancia_dias,
+        p.equipo_id, eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
+        eq.horometro_actual, eq.kilometraje_actual,
+        emp.razon_social AS empresa_nombre,
+        f.nombre AS faena_nombre,
+        p.ultimo_servicio_hrs AS semilla_hrs, p.ultimo_servicio_km AS semilla_km, p.ultimo_servicio_fecha AS semilla_fecha,
+        u.ult_hrs_ot, u.ult_km_ot, u.ult_fecha_ot,
+        GREATEST(COALESCE(u.ult_hrs_ot,0), COALESCE(p.ultimo_servicio_hrs,0)) AS ultimo_hrs,
+        GREATEST(COALESCE(u.ult_km_ot,0), COALESCE(p.ultimo_servicio_km,0)) AS ultimo_km,
+        (SELECT COUNT(*) FROM mant_plan_tareas pt WHERE pt.plan_id=p.plan_id) AS num_tareas,
+        (SELECT COUNT(*) FROM mant_ot ot WHERE ot.plan_id=p.plan_id AND ot.estado IN ('abierta','en_ejecucion','programada')) AS ots_abiertas
+      FROM mant_planes p
+      LEFT JOIN equipos eq ON p.equipo_id=eq.equipo_id
+      LEFT JOIN empresas emp ON p.empresa_id=emp.empresa_id
+      LEFT JOIN faenas f ON eq.faena_id=f.faena_id
+      LEFT JOIN ult_ot u ON u.plan_id=p.plan_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY eq.codigo NULLS LAST, p.intervalo_horas NULLS LAST`;
+    const r=await pool.query(sql,vals);
+
+    // Calcular estado para cada fila
+    const vencimientos=r.rows.map(row=>{
+      const ultHrs=parseFloat(row.ultimo_hrs)||0;
+      const ultKm=parseFloat(row.ultimo_km)||0;
+      const horoAct=parseFloat(row.horometro_actual)||0;
+      const kmAct=parseFloat(row.kilometraje_actual)||0;
+      const intHrs=parseFloat(row.intervalo_horas)||null;
+      const intKm=parseFloat(row.intervalo_km)||null;
+      const tolHrs=parseFloat(row.tolerancia_horas)||10;
+      const tolKm=parseFloat(row.tolerancia_km)||200;
+
+      let proxHrs=null, proxKm=null, diff=null, estado='sin_referencia', criterio=null;
+
+      if(intHrs && ultHrs>0){
+        proxHrs = ultHrs + intHrs;
+        diff = horoAct - proxHrs; // positivo = excedido, negativo = falta
+        criterio='horas';
+      } else if(intHrs && horoAct>0 && ultHrs===0){
+        // No hay último servicio pero hay intervalo y horómetro: calcular el próximo "ciclo"
+        // (asume que el equipo debería estar en el próximo múltiplo del intervalo)
+        proxHrs = Math.ceil(horoAct/intHrs)*intHrs;
+        diff = horoAct - proxHrs;
+        criterio='horas (sin referencia previa)';
+      } else if(intKm && ultKm>0){
+        proxKm = ultKm + intKm;
+        diff = kmAct - proxKm;
+        criterio='km';
+      } else if(intKm && kmAct>0){
+        proxKm = Math.ceil(kmAct/intKm)*intKm;
+        diff = kmAct - proxKm;
+        criterio='km (sin referencia previa)';
+      }
+
+      if(criterio){
+        const tol = criterio.startsWith('horas')?tolHrs:tolKm;
+        if(diff > tol) estado='vencida';
+        else if(diff >= -tol) estado='proxima';
+        else estado='vigente';
+      }
+
+      return Object.assign({},row,{
+        proxHrs:proxHrs!==null?Number(proxHrs.toFixed(1)):null,
+        proxKm:proxKm!==null?Number(proxKm.toFixed(0)):null,
+        diff:diff!==null?Number(diff.toFixed(1)):null,
+        estado_vencimiento:estado,
+        criterio
+      });
+    });
+
+    // Filtro de estado en JS porque el campo es calculado
+    const filtrados=estado?vencimientos.filter(v=>v.estado_vencimiento===estado):vencimientos;
+    res.json(filtrados);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ═══════════════════════════════════════════════════════════════
+// CARGAR ÚLTIMO SERVICIO desde Excel del rescate
+// ───────────────────────────────────────────────────────────────
+// Recibe { filas: [{equipo_nombre, intervalo_horas, ultimo_cambio}, ...] }
+// Para cada (equipo + intervalo) actualiza el campo ultimo_servicio_hrs del plan
+// (toma el MÁXIMO valor del último cambio porque viene a nivel de tarea)
+// ═══════════════════════════════════════════════════════════════
+app.post('/api/mant/planes/cargar-ultimo-servicio', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const filas=Array.isArray(req.body.filas)?req.body.filas:[];
+    if(!filas.length) return res.status(400).json({error:'No hay filas para cargar'});
+
+    // Agrupar por (equipo_nombre, intervalo_horas) y tomar MAX último cambio
+    const grupos={};
+    for(const f of filas){
+      const eqNom=(f.equipo_nombre||'').trim();
+      const intervalo=parseFloat(f.intervalo_horas)||null;
+      const ultimo=parseFloat(f.ultimo_cambio)||null;
+      if(!eqNom||!intervalo||ultimo===null) continue;
+      const k=eqNom+'__'+intervalo;
+      if(!grupos[k]) grupos[k]={equipo_nombre:eqNom,intervalo:intervalo,maximo:ultimo};
+      else if(ultimo>grupos[k].maximo) grupos[k].maximo=ultimo;
+    }
+
+    await client.query('BEGIN');
+    let actualizados=0, noEncontrados=[];
+
+    for(const k of Object.keys(grupos)){
+      const g=grupos[k];
+      // Buscar plan que coincida con equipo (por nombre o código) y mismo intervalo
+      const r=await client.query(`
+        UPDATE mant_planes SET ultimo_servicio_hrs=$1, ultimo_servicio_fecha=CURRENT_DATE
+        WHERE intervalo_horas=$2 AND tipo_mantencion='programada'
+        AND equipo_id IN (
+          SELECT equipo_id FROM equipos 
+          WHERE LOWER(nombre)=LOWER($3) OR LOWER(codigo)=LOWER($3)
+            OR REGEXP_REPLACE(LOWER(nombre),'[\\s\\-_]','','g')=REGEXP_REPLACE(LOWER($3),'[\\s\\-_]','','g')
+        )
+        RETURNING plan_id`,
+        [g.maximo,g.intervalo,g.equipo_nombre]);
+      if(r.rows.length>0) actualizados+=r.rows.length;
+      else noEncontrados.push(g.equipo_nombre+' @ '+g.intervalo+'h');
+    }
+
+    await client.query('COMMIT');
+    res.json({ok:true,planes_actualizados:actualizados,no_encontrados:noEncontrados});
+  }catch(e){
+    await client.query('ROLLBACK');
+    res.status(400).json({error:e.message});
+  }finally{client.release();}
 });
 
 // ─── TAREAS DEL PLAN (detalle del Plan Maestro) ───
