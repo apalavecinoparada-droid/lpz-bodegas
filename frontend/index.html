@@ -8554,10 +8554,25 @@ function MantVencimientos(p){
     ],'proximos_vencimientos');
   }
 
+  function repararHorometros(){
+    var msg=filtEquipo
+      ? '¿Reparar horómetro de este equipo desde la última distribución de combustible?'
+      : '¿Reparar los horómetros de TODOS los equipos desde su última distribución de combustible?\n\nEsto sobrescribe los valores actuales con los datos reales de combustibles.';
+    if(!confirm(msg)) return;
+    var body=filtEquipo?{equipo_id:filtEquipo}:{};
+    api('/mant/reparar-horometros','POST',body,p.tok)
+      .then(function(r){
+        alert('✓ Horómetros reparados: '+r.equipos_actualizados+' equipo(s).');
+        load();
+      })
+      .catch(function(e){alert('Error: '+e.message);});
+  }
+
   return h('div',null,
     // Barra superior
     h('div',{className:'tb'},
       h(Btn,{v:'teal',onClick:function(){setShowImportUC(true);}},'📥 Cargar Último Cambio'),
+      h(Btn,{v:'y',onClick:repararHorometros,title:'Sincroniza horómetro de equipos con la última distribución de combustible'},'🔧 Reparar Horómetros'),
       h(Btn,{v:'g',onClick:exportar},null,'Exportar Excel'),
       h(Btn,{onClick:load,style:{marginLeft:'auto'}},'🔄 Refrescar')
     ),
@@ -8620,7 +8635,12 @@ function MantVencimientos(p){
           parseInt(r.ots_abiertas||0)>0&&h('div',{style:{fontSize:10,color:'#F59E0B',marginTop:2}},'⚠ '+r.ots_abiertas+' OT abierta(s)')
         );}},
         {lbl:'Intervalo',c:true,render:function(r){return r.intervalo_horas?h('strong',null,parseFloat(r.intervalo_horas)+' h'):(r.intervalo_km?h('strong',null,r.intervalo_km+' km'):'—');}},
-        {lbl:'Horóm. Actual',r:true,render:function(r){return h('span',{className:'mono'},fmtN(r.horometro_actual));}},
+        {lbl:'Horóm. Actual',r:true,render:function(r){
+          var tooltip=r.fuente_horometro==='combustible'
+            ? 'Fuente: Última distribución de combustible'+(r.fecha_horometro_fuente?' ('+String(r.fecha_horometro_fuente).slice(0,10)+')':'')
+            : 'Fuente: Catálogo de equipos (sin distribución de combustible registrada)';
+          return h('span',{className:'mono',title:tooltip,style:{borderBottom:r.fuente_horometro==='combustible'?'1px dotted #94A3B8':'none',cursor:'help'}},fmtN(r.horometro_actual));
+        }},
         {lbl:'Último Servicio',r:true,render:function(r){
           var ult=parseFloat(r.ultimo_hrs)||0;
           if(ult===0) return h('span',{style:{color:'#94A3B8',fontSize:10,fontStyle:'italic'}},'sin registro');
