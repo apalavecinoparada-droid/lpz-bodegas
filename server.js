@@ -7247,6 +7247,27 @@ app.post('/api/cartas-termino', auth, async(req,res)=>{
     res.status(201).json({ok:true,carta_id:r.rows[0].carta_id});
   }catch(e){res.status(400).json({error:e.message});}
 });
+
+// PUT: editar carta de término (principalmente para complementar causal_hecho)
+app.put('/api/cartas-termino/:id', auth, async(req,res)=>{
+  try{
+    const b=req.body;
+    const fields=['fecha_carta','fecha_contrato','fecha_termino','causal','causal_hecho','cargo','observaciones'];
+    var sets=[],vals=[];
+    fields.forEach(function(f){
+      if(b[f]!==undefined){
+        vals.push(b[f]||null);
+        sets.push(f+'=$'+vals.length);
+      }
+    });
+    if(!sets.length) return res.status(400).json({error:'Sin campos para actualizar'});
+    vals.push(req.params.id);
+    const r=await pool.query('UPDATE cartas_termino SET '+sets.join(',')+' WHERE carta_id=$'+vals.length+' RETURNING *',vals);
+    if(!r.rows.length) return res.status(404).json({error:'Carta no encontrada'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 app.delete('/api/cartas-termino/:id', auth, async(req,res)=>{
   try{await pool.query('DELETE FROM cartas_termino WHERE carta_id=$1',[req.params.id]);res.json({ok:true});}
   catch(e){res.status(400).json({error:e.message});}
