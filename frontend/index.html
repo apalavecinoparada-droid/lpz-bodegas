@@ -12801,6 +12801,7 @@ function FiniquitosView(p){
   };
   var[carta,setCarta]=useState(emptyCarta);
   var[cartas,setCartas]=useState([]);
+  var[editCarta,setEditCarta]=useState(null);
 
   function load(){
     api('/finiquitos','GET',null,p.tok).then(function(r){setFiniquitos(Array.isArray(r)?r:[]);}).catch(function(){});
@@ -13307,6 +13308,7 @@ function FiniquitosView(p){
               h('td',null,fmtD(c.fecha_termino)),
               h('td',null,h('span',{style:{display:'inline-block',padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:pendiente?'#FEF3C7':'#DCFCE7',color:pendiente?'#92400E':'#15803D'}},pendiente?'⏳ PENDIENTE':'✓ COMPLETADA')),
               h('td',null,h('div',{style:{display:'flex',gap:3}},
+                h(Btn,{v:'b',sm:true,onClick:function(){setEditCarta(c);},title:'Editar causal de hecho u observaciones'},null,'✏'),
                 pendiente?h('span',{style:{fontSize:9,color:'#92400E',fontStyle:'italic',padding:'4px 6px'}},'Generar finiquito primero'):h(Btn,{v:'a',sm:true,onClick:function(){generarCartaDoc(c.carta_id,'pdf');}},null,'📑 PDF'),
                 !pendiente&&h(Btn,{v:'a',sm:true,onClick:function(){generarCartaDoc(c.carta_id,'word');}},null,'📄 Word'),
                 h(Btn,{v:'r',sm:true,onClick:function(){eliminarCarta(c.carta_id);}},null,'🗑')
@@ -13345,6 +13347,79 @@ function FiniquitosView(p){
             );
           }))
         )
+      )
+    ),
+    editCarta&&h(CartaEditModal,{tok:p.tok,carta:editCarta,onClose:function(){setEditCarta(null);},onSave:function(){setEditCarta(null);load();}})
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// MODAL: editar carta de término (principalmente causal_hecho)
+// ═══════════════════════════════════════════════════════════════════════
+function CartaEditModal(p){
+  var c=p.carta||{};
+  var[form,setForm]=useState({
+    fecha_carta:(c.fecha_carta||'').slice(0,10),
+    fecha_contrato:(c.fecha_contrato||'').slice(0,10),
+    fecha_termino:(c.fecha_termino||'').slice(0,10),
+    causal:c.causal||'',
+    causal_hecho:c.causal_hecho||'',
+    cargo:c.cargo||'',
+    observaciones:c.observaciones||''
+  });
+  var[err,setErr]=useState('');
+  var[saving,setSaving]=useState(false);
+  function sf(k,v){setForm(function(f){var x=Object.assign({},f);x[k]=v;return x;});}
+  function save(){
+    setSaving(true);setErr('');
+    api('/cartas-termino/'+c.carta_id,'PUT',form,p.tok)
+      .then(function(){p.onSave&&p.onSave();})
+      .catch(function(e){setErr(e.message);})
+      .finally(function(){setSaving(false);});
+  }
+  var inpS={width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  return h(Modal,{title:'✏ Editar Carta de Término — '+(c.nombre_completo||''),onClose:p.onClose,lg:true},
+    h('div',{style:{padding:14}},
+      err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+      h('div',{className:'al al-i',style:{marginBottom:14,fontSize:12}},
+        '💡 Edita la causal de hecho, observaciones o fechas. Los cálculos del finiquito asociado ',h('strong',null,'no'),' se modifican aquí.'
+      ),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}},
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha de la carta'),
+          h('input',{type:'date',value:form.fecha_carta,onChange:function(e){sf('fecha_carta',e.target.value);},style:inpS})
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha contrato'),
+          h('input',{type:'date',value:form.fecha_contrato,onChange:function(e){sf('fecha_contrato',e.target.value);},style:inpS})
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha término'),
+          h('input',{type:'date',value:form.fecha_termino,onChange:function(e){sf('fecha_termino',e.target.value);},style:inpS})
+        )
+      ),
+      h('div',{style:{marginBottom:10}},
+        h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Cargo'),
+        h('input',{type:'text',value:form.cargo,onChange:function(e){sf('cargo',e.target.value);},style:inpS})
+      ),
+      h('div',{style:{marginBottom:10}},
+        h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Causal (artículo)'),
+        h('select',{value:form.causal,onChange:function(e){sf('causal',e.target.value);},style:inpS},
+          h('option',{value:''},'— Seleccionar —'),
+          CAUSALES_FINIQUITO.map(function(cz){return h('option',{key:cz.k,value:cz.k},cz.k);})
+        )
+      ),
+      h('div',{style:{marginBottom:10}},
+        h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Causal de hecho ',h('span',{style:{fontSize:10,color:'#64748B',fontWeight:400}},'(descripción de los hechos que motivan el término)')),
+        h('textarea',{value:form.causal_hecho,onChange:function(e){sf('causal_hecho',e.target.value);},rows:6,style:Object.assign({},inpS,{resize:'vertical',fontFamily:'inherit'}),placeholder:'Ej: el trabajador, con fecha XX, incurrió en...'})
+      ),
+      h('div',{style:{marginBottom:14}},
+        h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observaciones'),
+        h('textarea',{value:form.observaciones,onChange:function(e){sf('observaciones',e.target.value);},rows:3,style:Object.assign({},inpS,{resize:'vertical',fontFamily:'inherit'})})
+      ),
+      h('div',{style:{display:'flex',gap:8,justifyContent:'flex-end',paddingTop:10,borderTop:'1px solid #E2E8F0'}},
+        h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),
+        h(Btn,{onClick:save,disabled:saving},saving?'Guardando...':'💾 Guardar cambios')
       )
     )
   );
