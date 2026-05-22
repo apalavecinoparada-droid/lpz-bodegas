@@ -8689,18 +8689,35 @@ function MantUltimoCambioImportModal(p){
         var ws=wb.Sheets[sheetName];
         // El Excel tiene 3 filas de cabecera/notas, los datos empiezan en fila 4 con encabezados en fila 3
         var rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
-        // Buscar la fila con "Equipo" y "Último Cambio"
+        // Buscar la fila que tenga simultáneamente "Equipo" + "Intervalo" + "Último Cambio"
+        // (NO solo "Último Cambio" porque el título del archivo también lo contiene)
         var headerRow=-1;
-        for(var i=0;i<Math.min(rows.length,10);i++){
-          if(rows[i].some(function(c){return String(c).toLowerCase().includes('último cambio')||String(c).toLowerCase().includes('ultimo cambio');})){
-            headerRow=i;break;
-          }
+        for(var i=0;i<Math.min(rows.length,15);i++){
+          var celdas=rows[i].map(function(c){return String(c||'').toLowerCase().trim();});
+          var tieneEquipo=celdas.some(function(c){return c==='equipo';});
+          var tieneIntervalo=celdas.some(function(c){return c.includes('intervalo');});
+          var tieneUltimoCambio=celdas.some(function(c){return c==='último cambio'||c==='ultimo cambio'||(c.includes('último')&&c.includes('cambio'))||(c.includes('ultimo')&&c.includes('cambio'));});
+          if(tieneEquipo&&tieneIntervalo&&tieneUltimoCambio){headerRow=i;break;}
         }
-        if(headerRow<0){setErr('No se encontró columna "Último Cambio"');setLoading(false);return;}
+        if(headerRow<0){setErr('No se encontró la fila de encabezados con columnas "Equipo", "Intervalo" y "Último Cambio"');setLoading(false);return;}
         var headers=rows[headerRow].map(function(h){return String(h||'').toLowerCase().trim();});
-        function colIdx(opts){return headers.findIndex(function(h){return opts.some(function(o){return h.includes(o.toLowerCase());});});}
-        var idxEq=colIdx(['equipo']),idxInt=colIdx(['intervalo']),idxUlt=colIdx(['último cambio','ultimo cambio']);
-        if(idxEq<0||idxInt<0||idxUlt<0){setErr('Faltan columnas. Encontrado: Equipo='+idxEq+', Intervalo='+idxInt+', Último Cambio='+idxUlt);setLoading(false);return;}
+        function colIdx(opts){
+          return headers.findIndex(function(h){
+            return opts.some(function(o){
+              var oL=o.toLowerCase();
+              // Match exacto primero
+              if(h===oL) return true;
+              // Para "Equipo", evitar match con cabeceras tipo "ID Cargo" o "Equipos Distintos"
+              if(oL==='equipo'&&h==='equipo') return true;
+              if(oL!=='equipo'&&h.includes(oL)) return true;
+              return false;
+            });
+          });
+        }
+        var idxEq=colIdx(['equipo']);
+        var idxInt=colIdx(['intervalo']);
+        var idxUlt=colIdx(['último cambio','ultimo cambio']);
+        if(idxEq<0||idxInt<0||idxUlt<0){setErr('Faltan columnas. Equipo='+idxEq+', Intervalo='+idxInt+', Último Cambio='+idxUlt+'. Encabezados detectados: '+headers.join(' | '));setLoading(false);return;}
         var data2=[];
         for(var j=headerRow+1;j<rows.length;j++){
           var r=rows[j];
