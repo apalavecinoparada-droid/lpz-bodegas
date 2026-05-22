@@ -8522,49 +8522,451 @@ function MantOTDetalle(p){
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// IMPORTADOR DE PAUTA DE MANTENCIÓN desde Excel del rescate
+// ═══════════════════════════════════════════════════════════════════════
+function MantPlanImportModal(p){
+  const[step,setStep]=useState(1); // 1=upload, 2=preview, 3=done
+  const[file,setFile]=useState(null);
+  const[filas,setFilas]=useState([]);
+  const[err,setErr]=useState('');
+  const[loading,setLoading]=useState(false);
+  const[modo,setModo]=useState('reemplazar');
+  const[result,setResult]=useState(null);
+
+  function onFile(ev){
+    var f=ev.target.files[0];if(!f)return;
+    setFile(f);setErr('');setLoading(true);
+    var reader=new FileReader();
+    reader.onload=function(e){
+      try{
+        var data=new Uint8Array(e.target.result);
+        var wb=XLSX.read(data,{type:'array'});
+        // Buscar hoja "Pauta de Mantención"
+        var sheetName=wb.SheetNames.find(function(n){return /pauta|mantenci|mant/i.test(n);});
+        if(!sheetName){setErr('No se encontró hoja "Pauta de Mantención". Hojas disponibles: '+wb.SheetNames.join(', '));setLoading(false);return;}
+        var ws=wb.Sheets[sheetName];
+        var rows=XLSX.utils.sheet_to_json(ws,{defval:''});
+        if(!rows.length){setErr('La hoja está vacía');setLoading(false);return;}
+        // Normalizar nombres de columnas (acepta variantes)
+        function pickField(row,opciones){
+          for(var i=0;i<opciones.length;i++){
+            var key=Object.keys(row).find(function(k){return k.toLowerCase().replace(/\s+/g,'').includes(opciones[i].toLowerCase().replace(/\s+/g,''));});
+            if(key&&row[key]!==''&&row[key]!=null) return row[key];
+          }
+          return '';
+        }
+        var normalizadas=rows.map(function(r){
+          return {
+            equipo_nombre:pickField(r,['Equipo']),
+            empresa_nombre:pickField(r,['Empresa']),
+            faena_nombre:pickField(r,['Faena']),
+            sistema:pickField(r,['Sistema']),
+            descripcion:pickField(r,['Tarea/Descripción','Tarea','Descripción','Descripcion']),
+            intervalo_horas:pickField(r,['Intervalo (Hrs/Kms)','Intervalo','Hrs']),
+            insumo_sugerido:pickField(r,['Insumo / Repuesto','Insumo','Repuesto']),
+            cantidad_sugerida:pickField(r,['Cantidad'])
+          };
+        }).filter(function(r){return r.equipo_nombre&&r.descripcion&&r.intervalo_horas;});
+        setFilas(normalizadas);
+        setStep(2);
+      }catch(ex){setErr('Error leyendo Excel: '+ex.message);}
+      finally{setLoading(false);}
+    };
+    reader.readAsArrayBuffer(f);
+  }
+
+  function importar(){
+    setLoading(true);setErr('');
+    api('/mant/planes/importar-pauta','POST',{filas:filas,modo:modo},p.tok)
+      .then(function(r){setResult(r);setStep(3);})
+      .catch(function(e){setErr('Error: '+e.message);})
+      .finally(function(){setLoading(false);});
+  }
+
+  // Preview: agrupar por (equipo, intervalo) para mostrar resumen
+  var grupos={};
+  filas.forEach(function(f){
+    var k=String(f.equipo_nombre).trim()+'__'+f.intervalo_horas;
+    if(!grupos[k]) grupos[k]={equipo:f.equipo_nombre,intervalo:f.intervalo_horas,tareas:0,trabajos:0,inspecciones:0};
+    grupos[k].tareas++;
+    if(f.insumo_sugerido) grupos[k].trabajos++; else grupos[k].inspecciones++;
+  });
+  var resumen=Object.values(grupos).sort(function(a,b){return a.equipo.localeCompare(b.equipo)||(parseFloat(a.intervalo)-parseFloat(b.intervalo));});
+
+  return h(Modal,{title:'📥 Importar Pauta de Mantención',onClose:p.onClose,xl:true},
+    h('div',null,
+      err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+      // Indicador de pasos
+      h('div',{style:{display:'flex',gap:4,marginBottom:14}},
+        [['1','Subir Excel'],['2','Vista previa'],['3','Importado']].map(function(s){
+          var active=parseInt(s[0])===step;
+          var done=parseInt(s[0])<step;
+          return h('div',{key:s[0],style:{flex:1,padding:'8px 10px',borderRadius:5,textAlign:'center',background:active?'#3B82F6':(done?'#10B981':'#F1F5F9'),color:active||done?'#fff':'#64748B',fontSize:11,fontWeight:600}},(done?'✓ ':s[0]+'. ')+s[1]);
+        })
+      ),
+
+      // ─── PASO 1: Upload ───
+      step===1&&h('div',{style:{textAlign:'center',padding:30}},
+        h('div',{className:'al al-i',style:{marginBottom:14,textAlign:'left'}},
+          h('strong',null,'Formato esperado:'),' archivo Excel (.xlsx) con una hoja "Pauta de Mantención" con columnas: Equipo, Empresa, Faena, Sistema, Tarea / Descripción, Intervalo (Hrs/Kms), Insumo / Repuesto, Cantidad. ',h('br'),
+          h('strong',null,'Importante:'),' los nombres de Equipo deben coincidir con los del sistema actual (usa el Excel actualizado con el match aplicado).'
+        ),
+        h('label',{style:{display:'inline-block',padding:'12px 24px',background:'#3B82F6',color:'#fff',borderRadius:6,cursor:loading?'not-allowed':'pointer',fontWeight:600,fontSize:13}},
+          loading?'⏳ Procesando...':'📂 Seleccionar archivo Excel',
+          h('input',{type:'file',accept:'.xlsx,.xls',onChange:onFile,disabled:loading,style:{display:'none'}})
+        )
+      ),
+
+      // ─── PASO 2: Preview ───
+      step===2&&h('div',null,
+        h('div',{className:'al al-s',style:{marginBottom:10}},
+          '✓ Excel procesado: ',h('strong',null,filas.length),' tareas válidas en ',h('strong',null,resumen.length),' planes (combinaciones equipo + intervalo)'
+        ),
+        h('div',{style:{padding:12,background:'#F8FAFC',borderRadius:6,marginBottom:10}},
+          h('label',{style:{fontSize:12,fontWeight:600,marginBottom:6,display:'block'}},'Modo de importación:'),
+          h('div',{style:{display:'flex',gap:14}},
+            h('label',{style:{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:12}},
+              h('input',{type:'radio',name:'modo',checked:modo==='reemplazar',onChange:function(){setModo('reemplazar');}}),
+              h('div',null,
+                h('strong',null,'Reemplazar'),
+                h('div',{style:{fontSize:10,color:'#64748B'}},'Elimina planes existentes y los recrea')
+              )
+            ),
+            h('label',{style:{display:'flex',alignItems:'center',gap:6,cursor:'pointer',fontSize:12}},
+              h('input',{type:'radio',name:'modo',checked:modo==='agregar',onChange:function(){setModo('agregar');}}),
+              h('div',null,
+                h('strong',null,'Agregar'),
+                h('div',{style:{fontSize:10,color:'#64748B'}},'Mantiene los existentes y crea nuevos')
+              )
+            )
+          )
+        ),
+        h('div',{style:{maxHeight:'40vh',overflowY:'auto',marginBottom:10}},
+          h('table',{className:'tb',style:{fontSize:11}},
+            h('thead',null,h('tr',null,h('th',null,'Equipo'),h('th',{className:'r'},'Intervalo'),h('th',{className:'r'},'Tareas'),h('th',{className:'r'},'🔧 Trabajos'),h('th',{className:'r'},'🔍 Inspecciones'))),
+            h('tbody',null,resumen.map(function(g,i){
+              return h('tr',{key:i},
+                h('td',null,h('strong',null,g.equipo)),
+                h('td',{className:'r mono'},g.intervalo+' h'),
+                h('td',{className:'r',style:{fontWeight:600,color:'#1E40AF'}},g.tareas),
+                h('td',{className:'r',style:{color:'#F59E0B'}},g.trabajos),
+                h('td',{className:'r',style:{color:'#6366F1'}},g.inspecciones)
+              );
+            }))
+          )
+        ),
+        h('div',{style:{display:'flex',gap:8,justifyContent:'flex-end'}},
+          h(Btn,{v:'g',onClick:function(){setStep(1);setFilas([]);}},null,'← Volver'),
+          h(Btn,{onClick:importar,disabled:loading},loading?'⏳ Importando...':'✓ Importar '+filas.length+' tareas')
+        )
+      ),
+
+      // ─── PASO 3: Resultado ───
+      step===3&&result&&h('div',null,
+        h('div',{className:'al al-s',style:{padding:14,marginBottom:14}},
+          h('h3',{style:{margin:'0 0 8px 0'}},'✓ Importación completada'),
+          h('div',{style:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:8,fontSize:12}},
+            h('div',null,h('strong',null,result.planes_creados),' planes creados'),
+            h('div',null,h('strong',null,result.tareas_creadas),' tareas creadas'),
+            result.planes_eliminados>0&&h('div',null,result.planes_eliminados+' planes anteriores reemplazados'),
+            result.filas_ignoradas>0&&h('div',{style:{color:'#92400E'}},result.filas_ignoradas+' filas ignoradas')
+          )
+        ),
+        result.equipos_no_encontrados&&result.equipos_no_encontrados.length>0&&h('div',{className:'al al-w',style:{marginBottom:10}},
+          h('strong',null,'⚠ Equipos no encontrados ('+result.equipos_no_encontrados.length+'):'),h('br'),
+          h('div',{style:{fontSize:11,maxHeight:120,overflowY:'auto',marginTop:4}},result.equipos_no_encontrados.join(', ')),
+          h('div',{style:{fontSize:10,marginTop:6,fontStyle:'italic'}},'Estos nombres no existen en el sistema. Verifica el match de cargos antes de re-importar.')
+        ),
+        h('div',{style:{display:'flex',justifyContent:'flex-end'}},
+          h(Btn,{onClick:p.onClose},'Cerrar')
+        )
+      )
+    )
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// DETALLE DE TAREAS DE UN PLAN (drill-in con edición)
+// ═══════════════════════════════════════════════════════════════════════
+function MantPlanDetalleModal(p){
+  const[tareas,setTareas]=useState([]);
+  const[loading,setLoading]=useState(false);
+  const[editId,setEditId]=useState(null);
+  const[editForm,setEditForm]=useState({});
+  const[showAdd,setShowAdd]=useState(false);
+  const[addForm,setAddForm]=useState({descripcion:'',sistema:'',tipo:'inspeccion',insumo_sugerido:'',cantidad_sugerida:''});
+  const[filtTipo,setFiltTipo]=useState('');
+  const[err,setErr]=useState('');
+
+  function load(){
+    setLoading(true);
+    api('/mant/planes/'+p.plan.plan_id+'/tareas','GET',null,p.tok)
+      .then(function(r){setTareas(Array.isArray(r)?r:[]);})
+      .catch(function(){setTareas([]);})
+      .finally(function(){setLoading(false);});
+  }
+  useEffect(load,[p.tok,p.plan.plan_id]);
+
+  function saveEdit(){
+    api('/mant/plan-tareas/'+editId,'PUT',editForm,p.tok)
+      .then(function(){setEditId(null);load();})
+      .catch(function(e){setErr(e.message);});
+  }
+  function delTarea(id){
+    if(!confirm('¿Eliminar esta tarea?')) return;
+    api('/mant/plan-tareas/'+id,'DELETE',null,p.tok).then(load).catch(function(e){setErr(e.message);});
+  }
+  function addTarea(){
+    if(!addForm.descripcion){setErr('Descripción requerida');return;}
+    api('/mant/planes/'+p.plan.plan_id+'/tareas','POST',addForm,p.tok)
+      .then(function(){setAddForm({descripcion:'',sistema:'',tipo:'inspeccion',insumo_sugerido:'',cantidad_sugerida:''});setShowAdd(false);load();})
+      .catch(function(e){setErr(e.message);});
+  }
+
+  var tareasFilt=filtTipo?tareas.filter(function(t){return t.tipo===filtTipo;}):tareas;
+  var sistemas=Array.from(new Set(tareas.map(function(t){return t.sistema;}).filter(Boolean))).sort();
+  var inpS={width:'100%',padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:11,boxSizing:'border-box'};
+
+  return h(Modal,{title:'📐 '+(p.plan.nombre||'Plan'),onClose:p.onClose,xl:true},
+    h('div',null,
+      err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+      // Header info
+      h('div',{style:{padding:10,background:'#F8FAFC',borderRadius:6,marginBottom:10,display:'flex',gap:14,fontSize:12,flexWrap:'wrap'}},
+        h('div',null,h('strong',null,'Equipo: '),p.plan.equipo_codigo+' — '+(p.plan.equipo_nombre||'—')),
+        h('div',null,h('strong',null,'Intervalo: '),p.plan.intervalo_horas?parseFloat(p.plan.intervalo_horas)+' h':'—'),
+        h('div',null,h('strong',null,'Tipo: '),p.plan.tipo_mantencion),
+        h('div',null,h('strong',null,'Total tareas: '),tareas.length)
+      ),
+      // Tabs filtro
+      h('div',{style:{display:'flex',gap:6,marginBottom:10}},
+        h('button',{onClick:function(){setFiltTipo('');},style:{padding:'5px 10px',fontSize:11,border:'1px solid #CBD5E1',background:filtTipo===''?'#3B82F6':'#fff',color:filtTipo===''?'#fff':'#475569',borderRadius:4,cursor:'pointer'}},'Todas ('+tareas.length+')'),
+        h('button',{onClick:function(){setFiltTipo('trabajo');},style:{padding:'5px 10px',fontSize:11,border:'1px solid #CBD5E1',background:filtTipo==='trabajo'?'#F59E0B':'#fff',color:filtTipo==='trabajo'?'#fff':'#475569',borderRadius:4,cursor:'pointer'}},'🔧 Trabajos ('+tareas.filter(function(t){return t.tipo==='trabajo';}).length+')'),
+        h('button',{onClick:function(){setFiltTipo('inspeccion');},style:{padding:'5px 10px',fontSize:11,border:'1px solid #CBD5E1',background:filtTipo==='inspeccion'?'#6366F1':'#fff',color:filtTipo==='inspeccion'?'#fff':'#475569',borderRadius:4,cursor:'pointer'}},'🔍 Inspecciones ('+tareas.filter(function(t){return t.tipo==='inspeccion';}).length+')'),
+        h('div',{style:{flex:1}}),
+        h(Btn,{onClick:function(){setShowAdd(!showAdd);},sm:true},showAdd?'Cancelar':'+ Agregar tarea')
+      ),
+      // Form agregar
+      showAdd&&h('div',{style:{padding:10,background:'#F0FDF4',border:'1px solid #86EFAC',borderRadius:6,marginBottom:10}},
+        h('div',{style:{display:'grid',gridTemplateColumns:'3fr 1fr 1fr 2fr 1fr',gap:6,marginBottom:6}},
+          h('input',{type:'text',placeholder:'Descripción *',value:addForm.descripcion,onChange:function(e){setAddForm(Object.assign({},addForm,{descripcion:e.target.value}));},style:inpS}),
+          h('input',{type:'text',placeholder:'Sistema',value:addForm.sistema,onChange:function(e){setAddForm(Object.assign({},addForm,{sistema:e.target.value}));},list:'sist-list',style:inpS}),
+          h('select',{value:addForm.tipo,onChange:function(e){setAddForm(Object.assign({},addForm,{tipo:e.target.value}));},style:inpS},
+            h('option',{value:'inspeccion'},'🔍 Inspección'),
+            h('option',{value:'trabajo'},'🔧 Trabajo')
+          ),
+          h('input',{type:'text',placeholder:'Insumo sugerido',value:addForm.insumo_sugerido,onChange:function(e){setAddForm(Object.assign({},addForm,{insumo_sugerido:e.target.value}));},style:inpS}),
+          h('input',{type:'text',placeholder:'Cantidad',value:addForm.cantidad_sugerida,onChange:function(e){setAddForm(Object.assign({},addForm,{cantidad_sugerida:e.target.value}));},style:inpS})
+        ),
+        h('datalist',{id:'sist-list'},sistemas.map(function(s){return h('option',{key:s,value:s});})),
+        h('div',{style:{textAlign:'right'}},h(Btn,{onClick:addTarea,sm:true},'✓ Agregar'))
+      ),
+      // Tabla
+      loading&&h('div',{className:'spin'},'Cargando...'),
+      !loading&&h('div',{style:{maxHeight:'50vh',overflowY:'auto'}},
+        h('table',{className:'tb',style:{fontSize:11}},
+          h('thead',null,h('tr',null,h('th',{style:{width:30},className:'c'},'#'),h('th',{style:{width:90}},'Tipo'),h('th',null,'Sistema'),h('th',null,'Descripción'),h('th',null,'Insumo sugerido'),h('th',{style:{width:50}},'Cant'),h('th',{style:{width:60}},''))),
+          h('tbody',null,tareasFilt.map(function(t,i){
+            if(editId===t.tarea_plan_id){
+              return h('tr',{key:t.tarea_plan_id,style:{background:'#FFFBEB'}},
+                h('td',{className:'c'},i+1),
+                h('td',null,h('select',{value:editForm.tipo,onChange:function(e){setEditForm(Object.assign({},editForm,{tipo:e.target.value}));},style:inpS},h('option',{value:'inspeccion'},'🔍 Inspección'),h('option',{value:'trabajo'},'🔧 Trabajo'))),
+                h('td',null,h('input',{type:'text',value:editForm.sistema||'',onChange:function(e){setEditForm(Object.assign({},editForm,{sistema:e.target.value}));},style:inpS})),
+                h('td',null,h('input',{type:'text',value:editForm.descripcion||'',onChange:function(e){setEditForm(Object.assign({},editForm,{descripcion:e.target.value}));},style:inpS})),
+                h('td',null,h('input',{type:'text',value:editForm.insumo_sugerido||'',onChange:function(e){setEditForm(Object.assign({},editForm,{insumo_sugerido:e.target.value}));},style:inpS})),
+                h('td',null,h('input',{type:'text',value:editForm.cantidad_sugerida||'',onChange:function(e){setEditForm(Object.assign({},editForm,{cantidad_sugerida:e.target.value}));},style:inpS})),
+                h('td',{className:'c'},
+                  h('button',{onClick:saveEdit,style:{padding:'3px 6px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10,marginRight:2}},'✓'),
+                  h('button',{onClick:function(){setEditId(null);},style:{padding:'3px 6px',background:'#E2E8F0',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'✕')
+                )
+              );
+            }
+            return h('tr',{key:t.tarea_plan_id,style:{background:t.tipo==='trabajo'?'#FFFBEB':'transparent'}},
+              h('td',{className:'c',style:{color:'#94A3B8'}},i+1),
+              h('td',null,t.tipo==='trabajo'?h('span',{style:{fontSize:10,color:'#92400E',background:'#FEF3C7',padding:'2px 6px',borderRadius:3,fontWeight:600}},'🔧 Trabajo'):h('span',{style:{fontSize:10,color:'#4338CA',background:'#E0E7FF',padding:'2px 6px',borderRadius:3,fontWeight:600}},'🔍 Inspección')),
+              h('td',{style:{fontSize:10,color:'#64748B'}},t.sistema||'—'),
+              h('td',null,t.descripcion),
+              h('td',{style:{fontSize:10}},t.insumo_sugerido||h('span',{style:{color:'#CBD5E1'}},'—')),
+              h('td',{className:'c',style:{fontSize:10}},t.cantidad_sugerida||'—'),
+              h('td',{className:'c'},
+                h('button',{onClick:function(){setEditId(t.tarea_plan_id);setEditForm({descripcion:t.descripcion,sistema:t.sistema,tipo:t.tipo,insumo_sugerido:t.insumo_sugerido,cantidad_sugerida:t.cantidad_sugerida});},style:{padding:'2px 5px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10,marginRight:2}},'✏'),
+                h('button',{onClick:function(){delTarea(t.tarea_plan_id);},style:{padding:'2px 5px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'🗑')
+              )
+            );
+          }))
+        ),
+        tareasFilt.length===0&&h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin tareas. Usa "+ Agregar tarea" para crear.')
+      ),
+      h('div',{style:{marginTop:10,display:'flex',justifyContent:'flex-end'}},h(Btn,{onClick:p.onClose},'Cerrar'))
+    )
+  );
+}
+
 function MantPlanes(p){
-  const[planes,setPlanes]=useState([]);const[showForm,setShowForm]=useState(false);
-  const[form,setForm]=useState({nombre:'',descripcion:'',tipo_activo:'todos',sistema:'',tipo_mantencion:'programada',intervalo_horas:'',intervalo_km:'',intervalo_dias:'',tolerancia_horas:10,tiempo_estimado_hrs:'',prioridad:'normal',checklist_items:[],repuestos_sugeridos:[],lubricantes_sugeridos:[]});
+  const equipos=(p.m&&p.m.equipos)||[];
+  const empresas=(p.m&&p.m.empresas)||[];
+  const[planes,setPlanes]=useState([]);
+  const[loading,setLoading]=useState(false);
+  const[showImport,setShowImport]=useState(false);
+  const[showForm,setShowForm]=useState(false);
+  const[editPlan,setEditPlan]=useState(null);
+  const[detallePlan,setDetallePlan]=useState(null);
   const[msg,setMsg]=useState('');
-  function load(){api('/mant/planes','GET',null,p.tok).then(function(r){setPlanes(Array.isArray(r)?r:[]);}).catch(function(){});}
-  useEffect(load,[p.tok]);
+  // Filtros
+  const[filtEquipo,setFiltEquipo]=useState('');
+  const[filtEmpresa,setFiltEmpresa]=useState('');
+  const[filtTipo,setFiltTipo]=useState('');
+  // Form crear/editar manual
+  const blank={nombre:'',equipo_id:'',tipo_mantencion:'programada',intervalo_horas:'',intervalo_km:'',intervalo_dias:'',prioridad:'normal'};
+  const[form,setForm]=useState(blank);
+
+  function load(){
+    setLoading(true);
+    var qs='?activo=true';
+    if(filtEquipo) qs+='&equipo_id='+filtEquipo;
+    if(filtEmpresa) qs+='&empresa_id='+filtEmpresa;
+    if(filtTipo) qs+='&tipo_mantencion='+filtTipo;
+    api('/mant/planes'+qs,'GET',null,p.tok)
+      .then(function(r){setPlanes(Array.isArray(r)?r:[]);})
+      .catch(function(){setPlanes([]);})
+      .finally(function(){setLoading(false);});
+  }
+  useEffect(load,[p.tok,filtEquipo,filtEmpresa,filtTipo]);
+
   function guardar(){
     if(!form.nombre){setMsg('Nombre requerido');return;}
-    api('/mant/planes','POST',form,p.tok).then(function(){load();setShowForm(false);setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});
+    var url=editPlan?'/mant/planes/'+editPlan.plan_id:'/mant/planes';
+    var method=editPlan?'PUT':'POST';
+    api(url,method,form,p.tok)
+      .then(function(){load();setShowForm(false);setEditPlan(null);setForm(blank);setMsg('');})
+      .catch(function(e){setMsg('Error: '+e.message);});
   }
+  function eliminar(plan){
+    if(!confirm('¿Eliminar el plan "'+plan.nombre+'" y todas sus tareas?')) return;
+    api('/mant/planes/'+plan.plan_id,'DELETE',null,p.tok)
+      .then(function(){load();})
+      .catch(function(e){alert('Error: '+e.message);});
+  }
+
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+
+  // Stats agregados
+  var totalTareas=planes.reduce(function(a,r){return a+parseInt(r.num_tareas||0);},0);
+  var totalTrabajos=planes.reduce(function(a,r){return a+parseInt(r.num_trabajos||0);},0);
+  var totalInspecciones=planes.reduce(function(a,r){return a+parseInt(r.num_inspecciones||0);},0);
+
   return h('div',null,
-    h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:10}},
-      h('div',null),
-      h(Btn,{onClick:function(){setShowForm(!showForm);}},showForm?'Cancelar':'+ Nuevo Plan')
+    // ── Barra superior ──
+    h('div',{className:'tb'},
+      h(Btn,{v:'teal',onClick:function(){setShowImport(true);},style:{fontWeight:600}},'📥 Importar Pauta'),
+      h(Btn,{onClick:function(){setEditPlan(null);setForm(blank);setShowForm(!showForm);}},showForm?'Cancelar':'+ Nuevo Plan')
     ),
-    msg&&h('div',{className:'al al-e'},msg),
-    showForm&&h('div',{className:'card',style:{marginBottom:12}},
-      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
-        h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Nombre del plan *'),h('input',{type:'text',value:form.nombre,onChange:function(e){setForm(function(f){return Object.assign({},f,{nombre:e.target.value});});},style:inpS})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Tipo activo'),h('select',{value:form.tipo_activo,onChange:function(e){setForm(function(f){return Object.assign({},f,{tipo_activo:e.target.value});});},style:inpS},['todos','maquinaria','vehiculo','especial'].map(function(t){return h('option',{key:t,value:t},t);}))),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Sistema'),h('select',{value:form.sistema,onChange:function(e){setForm(function(f){return Object.assign({},f,{sistema:e.target.value});});},style:inpS},h('option',{value:''},'General'),SISTEMAS_OPS.map(function(s){return h('option',{key:s,value:s},s.replace(/_/g,' '));}))),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Tipo mantención'),h('select',{value:form.tipo_mantencion,onChange:function(e){setForm(function(f){return Object.assign({},f,{tipo_mantencion:e.target.value});});},style:inpS},TIPO_MANT_OPS.map(function(t){return h('option',{key:t,value:t},t.replace(/_/g,' '));}))),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Intervalo horas'),h('input',{type:'number',placeholder:'Ej: 250',value:form.intervalo_horas,onChange:function(e){setForm(function(f){return Object.assign({},f,{intervalo_horas:e.target.value});});},style:inpS})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Intervalo km'),h('input',{type:'number',placeholder:'Ej: 10000',value:form.intervalo_km,onChange:function(e){setForm(function(f){return Object.assign({},f,{intervalo_km:e.target.value});});},style:inpS})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Intervalo días'),h('input',{type:'number',placeholder:'Ej: 180',value:form.intervalo_dias,onChange:function(e){setForm(function(f){return Object.assign({},f,{intervalo_dias:e.target.value});});},style:inpS})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Tiempo est. hrs'),h('input',{type:'number',value:form.tiempo_estimado_hrs,onChange:function(e){setForm(function(f){return Object.assign({},f,{tiempo_estimado_hrs:e.target.value});});},style:inpS})),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Prioridad'),h('select',{value:form.prioridad,onChange:function(e){setForm(function(f){return Object.assign({},f,{prioridad:e.target.value});});},style:inpS},['urgente','alta','normal','baja'].map(function(t){return h('option',{key:t,value:t},t);}))),
-        h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Descripción'),h('textarea',{value:form.descripcion,onChange:function(e){setForm(function(f){return Object.assign({},f,{descripcion:e.target.value});});},rows:2,style:Object.assign({},inpS,{resize:'vertical'})}))
+
+    // ── Stats cards ──
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:12}},
+      h('div',{className:'card',style:{padding:10,textAlign:'center',borderLeft:'4px solid #1E40AF'}},
+        h('div',{style:{fontSize:22,fontWeight:700,color:'#1E40AF'}},planes.length),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'Planes')
       ),
-      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},h(Btn,{v:'g',onClick:function(){setShowForm(false);}},null,'Cancelar'),h(Btn,{onClick:guardar},'Guardar Plan'))
+      h('div',{className:'card',style:{padding:10,textAlign:'center',borderLeft:'4px solid #10B981'}},
+        h('div',{style:{fontSize:22,fontWeight:700,color:'#10B981'}},totalTareas),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'Tareas totales')
+      ),
+      h('div',{className:'card',style:{padding:10,textAlign:'center',borderLeft:'4px solid #F59E0B'}},
+        h('div',{style:{fontSize:22,fontWeight:700,color:'#F59E0B'}},totalTrabajos),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'Trabajos (con insumo)')
+      ),
+      h('div',{className:'card',style:{padding:10,textAlign:'center',borderLeft:'4px solid #6366F1'}},
+        h('div',{style:{fontSize:22,fontWeight:700,color:'#6366F1'}},totalInspecciones),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'Inspecciones')
+      )
     ),
-    h('div',{className:'card'},
+
+    // ── Filtros ──
+    h('div',{style:{display:'flex',gap:8,marginBottom:10,padding:10,background:'#F8FAFC',borderRadius:6,flexWrap:'wrap',alignItems:'center'}},
+      h('span',{style:{fontSize:11,fontWeight:600,color:'#475569'}},'🔍'),
+      h('select',{value:filtEmpresa,onChange:function(e){setFiltEmpresa(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:150}},
+        h('option',{value:''},'Todas las empresas'),
+        empresas.filter(function(e){return e.activo;}).map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})
+      ),
+      h('select',{value:filtEquipo,onChange:function(e){setFiltEquipo(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:180}},
+        h('option',{value:''},'Todos los equipos'),
+        equipos.filter(function(e){return e.activo;}).map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);})
+      ),
+      h('select',{value:filtTipo,onChange:function(e){setFiltTipo(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
+        h('option',{value:''},'Todos los tipos'),
+        h('option',{value:'programada'},'Programada'),
+        h('option',{value:'preventivo'},'Preventiva'),
+        h('option',{value:'correctivo'},'Correctiva')
+      ),
+      (filtEquipo||filtEmpresa||filtTipo)&&h('button',{onClick:function(){setFiltEquipo('');setFiltEmpresa('');setFiltTipo('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
+      h('span',{style:{fontSize:11,color:'#64748B',marginLeft:'auto',fontWeight:600}},planes.length+' plan(es)')
+    ),
+
+    msg&&h('div',{className:'al al-e'},msg),
+
+    // ── Form crear/editar manual ──
+    showForm&&h('div',{className:'card',style:{marginBottom:12,padding:12}},
+      h('h4',{style:{margin:'0 0 10px 0',color:'#1E3A2D'}},editPlan?'Editar plan':'Crear plan manual'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'2fr 1fr 1fr 1fr',gap:8}},
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Nombre *'),
+          h('input',{type:'text',value:form.nombre,onChange:function(e){setForm(function(f){return Object.assign({},f,{nombre:e.target.value});});},style:inpS})
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Equipo'),
+          h('select',{value:form.equipo_id,onChange:function(e){setForm(function(f){return Object.assign({},f,{equipo_id:e.target.value});});},style:inpS},
+            h('option',{value:''},'—'),
+            equipos.filter(function(e){return e.activo;}).map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo);})
+          )
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Tipo'),
+          h('select',{value:form.tipo_mantencion,onChange:function(e){setForm(function(f){return Object.assign({},f,{tipo_mantencion:e.target.value});});},style:inpS},
+            h('option',{value:'programada'},'Programada'),
+            h('option',{value:'preventivo'},'Preventiva'),
+            h('option',{value:'correctivo'},'Correctiva')
+          )
+        ),
+        h('div',null,
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Intervalo horas'),
+          h('input',{type:'number',value:form.intervalo_horas,onChange:function(e){setForm(function(f){return Object.assign({},f,{intervalo_horas:e.target.value});});},style:inpS})
+        )
+      ),
+      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:10}},
+        h(Btn,{v:'g',onClick:function(){setShowForm(false);setEditPlan(null);setForm(blank);}},null,'Cancelar'),
+        h(Btn,{onClick:guardar},editPlan?'💾 Guardar cambios':'Crear plan')
+      )
+    ),
+
+    // ── Tabla ──
+    loading&&h('div',{className:'spin'},'Cargando...'),
+    !loading&&h('div',{className:'card'},
       h(TBL,{cols:[
-        {lbl:'Nombre',k:'nombre'},
-        {lbl:'Tipo activo',k:'tipo_activo'},
-        {lbl:'Sistema',render:function(r){return r.sistema?(r.sistema.replace(/_/g,' ')):'General';}},
-        {lbl:'Tipo mant.',render:function(r){return r.tipo_mantencion.replace(/_/g,' ');}},
-        {lbl:'Intervalo',render:function(r){var parts=[];if(r.intervalo_horas)parts.push(r.intervalo_horas+'h');if(r.intervalo_km)parts.push(r.intervalo_km+'km');if(r.intervalo_dias)parts.push(r.intervalo_dias+'d');return parts.join(' / ')||'—';}},
-        {lbl:'Prioridad',render:function(r){return h(Bg,{c:r.prioridad==='urgente'?'r':r.prioridad==='alta'?'y':'b'},r.prioridad);}},
-        {lbl:'Activo',render:function(r){return r.activo?h('span',{style:{color:'#10B981'}},'✓'):'✗';}}
-      ],rows:planes,empty:'Sin planes definidos'})
-    )
+        {lbl:'Plan',render:function(r){return h('div',null,
+          h('strong',null,r.nombre),
+          r.equipo_codigo&&h('span',{style:{fontSize:10,color:'#64748B',display:'block'}},r.equipo_codigo+' — '+(r.equipo_nombre||''))
+        );}},
+        {lbl:'Empresa',render:function(r){return h('span',{style:{fontSize:11}},r.empresa_nombre||'—');}},
+        {lbl:'Tipo',render:function(r){var c=r.tipo_mantencion==='programada'?'b':r.tipo_mantencion==='preventivo'?'y':'r';return h(Bg,{c:c},r.tipo_mantencion);}},
+        {lbl:'Intervalo',r:true,render:function(r){var parts=[];if(r.intervalo_horas)parts.push(parseFloat(r.intervalo_horas)+'h');if(r.intervalo_km)parts.push(r.intervalo_km+'km');if(r.intervalo_dias)parts.push(r.intervalo_dias+'d');return parts.join(' / ')||'—';}},
+        {lbl:'Tareas',c:true,render:function(r){return h('div',{style:{display:'flex',gap:6,justifyContent:'center'}},
+          h('span',{style:{fontSize:11,fontWeight:700,color:'#1E40AF'}},(r.num_tareas||0)),
+          parseInt(r.num_trabajos||0)>0&&h('span',{style:{fontSize:9,color:'#F59E0B',background:'#FEF3C7',padding:'1px 5px',borderRadius:3},title:'Trabajos con insumo'},'🔧'+r.num_trabajos),
+          parseInt(r.num_inspecciones||0)>0&&h('span',{style:{fontSize:9,color:'#6366F1',background:'#E0E7FF',padding:'1px 5px',borderRadius:3},title:'Inspecciones'},'🔍'+r.num_inspecciones)
+        );}},
+        {lbl:'Activo',c:true,render:function(r){return r.activo?h('span',{style:{color:'#10B981'}},'✓'):'✗';}},
+        {lbl:'',c:true,render:function(r){return h('div',{style:{display:'flex',gap:4}},
+          h('button',{className:'btn btn-blue btn-xs',onClick:function(){setDetallePlan(r);},title:'Ver tareas'},'👁'),
+          h('button',{className:'btn btn-teal btn-xs',onClick:function(){setEditPlan(r);setForm({nombre:r.nombre,equipo_id:r.equipo_id||'',tipo_mantencion:r.tipo_mantencion,intervalo_horas:r.intervalo_horas||'',intervalo_km:r.intervalo_km||'',intervalo_dias:r.intervalo_dias||'',prioridad:r.prioridad||'normal'});setShowForm(true);},title:'Editar'},'✏'),
+          h('button',{className:'btn btn-d btn-xs',onClick:function(){eliminar(r);},title:'Eliminar'},'🗑')
+        );}}
+      ],rows:planes,empty:'Sin planes definidos. Usa "📥 Importar Pauta" para cargar el rescate del sistema antiguo.'})
+    ),
+
+    // ── Modales ──
+    showImport&&h(MantPlanImportModal,{tok:p.tok,onClose:function(){setShowImport(false);load();}}),
+    detallePlan&&h(MantPlanDetalleModal,{tok:p.tok,plan:detallePlan,onClose:function(){setDetallePlan(null);load();}})
   );
 }
 
