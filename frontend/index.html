@@ -8523,6 +8523,327 @@ function MantOTDetalle(p){
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// PRÓXIMOS VENCIMIENTOS — la vista clave para jefe de taller y gerente
+// ═══════════════════════════════════════════════════════════════════════
+function MantVencimientos(p){
+  const equipos=(p.m&&p.m.equipos)||[];
+  const empresas=(p.m&&p.m.empresas)||[];
+  const[vencs,setVencs]=useState([]);
+  const[loading,setLoading]=useState(false);
+  const[filtEquipo,setFiltEquipo]=useState('');
+  const[filtEmpresa,setFiltEmpresa]=useState('');
+  const[filtEstado,setFiltEstado]=useState('');
+  const[showImportUC,setShowImportUC]=useState(false);
+  const[showSemilla,setShowSemilla]=useState(null); // plan al que editar semilla manual
+
+  function load(){
+    setLoading(true);
+    var qs='';
+    if(filtEquipo) qs+=(qs?'&':'?')+'equipo_id='+filtEquipo;
+    if(filtEmpresa) qs+=(qs?'&':'?')+'empresa_id='+filtEmpresa;
+    api('/mant/vencimientos'+qs,'GET',null,p.tok)
+      .then(function(r){setVencs(Array.isArray(r)?r:[]);})
+      .catch(function(){setVencs([]);})
+      .finally(function(){setLoading(false);});
+  }
+  useEffect(load,[p.tok,filtEquipo,filtEmpresa]);
+
+  function fmtN(n){if(n==null) return '—';return new Intl.NumberFormat('es-CL',{maximumFractionDigits:1}).format(n);}
+
+  // Aplicar filtro de estado en frontend
+  var vencsFilt=filtEstado?vencs.filter(function(v){return v.estado_vencimiento===filtEstado;}):vencs;
+
+  // Stats
+  var resumen={
+    vencida:vencs.filter(function(v){return v.estado_vencimiento==='vencida';}).length,
+    proxima:vencs.filter(function(v){return v.estado_vencimiento==='proxima';}).length,
+    vigente:vencs.filter(function(v){return v.estado_vencimiento==='vigente';}).length,
+    sin_ref:vencs.filter(function(v){return v.estado_vencimiento==='sin_referencia';}).length
+  };
+
+  function exportar(){
+    exportXLSX(vencsFilt,[
+      {header:'Equipo',value:function(r){return r.equipo_codigo+' — '+(r.equipo_nombre||'');}},
+      {header:'Empresa',value:function(r){return r.empresa_nombre||'';}},
+      {header:'Plan',value:function(r){return r.plan_nombre;}},
+      {header:'Intervalo',value:function(r){return r.intervalo_horas?parseFloat(r.intervalo_horas)+' h':(r.intervalo_km?r.intervalo_km+' km':'');}},
+      {header:'Horómetro actual',value:function(r){return r.horometro_actual;}},
+      {header:'Último servicio',value:function(r){return r.ultimo_hrs;}},
+      {header:'Próximo servicio',value:function(r){return r.proxHrs||r.proxKm;}},
+      {header:'Diferencia',value:function(r){return r.diff;}},
+      {header:'Estado',value:function(r){return r.estado_vencimiento;}},
+      {header:'OT abiertas',value:function(r){return r.ots_abiertas;}}
+    ],'proximos_vencimientos');
+  }
+
+  return h('div',null,
+    // Barra superior
+    h('div',{className:'tb'},
+      h(Btn,{v:'teal',onClick:function(){setShowImportUC(true);}},'📥 Cargar Último Cambio'),
+      h(Btn,{v:'g',onClick:exportar},null,'Exportar Excel'),
+      h(Btn,{onClick:load,style:{marginLeft:'auto'}},'🔄 Refrescar')
+    ),
+
+    // Cards resumen
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:12}},
+      h('div',{className:'card',style:{padding:12,textAlign:'center',borderLeft:'4px solid #DC2626',cursor:'pointer'},onClick:function(){setFiltEstado(filtEstado==='vencida'?'':'vencida');}},
+        h('div',{style:{fontSize:26,fontWeight:700,color:'#DC2626'}},resumen.vencida),
+        h('div',{style:{fontSize:11,color:'#64748B',fontWeight:600}},'🔴 VENCIDAS'),
+        h('div',{style:{fontSize:9,color:'#94A3B8'}},'Pasaron del intervalo + tolerancia')
+      ),
+      h('div',{className:'card',style:{padding:12,textAlign:'center',borderLeft:'4px solid #F59E0B',cursor:'pointer'},onClick:function(){setFiltEstado(filtEstado==='proxima'?'':'proxima');}},
+        h('div',{style:{fontSize:26,fontWeight:700,color:'#F59E0B'}},resumen.proxima),
+        h('div',{style:{fontSize:11,color:'#64748B',fontWeight:600}},'🟡 PRÓXIMAS'),
+        h('div',{style:{fontSize:9,color:'#94A3B8'}},'Dentro de la tolerancia')
+      ),
+      h('div',{className:'card',style:{padding:12,textAlign:'center',borderLeft:'4px solid #10B981',cursor:'pointer'},onClick:function(){setFiltEstado(filtEstado==='vigente'?'':'vigente');}},
+        h('div',{style:{fontSize:26,fontWeight:700,color:'#10B981'}},resumen.vigente),
+        h('div',{style:{fontSize:11,color:'#64748B',fontWeight:600}},'🟢 VIGENTES'),
+        h('div',{style:{fontSize:9,color:'#94A3B8'}},'Sin alertar todavía')
+      ),
+      h('div',{className:'card',style:{padding:12,textAlign:'center',borderLeft:'4px solid #94A3B8',cursor:'pointer'},onClick:function(){setFiltEstado(filtEstado==='sin_referencia'?'':'sin_referencia');}},
+        h('div',{style:{fontSize:26,fontWeight:700,color:'#94A3B8'}},resumen.sin_ref),
+        h('div',{style:{fontSize:11,color:'#64748B',fontWeight:600}},'⚪ SIN REFERENCIA'),
+        h('div',{style:{fontSize:9,color:'#94A3B8'}},'Falta cargar último servicio')
+      )
+    ),
+
+    // Filtros
+    h('div',{style:{display:'flex',gap:8,marginBottom:10,padding:10,background:'#F8FAFC',borderRadius:6,flexWrap:'wrap',alignItems:'center'}},
+      h('span',{style:{fontSize:11,fontWeight:600,color:'#475569'}},'🔍'),
+      h('select',{value:filtEmpresa,onChange:function(e){setFiltEmpresa(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
+        h('option',{value:''},'Todas las empresas'),
+        empresas.filter(function(e){return e.activo;}).map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})
+      ),
+      h('select',{value:filtEquipo,onChange:function(e){setFiltEquipo(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:180}},
+        h('option',{value:''},'Todos los equipos'),
+        equipos.filter(function(e){return e.activo;}).map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);})
+      ),
+      filtEstado&&h('span',{style:{padding:'5px 10px',background:'#EFF6FF',border:'1px solid #93C5FD',borderRadius:12,fontSize:11,fontWeight:600,color:'#1E40AF'}},'Estado: '+filtEstado),
+      (filtEquipo||filtEmpresa||filtEstado)&&h('button',{onClick:function(){setFiltEquipo('');setFiltEmpresa('');setFiltEstado('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
+      h('span',{style:{fontSize:11,color:'#64748B',marginLeft:'auto',fontWeight:600}},vencsFilt.length+' plan(es)')
+    ),
+
+    // Tabla
+    loading&&h('div',{className:'spin'},'Cargando vencimientos...'),
+    !loading&&h('div',{className:'card'},
+      h(TBL,{cols:[
+        {lbl:'Estado',c:true,render:function(r){
+          var conf={vencida:{c:'#DC2626',bg:'#FEE2E2',l:'🔴 VENCIDA'},proxima:{c:'#F59E0B',bg:'#FEF3C7',l:'🟡 PRÓXIMA'},vigente:{c:'#10B981',bg:'#DCFCE7',l:'🟢 Vigente'},sin_referencia:{c:'#94A3B8',bg:'#F1F5F9',l:'⚪ Sin ref'}};
+          var c=conf[r.estado_vencimiento]||conf.sin_referencia;
+          return h('span',{style:{padding:'3px 8px',background:c.bg,color:c.c,borderRadius:4,fontSize:10,fontWeight:600}},c.l);
+        }},
+        {lbl:'Equipo',render:function(r){return h('div',null,
+          h('strong',null,r.equipo_codigo||'—'),
+          r.equipo_nombre&&h('div',{style:{fontSize:10,color:'#64748B'}},r.equipo_nombre)
+        );}},
+        {lbl:'Plan',render:function(r){return h('div',null,
+          r.plan_nombre,
+          parseInt(r.ots_abiertas||0)>0&&h('div',{style:{fontSize:10,color:'#F59E0B',marginTop:2}},'⚠ '+r.ots_abiertas+' OT abierta(s)')
+        );}},
+        {lbl:'Intervalo',c:true,render:function(r){return r.intervalo_horas?h('strong',null,parseFloat(r.intervalo_horas)+' h'):(r.intervalo_km?h('strong',null,r.intervalo_km+' km'):'—');}},
+        {lbl:'Horóm. Actual',r:true,render:function(r){return h('span',{className:'mono'},fmtN(r.horometro_actual));}},
+        {lbl:'Último Servicio',r:true,render:function(r){
+          var ult=parseFloat(r.ultimo_hrs)||0;
+          if(ult===0) return h('span',{style:{color:'#94A3B8',fontSize:10,fontStyle:'italic'}},'sin registro');
+          return h('span',{className:'mono'},fmtN(ult));
+        }},
+        {lbl:'Próximo',r:true,render:function(r){return r.proxHrs?h('strong',{className:'mono',style:{color:r.estado_vencimiento==='vencida'?'#DC2626':r.estado_vencimiento==='proxima'?'#F59E0B':'#1E40AF'}},fmtN(r.proxHrs)+' h'):(r.proxKm?h('strong',{className:'mono'},fmtN(r.proxKm)+' km'):'—');}},
+        {lbl:'Diferencia',r:true,render:function(r){
+          if(r.diff===null) return '—';
+          var d=parseFloat(r.diff);
+          if(d>0) return h('strong',{className:'mono',style:{color:'#DC2626'}},'+'+fmtN(d)+' h');
+          return h('strong',{className:'mono',style:{color:'#10B981'}},fmtN(d)+' h');
+        }},
+        {lbl:'',c:true,render:function(r){return h('div',{style:{display:'flex',gap:3}},
+          h('button',{onClick:function(){setShowSemilla(r);},title:'Editar último servicio manualmente',style:{padding:'3px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'✏'),
+          (r.estado_vencimiento==='vencida'||r.estado_vencimiento==='proxima')&&parseInt(r.ots_abiertas||0)===0&&h('button',{onClick:function(){alert('Próxima fase: generación automática de OT desde plan');},title:'Crear OT desde este plan',style:{padding:'3px 6px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'+ OT')
+        );}}
+      ],rows:vencsFilt,empty:'Sin planes programados. Importa la pauta desde el módulo Plan Maestro.'})
+    ),
+
+    // Modales
+    showImportUC&&h(MantUltimoCambioImportModal,{tok:p.tok,onClose:function(){setShowImportUC(false);load();}}),
+    showSemilla&&h(MantSemillaEditModal,{tok:p.tok,plan:showSemilla,onClose:function(){setShowSemilla(null);},onSave:function(){setShowSemilla(null);load();}})
+  );
+}
+
+// Modal: importar Excel "Último Cambio" para inicializar última-servicio-conocido
+function MantUltimoCambioImportModal(p){
+  const[step,setStep]=useState(1);
+  const[filas,setFilas]=useState([]);
+  const[err,setErr]=useState('');
+  const[loading,setLoading]=useState(false);
+  const[result,setResult]=useState(null);
+
+  function onFile(ev){
+    var f=ev.target.files[0];if(!f)return;
+    setErr('');setLoading(true);
+    var reader=new FileReader();
+    reader.onload=function(e){
+      try{
+        var data=new Uint8Array(e.target.result);
+        var wb=XLSX.read(data,{type:'array'});
+        var sheetName=wb.SheetNames.find(function(n){return /último cambio|ultimo cambio|importar/i.test(n);});
+        if(!sheetName) sheetName=wb.SheetNames[0];
+        var ws=wb.Sheets[sheetName];
+        // El Excel tiene 3 filas de cabecera/notas, los datos empiezan en fila 4 con encabezados en fila 3
+        var rows=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+        // Buscar la fila con "Equipo" y "Último Cambio"
+        var headerRow=-1;
+        for(var i=0;i<Math.min(rows.length,10);i++){
+          if(rows[i].some(function(c){return String(c).toLowerCase().includes('último cambio')||String(c).toLowerCase().includes('ultimo cambio');})){
+            headerRow=i;break;
+          }
+        }
+        if(headerRow<0){setErr('No se encontró columna "Último Cambio"');setLoading(false);return;}
+        var headers=rows[headerRow].map(function(h){return String(h||'').toLowerCase().trim();});
+        function colIdx(opts){return headers.findIndex(function(h){return opts.some(function(o){return h.includes(o.toLowerCase());});});}
+        var idxEq=colIdx(['equipo']),idxInt=colIdx(['intervalo']),idxUlt=colIdx(['último cambio','ultimo cambio']);
+        if(idxEq<0||idxInt<0||idxUlt<0){setErr('Faltan columnas. Encontrado: Equipo='+idxEq+', Intervalo='+idxInt+', Último Cambio='+idxUlt);setLoading(false);return;}
+        var data2=[];
+        for(var j=headerRow+1;j<rows.length;j++){
+          var r=rows[j];
+          if(!r[idxEq]) continue;
+          var ult=parseFloat(r[idxUlt]);
+          if(isNaN(ult)) continue;
+          data2.push({equipo_nombre:String(r[idxEq]).trim(),intervalo_horas:parseFloat(r[idxInt]),ultimo_cambio:ult});
+        }
+        if(!data2.length){setErr('No hay filas con último cambio válido');setLoading(false);return;}
+        setFilas(data2);
+        setStep(2);
+      }catch(ex){setErr('Error: '+ex.message);}
+      finally{setLoading(false);}
+    };
+    reader.readAsArrayBuffer(f);
+  }
+
+  function importar(){
+    setLoading(true);setErr('');
+    api('/mant/planes/cargar-ultimo-servicio','POST',{filas:filas},p.tok)
+      .then(function(r){setResult(r);setStep(3);})
+      .catch(function(e){setErr(e.message);})
+      .finally(function(){setLoading(false);});
+  }
+
+  // Resumen agrupado por (equipo + intervalo) para mostrar el MAX
+  var grupos={};
+  filas.forEach(function(f){
+    var k=f.equipo_nombre+'__'+f.intervalo_horas;
+    if(!grupos[k]) grupos[k]={equipo:f.equipo_nombre,intervalo:f.intervalo_horas,max:f.ultimo_cambio,count:1};
+    else {grupos[k].count++;if(f.ultimo_cambio>grupos[k].max) grupos[k].max=f.ultimo_cambio;}
+  });
+  var resumen=Object.values(grupos).sort(function(a,b){return a.equipo.localeCompare(b.equipo)||a.intervalo-b.intervalo;});
+
+  return h(Modal,{title:'📥 Cargar Último Cambio (semilla de vencimientos)',onClose:p.onClose,xl:true},
+    h('div',null,
+      err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+      h('div',{style:{display:'flex',gap:4,marginBottom:14}},
+        [['1','Subir Excel'],['2','Vista previa'],['3','Cargado']].map(function(s){
+          var active=parseInt(s[0])===step;var done=parseInt(s[0])<step;
+          return h('div',{key:s[0],style:{flex:1,padding:'8px 10px',borderRadius:5,textAlign:'center',background:active?'#3B82F6':(done?'#10B981':'#F1F5F9'),color:active||done?'#fff':'#64748B',fontSize:11,fontWeight:600}},(done?'✓ ':s[0]+'. ')+s[1]);
+        })
+      ),
+      step===1&&h('div',{style:{textAlign:'center',padding:30}},
+        h('div',{className:'al al-i',style:{marginBottom:14,textAlign:'left',fontSize:12}},
+          h('strong',null,'Carga inicial del horómetro al que se hizo el último servicio.'),h('br'),
+          'Esto sirve de "punto cero" para calcular el próximo vencimiento. Tras cada OT cerrada con horómetro de servicio, el sistema actualizará este valor automáticamente.',h('br'),h('br'),
+          h('strong',null,'Archivo esperado:'),' Excel del rescate con hoja "Importar Último Cambio". Para cada combinación equipo + intervalo, se toma el MÁXIMO valor del último cambio.'
+        ),
+        h('label',{style:{display:'inline-block',padding:'12px 24px',background:'#3B82F6',color:'#fff',borderRadius:6,cursor:loading?'not-allowed':'pointer',fontWeight:600,fontSize:13}},
+          loading?'⏳ Procesando...':'📂 Seleccionar archivo Excel',
+          h('input',{type:'file',accept:'.xlsx,.xls',onChange:onFile,disabled:loading,style:{display:'none'}})
+        )
+      ),
+      step===2&&h('div',null,
+        h('div',{className:'al al-s',style:{marginBottom:10}},
+          '✓ ',h('strong',null,filas.length),' filas válidas, agrupadas en ',h('strong',null,resumen.length),' planes (equipo + intervalo)'
+        ),
+        h('div',{style:{maxHeight:'45vh',overflowY:'auto',marginBottom:10}},
+          h('table',{className:'tb',style:{fontSize:11}},
+            h('thead',null,h('tr',null,h('th',null,'Equipo'),h('th',{className:'r'},'Intervalo'),h('th',{className:'r'},'Último cambio (max)'),h('th',{className:'r'},'Tareas'))),
+            h('tbody',null,resumen.map(function(g,i){
+              return h('tr',{key:i},
+                h('td',null,h('strong',null,g.equipo)),
+                h('td',{className:'r mono'},g.intervalo+' h'),
+                h('td',{className:'r mono',style:{color:'#1E40AF',fontWeight:600}},new Intl.NumberFormat('es-CL').format(g.max)+' h'),
+                h('td',{className:'r'},g.count)
+              );
+            }))
+          )
+        ),
+        h('div',{style:{display:'flex',gap:8,justifyContent:'flex-end'}},
+          h(Btn,{v:'g',onClick:function(){setStep(1);setFilas([]);}},null,'← Volver'),
+          h(Btn,{onClick:importar,disabled:loading},loading?'⏳ Cargando...':'✓ Aplicar a '+resumen.length+' planes')
+        )
+      ),
+      step===3&&result&&h('div',null,
+        h('div',{className:'al al-s',style:{padding:14,marginBottom:14}},
+          h('h3',{style:{margin:'0 0 8px 0'}},'✓ Carga completada'),
+          h('div',{style:{fontSize:12}},h('strong',null,result.planes_actualizados),' planes actualizados con su último servicio conocido.')
+        ),
+        result.no_encontrados&&result.no_encontrados.length>0&&h('div',{className:'al al-w',style:{marginBottom:10}},
+          h('strong',null,'⚠ No encontrados ('+result.no_encontrados.length+'):'),
+          h('div',{style:{fontSize:11,maxHeight:120,overflowY:'auto',marginTop:4}},result.no_encontrados.join(', ')),
+          h('div',{style:{fontSize:10,marginTop:6,fontStyle:'italic'}},'Estos equipos+intervalos no tienen plan creado. Importa primero la pauta desde Plan Maestro.')
+        ),
+        h('div',{style:{display:'flex',justifyContent:'flex-end'}},h(Btn,{onClick:p.onClose},'Cerrar'))
+      )
+    )
+  );
+}
+
+// Modal: editar manualmente el "último servicio" de un plan
+function MantSemillaEditModal(p){
+  const[hrs,setHrs]=useState(p.plan.semilla_hrs||'');
+  const[fecha,setFecha]=useState(p.plan.semilla_fecha?String(p.plan.semilla_fecha).slice(0,10):'');
+  const[err,setErr]=useState('');
+  const[saving,setSaving]=useState(false);
+
+  function save(){
+    setSaving(true);setErr('');
+    api('/mant/planes/'+p.plan.plan_id,'PUT',{
+      nombre:p.plan.plan_nombre,
+      tipo_mantencion:'programada',
+      intervalo_horas:p.plan.intervalo_horas,
+      intervalo_km:p.plan.intervalo_km,
+      ultimo_servicio_hrs:hrs?parseFloat(hrs):null,
+      ultimo_servicio_fecha:fecha||null,
+      activo:true
+    },p.tok)
+      .then(p.onSave)
+      .catch(function(e){setErr(e.message);})
+      .finally(function(){setSaving(false);});
+  }
+
+  return h(Modal,{title:'Editar último servicio — '+p.plan.plan_nombre,onClose:p.onClose},
+    h('div',{style:{padding:14}},
+      err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+      h('div',{className:'al al-i',style:{marginBottom:14,fontSize:12}},
+        'Ingresa el horómetro al que se realizó el último servicio conocido. El próximo vencimiento será este valor + el intervalo del plan (',
+        h('strong',null,parseFloat(p.plan.intervalo_horas)+' h'),').'
+      ),
+      h('div',{style:{padding:10,background:'#F8FAFC',borderRadius:6,marginBottom:14,fontSize:12}},
+        h('div',null,h('strong',null,'Equipo: '),p.plan.equipo_codigo+' — '+(p.plan.equipo_nombre||'')),
+        h('div',null,h('strong',null,'Horómetro actual del equipo: '),p.plan.horometro_actual?parseFloat(p.plan.horometro_actual)+' h':'sin datos')
+      ),
+      h('div',{style:{marginBottom:10}},
+        h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Horómetro último servicio'),
+        h('input',{type:'number',value:hrs,onChange:function(e){setHrs(e.target.value);},style:{width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}})
+      ),
+      h('div',{style:{marginBottom:14}},
+        h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha último servicio (opcional)'),
+        h('input',{type:'date',value:fecha,onChange:function(e){setFecha(e.target.value);},style:{width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}})
+      ),
+      h('div',{style:{display:'flex',gap:8,justifyContent:'flex-end',paddingTop:10,borderTop:'1px solid #E2E8F0'}},
+        h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),
+        h(Btn,{onClick:save,disabled:saving},saving?'Guardando...':'💾 Guardar')
+      )
+    )
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // IMPORTADOR DE PAUTA DE MANTENCIÓN desde Excel del rescate
 // ═══════════════════════════════════════════════════════════════════════
 function MantPlanImportModal(p){
@@ -15785,7 +16106,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','comb-auditoria':'Combustibles — Auditoría vs Terreno','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','comb-auditoria':'Combustibles — Auditoría vs Terreno','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -16434,7 +16755,7 @@ function App(){
     'ordenes':'ordenes','oc-guias':'ordenes','dte-recibidos':'ordenes','bandeja-dte-oc':'ordenes',
     'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-auditoria':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
     'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-reportes':'inventario',
-    'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion',
+    'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion','mant-planes':'mantencion','mant-vencimientos':'mantencion','mant-programacion':'mantencion','mant-avisos':'mantencion',
     'rendiciones':'rendiciones',
     'terreno':'terreno','terreno-equipos':'terreno','terreno-faena':'terreno','terreno-reportes':'terreno',
     'solicitudes':'solicitudes',
@@ -16610,6 +16931,7 @@ function App(){
           navI('mant-avisos','⚠','Avisos de Falla',true),
           navI('mant-ot','📋','Órdenes de Trabajo',true),
           navI('mant-planes','📐','Plan Maestro',true),
+          navI('mant-vencimientos','⏰','Próximos Vencimientos',true),
           navI('mant-programacion','📅','Programación',true),
           navI('mant-historial','📜','Historial Técnico',true),
           navI('mant-sistemas','⚙','Sistemas',true),
@@ -16706,6 +17028,7 @@ function App(){
           view==='mant-avisos'&&h(MantAvisos,{tok,m}),
           view==='mant-ot'&&h(MantOT,{tok,m}),
           view==='mant-planes'&&h(MantPlanes,{tok,m}),
+          view==='mant-vencimientos'&&h(MantVencimientos,{tok,m,user}),
           view==='mant-programacion'&&h(MantProgramacion,{tok,m}),
           view==='mant-historial'&&h(MantHistorial,{tok,m}),
           view==='mant-sistemas'&&h(MantSistemasAdmin,{tok,m}),
