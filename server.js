@@ -1685,6 +1685,98 @@ mvR.post('/', auth, async(req,res)=>{
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
+
+// ─── GET: detalle completo de un movimiento (líneas + producto con factor) ───
+mvR.get('/:id/detalle', auth, async(req,res)=>{
+  try{
+    const head=await pool.query(`
+      SELECT me.*, b.nombre AS bodega_nombre, pr.nombre AS proveedor_nombre, pr.rut AS proveedor_rut,
+             td.nombre AS tipo_doc_nombre, u.nombre AS usuario_nombre
+      FROM movimiento_encabezado me
+      LEFT JOIN bodegas b ON me.bodega_id=b.bodega_id
+      LEFT JOIN proveedores pr ON me.proveedor_id=pr.proveedor_id
+      LEFT JOIN tipos_documento td ON me.tipo_doc_id=td.tipo_doc_id
+      LEFT JOIN usuarios u ON LOWER(u.email)=LOWER(me.usuario)
+      WHERE me.movimiento_id=$1`,[req.params.id]);
+    if(!head.rows.length) return res.status(404).json({error:'Movimiento no encontrado'});
+    const lineas=await pool.query(`
+      SELECT md.*, p.codigo AS producto_codigo, p.nombre AS producto_nombre, 
+             p.unidad_medida, p.unidad_compra, p.factor_conversion, sc.nombre AS subcategoria_nombre
+      FROM movimiento_detalle md
+      JOIN productos p ON md.producto_id=p.producto_id
+      LEFT JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id
+      WHERE md.movimiento_id=$1
+      ORDER BY md.detalle_id`,[req.params.id]);
+    res.json({encabezado:head.rows[0], lineas:lineas.rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ─── PUT: editar una línea de movimiento (cantidad o costo_unitario) ───
+// Ajusta el stock con la diferencia. Solo para movimientos ACTIVOS.
+// IMPORTANTE: si cambia cantidad, ajusta stock con (nueva - vieja). Si cambia costo, no toca cantidades pero recalcula CPP.
+mvR.put('/detalle/:detalleId', auth, requireModulo('inventario-editar'), async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const{cantidad,costo_unitario}=req.body||{};
+    if(cantidad===undefined&&costo_unitario===undefined) return res.status(400).json({error:'Indica cantidad o costo_unitario'});
+    await client.query('BEGIN');
+    const r=await client.query(`
+      SELECT md.*, me.tipo_movimiento, me.bodega_id, me.estado
+      FROM movimiento_detalle md
+      JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
+      WHERE md.detalle_id=$1`,[req.params.detalleId]);
+    if(!r.rows.length){await client.query('ROLLBACK');return res.status(404).json({error:'Línea no encontrada'});}
+    const linea=r.rows[0];
+    if(linea.estado!=='ACTIVO'){await client.query('ROLLBACK');return res.status(400).json({error:'Solo se pueden editar movimientos ACTIVOS'});}
+    if(linea.tipo_movimiento!=='INGRESO'){await client.query('ROLLBACK');return res.status(400).json({error:'Solo se permite editar líneas de INGRESOS por seguridad. Para salidas/traspasos: anular y recrear.'});}
+
+    const cantAnt=parseFloat(linea.cantidad)||0;
+    const cuAnt=parseFloat(linea.costo_unitario)||0;
+    const cantNew=cantidad!==undefined?parseFloat(cantidad):cantAnt;
+    const cuNew=costo_unitario!==undefined?parseFloat(costo_unitario):cuAnt;
+    if(cantNew<0||cuNew<0){await client.query('ROLLBACK');return res.status(400).json({error:'Cantidad y costo no pueden ser negativos'});}
+
+    // Actualizar línea
+    await client.query(
+      'UPDATE movimiento_detalle SET cantidad=$1, costo_unitario=$2, costo_total=$3 WHERE detalle_id=$4',
+      [cantNew, cuNew, cantNew*cuNew, req.params.detalleId]);
+
+    // Ajustar stock_actual con la diferencia de cantidad
+    const deltaCant = cantNew - cantAnt;
+    if(deltaCant !== 0){
+      // INGRESO: si crece cantidad, sube stock; si baja, baja stock
+      await client.query(
+        'UPDATE stock_actual SET cantidad_disponible = GREATEST(0, cantidad_disponible + $1), ultima_actualizacion=NOW() WHERE producto_id=$2 AND bodega_id=$3',
+        [deltaCant, linea.producto_id, linea.bodega_id]);
+    }
+
+    // Recalcular CPP del producto/bodega desde cero usando todos los ingresos en orden cronológico
+    const movs=await client.query(`
+      SELECT md.cantidad, md.costo_unitario, me.tipo_movimiento, me.fecha, me.creado_en, me.movimiento_id
+      FROM movimiento_detalle md
+      JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
+      WHERE me.estado='ACTIVO' AND md.producto_id=$1 AND me.bodega_id=$2
+      ORDER BY me.fecha, me.creado_en, me.movimiento_id`,[linea.producto_id, linea.bodega_id]);
+    var stock=0, cpp=0;
+    for(const m of movs.rows){
+      const c=parseFloat(m.cantidad)||0;
+      if(m.tipo_movimiento==='INGRESO'||m.tipo_movimiento==='TRASPASO_INGRESO'){
+        const cu=parseFloat(m.costo_unitario)||0;
+        const newStock=stock+c;
+        if(newStock>0) cpp=(stock*cpp+c*cu)/newStock;
+        stock=newStock;
+      } else stock=Math.max(0,stock-c);
+    }
+    await client.query(
+      'UPDATE stock_actual SET costo_promedio_actual=$1, ultima_actualizacion=NOW() WHERE producto_id=$2 AND bodega_id=$3',
+      [Math.max(0,cpp), linea.producto_id, linea.bodega_id]);
+
+    await client.query('COMMIT');
+    res.json({ok:true, delta_cantidad:deltaCant, nuevo_cpp:Math.max(0,cpp)});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
 // PUT: editar metadata de un movimiento (fecha, faena, equipo, motivo, observaciones, responsables, doc)
 // No permite cambiar productos/cantidades/bodegas: para eso, anular y crear uno nuevo.
 // Requiere módulo "inventario-editar" (los admin siempre pueden)
