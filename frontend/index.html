@@ -12796,7 +12796,7 @@ function FiniquitosView(p){
     fecha_carta:hoy,fecha_contrato:'',fecha_termino:hoy,
     causal:'Art. 159-5: Conclusión del trabajo que dio origen al contrato (obra o faena)',
     causal_hecho:'',cargo:'',
-    indem_anios_servicio:0,indem_vacaciones:0,indem_tiempo_servido:0,indem_aviso_previo:0,
+    indem_anios_servicio:0,indem_vacaciones:0,indem_tiempo_servido:0,indem_aviso_previo:0,indem_mutuo_acuerdo:0,
     observaciones:''
   };
   var[carta,setCarta]=useState(emptyCarta);
@@ -12908,9 +12908,10 @@ function FiniquitosView(p){
   // IMPORTANTE: usar aniosD (años enteros REALES del período Y/M/D), no aniosServicio
   // (este último tiene aplicado el redondeo legal de "fracción > 6 meses = año completo"
   // que solo aplica para indemnización por años de servicio, NO para feriado proporcional)
+  // LEY: el feriado proporcional sólo aplica a contratos de 30 días o más de duración
   var diasBaseAnio=form.es_zona_extrema?20:15;
   var diasFeriadoLegal=0;
-  if(diasTrabajados>0){
+  if(diasTrabajados>=30){
     diasFeriadoLegal=Math.round((diasBaseAnio*aniosD+1.25*mesesD+(1.25/30)*diasD)*1000)/1000;
     if(diasFeriadoLegal<1)diasFeriadoLegal=0;
   }
@@ -12968,8 +12969,9 @@ function FiniquitosView(p){
   var baseVac=form.tipo_sueldo==='Fijo'?(sb+bonoFijo):(sb+bonoFijo+promVar);
   var indemVac=(baseVac/30)*totalDiasFeriado;
   // Indem por tiempo servido (solo Art. 159-5 obra/faena, contratos posteriores a 01-01-2019, 2.5 días por mes + 1 si fracción >=15 días)
+  // LEY: el contrato debe haber estado vigente UN MES (>= 30 días) o más
   var indemTiempoServ=0;
-  if(form.causal==='Art. 159-5: Conclusión del trabajo que dio origen al contrato (obra o faena)'){
+  if(form.causal==='Art. 159-5: Conclusión del trabajo que dio origen al contrato (obra o faena)' && diasTrabajados>=30){
     var fechaTermino=new Date(form.fecha_termino+'T00:00:00');
     var lim2019=new Date('2019-01-01T00:00:00');
     var lim2020=new Date('2020-07-01T00:00:00');
@@ -12985,10 +12987,15 @@ function FiniquitosView(p){
       indemTiempoServ=(totalHaberes/30)*(totalMeses*diasPorMes);
     }
   }
+  // Indemnización por mutuo acuerdo (sólo Art. 159-1): monto libremente acordado entre las partes
+  var indemMutuoAcuerdo=0;
+  if(form.causal==='Art. 159-1: Mutuo acuerdo'){
+    indemMutuoAcuerdo=parseFloat(form.indem_mutuo_acuerdo)||0;
+  }
   var remuPend=parseFloat(form.remuneracion_pendiente)||0;
   var descuentos=parseFloat(form.descuentos)||0;
   var saldoAFC=parseFloat(form.saldo_afc_empleador)||0;
-  var totalFiniquito=remuPend+indemAviso+indemAnios+indemVac+indemTiempoServ-descuentos-saldoAFC;
+  var totalFiniquito=remuPend+indemAviso+indemAnios+indemVac+indemTiempoServ+indemMutuoAcuerdo-descuentos-saldoAFC;
 
   function guardar(){
     if(!form.persona_id||!form.empresa_id||!form.fecha_inicio||!form.fecha_termino){
@@ -13004,6 +13011,7 @@ function FiniquitosView(p){
       indem_anios_servicio:indemAnios,
       indem_vacaciones:indemVac,
       indem_tiempo_servido:indemTiempoServ,
+      indem_mutuo_acuerdo:indemMutuoAcuerdo,
       total_finiquito:totalFiniquito,
       descuentos:descuentos,
       saldo_afc_empleador:saldoAFC
@@ -13251,6 +13259,10 @@ function FiniquitosView(p){
             h('tr',null,h('td',{style:{padding:'6px 10px'}},'Indemnización años de servicio'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:indemAnios>0?'#15803D':'#94A3B8'}},indemAnios>0?CLPF(indemAnios):'No aplica')),
             h('tr',null,h('td',{style:{padding:'6px 10px'}},'Indemnización vacaciones proporcionales'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:indemVac>0?'#15803D':'#94A3B8'}},indemVac>0?CLPF(indemVac):'No aplica')),
             h('tr',null,h('td',{style:{padding:'6px 10px'}},'Indemnización por tiempo servido (obra/faena)'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:indemTiempoServ>0?'#15803D':'#94A3B8'}},indemTiempoServ>0?CLPF(indemTiempoServ):'No aplica')),
+            form.causal==='Art. 159-1: Mutuo acuerdo'&&h('tr',{style:{background:'#FFFBEB'}},
+              h('td',{style:{padding:'6px 10px'}},'Indemnización por mutuo acuerdo ',h('span',{style:{fontSize:10,color:'#92400E',fontStyle:'italic'}},'(monto pactado entre las partes)')),
+              h('td',{style:{padding:'6px 10px',textAlign:'right'}},h('input',{type:'number',min:0,value:form.indem_mutuo_acuerdo||0,onChange:function(e){upd('indem_mutuo_acuerdo',e.target.value);},style:{width:140,padding:'4px 6px',border:'1px solid #F59E0B',borderRadius:4,textAlign:'right',fontFamily:'monospace',fontSize:12,background:'#fff'}}))
+            ),
             descuentos>0&&h('tr',null,h('td',{style:{padding:'6px 10px',color:'#DC2626'}},'(–) Descuentos'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:'#DC2626'}},'-'+CLPF(descuentos))),
             saldoAFC>0&&h('tr',null,h('td',{style:{padding:'6px 10px',color:'#DC2626'}},'(–) Saldo AFC empleador'),h('td',{style:{padding:'6px 10px',textAlign:'right',fontFamily:'monospace',color:'#DC2626'}},'-'+CLPF(saldoAFC))),
             h('tr',{style:{background:'#FDE68A',fontWeight:700}},h('td',{style:{padding:'10px',fontSize:13}},'TOTAL FINIQUITO'),h('td',{style:{padding:'10px',textAlign:'right',fontFamily:'monospace',fontSize:16,color:'#15803D'}},CLPF(totalFiniquito)))
@@ -13374,6 +13386,7 @@ function buildFiniquitoHTML(f){
   if((f.indem_anios_servicio||0)>0)filas.push(['Indemnización Años de Servicio',f.indem_anios_servicio]);
   else filas.push(['Indemnización Años de Servicio',0]);
   if((f.indem_tiempo_servido||0)>0)filas.push(['Indemnización por tiempo servido (obra/faena)',f.indem_tiempo_servido]);
+  if((f.indem_mutuo_acuerdo||0)>0)filas.push(['Indemnización por mutuo acuerdo',f.indem_mutuo_acuerdo]);
   if((f.remuneracion_pendiente||0)>0)filas.push(['Remuneración pendiente',f.remuneracion_pendiente]);
   if((f.descuentos||0)>0)filas.push(['Descuentos',f.descuentos]);
   if((f.saldo_afc_empleador||0)>0)filas.push(['Saldo AFC Aporte Empleador',f.saldo_afc_empleador]);
