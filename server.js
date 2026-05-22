@@ -1736,10 +1736,10 @@ mvR.put('/detalle/:detalleId', auth, requireModulo('inventario-editar'), async(r
     const cuNew=costo_unitario!==undefined?parseFloat(costo_unitario):cuAnt;
     if(cantNew<0||cuNew<0){await client.query('ROLLBACK');return res.status(400).json({error:'Cantidad y costo no pueden ser negativos'});}
 
-    // Actualizar línea
+    // Actualizar línea (costo_total es columna calculada en BD, no se setea directamente)
     await client.query(
-      'UPDATE movimiento_detalle SET cantidad=$1, costo_unitario=$2, costo_total=$3 WHERE detalle_id=$4',
-      [cantNew, cuNew, cantNew*cuNew, req.params.detalleId]);
+      'UPDATE movimiento_detalle SET cantidad=$1, costo_unitario=$2 WHERE detalle_id=$3',
+      [cantNew, cuNew, req.params.detalleId]);
 
     // Ajustar stock_actual con la diferencia de cantidad
     const deltaCant = cantNew - cantAnt;
