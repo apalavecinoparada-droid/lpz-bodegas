@@ -3602,12 +3602,23 @@ app.get('/api/mant/vencimientos', auth, async(req,res)=>{
         FROM mant_ot
         WHERE estado IN ('cerrada','completada') AND plan_id IS NOT NULL
         GROUP BY plan_id
+      ),
+      ult_comb AS (
+        -- Último horómetro registrado en distribución de combustible (fuente confiable según política operativa)
+        SELECT DISTINCT ON (equipo_id) equipo_id, horometro AS horometro_comb, kilometraje AS km_comb, fecha AS fecha_comb
+        FROM comb_movimientos
+        WHERE tipo_mov='DISTRIBUCION' AND estado='ACTIVO' AND (horometro IS NOT NULL OR kilometraje IS NOT NULL)
+        ORDER BY equipo_id, fecha DESC, hora_carga DESC NULLS LAST, mov_id DESC
       )
       SELECT 
         p.plan_id, p.nombre AS plan_nombre, p.intervalo_horas, p.intervalo_km, p.intervalo_dias,
         p.tolerancia_horas, p.tolerancia_km, p.tolerancia_dias,
         p.equipo_id, eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
-        eq.horometro_actual, eq.kilometraje_actual,
+        -- Prioridad: 1) último horómetro de combustible (fuente confiable), 2) horometro_actual de equipos (fallback)
+        COALESCE(uc.horometro_comb, eq.horometro_actual) AS horometro_actual,
+        COALESCE(uc.km_comb, eq.kilometraje_actual) AS kilometraje_actual,
+        uc.fecha_comb AS fecha_horometro_fuente,
+        CASE WHEN uc.horometro_comb IS NOT NULL THEN 'combustible' ELSE 'equipos' END AS fuente_horometro,
         emp.razon_social AS empresa_nombre,
         f.nombre AS faena_nombre,
         p.ultimo_servicio_hrs AS semilla_hrs, p.ultimo_servicio_km AS semilla_km, p.ultimo_servicio_fecha AS semilla_fecha,
@@ -3621,6 +3632,7 @@ app.get('/api/mant/vencimientos', auth, async(req,res)=>{
       LEFT JOIN empresas emp ON p.empresa_id=emp.empresa_id
       LEFT JOIN faenas f ON eq.faena_id=f.faena_id
       LEFT JOIN ult_ot u ON u.plan_id=p.plan_id
+      LEFT JOIN ult_comb uc ON uc.equipo_id=p.equipo_id
       WHERE ${where.join(' AND ')}
       ORDER BY eq.codigo NULLS LAST, p.intervalo_horas NULLS LAST`;
     const r=await pool.query(sql,vals);
@@ -3678,6 +3690,35 @@ app.get('/api/mant/vencimientos', auth, async(req,res)=>{
     const filtrados=estado?vencimientos.filter(v=>v.estado_vencimiento===estado):vencimientos;
     res.json(filtrados);
   }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ═══════════════════════════════════════════════════════════════
+// REPARAR HORÓMETROS — Sincroniza equipos.horometro_actual con la
+// última distribución de combustible (fuente operativa confiable)
+// Útil para corregir datos erróneos heredados o con valores absurdos.
+// ═══════════════════════════════════════════════════════════════
+app.post('/api/mant/reparar-horometros', auth, async(req,res)=>{
+  try{
+    const{equipo_id}=req.body||{};
+    var w='', vals=[];
+    if(equipo_id){w='WHERE cm.equipo_id=$1';vals.push(equipo_id);}
+    const sql=`
+      WITH ult AS (
+        SELECT DISTINCT ON (equipo_id) equipo_id, horometro, kilometraje, fecha
+        FROM comb_movimientos cm
+        WHERE tipo_mov='DISTRIBUCION' AND estado='ACTIVO' AND (horometro IS NOT NULL OR kilometraje IS NOT NULL)
+        ${w}
+        ORDER BY equipo_id, fecha DESC, hora_carga DESC NULLS LAST, mov_id DESC
+      )
+      UPDATE equipos e
+      SET horometro_actual = COALESCE(ult.horometro, e.horometro_actual),
+          kilometraje_actual = COALESCE(ult.kilometraje, e.kilometraje_actual)
+      FROM ult
+      WHERE e.equipo_id = ult.equipo_id
+      RETURNING e.equipo_id, e.codigo, e.nombre, ult.horometro, ult.kilometraje, ult.fecha`;
+    const r=await pool.query(sql,vals);
+    res.json({ok:true, equipos_actualizados:r.rows.length, detalle:r.rows});
+  }catch(e){res.status(400).json({error:e.message});}
 });
 
 // ═══════════════════════════════════════════════════════════════
