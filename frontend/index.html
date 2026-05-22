@@ -1072,12 +1072,14 @@ function IngresoView(p){
   return h('div',null,
     h('div',{className:'tb'},
       h(Btn,{onClick:function(){setErr('');setForm(blank);setModal(true);}},'+ Nuevo Ingreso'),
-      h(Btn,{v:'g',onClick:function(){exportXLSX(movs,[{header:'N°',value:r=>r.movimiento_id},{header:'Fecha',value:r=>r.fecha},{header:'Bodega',value:r=>r.bodega_nombre},{header:'Proveedor',value:r=>r.proveedor_nombre},{header:'N° Doc',value:r=>r.numero_documento},{header:'Total',value:r=>r.total_ingreso},{header:'Usuario',value:r=>r.usuario_nombre||r.usuario},{header:'Estado',value:r=>r.estado}],'ingresos');}},null,'Exportar Excel')
+      h(Btn,{v:'g',onClick:function(){exportXLSX(movs,[{header:'N°',value:r=>r.movimiento_id},{header:'Fecha',value:r=>r.fecha},{header:'Bodega',value:r=>r.bodega_nombre},{header:'Proveedor',value:r=>r.proveedor_nombre},{header:'N° Doc',value:r=>r.numero_documento},{header:'Subcategoría',value:r=>r.subcategorias||''},{header:'Detalle Productos',value:r=>r.detalle_productos||''},{header:'Items',value:r=>r.num_lineas||0},{header:'Total',value:r=>r.total_ingreso},{header:'Usuario',value:r=>r.usuario_nombre||r.usuario},{header:'Estado',value:r=>r.estado}],'ingresos');}},null,'Exportar Excel')
     ),
     h('div',{className:'card'},h(TBL,{cols:[
-      {lbl:'N°',k:'movimiento_id',w:60},{lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},{lbl:'Bodega',k:'bodega_nombre'},
+      {lbl:'N°',k:'movimiento_id',w:50},{lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},{lbl:'Bodega',k:'bodega_nombre'},
       {lbl:'Proveedor',k:'proveedor_nombre'},{lbl:'Documento',render:r=>r.numero_documento?(str(r.tipo_doc_nombre)+' '+r.numero_documento):'—'},
-      {lbl:'Items',k:'num_lineas',r:true},{lbl:'Total',r:true,render:r=>CLP(r.total_ingreso||0)},
+      {lbl:'Subcategoría',render:function(r){return h('span',{style:{fontSize:11}},r.subcategorias||'—');}},
+      {lbl:'Detalle',render:function(r){return h('span',{style:{fontSize:11,color:'#475569',maxWidth:260,display:'inline-block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},title:r.detalle_productos||''},r.detalle_productos||'—');}},
+      {lbl:'Items',k:'num_lineas',r:true,c:true},{lbl:'Total',r:true,render:r=>CLP(r.total_ingreso||0)},
       {lbl:'Usuario',render:function(r){return h('span',{style:{fontSize:10,color:'#64748B'},title:r.usuario||''},r.usuario_nombre||r.usuario||'—');}},
       {lbl:'Estado',render:r=>h(Bg,{c:r.estado==='ACTIVO'?'g':'r'},r.estado)},
       {lbl:'',c:true,render:r=>r.estado==='ACTIVO'&&canEditInv()?h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular'):''}
@@ -1804,6 +1806,244 @@ function KardexView(p){
 }
 
 // ── REPORTES VIEW ──
+// ═══════════════════════════════════════════════════════════════════════
+// AUDITORÍA DE INVENTARIO
+// Detecta y corrige inconsistencias en stock y CPP
+// ═══════════════════════════════════════════════════════════════════════
+function InvAuditoriaView(p){
+  const[data,setData]=useState(null);
+  const[loading,setLoading]=useState(false);
+  const[err,setErr]=useState('');
+  const[tab,setTab]=useState('cpp_raro');
+  const[busy,setBusy]=useState(false);
+
+  function cargar(){
+    setLoading(true);setErr('');
+    api('/inv/auditoria','GET',null,p.tok)
+      .then(function(r){setData(r);})
+      .catch(function(e){setErr(e.message);})
+      .finally(function(){setLoading(false);});
+  }
+  useEffect(cargar,[p.tok]);
+
+  function fmtN(n){return new Intl.NumberFormat('es-CL',{maximumFractionDigits:2}).format(parseFloat(n)||0);}
+  function fmtCLP(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+
+  function recalcularStock(pid,bid){
+    if(!confirm('¿Recalcular el stock del producto desde sus movimientos activos?\n\nEsto sobrescribirá la cantidad disponible con la suma calculada (entradas - salidas) y solo aplica para este (producto, bodega).'))return;
+    setBusy(true);
+    api('/inv/recalcular-stock','POST',{producto_id:pid,bodega_id:bid},p.tok)
+      .then(function(r){alert('✓ '+r.filas_actualizadas+' fila(s) actualizada(s)');cargar();})
+      .catch(function(e){alert('Error: '+e.message);})
+      .finally(function(){setBusy(false);});
+  }
+  function recalcularCPP(pid,bid){
+    if(!confirm('¿Recalcular el CPP del producto desde sus movimientos activos en orden cronológico?\n\nÚtil si el CPP quedó negativo o cero por errores históricos.'))return;
+    setBusy(true);
+    api('/inv/recalcular-cpp','POST',{producto_id:pid,bodega_id:bid},p.tok)
+      .then(function(r){alert('✓ '+r.filas_actualizadas+' fila(s) actualizada(s)');cargar();})
+      .catch(function(e){alert('Error: '+e.message);})
+      .finally(function(){setBusy(false);});
+  }
+  function recalcularTodo(tipo){
+    var msg=tipo==='stock'
+      ? '¿Recalcular el stock de TODOS los productos del sistema desde sus movimientos?\n\nEsto sobrescribe las cantidades de stock_actual con la suma de movimientos activos. NO se recomienda en horario operativo.'
+      : '¿Recalcular el CPP de TODOS los productos del sistema?\n\nReprocesa todos los ingresos en orden cronológico para recalcular el costo promedio. NO se recomienda en horario operativo.';
+    if(!confirm(msg))return;
+    setBusy(true);
+    api('/inv/recalcular-'+tipo,'POST',{},p.tok)
+      .then(function(r){alert('✓ '+r.filas_actualizadas+' fila(s) actualizada(s)');cargar();})
+      .catch(function(e){alert('Error: '+e.message);})
+      .finally(function(){setBusy(false);});
+  }
+
+  var res=data&&data.resumen||{};
+  var totalProblemas=(res.cpp_raro||0)+(res.stock_negativo||0)+(res.desincronizacion||0)+(res.cod_duplicados||0)+(res.nom_duplicados||0);
+
+  return h('div',null,
+    h('div',{className:'tb'},
+      h(Btn,{onClick:cargar,disabled:loading||busy},loading?'⏳ Analizando...':'🔄 Volver a analizar'),
+      h(Btn,{v:'r',onClick:function(){recalcularTodo('stock');},disabled:busy,title:'Recalcula stock_actual desde movimientos para TODOS los productos'},'⚙ Recalcular Stock TODOS'),
+      h(Btn,{v:'r',onClick:function(){recalcularTodo('cpp');},disabled:busy,title:'Recalcula CPP desde ingresos para TODOS los productos'},'⚙ Recalcular CPP TODOS')
+    ),
+    err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+
+    h('div',{className:'al al-i',style:{marginBottom:14,fontSize:12}},
+      h('strong',null,'¿Qué revisa esta auditoría?'),h('br'),
+      '• ',h('strong',null,'CPP raro:'),' productos con costo promedio negativo o cero pero con stock disponible.',h('br'),
+      '• ',h('strong',null,'Stock negativo:'),' productos con cantidad disponible < 0.',h('br'),
+      '• ',h('strong',null,'Desincronización:'),' la cantidad guardada en stock_actual no coincide con la suma de movimientos activos.',h('br'),
+      '• ',h('strong',null,'Códigos duplicados:'),' productos diferentes con el mismo código.',h('br'),
+      '• ',h('strong',null,'Nombres duplicados:'),' productos con nombres idénticos pero códigos distintos.'
+    ),
+
+    // Cards resumen
+    data&&!loading&&h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:8,marginBottom:14}},
+      h('div',{className:'card',style:{padding:12,textAlign:'center',borderLeft:'4px solid '+(res.cpp_raro?'#DC2626':'#10B981'),cursor:'pointer'},onClick:function(){setTab('cpp_raro');}},
+        h('div',{style:{fontSize:24,fontWeight:700,color:res.cpp_raro?'#DC2626':'#10B981'}},res.cpp_raro||0),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'CPP negativo/cero')
+      ),
+      h('div',{className:'card',style:{padding:12,textAlign:'center',borderLeft:'4px solid '+(res.stock_negativo?'#DC2626':'#10B981'),cursor:'pointer'},onClick:function(){setTab('stock_negativo');}},
+        h('div',{style:{fontSize:24,fontWeight:700,color:res.stock_negativo?'#DC2626':'#10B981'}},res.stock_negativo||0),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'Stock negativo')
+      ),
+      h('div',{className:'card',style:{padding:12,textAlign:'center',borderLeft:'4px solid '+(res.desincronizacion?'#F59E0B':'#10B981'),cursor:'pointer'},onClick:function(){setTab('desincronizacion');}},
+        h('div',{style:{fontSize:24,fontWeight:700,color:res.desincronizacion?'#F59E0B':'#10B981'}},res.desincronizacion||0),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'Desincronización')
+      ),
+      h('div',{className:'card',style:{padding:12,textAlign:'center',borderLeft:'4px solid '+((res.cod_duplicados+res.nom_duplicados)?'#F59E0B':'#10B981'),cursor:'pointer'},onClick:function(){setTab('duplicados');}},
+        h('div',{style:{fontSize:24,fontWeight:700,color:(res.cod_duplicados+res.nom_duplicados)?'#F59E0B':'#10B981'}},(res.cod_duplicados||0)+(res.nom_duplicados||0)),
+        h('div',{style:{fontSize:10,color:'#64748B'}},'Productos duplicados')
+      )
+    ),
+
+    // Tabs
+    data&&!loading&&h('div',{style:{display:'flex',gap:4,marginBottom:10,borderBottom:'2px solid #E2E8F0',flexWrap:'wrap'}},
+      h('button',{onClick:function(){setTab('cpp_raro');},style:{padding:'7px 12px',background:tab==='cpp_raro'?'#DC2626':'transparent',color:tab==='cpp_raro'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'🔴 CPP raro ('+(res.cpp_raro||0)+')'),
+      h('button',{onClick:function(){setTab('stock_negativo');},style:{padding:'7px 12px',background:tab==='stock_negativo'?'#DC2626':'transparent',color:tab==='stock_negativo'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'⚠ Stock negativo ('+(res.stock_negativo||0)+')'),
+      h('button',{onClick:function(){setTab('desincronizacion');},style:{padding:'7px 12px',background:tab==='desincronizacion'?'#F59E0B':'transparent',color:tab==='desincronizacion'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'⚡ Desincronización ('+(res.desincronizacion||0)+')'),
+      h('button',{onClick:function(){setTab('duplicados');},style:{padding:'7px 12px',background:tab==='duplicados'?'#3B82F6':'transparent',color:tab==='duplicados'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'👥 Duplicados ('+((res.cod_duplicados||0)+(res.nom_duplicados||0))+')'),
+      h('button',{onClick:function(){setTab('anulados');},style:{padding:'7px 12px',background:tab==='anulados'?'#6B7280':'transparent',color:tab==='anulados'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'📌 Anulados recientes ('+(res.anulados_recientes||0)+')'),
+      h('button',{onClick:function(){setTab('huerfanos');},style:{padding:'7px 12px',background:tab==='huerfanos'?'#94A3B8':'transparent',color:tab==='huerfanos'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'🔘 Stock sin mov. ('+(res.stock_sin_mov||0)+')')
+    ),
+
+    // Tab content
+    loading&&h('div',{className:'spin'},'Analizando inventario...'),
+    !loading&&data&&h('div',{style:{maxHeight:'55vh',overflowY:'auto'}},
+
+      tab==='cpp_raro'&&(data.cpp_raro.length===0
+        ? h('div',{className:'al al-s',style:{padding:20,textAlign:'center'}},'✓ No hay productos con CPP raro')
+        : h('table',{className:'tb',style:{fontSize:12}},
+            h('thead',null,h('tr',null,h('th',null,'Código'),h('th',null,'Producto'),h('th',null,'Bodega'),h('th',{className:'r'},'Stock'),h('th',{className:'r'},'CPP'),h('th',{className:'r'},'Valor'),h('th',null,'Acción'))),
+            h('tbody',null,data.cpp_raro.map(function(r,i){
+              return h('tr',{key:i,style:{background:'#FEF2F2'}},
+                h('td',null,h('strong',null,r.codigo)),
+                h('td',null,r.nombre),
+                h('td',{style:{fontSize:11}},r.bodega_nombre),
+                h('td',{className:'r mono'},fmtN(r.cantidad_disponible)),
+                h('td',{className:'r mono',style:{color:'#DC2626',fontWeight:700}},fmtCLP(r.costo_promedio_actual)),
+                h('td',{className:'r mono',style:{color:'#DC2626',fontWeight:700}},fmtCLP(r.valor_calculado)),
+                h('td',null,h('button',{onClick:function(){recalcularCPP(r.producto_id,r.bodega_id);},disabled:busy,style:{padding:'3px 8px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10,fontWeight:600}},'⚙ Recalcular CPP'))
+              );
+            }))
+          )
+      ),
+
+      tab==='stock_negativo'&&(data.stock_negativo.length===0
+        ? h('div',{className:'al al-s',style:{padding:20,textAlign:'center'}},'✓ No hay productos con stock negativo')
+        : h('table',{className:'tb',style:{fontSize:12}},
+            h('thead',null,h('tr',null,h('th',null,'Código'),h('th',null,'Producto'),h('th',null,'Bodega'),h('th',{className:'r'},'Stock'),h('th',null,'Acción'))),
+            h('tbody',null,data.stock_negativo.map(function(r,i){
+              return h('tr',{key:i,style:{background:'#FEF2F2'}},
+                h('td',null,h('strong',null,r.codigo)),
+                h('td',null,r.nombre),
+                h('td',{style:{fontSize:11}},r.bodega_nombre),
+                h('td',{className:'r mono',style:{color:'#DC2626',fontWeight:700}},fmtN(r.cantidad_disponible)),
+                h('td',null,h('button',{onClick:function(){recalcularStock(r.producto_id,r.bodega_id);},disabled:busy,style:{padding:'3px 8px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10,fontWeight:600}},'⚙ Recalcular stock'))
+              );
+            }))
+          )
+      ),
+
+      tab==='desincronizacion'&&(data.desincronizacion.length===0
+        ? h('div',{className:'al al-s',style:{padding:20,textAlign:'center'}},'✓ El stock_actual coincide con la suma de movimientos')
+        : h('div',null,
+            h('div',{className:'al al-w',style:{marginBottom:10,fontSize:11}},'⚠ Estos productos tienen ',h('strong',null,'stock_actual ≠ suma de movimientos'),'. Es la causa más común de errores en inventario. El "Stock calculado" es la cantidad correcta según los movimientos activos.'),
+            h('table',{className:'tb',style:{fontSize:12}},
+              h('thead',null,h('tr',null,h('th',null,'Código'),h('th',null,'Producto'),h('th',null,'Bodega'),h('th',{className:'r'},'Stock sistema'),h('th',{className:'r'},'Stock calculado'),h('th',{className:'r'},'Diferencia'),h('th',null,'Acción'))),
+              h('tbody',null,data.desincronizacion.map(function(r,i){
+                var diff=parseFloat(r.diferencia)||0;
+                return h('tr',{key:i,style:{background:'#FFFBEB'}},
+                  h('td',null,h('strong',null,r.codigo)),
+                  h('td',null,r.nombre),
+                  h('td',{style:{fontSize:11}},r.bodega_nombre),
+                  h('td',{className:'r mono'},fmtN(r.stock_sistema)),
+                  h('td',{className:'r mono',style:{color:'#10B981',fontWeight:600}},fmtN(r.stock_calculado)),
+                  h('td',{className:'r mono',style:{color:diff>0?'#DC2626':'#F59E0B',fontWeight:700}},(diff>0?'+':'')+fmtN(diff)),
+                  h('td',null,h('button',{onClick:function(){recalcularStock(r.producto_id,r.bodega_id);},disabled:busy,style:{padding:'3px 8px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10,fontWeight:600}},'⚙ Sincronizar'))
+                );
+              }))
+            )
+          )
+      ),
+
+      tab==='duplicados'&&h('div',null,
+        data.cod_duplicados.length>0&&h('div',{style:{marginBottom:16}},
+          h('h4',{style:{margin:'0 0 6px 0',color:'#991B1B'}},'🔴 Códigos duplicados ('+data.cod_duplicados.length+')'),
+          h('div',{className:'al al-w',style:{fontSize:11,marginBottom:6}},'Es un problema serio: productos distintos comparten código.'),
+          h('table',{className:'tb',style:{fontSize:12}},
+            h('thead',null,h('tr',null,h('th',null,'Código'),h('th',{className:'c'},'Cantidad'),h('th',null,'Detalle'))),
+            h('tbody',null,data.cod_duplicados.map(function(r,i){
+              return h('tr',{key:i,style:{background:'#FEF2F2'}},
+                h('td',null,h('strong',null,r.codigo)),
+                h('td',{className:'c'},r.cant),
+                h('td',{style:{fontSize:11}},r.detalle)
+              );
+            }))
+          )
+        ),
+        data.nom_duplicados.length>0&&h('div',null,
+          h('h4',{style:{margin:'0 0 6px 0',color:'#92400E'}},'⚠ Nombres duplicados ('+data.nom_duplicados.length+')'),
+          h('div',{className:'al al-i',style:{fontSize:11,marginBottom:6}},'Productos con el mismo nombre pero código distinto. Puede ser intencional o un error de captura.'),
+          h('table',{className:'tb',style:{fontSize:12}},
+            h('thead',null,h('tr',null,h('th',null,'Nombre normalizado'),h('th',{className:'c'},'Cantidad'),h('th',null,'Códigos'))),
+            h('tbody',null,data.nom_duplicados.map(function(r,i){
+              return h('tr',{key:i,style:{background:'#FFFBEB'}},
+                h('td',null,r.nombre_norm),
+                h('td',{className:'c'},r.cant),
+                h('td',{style:{fontSize:11}},r.detalle)
+              );
+            }))
+          )
+        ),
+        data.cod_duplicados.length===0&&data.nom_duplicados.length===0&&h('div',{className:'al al-s',style:{padding:20,textAlign:'center'}},'✓ Sin códigos ni nombres duplicados')
+      ),
+
+      tab==='anulados'&&(data.anulados_recientes.length===0
+        ? h('div',{className:'al al-i',style:{padding:20,textAlign:'center'}},'No hay movimientos anulados en los últimos 90 días')
+        : h('div',null,
+            h('div',{className:'al al-i',style:{fontSize:11,marginBottom:6}},'Movimientos anulados en los últimos 90 días. Si un movimiento se anuló DESPUÉS de generar salidas con su CPP, el CPP histórico de productos pudo quedar contaminado.'),
+            h('table',{className:'tb',style:{fontSize:12}},
+              h('thead',null,h('tr',null,h('th',null,'N°'),h('th',null,'Fecha'),h('th',null,'Tipo'),h('th',null,'Bodega'),h('th',null,'Proveedor'),h('th',{className:'c'},'Líneas'),h('th',{className:'r'},'Valor'),h('th',null,'Usuario'))),
+              h('tbody',null,data.anulados_recientes.map(function(r,i){
+                return h('tr',{key:i},
+                  h('td',null,r.movimiento_id),
+                  h('td',{style:{fontSize:11}},String(r.fecha).slice(0,10).split('-').reverse().join('/')),
+                  h('td',{style:{fontSize:11}},r.tipo_movimiento),
+                  h('td',{style:{fontSize:11}},r.bodega_nombre||'—'),
+                  h('td',{style:{fontSize:11}},r.proveedor_nombre||'—'),
+                  h('td',{className:'c'},r.lineas),
+                  h('td',{className:'r mono'},fmtCLP(r.valor_total)),
+                  h('td',{style:{fontSize:10,color:'#64748B'}},r.usuario||'—')
+                );
+              }))
+            )
+          )
+      ),
+
+      tab==='huerfanos'&&(data.stock_sin_mov.length===0
+        ? h('div',{className:'al al-s',style:{padding:20,textAlign:'center'}},'✓ Todo el stock tiene movimientos que lo respaldan')
+        : h('div',null,
+            h('div',{className:'al al-w',style:{fontSize:11,marginBottom:6}},'Stock con cantidad > 0 pero sin movimientos activos que lo respalden. Probablemente cargados manualmente o por movimientos anulados.'),
+            h('table',{className:'tb',style:{fontSize:12}},
+              h('thead',null,h('tr',null,h('th',null,'Código'),h('th',null,'Producto'),h('th',null,'Bodega'),h('th',{className:'r'},'Stock'),h('th',{className:'r'},'CPP'),h('th',null,'Acción'))),
+              h('tbody',null,data.stock_sin_mov.map(function(r,i){
+                return h('tr',{key:i},
+                  h('td',null,h('strong',null,r.codigo)),
+                  h('td',null,r.nombre),
+                  h('td',{style:{fontSize:11}},r.bodega_nombre),
+                  h('td',{className:'r mono'},fmtN(r.cantidad_disponible)),
+                  h('td',{className:'r mono'},fmtCLP(r.costo_promedio_actual)),
+                  h('td',null,h('button',{onClick:function(){recalcularStock(r.producto_id,r.bodega_id);},disabled:busy,style:{padding:'3px 8px',background:'#DC2626',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10,fontWeight:600},title:'Recalcular: pondrá stock en 0 si no hay movimientos'},'⚙ Limpiar'))
+                );
+              }))
+            )
+          )
+      )
+    )
+  );
+}
+
 function ReportesView(p){
   const faenas=p.m&&Array.isArray(p.m.faenas)?p.m.faenas:[];
   const equipos=p.m&&Array.isArray(p.m.equipos)?p.m.equipos:[];
@@ -16209,7 +16449,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','comb-auditoria':'Combustibles — Auditoría vs Terreno','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -16857,7 +17097,7 @@ function App(){
   var VIEW_MOD={
     'ordenes':'ordenes','oc-guias':'ordenes','dte-recibidos':'ordenes','bandeja-dte-oc':'ordenes',
     'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-auditoria':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
-    'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-reportes':'inventario',
+    'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-auditoria':'inventario','inv-reportes':'inventario',
     'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion','mant-planes':'mantencion','mant-vencimientos':'mantencion','mant-programacion':'mantencion','mant-avisos':'mantencion',
     'rendiciones':'rendiciones',
     'terreno':'terreno','terreno-equipos':'terreno','terreno-faena':'terreno','terreno-reportes':'terreno',
@@ -17025,6 +17265,7 @@ function App(){
           navI('traspasos','⇄','Traspasos entre bodegas',true),
           navI('stock','■','Stock actual',true),
           navI('kardex','≡','Kardex',true),
+          navI('inv-auditoria','🔍','Auditoría Inventario',true),
           navI('reportes','◈','Reportes',true)
         ),
         canSee('inventario')&&h('div',{className:'sb-sep'}),
@@ -17142,6 +17383,7 @@ function App(){
           view==='traspasos'&&h(TraspasoView,{tok,m,user,onMov}),
           view==='stock'&&h(StockView,{tok,m}),
           view==='kardex'&&h(KardexView,{tok,m}),
+          view==='inv-auditoria'&&h(InvAuditoriaView,{tok,m}),
           view==='reportes'&&h(ReportesView,{tok,m}),
           view==='ordenes'&&h(OCView,{tok,m,user,setView}),
           view==='oc-guias'&&h(OCGuiasView,{tok,m}),
