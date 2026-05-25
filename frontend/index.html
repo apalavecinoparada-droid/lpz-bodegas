@@ -2482,18 +2482,34 @@ function TerrenoInforme(p){
       Number((t.litros_combustible||0).toFixed(2)),
       '',t.disponibilidad_pct!=null?Number(t.disponibilidad_pct.toFixed(1)):'—']);
     XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(resData),'Resumen');
-    // Hoja 2: Detalle
-    var detData=[['Fecha','Empresa','Faena','Código','Equipo','Tipo','Horómetro inicial','Horómetro final','Hrs trabajadas','Hrs perdidas','Litros','Observaciones']];
+    // Hoja 2: Detalle (con descripción del tiempo perdido / TOB)
+    var detData=[['Fecha','Empresa','Faena','Código','Equipo','Tipo','Horómetro inicial','Horómetro final','Hrs trabajadas','Hrs perdidas','Descripción tiempo perdido (TOB)','Litros','Observaciones']];
     (data.detalle||[]).forEach(function(r){
       detData.push([(r.fecha+'').slice(0,10),r.empresa_nombre||'—',r.faena_nombre||'—',r.equipo_codigo,r.equipo_nombre,r.tipo_cargo,
         Number((parseFloat(r.horometro_inicial)||0).toFixed(2)),
         Number((parseFloat(r.horometro_final)||0).toFixed(2)),
         Number((parseFloat(r.horas_trabajadas)||0).toFixed(2)),
         Number((parseFloat(r.horas_perdidas)||0).toFixed(2)),
+        r.tob_descripcion||'',
         Number((parseFloat(r.litros_combustible)||0).toFixed(2)),
         r.observaciones||'']);
     });
     XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(detData),'Detalle');
+
+    // Hoja extra: Detalle TOB (una fila por cada tiempo obvio individual)
+    var tobRows=[['Fecha','Empresa','Faena','Código','Equipo','Causa','Clasificación','Horas','Observación TOB']];
+    (data.detalle||[]).forEach(function(r){
+      (r.tob_detalle||[]).forEach(function(t){
+        tobRows.push([
+          (r.fecha+'').slice(0,10),
+          r.empresa_nombre||'—', r.faena_nombre||'—', r.equipo_codigo, r.equipo_nombre,
+          t.causa||'—', t.clasificacion||'—',
+          Number((parseFloat(t.horas)||0).toFixed(2)),
+          t.observacion||''
+        ]);
+      });
+    });
+    if(tobRows.length>1) XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(tobRows),'Detalle TOB');
     // Hoja 3: TOB top
     if((data.tob_top||[]).length){
       var tobData=[['Causa','Clasificación','Veces','Horas']];
@@ -3772,6 +3788,17 @@ function SolicitudesView(p){
   var userId=p.user?p.user.id:null;
   var[solicitudes,setSolicitudes]=useState([]);var[usuarios,setUsuarios]=useState([]);
   var[tab,setTab]=useState('recibidas');var[showForm,setShowForm]=useState(false);var[msg,setMsg]=useState('');
+  // Filtros completos
+  var[fEstado,setFEstado]=useState('');
+  var[fPrioridad,setFPrioridad]=useState('');
+  var[fFaena,setFFaena]=useState('');
+  var[fEquipo,setFEquipo]=useState('');
+  var[fSubcat,setFSubcat]=useState('');
+  var[fSolicita,setFSolicita]=useState('');
+  var[fDirigida,setFDirigida]=useState('');
+  var[fDesde,setFDesde]=useState('');
+  var[fHasta,setFHasta]=useState('');
+  var[fSearch,setFSearch]=useState('');
   var[respModal,setRespModal]=useState(null);var[respText,setRespText]=useState('');
   var[form,setForm]=useState({dirigida_a_id:'',empresa_id:'',prioridad:'normal',lineas:[{cantidad:1,detalle:'',subcategoria_id:'',faena_id:'',equipo_id:''}]});
   function load(){api('/solicitudes','GET',null,p.tok).then(function(r){setSolicitudes(Array.isArray(r)?r:[]);}).catch(function(){});}
@@ -3821,10 +3848,26 @@ function SolicitudesView(p){
   function cancelarEdicion(){setEditing(null);setShowForm(false);setForm({dirigida_a_id:'',empresa_id:'',prioridad:'normal',lineas:[{cantidad:1,detalle:'',subcategoria_id:'',faena_id:'',equipo_id:''}]});}
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
   var filtered=solicitudes.filter(function(s){
-    if(tab==='recibidas')return String(s.dirigida_a_id)===String(userId);
-    if(tab==='enviadas')return String(s.solicitante_id)===String(userId);
+    if(tab==='recibidas'&&String(s.dirigida_a_id)!==String(userId))return false;
+    if(tab==='enviadas'&&String(s.solicitante_id)!==String(userId))return false;
+    if(fEstado&&s.estado!==fEstado)return false;
+    if(fPrioridad&&(s.prioridad||'normal')!==fPrioridad)return false;
+    if(fFaena&&String(s.faena_id||'')!==String(fFaena))return false;
+    if(fEquipo&&String(s.equipo_id||'')!==String(fEquipo))return false;
+    if(fSubcat&&String(s.subcategoria_id||'')!==String(fSubcat))return false;
+    if(fSolicita&&String(s.solicitante_id||'')!==String(fSolicita))return false;
+    if(fDirigida&&String(s.dirigida_a_id||'')!==String(fDirigida))return false;
+    if(fDesde&&String(s.fecha_creacion||'').slice(0,10)<fDesde)return false;
+    if(fHasta&&String(s.fecha_creacion||'').slice(0,10)>fHasta)return false;
+    if(fSearch){
+      var q=fSearch.toLowerCase();
+      var hay=[s.detalle,s.solicitante_nombre,s.dirigida_a_nombre,s.respuesta,s.faena_nombre,s.equipo_codigo,s.equipo_nombre,s.subcategoria_nombre].join(' ').toLowerCase();
+      if(hay.indexOf(q)<0)return false;
+    }
     return true;
   });
+  var hayFiltros=fEstado||fPrioridad||fFaena||fEquipo||fSubcat||fSolicita||fDirigida||fDesde||fHasta||fSearch;
+  function limpiarFiltros(){setFEstado('');setFPrioridad('');setFFaena('');setFEquipo('');setFSubcat('');setFSolicita('');setFDirigida('');setFDesde('');setFHasta('');setFSearch('');}
   var esAdmin=p.user&&p.user.es_admin;
   var pendientes=solicitudes.filter(function(s){return s.estado==='pendiente'&&(esAdmin||String(s.dirigida_a_id)===String(userId));}).length;
   var enCursoCount=solicitudes.filter(function(s){return s.estado==='en_curso'&&(esAdmin||String(s.dirigida_a_id)===String(userId));}).length;
@@ -3841,6 +3884,52 @@ function SolicitudesView(p){
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
       h('div',{style:{display:'flex',gap:4}},tabs.map(function(t){return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'6px 14px',borderRadius:5,fontSize:12,cursor:'pointer',border:'1px solid #CBD5E1',background:tab===t.k?'#1E3A2D':'#F8FAFC',color:tab===t.k?'#fff':'#475569',fontWeight:tab===t.k?600:400}},t.l);})),
       h(Btn,{onClick:function(){if(showForm){cancelarEdicion();}else{setShowForm(true);}}},showForm?'Cancelar':'+ Nueva Solicitud')
+    ),
+
+    // ── Barra de filtros ──
+    h('div',{className:'card',style:{padding:10,marginBottom:10,background:'#F8FAFC'}},
+      h('div',{style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}},
+        h('input',{type:'text',placeholder:'🔍 Buscar texto en detalle/respuesta/persona...',value:fSearch,onChange:function(e){setFSearch(e.target.value);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:240,flex:1}}),
+        h('select',{value:fEstado,onChange:function(e){setFEstado(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
+          h('option',{value:''},'Estado: todos'),
+          h('option',{value:'pendiente'},'Pendiente'),
+          h('option',{value:'en_curso'},'En curso'),
+          h('option',{value:'completada'},'Completada'),
+          h('option',{value:'rechazada'},'Rechazada')
+        ),
+        h('select',{value:fPrioridad,onChange:function(e){setFPrioridad(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
+          h('option',{value:''},'Prioridad: todas'),
+          PRIORIDADES_SOL.map(function(pr){return h('option',{key:pr.v,value:pr.v},pr.l);})
+        ),
+        h('select',{value:fFaena,onChange:function(e){setFFaena(e.target.value);setFEquipo('');},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,maxWidth:180}},
+          h('option',{value:''},'Faena: todas'),
+          faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})
+        ),
+        h('select',{value:fEquipo,onChange:function(e){setFEquipo(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,maxWidth:180}},
+          h('option',{value:''},'Equipo: todos'),
+          (fFaena?equipos.filter(function(eq){return String(eq.faena_id||'')===String(fFaena);}):equipos).map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);})
+        ),
+        h('select',{value:fSubcat,onChange:function(e){setFSubcat(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,maxWidth:160}},
+          h('option',{value:''},'Subcat: todas'),
+          subcats.map(function(s){return h('option',{key:s.subcategoria_id,value:s.subcategoria_id},s.nombre);})
+        )
+      ),
+      h('div',{style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginTop:6}},
+        h('select',{value:fSolicita,onChange:function(e){setFSolicita(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,maxWidth:180}},
+          h('option',{value:''},'Solicita: todos'),
+          usuarios.map(function(u){return h('option',{key:u.usuario_id,value:u.usuario_id},u.nombre);})
+        ),
+        h('select',{value:fDirigida,onChange:function(e){setFDirigida(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,maxWidth:180}},
+          h('option',{value:''},'Dirigida a: todos'),
+          usuarios.map(function(u){return h('option',{key:u.usuario_id,value:u.usuario_id},u.nombre);})
+        ),
+        h('span',{style:{fontSize:11,color:'#64748B'}},'Fecha:'),
+        h('input',{type:'date',value:fDesde,onChange:function(e){setFDesde(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}}),
+        h('span',{style:{fontSize:11,color:'#64748B'}},'a'),
+        h('input',{type:'date',value:fHasta,onChange:function(e){setFHasta(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}}),
+        hayFiltros&&h('button',{onClick:limpiarFiltros,style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
+        h('span',{style:{fontSize:11,color:'#475569',marginLeft:'auto',fontWeight:600}},'Mostrando '+filtered.length+' de '+solicitudes.length)
+      )
     ),
     msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
     showForm&&h('div',{className:'card',style:{marginBottom:12,borderLeft:editing?'4px solid #1E40AF':'4px solid #1E3A2D'}},
@@ -9465,7 +9554,9 @@ function MantPlanDetalleModal(p){
   }
 
   var tareasFilt=filtTipo?tareas.filter(function(t){return t.tipo===filtTipo;}):tareas;
-  var sistemas=Array.from(new Set(tareas.map(function(t){return t.sistema;}).filter(Boolean))).sort();
+  var SISTEMAS_BASE=['Cabina','Electrico','Hidraulico','Motor','Sistema de Corte','Transmision','Rodado y Neumaticos','Otro'];
+  var sistemasUsados=tareas.map(function(t){return t.sistema;}).filter(Boolean);
+  var sistemas=Array.from(new Set(SISTEMAS_BASE.concat(sistemasUsados))).sort();
   var inpS={width:'100%',padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:11,boxSizing:'border-box'};
 
   return h(Modal,{title:'📐 '+(p.plan.nombre||'Plan'),onClose:p.onClose,xl:true},
