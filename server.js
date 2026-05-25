@@ -581,6 +581,28 @@ async function setupMantenciones(q){
   try{await q('ALTER TABLE mant_planes ADD COLUMN IF NOT EXISTS ultimo_servicio_km INT');}catch(e){}
   try{await q('ALTER TABLE mant_planes ADD COLUMN IF NOT EXISTS ultimo_servicio_fecha DATE');}catch(e){}
 
+  // ── Programación semanal de mano de obra de mantención ──
+  await q(`CREATE TABLE IF NOT EXISTS mant_prog_tareas (
+    tarea_id SERIAL PRIMARY KEY,
+    anio INT NOT NULL,
+    mes INT NOT NULL,
+    semana INT NOT NULL,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    faena_id INT REFERENCES faenas(faena_id),
+    equipo_id INT REFERENCES equipos(equipo_id),
+    detalle TEXT NOT NULL,
+    estado VARCHAR(20) DEFAULT 'programado',
+    notas TEXT,
+    -- matriz dias[7][3] con persona_ids o nombres en JSONB
+    -- formato: [[id1,id2,id3], ...] - 7 arrays (lun..dom), cada uno con hasta 3 strings
+    dias JSONB DEFAULT '[[],[],[],[],[],[],[]]',
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    actualizado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  try{await q('CREATE INDEX IF NOT EXISTS idx_mant_prog_anio_semana ON mant_prog_tareas(anio,mes,semana)');}catch(e){}
+  try{await q('CREATE INDEX IF NOT EXISTS idx_mant_prog_estado ON mant_prog_tareas(estado)');}catch(e){}
+
   // ── ALTER comb_movimientos: agregar hora de carga (para soportar múltiples cargas/día) ──
   try{await q('ALTER TABLE comb_movimientos ADD COLUMN IF NOT EXISTS hora_carga TIME');}catch(e){}
 
@@ -4024,6 +4046,211 @@ app.post('/api/mant/reparar-horometros', auth, async(req,res)=>{
 // Para cada (equipo + intervalo) actualiza el campo ultimo_servicio_hrs del plan
 // (toma el MÁXIMO valor del último cambio porque viene a nivel de tarea)
 // ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// PROGRAMACIÓN SEMANAL DE MANO DE OBRA
+// ═══════════════════════════════════════════════════════════════
+
+// ─── GET: listar mecánicos disponibles (personas con participa_mantencion=true) ───
+app.get('/api/mant/mecanicos', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`
+      SELECT p.persona_id, p.nombre_completo, p.cargo, p.especialidad, p.telefono, p.empresa_id, e.razon_social AS empresa_nombre
+      FROM personal p
+      LEFT JOIN empresas e ON p.empresa_id=e.empresa_id
+      WHERE p.activo=true AND p.participa_mantencion=true
+      ORDER BY p.nombre_completo`);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ─── GET: listar tareas programadas (filtrable por año/mes/semana) ───
+app.get('/api/mant/prog-tareas', auth, async(req,res)=>{
+  try{
+    const{anio,mes,semana,faena_id,empresa_id,estado}=req.query;
+    let where=['1=1'],vals=[];
+    if(anio){vals.push(anio);where.push(`t.anio=$${vals.length}`);}
+    if(mes){vals.push(mes);where.push(`t.mes=$${vals.length}`);}
+    if(semana){vals.push(semana);where.push(`t.semana=$${vals.length}`);}
+    if(faena_id){vals.push(faena_id);where.push(`t.faena_id=$${vals.length}`);}
+    if(empresa_id){vals.push(empresa_id);where.push(`t.empresa_id=$${vals.length}`);}
+    if(estado){vals.push(estado);where.push(`t.estado=$${vals.length}`);}
+    const r=await pool.query(`
+      SELECT t.*, e.razon_social AS empresa_nombre, f.nombre AS faena_nombre, 
+             eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre
+      FROM mant_prog_tareas t
+      LEFT JOIN empresas e ON t.empresa_id=e.empresa_id
+      LEFT JOIN faenas f ON t.faena_id=f.faena_id
+      LEFT JOIN equipos eq ON t.equipo_id=eq.equipo_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY t.anio,t.mes,t.semana,t.tarea_id`,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ─── POST: crear tarea programada ───
+app.post('/api/mant/prog-tareas', auth, async(req,res)=>{
+  try{
+    const b=req.body||{};
+    if(!b.detalle) return res.status(400).json({error:'Detalle requerido'});
+    if(!b.anio||!b.mes||!b.semana) return res.status(400).json({error:'Año, mes y semana requeridos'});
+    const dias=Array.isArray(b.dias)?b.dias:[[],[],[],[],[],[],[]];
+    while(dias.length<7) dias.push([]);
+    const r=await pool.query(`
+      INSERT INTO mant_prog_tareas(anio,mes,semana,empresa_id,faena_id,equipo_id,detalle,estado,notas,dias,usuario)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+      [b.anio,b.mes,b.semana,b.empresa_id||null,b.faena_id||null,b.equipo_id||null,b.detalle,b.estado||'programado',b.notas||null,JSON.stringify(dias),req.user.email]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ─── PUT: editar tarea programada ───
+app.put('/api/mant/prog-tareas/:id', auth, async(req,res)=>{
+  try{
+    const b=req.body||{};
+    const fields=['anio','mes','semana','empresa_id','faena_id','equipo_id','detalle','estado','notas'];
+    var sets=[],vals=[];
+    fields.forEach(function(f){
+      if(b[f]!==undefined){vals.push(b[f]||null);sets.push(f+'=$'+vals.length);}
+    });
+    if(b.dias!==undefined){
+      const dias=Array.isArray(b.dias)?b.dias:[[],[],[],[],[],[],[]];
+      while(dias.length<7) dias.push([]);
+      vals.push(JSON.stringify(dias));sets.push('dias=$'+vals.length);
+    }
+    sets.push('actualizado_en=NOW()');
+    if(!sets.length) return res.status(400).json({error:'Sin campos'});
+    vals.push(req.params.id);
+    const r=await pool.query('UPDATE mant_prog_tareas SET '+sets.join(',')+' WHERE tarea_id=$'+vals.length+' RETURNING *',vals);
+    if(!r.rows.length) return res.status(404).json({error:'No encontrada'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ─── DELETE: eliminar tarea programada ───
+app.delete('/api/mant/prog-tareas/:id', auth, async(req,res)=>{
+  try{
+    await pool.query('DELETE FROM mant_prog_tareas WHERE tarea_id=$1',[req.params.id]);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ─── POST: reprogramar pendientes de una semana anterior a la siguiente ───
+// Copia tareas con estado 'pendiente' o 'reprogramado' de la semana origen a la destino
+// marcándolas como 'reprogramado'
+app.post('/api/mant/prog-tareas/reprogramar', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const{anio_origen,mes_origen,semana_origen,anio_destino,mes_destino,semana_destino}=req.body||{};
+    if(!anio_origen||!semana_origen||!anio_destino||!semana_destino) return res.status(400).json({error:'Parámetros requeridos'});
+    await client.query('BEGIN');
+    const pend=await client.query(`
+      SELECT * FROM mant_prog_tareas 
+      WHERE anio=$1 AND mes=$2 AND semana=$3 AND estado IN ('pendiente','reprogramado','en_curso')`,
+      [anio_origen,mes_origen,semana_origen]);
+    let copiadas=0;
+    for(const t of pend.rows){
+      // Verificar que no exista una ya reprogramada con mismo detalle/equipo en la semana destino
+      const exists=await client.query(
+        "SELECT 1 FROM mant_prog_tareas WHERE anio=$1 AND mes=$2 AND semana=$3 AND detalle=$4 AND COALESCE(equipo_id,0)=COALESCE($5,0)",
+        [anio_destino,mes_destino,semana_destino,t.detalle,t.equipo_id]);
+      if(exists.rows.length) continue;
+      await client.query(`
+        INSERT INTO mant_prog_tareas(anio,mes,semana,empresa_id,faena_id,equipo_id,detalle,estado,notas,dias,usuario)
+        VALUES($1,$2,$3,$4,$5,$6,$7,'reprogramado',$8,'[[],[],[],[],[],[],[]]',$9)`,
+        [anio_destino,mes_destino,semana_destino,t.empresa_id,t.faena_id,t.equipo_id,t.detalle,t.notas,req.user.email]);
+      copiadas++;
+    }
+    await client.query('COMMIT');
+    res.json({ok:true,copiadas:copiadas,encontradas:pend.rows.length});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// ─── POST: importar tareas desde Excel (formato plantilla v5) ───
+// Body: { filas: [{anio,mes,semana,empresa_nombre,faena_nombre,cargo_equipo,detalle,estado,dias:[[...],...],notas},...], modo:'agregar'|'reemplazar' }
+app.post('/api/mant/prog-tareas/importar', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const filas=Array.isArray(req.body.filas)?req.body.filas:[];
+    const modo=req.body.modo||'agregar';
+    if(!filas.length) return res.status(400).json({error:'No hay filas para importar'});
+
+    // Pre-cargar catálogos para resolver nombres → ids
+    const[emps,faenas,equipos]=await Promise.all([
+      client.query('SELECT empresa_id,razon_social FROM empresas WHERE activo=true'),
+      client.query('SELECT faena_id,nombre,empresa_id FROM faenas WHERE activo=true'),
+      client.query('SELECT equipo_id,codigo,nombre FROM equipos WHERE activo=true')
+    ]);
+    function findEmp(nombre){
+      if(!nombre) return null;
+      const n=String(nombre).trim().toLowerCase();
+      return emps.rows.find(e=>String(e.razon_social).trim().toLowerCase()===n)||null;
+    }
+    function findFaena(nombre,empresa_id){
+      if(!nombre) return null;
+      const n=String(nombre).trim().toLowerCase();
+      return faenas.rows.find(f=>String(f.nombre).trim().toLowerCase()===n&&(!empresa_id||f.empresa_id===empresa_id))||null;
+    }
+    function findEquipo(cargo){
+      if(!cargo) return null;
+      const n=String(cargo).trim().toLowerCase().replace(/[\s\-_]/g,'');
+      return equipos.rows.find(eq=>{
+        const ne=String(eq.nombre||'').trim().toLowerCase().replace(/[\s\-_]/g,'');
+        const ce=String(eq.codigo||'').trim().toLowerCase().replace(/[\s\-_]/g,'');
+        return ne===n||ce===n;
+      })||null;
+    }
+
+    await client.query('BEGIN');
+    let creadas=0, ignoradas=0, reemplazadas=0;
+    const sinResolver={empresas:new Set(),faenas:new Set(),cargos:new Set()};
+
+    // Si modo reemplazar, identificar semanas únicas y borrarlas primero
+    if(modo==='reemplazar'){
+      const semanas=new Set();
+      filas.forEach(f=>{if(f.anio&&f.semana) semanas.add(f.anio+'_'+(f.mes||0)+'_'+f.semana);});
+      for(const k of semanas){
+        const[a,m,s]=k.split('_');
+        const d=await client.query('DELETE FROM mant_prog_tareas WHERE anio=$1 AND mes=$2 AND semana=$3',[a,m,s]);
+        reemplazadas+=d.rowCount;
+      }
+    }
+
+    for(const f of filas){
+      if(!f.detalle||!f.anio||!f.semana){ignoradas++;continue;}
+      const emp=findEmp(f.empresa_nombre);
+      if(f.empresa_nombre&&!emp) sinResolver.empresas.add(f.empresa_nombre);
+      const fae=findFaena(f.faena_nombre, emp?emp.empresa_id:null);
+      if(f.faena_nombre&&!fae) sinResolver.faenas.add(f.faena_nombre);
+      const eq=findEquipo(f.cargo_equipo);
+      if(f.cargo_equipo&&!eq) sinResolver.cargos.add(f.cargo_equipo);
+      // dias debe ser [[],[],[],[],[],[],[]]
+      let dias=Array.isArray(f.dias)?f.dias:[[],[],[],[],[],[],[]];
+      while(dias.length<7) dias.push([]);
+      dias=dias.map(d=>Array.isArray(d)?d.filter(Boolean).slice(0,3):[]);
+      await client.query(`
+        INSERT INTO mant_prog_tareas(anio,mes,semana,empresa_id,faena_id,equipo_id,detalle,estado,notas,dias,usuario)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [parseInt(f.anio),parseInt(f.mes||0),parseInt(f.semana),
+         emp?emp.empresa_id:null, fae?fae.faena_id:null, eq?eq.equipo_id:null,
+         String(f.detalle).slice(0,2000),
+         f.estado||'programado',
+         f.notas||null,
+         JSON.stringify(dias),
+         req.user.email]);
+      creadas++;
+    }
+    await client.query('COMMIT');
+    res.json({
+      ok:true, creadas, ignoradas, reemplazadas,
+      empresas_no_encontradas:Array.from(sinResolver.empresas),
+      faenas_no_encontradas:Array.from(sinResolver.faenas),
+      cargos_no_encontrados:Array.from(sinResolver.cargos)
+    });
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
 app.post('/api/mant/planes/cargar-ultimo-servicio', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
