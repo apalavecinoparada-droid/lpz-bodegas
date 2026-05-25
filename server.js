@@ -4247,11 +4247,38 @@ app.post('/api/mant/prog-tareas/importar', auth, async(req,res)=>{
     await client.query('BEGIN');
     let creadas=0, ignoradas=0, reemplazadas=0;
     const sinResolver={empresas:new Set(),faenas:new Set(),cargos:new Set()};
+    const semanasCreadas=new Set();
+
+    // Helper: convertir "semana del mes" (1-6) a "semana ISO del año"
+    // Si la semana es > 6, se asume que ya es semana del año
+    function semanaDelAnio(anio, mes, semanaMes){
+      if(!mes || semanaMes>6) return parseInt(semanaMes);
+      // Primer día del mes
+      const first=new Date(anio, mes-1, 1);
+      // Ir al lunes de la semana que contiene el día 1 (norma ISO)
+      let d=new Date(first);
+      const dow=d.getDay(); // 0=dom..6=sab
+      const shift=dow===0?-6:(1-dow);
+      d.setDate(d.getDate()+shift);
+      // Avanzar (semanaMes-1) semanas
+      d.setDate(d.getDate()+(semanaMes-1)*7);
+      // Calcular semana ISO del año
+      const x=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));
+      const day=x.getUTCDay()||7;
+      x.setUTCDate(x.getUTCDate()+4-day);
+      const yearStart=new Date(Date.UTC(x.getUTCFullYear(),0,1));
+      return Math.ceil((((x-yearStart)/86400000)+1)/7);
+    }
 
     // Si modo reemplazar, identificar semanas únicas y borrarlas primero
     if(modo==='reemplazar'){
       const semanas=new Set();
-      filas.forEach(f=>{if(f.anio&&f.semana) semanas.add(f.anio+'_'+(f.mes||0)+'_'+f.semana);});
+      filas.forEach(f=>{
+        if(f.anio&&f.semana){
+          const sAnio=semanaDelAnio(parseInt(f.anio),parseInt(f.mes||0),parseInt(f.semana));
+          semanas.add(f.anio+'_'+(f.mes||0)+'_'+sAnio);
+        }
+      });
       for(const k of semanas){
         const[a,m,s]=k.split('_');
         const d=await client.query('DELETE FROM mant_prog_tareas WHERE anio=$1 AND mes=$2 AND semana=$3',[a,m,s]);
@@ -4281,10 +4308,13 @@ app.post('/api/mant/prog-tareas/importar', auth, async(req,res)=>{
       while(dias.length<7) dias.push([]);
       // Limpiar cada slot: trim y descartar vacíos o de 1 caracter
       dias=dias.map(d=>Array.isArray(d)?d.map(m=>String(m||'').trim()).filter(m=>m.length>1).slice(0,3):[]);
+      // Convertir semana del mes (1-6) a semana ISO del año
+      const sAnio=semanaDelAnio(parseInt(f.anio),parseInt(f.mes||0),parseInt(f.semana));
+      semanasCreadas.add(f.anio+'-M'+(f.mes||0)+'-S'+sAnio);
       await client.query(`
         INSERT INTO mant_prog_tareas(anio,mes,semana,empresa_id,faena_id,equipo_id,detalle,estado,notas,dias,usuario)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-        [parseInt(f.anio),parseInt(f.mes||0),parseInt(f.semana),
+        [parseInt(f.anio),parseInt(f.mes||0),sAnio,
          emp?emp.empresa_id:null, fae?fae.faena_id:null, eq?eq.equipo_id:null,
          String(f.detalle).trim().slice(0,2000),
          normEstado(f.estado),
@@ -4296,10 +4326,46 @@ app.post('/api/mant/prog-tareas/importar', auth, async(req,res)=>{
     await client.query('COMMIT');
     res.json({
       ok:true, creadas, ignoradas, reemplazadas,
+      semanas_creadas:Array.from(semanasCreadas).sort(),
       empresas_no_encontradas:Array.from(sinResolver.empresas),
       faenas_no_encontradas:Array.from(sinResolver.faenas),
       cargos_no_encontrados:Array.from(sinResolver.cargos)
     });
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// ─── POST: migrar tareas con "semana del mes" (1-6) a "semana ISO del año" ───
+// Útil para corregir importaciones anteriores donde las semanas se guardaron como número relativo al mes
+app.post('/api/mant/prog-tareas/migrar-semanas', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    function semanaDelAnio(anio,mes,semanaMes){
+      if(!mes||semanaMes>6) return parseInt(semanaMes);
+      const first=new Date(anio,mes-1,1);
+      let d=new Date(first);
+      const dow=d.getDay();
+      const shift=dow===0?-6:(1-dow);
+      d.setDate(d.getDate()+shift);
+      d.setDate(d.getDate()+(semanaMes-1)*7);
+      const x=new Date(Date.UTC(d.getFullYear(),d.getMonth(),d.getDate()));
+      const day=x.getUTCDay()||7;
+      x.setUTCDate(x.getUTCDate()+4-day);
+      const yearStart=new Date(Date.UTC(x.getUTCFullYear(),0,1));
+      return Math.ceil((((x-yearStart)/86400000)+1)/7);
+    }
+    await client.query('BEGIN');
+    const r=await client.query("SELECT tarea_id,anio,mes,semana FROM mant_prog_tareas WHERE semana<=6 AND mes>0");
+    let migradas=0;
+    for(const t of r.rows){
+      const sAnio=semanaDelAnio(t.anio,t.mes,t.semana);
+      if(sAnio!==t.semana){
+        await client.query('UPDATE mant_prog_tareas SET semana=$1 WHERE tarea_id=$2',[sAnio,t.tarea_id]);
+        migradas++;
+      }
+    }
+    await client.query('COMMIT');
+    res.json({ok:true,revisadas:r.rows.length,migradas:migradas});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
