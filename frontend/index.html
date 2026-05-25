@@ -10380,7 +10380,23 @@ function MantProgView(p){
       api('/mant/mecanicos','GET',null,p.tok)
     ]).then(function(r){
       setTareas(Array.isArray(r[0])?r[0]:[]);
-      setMecanicos(Array.isArray(r[1])?r[1]:[]);
+      // El endpoint ahora retorna {sistema:[...], usados_en_tareas:[...]}
+      // Combinamos en una lista única de nombres (con dedupe case-insensitive)
+      const mec=r[1]||{};
+      const sistema=Array.isArray(mec.sistema)?mec.sistema:[];
+      const usados=Array.isArray(mec.usados_en_tareas)?mec.usados_en_tareas:[];
+      // Construir lista combinada: primero sistema, luego usados que no estén ya
+      const lista=[];
+      const seen=new Set();
+      sistema.forEach(function(s){
+        const k=String(s.nombre_completo||'').toLowerCase().trim();
+        if(k&&!seen.has(k)){seen.add(k);lista.push({nombre:s.nombre_completo,fuente:'sistema',es_mantencion:s.es_mantencion});}
+      });
+      usados.forEach(function(u){
+        const k=String(u).toLowerCase().trim();
+        if(k&&!seen.has(k)){seen.add(k);lista.push({nombre:u,fuente:'tareas',es_mantencion:false});}
+      });
+      setMecanicos(lista);
     }).catch(function(e){setErr(e.message);})
     .finally(function(){setLoading(false);});
   }
@@ -10536,7 +10552,7 @@ function MantProgView(p){
       ),
       h('select',{value:filtMec,onChange:function(e){setFiltMec(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
         h('option',{value:''},'Todos'),
-        mecanicos.map(function(m){return h('option',{key:m.persona_id,value:m.nombre_completo},m.nombre_completo);})
+        mecanicos.map(function(m,i){return h('option',{key:i,value:m.nombre},m.nombre+(m.fuente==='sistema'?'':' (externo)'));})
       )
     ),
 
@@ -10826,16 +10842,16 @@ function ProgTaskModal(p){
       ),
       // Matriz 7 días x 3 mecánicos
       h('div',{style:{marginBottom:10}},
-        h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:6}},'Mecánicos asignados por día (hasta 3 por día)'),
+        h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:6}},'Mecánicos asignados por día (hasta 3 por día) ',h('span',{style:{fontSize:10,color:'#64748B',fontStyle:'italic',fontWeight:400}},'— acepta cualquier nombre, incluso externos')),
+        h('datalist',{id:'mecanicos-datalist'},
+          p.mecanicos.map(function(m,i){return h('option',{key:i,value:m.nombre},m.fuente==='sistema'?(m.es_mantencion?'Personal mantención':'Personal'):'Usado en tareas');})
+        ),
         h('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:6}},
           DIAS.map(function(d,i){
             return h('div',{key:i,style:{border:'1px solid #E2E8F0',borderRadius:5,padding:6,background:'#F8FAFC'}},
               h('div',{style:{fontSize:10,fontWeight:700,textAlign:'center',marginBottom:4,color:'#475569'}},d),
               [0,1,2].map(function(s){
-                return h('select',{key:s,value:(form.dias[i]&&form.dias[i][s])||'',onChange:function(e){setMecDia(i,s,e.target.value);},style:{width:'100%',padding:'3px 4px',border:'1px solid #CBD5E1',borderRadius:3,fontSize:10,marginBottom:2,boxSizing:'border-box'}},
-                  h('option',{value:''},'—'),
-                  p.mecanicos.map(function(m){return h('option',{key:m.persona_id,value:m.nombre_completo},m.nombre_completo);})
-                );
+                return h('input',{key:s,type:'text',list:'mecanicos-datalist',value:(form.dias[i]&&form.dias[i][s])||'',onChange:function(e){setMecDia(i,s,e.target.value);},placeholder:'Mecánico '+(s+1),style:{width:'100%',padding:'3px 4px',border:'1px solid #CBD5E1',borderRadius:3,fontSize:10,marginBottom:2,boxSizing:'border-box'}});
               })
             );
           })
