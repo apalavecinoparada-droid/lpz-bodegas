@@ -4050,16 +4050,38 @@ app.post('/api/mant/reparar-horometros', auth, async(req,res)=>{
 // PROGRAMACIÓN SEMANAL DE MANO DE OBRA
 // ═══════════════════════════════════════════════════════════════
 
-// ─── GET: listar mecánicos disponibles (personas con participa_mantencion=true) ───
+// ─── GET: listar mecánicos disponibles (TODAS las personas activas + nombres ya usados en tareas) ───
+// El sistema acepta texto libre, por lo que personas externas (no contratadas) también se pueden escribir
+// El dropdown sugiere: a) personas activas del sistema  b) nombres ya usados en tareas previas
 app.get('/api/mant/mecanicos', auth, async(req,res)=>{
   try{
-    const r=await pool.query(`
-      SELECT p.persona_id, p.nombre_completo, p.cargo, p.especialidad, p.telefono, p.empresa_id, e.razon_social AS empresa_nombre
+    // 1) Personas activas en el sistema (todas, no solo las marcadas participa_mantencion=true,
+    //    porque puede haber inconsistencias en la configuración del catálogo personal)
+    const pers=await pool.query(`
+      SELECT p.persona_id, p.nombre_completo, p.cargo, p.especialidad, p.telefono, p.empresa_id,
+             e.razon_social AS empresa_nombre,
+             COALESCE(p.participa_mantencion,false) AS es_mantencion
       FROM personal p
       LEFT JOIN empresas e ON p.empresa_id=e.empresa_id
-      WHERE p.activo=true AND p.participa_mantencion=true
-      ORDER BY p.nombre_completo`);
-    res.json(r.rows);
+      WHERE p.activo=true
+      ORDER BY (CASE WHEN p.participa_mantencion=true THEN 0 ELSE 1 END), p.nombre_completo`);
+
+    // 2) Nombres únicos extraídos del JSONB de tareas existentes (incluye externos como "Juan Carlos Bustamante")
+    const usados=await pool.query(`
+      WITH expanded AS (
+        SELECT jsonb_array_elements(jsonb_array_elements(dias)) AS nombre
+        FROM mant_prog_tareas
+        WHERE dias IS NOT NULL
+      )
+      SELECT DISTINCT TRIM(nombre::text, '"') AS nombre_uso
+      FROM expanded
+      WHERE TRIM(nombre::text, '"') != '' AND LENGTH(TRIM(nombre::text, '"')) > 1
+      ORDER BY nombre_uso`);
+
+    res.json({
+      sistema: pers.rows,
+      usados_en_tareas: usados.rows.map(r=>r.nombre_uso)
+    });
   }catch(e){res.status(500).json({error:e.message});}
 });
 
@@ -4181,22 +4203,43 @@ app.post('/api/mant/prog-tareas/importar', auth, async(req,res)=>{
       client.query('SELECT faena_id,nombre,empresa_id FROM faenas WHERE activo=true'),
       client.query('SELECT equipo_id,codigo,nombre FROM equipos WHERE activo=true')
     ]);
+    function norm(s){return String(s||'').trim().toLowerCase().replace(/\s+/g,' ');}
+    function normPlus(s){return norm(s).replace(/[\s\-_\.]/g,'');}
     function findEmp(nombre){
       if(!nombre) return null;
-      const n=String(nombre).trim().toLowerCase();
-      return emps.rows.find(e=>String(e.razon_social).trim().toLowerCase()===n)||null;
+      const n=norm(nombre);
+      const np=normPlus(nombre);
+      // Match exacto
+      let m=emps.rows.find(e=>norm(e.razon_social)===n);
+      if(m) return m;
+      // Match sin separadores
+      m=emps.rows.find(e=>normPlus(e.razon_social)===np);
+      if(m) return m;
+      // Match parcial: el nombre del Excel está contenido en el del sistema o viceversa
+      m=emps.rows.find(e=>{const er=norm(e.razon_social);return er.indexOf(n)>=0||n.indexOf(er)>=0;});
+      return m||null;
     }
     function findFaena(nombre,empresa_id){
       if(!nombre) return null;
-      const n=String(nombre).trim().toLowerCase();
-      return faenas.rows.find(f=>String(f.nombre).trim().toLowerCase()===n&&(!empresa_id||f.empresa_id===empresa_id))||null;
+      const n=norm(nombre);
+      const np=normPlus(nombre);
+      // Match exacto (con empresa si aplica)
+      let m=faenas.rows.find(f=>norm(f.nombre)===n&&(!empresa_id||f.empresa_id===empresa_id));
+      if(m) return m;
+      // Match sin empresa restrictiva
+      m=faenas.rows.find(f=>norm(f.nombre)===n);
+      if(m) return m;
+      // Match sin separadores
+      m=faenas.rows.find(f=>normPlus(f.nombre)===np);
+      if(m) return m;
+      return null;
     }
     function findEquipo(cargo){
       if(!cargo) return null;
-      const n=String(cargo).trim().toLowerCase().replace(/[\s\-_]/g,'');
+      const n=normPlus(cargo);
       return equipos.rows.find(eq=>{
-        const ne=String(eq.nombre||'').trim().toLowerCase().replace(/[\s\-_]/g,'');
-        const ce=String(eq.codigo||'').trim().toLowerCase().replace(/[\s\-_]/g,'');
+        const ne=normPlus(eq.nombre||'');
+        const ce=normPlus(eq.codigo||'');
         return ne===n||ce===n;
       })||null;
     }
@@ -4224,17 +4267,27 @@ app.post('/api/mant/prog-tareas/importar', auth, async(req,res)=>{
       if(f.faena_nombre&&!fae) sinResolver.faenas.add(f.faena_nombre);
       const eq=findEquipo(f.cargo_equipo);
       if(f.cargo_equipo&&!eq) sinResolver.cargos.add(f.cargo_equipo);
+      // Normalizar estado a uno de los valores válidos
+      function normEstado(s){
+        const x=String(s||'').toLowerCase().trim();
+        if(x.indexOf('realiz')>=0||x==='realzado'||x.indexOf('termin')>=0) return 'realizado';
+        if(x.indexOf('pend')>=0) return 'pendiente';
+        if(x.indexOf('reprog')>=0) return 'reprogramado';
+        if(x.indexOf('curso')>=0||x.indexOf('faena')>=0||x.indexOf('espera')>=0) return 'en_curso';
+        return 'programado';
+      }
       // dias debe ser [[],[],[],[],[],[],[]]
       let dias=Array.isArray(f.dias)?f.dias:[[],[],[],[],[],[],[]];
       while(dias.length<7) dias.push([]);
-      dias=dias.map(d=>Array.isArray(d)?d.filter(Boolean).slice(0,3):[]);
+      // Limpiar cada slot: trim y descartar vacíos o de 1 caracter
+      dias=dias.map(d=>Array.isArray(d)?d.map(m=>String(m||'').trim()).filter(m=>m.length>1).slice(0,3):[]);
       await client.query(`
         INSERT INTO mant_prog_tareas(anio,mes,semana,empresa_id,faena_id,equipo_id,detalle,estado,notas,dias,usuario)
         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
         [parseInt(f.anio),parseInt(f.mes||0),parseInt(f.semana),
          emp?emp.empresa_id:null, fae?fae.faena_id:null, eq?eq.equipo_id:null,
-         String(f.detalle).slice(0,2000),
-         f.estado||'programado',
+         String(f.detalle).trim().slice(0,2000),
+         normEstado(f.estado),
          f.notas||null,
          JSON.stringify(dias),
          req.user.email]);
