@@ -6159,6 +6159,32 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
        WHERE ${w.join(' AND ')}
        ORDER BY emp.razon_social, f.nombre, e.codigo, r.fecha`;
     const det=await pool.query(detSQL,v);
+    // Para cada registro, traer el resumen de TOBs como texto concatenado y lista detallada
+    if(det.rows.length){
+      const regIds=det.rows.map(r=>r.registro_id);
+      const tobDet=await pool.query(`
+        SELECT t.registro_id, c.causa, c.clasificacion, t.horas, t.observacion
+        FROM terreno_tob_detalle t
+        JOIN terreno_tob_categorias c ON t.tob_cat_id=c.tob_cat_id
+        WHERE t.registro_id = ANY($1::int[])
+        ORDER BY t.registro_id, t.horas DESC`,[regIds]);
+      // Indexar por registro_id
+      const tobPorReg={};
+      tobDet.rows.forEach(function(t){
+        if(!tobPorReg[t.registro_id]) tobPorReg[t.registro_id]=[];
+        tobPorReg[t.registro_id].push(t);
+      });
+      det.rows.forEach(function(r){
+        const lista=tobPorReg[r.registro_id]||[];
+        r.tob_detalle=lista;
+        // Texto concatenado: "Mantención Correctiva (3h), Lluvia (2h), Otros (1h)"
+        r.tob_descripcion=lista.map(function(t){
+          var txt=t.causa+' ('+(parseFloat(t.horas)||0).toFixed(1)+'h)';
+          if(t.observacion) txt+=' - '+t.observacion;
+          return txt;
+        }).join(' · ');
+      });
+    }
     // Calcular resumen agrupado: por equipo (que arrastra empresa y faena)
     const resumenMap={};
     det.rows.forEach(function(r){
