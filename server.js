@@ -6149,8 +6149,8 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
              f.nombre AS faena_nombre,
              es.codigo AS estanque_codigo, es.nombre AS estanque_nombre,
              COALESCE((SELECT SUM(t.horas) FROM terreno_tob_detalle t WHERE t.registro_id=r.registro_id AND t.clasificacion='E'),0) AS tob_horas_e,
-             COALESCE((SELECT SUM(t.horas) FROM terreno_tob_detalle t WHERE t.registro_id=r.registro_id AND t.clasificacion='I'),0) AS tob_horas_i,
-             COALESCE((SELECT SUM(t.horas) FROM terreno_tob_detalle t WHERE t.registro_id=r.registro_id AND t.clasificacion='A'),0) AS tob_horas_a
+             COALESCE((SELECT SUM(t.horas) FROM terreno_tob_detalle t WHERE t.registro_id=r.registro_id AND t.clasificacion='F'),0) AS tob_horas_f,
+             COALESCE((SELECT SUM(t.horas) FROM terreno_tob_detalle t WHERE t.registro_id=r.registro_id AND t.clasificacion NOT IN ('E','F')),0) AS tob_horas_otros
         FROM terreno_registros r
         JOIN equipos e ON r.equipo_id=e.equipo_id
         LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
@@ -6199,7 +6199,7 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
           equipo_id:r.equipo_id,equipo_codigo:r.equipo_codigo,equipo_nombre:r.equipo_nombre,tipo_cargo:r.tipo_cargo,
           registros:0,
           horas_trabajadas:0,horas_perdidas:0,
-          tob_horas_e:0,tob_horas_i:0,tob_horas_a:0,
+          tob_horas_e:0,tob_horas_f:0,tob_horas_otros:0,
           litros_combustible:0,
           primera_fecha:r.fecha,ultima_fecha:r.fecha
         };
@@ -6209,8 +6209,8 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
       x.horas_trabajadas+=parseFloat(r.horas_trabajadas)||0;
       x.horas_perdidas+=parseFloat(r.horas_perdidas)||0;
       x.tob_horas_e+=parseFloat(r.tob_horas_e)||0;
-      x.tob_horas_i+=parseFloat(r.tob_horas_i)||0;
-      x.tob_horas_a+=parseFloat(r.tob_horas_a)||0;
+      x.tob_horas_f+=parseFloat(r.tob_horas_f)||0;
+      x.tob_horas_otros+=parseFloat(r.tob_horas_otros)||0;
       x.litros_combustible+=parseFloat(r.litros_combustible)||0;
       if(r.fecha<x.primera_fecha)x.primera_fecha=r.fecha;
       if(r.fecha>x.ultima_fecha)x.ultima_fecha=r.fecha;
@@ -6238,22 +6238,22 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
       horas_trabajadas:resumen.reduce(function(s,x){return s+x.horas_trabajadas;},0),
       horas_perdidas:resumen.reduce(function(s,x){return s+x.horas_perdidas;},0),
       tob_horas_e:resumen.reduce(function(s,x){return s+x.tob_horas_e;},0),
-      tob_horas_i:resumen.reduce(function(s,x){return s+x.tob_horas_i;},0),
-      tob_horas_a:resumen.reduce(function(s,x){return s+x.tob_horas_a;},0),
+      tob_horas_f:resumen.reduce(function(s,x){return s+x.tob_horas_f;},0),
+      tob_horas_otros:resumen.reduce(function(s,x){return s+x.tob_horas_otros;},0),
       litros_combustible:resumen.reduce(function(s,x){return s+x.litros_combustible;},0)
     };
     tot.disponibilidad_pct=(tot.horas_trabajadas+tot.horas_perdidas)>0?(tot.horas_trabajadas/(tot.horas_trabajadas+tot.horas_perdidas)*100):null;
-    // Top categorías de tiempo perdido (TOB)
+    // Top categorías de tiempo perdido (TOB) — agrupado por t.clasificacion (la del DETALLE, no la de la categoría)
     const tobTopSQL=`
-      SELECT c.causa, c.clasificacion, COUNT(t.detalle_id) AS veces, COALESCE(SUM(t.horas),0) AS horas
+      SELECT c.causa, t.clasificacion, COUNT(t.detalle_id) AS veces, COALESCE(SUM(t.horas),0) AS horas
         FROM terreno_tob_detalle t
         JOIN terreno_tob_categorias c ON t.tob_cat_id=c.tob_cat_id
         JOIN terreno_registros r ON t.registro_id=r.registro_id
         JOIN equipos e ON r.equipo_id=e.equipo_id
        WHERE ${w.join(' AND ')}
-       GROUP BY c.causa, c.clasificacion
+       GROUP BY c.causa, t.clasificacion
        ORDER BY horas DESC
-       LIMIT 10`;
+       LIMIT 15`;
     const tobTop=await pool.query(tobTopSQL,v);
     res.json({resumen:resumen,detalle:det.rows,totales:tot,tob_top:tobTop.rows});
   }catch(e){res.status(500).json({error:e.message});}
