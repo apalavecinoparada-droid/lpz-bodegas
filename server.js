@@ -8087,6 +8087,52 @@ app.post('/api/finiquitos', auth, async(req,res)=>{
   finally{client.release();}
 });
 
+// ── PUT: editar finiquito existente ──
+// Permite modificar cualquier campo del finiquito sin necesidad de eliminarlo y recrearlo.
+// Actualiza también el total_finiquito si vienen los componentes de indemnización.
+app.put('/api/finiquitos/:id', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const b=req.body;
+    if(!b.persona_id||!b.empresa_id||!b.fecha_inicio||!b.fecha_termino)throw new Error('Datos obligatorios faltantes');
+    const r=await client.query(`UPDATE finiquitos SET 
+        persona_id=$1, empresa_id=$2, causal=$3, fecha_inicio=$4, fecha_termino=$5, fecha_aviso=$6,
+        es_zona_extrema=$7, tipo_sueldo=$8, valor_sueldo_minimo=$9, valor_uf=$10,
+        sueldo_base=$11, bono_fijo=$12, gratificacion_mensual=$13, asignacion_colacion=$14, asignacion_movilizacion=$15,
+        haber_var_mes1=$16, haber_var_mes2=$17, haber_var_mes3=$18, promedio_variable=$19,
+        dias_feriado_tomados=$20, dias_inhabiles=$21, remuneracion_pendiente=$22, descuentos=$23, saldo_afc_empleador=$24,
+        anios_servicio=$25, dias_feriado_legal=$26, dias_feriado_pendiente=$27, total_haberes=$28,
+        indem_aviso_previo=$29, indem_anios_servicio=$30, indem_vacaciones=$31, indem_tiempo_servido=$32, indem_mutuo_acuerdo=$33,
+        total_finiquito=$34, observaciones=$35
+      WHERE finiquito_id=$36 RETURNING finiquito_id, persona_id, empresa_id`,
+      [b.persona_id,b.empresa_id,b.causal||null,b.fecha_inicio,b.fecha_termino,b.fecha_aviso||null,
+       b.es_zona_extrema||false,b.tipo_sueldo||'Fijo',b.valor_sueldo_minimo||0,b.valor_uf||0,
+       b.sueldo_base||0,b.bono_fijo||0,b.gratificacion_mensual!==false,b.asignacion_colacion||0,b.asignacion_movilizacion||0,
+       b.haber_var_mes1||0,b.haber_var_mes2||0,b.haber_var_mes3||0,b.promedio_variable||0,
+       b.dias_feriado_tomados||0,b.dias_inhabiles||0,b.remuneracion_pendiente||0,b.descuentos||0,b.saldo_afc_empleador||0,
+       b.anios_servicio||0,b.dias_feriado_legal||0,b.dias_feriado_pendiente||0,b.total_haberes||0,
+       b.indem_aviso_previo||0,b.indem_anios_servicio||0,b.indem_vacaciones||0,b.indem_tiempo_servido||0,b.indem_mutuo_acuerdo||0,
+       b.total_finiquito||0,b.observaciones||null,
+       req.params.id]);
+    if(!r.rows.length){await client.query('ROLLBACK');return res.status(404).json({error:'Finiquito no encontrado'});}
+    const fini=r.rows[0];
+    // Sincronizar carta de término asociada (si existe)
+    await client.query(`UPDATE cartas_termino SET 
+        indem_anios_servicio=$1,
+        indem_vacaciones=$2,
+        indem_tiempo_servido=$3,
+        indem_aviso_previo=$4
+      WHERE finiquito_id=$5`,
+      [b.indem_anios_servicio||0,b.indem_vacaciones||0,b.indem_tiempo_servido||0,b.indem_aviso_previo||0,req.params.id]);
+    // Actualizar fecha_termino en personal
+    await client.query('UPDATE personal SET fecha_termino=$1 WHERE persona_id=$2',[b.fecha_termino, b.persona_id]);
+    await client.query('COMMIT');
+    res.json({ok:true,finiquito_id:fini.finiquito_id});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
 // Indicadores económicos chilenos (UF y sueldo mínimo)
 // UF: mindicador.cl (Banco Central) — Sueldo Mínimo: tabla legal histórica (Ley 21.751 y anteriores)
 const SUELDO_MINIMO_HIST=[
