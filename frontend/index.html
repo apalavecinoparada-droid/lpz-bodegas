@@ -10304,6 +10304,7 @@ function TransporteView(p){
   var[fHasta,setFHasta]=useState(new Date().toISOString().slice(0,10));
   var emptyForm={fecha:new Date().toISOString().slice(0,10),empresa_id:'',camion_id:'',chofer_id:'',faena_id:'',equipo_id:'',equipos_ids:[],origen:'',destino:'',km_cargado:'',km_vacio:'0',odometro_inicio:'',odometro_fin:'',estado:'finalizado',observaciones:'',litros_combustible:'0',estanque_id:''};
   var[form,setForm]=useState(emptyForm);
+  var[ultimoOdo,setUltimoOdo]=useState(null);
   var[pendientes,setPendientes]=useState([]);
   var[planSel,setPlanSel]=useState('');
 
@@ -10483,7 +10484,20 @@ function TransporteView(p){
       h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
         h('div',null,h('label',{style:lblS},'Fecha *'),h('input',{type:'date',value:form.fecha,onChange:function(e){upd('fecha',e.target.value);},style:inpS})),
         h('div',null,h('label',{style:lblS},'Empresa *'),h('select',{value:form.empresa_id,onChange:function(e){upd('empresa_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
-        h('div',null,h('label',{style:lblS},'Camión cama baja *'),h('select',{value:form.camion_id,onChange:function(e){upd('camion_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),camiones.map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.patente_serie+(c.patente_carro?' + '+c.patente_carro:'')+' — '+c.nombre);}))),
+        h('div',null,h('label',{style:lblS},'Camión cama baja *'),h('select',{value:form.camion_id,onChange:function(e){
+          var cid=e.target.value;
+          upd('camion_id',cid);
+          setUltimoOdo(null);
+          // Auto-completar odómetro inicial con el último registrado para este camión (solo al crear, no al editar)
+          if(cid && !sel){
+            api('/trans/ultimo-odometro/'+cid,'GET',null,p.tok).then(function(r){
+              if(r && r.odometro_fin){
+                setUltimoOdo(r);
+                setForm(function(f){return Object.assign({},f,{odometro_inicio:r.odometro_fin});});
+              }
+            }).catch(function(){});
+          }
+        },style:inpS},h('option',{value:''},'Seleccione...'),camiones.map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.patente_serie+(c.patente_carro?' + '+c.patente_carro:'')+' — '+c.nombre);}))),
         h('div',null,h('label',{style:lblS},'Chofer *'),h('select',{value:form.chofer_id,onChange:function(e){upd('chofer_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione...'),choferes.map(function(c){return h('option',{key:c.persona_id,value:c.persona_id},c.nombre_completo);}))),
         h('div',null,h('label',{style:lblS},'Faena asociada'),h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);},style:inpS},h('option',{value:''},'—'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
         // Selector múltiple de equipos transportados (chips)
@@ -10553,7 +10567,13 @@ function TransporteView(p){
           ),
           // Paso 1: Odómetro
           h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:10}},
-            h('div',null,h('label',{style:lblS},'Odómetro inicial *'),h('input',{type:'number',value:form.odometro_inicio,onChange:function(e){upd('odometro_inicio',e.target.value);},style:inpS,min:0,placeholder:'Ej: 125430'})),
+            h('div',null,h('label',{style:lblS},'Odómetro inicial *'),
+              h('input',{type:'number',value:form.odometro_inicio,onChange:function(e){upd('odometro_inicio',e.target.value);},style:inpS,min:0,placeholder:'Ej: 125430'}),
+              ultimoOdo&&ultimoOdo.odometro_fin&&!sel&&h('div',{style:{fontSize:10,color:'#0F766E',marginTop:3,fontStyle:'italic'}},
+                '🚚 Último registrado: ',h('strong',null,parseFloat(ultimoOdo.odometro_fin).toLocaleString('es-CL')+' km'),
+                ' (',(ultimoOdo.fecha||'').slice(0,10),', ',ultimoOdo.origen,'→',ultimoOdo.destino,')'
+              )
+            ),
             h('div',null,h('label',{style:lblS},'Odómetro final *'),h('input',{type:'number',value:form.odometro_fin,onChange:function(e){upd('odometro_fin',e.target.value);},style:inpS,min:0,placeholder:'Ej: 125678'})),
             h('div',null,h('label',{style:lblS},'KM totales (calculado)'),
               h('div',{style:{padding:'8px 10px',background:kmTotal>0?'#DCFCE7':'#F1F5F9',border:'1px solid '+(kmTotal>0?'#86EFAC':'#CBD5E1'),borderRadius:5,fontSize:14,fontWeight:700,color:kmTotal>0?'#15803D':'#94A3B8',textAlign:'center'}},
@@ -15580,7 +15600,18 @@ function MobileTransporte(p){
       msg&&h('div',{className:'al al-e',style:{marginBottom:10}},msg),
       F('Fecha',h('input',{type:'date',value:form.fecha,onChange:function(e){upd('fecha',e.target.value);}})),
       F('Empresa',h('select',{value:form.empresa_id,onChange:function(e){upd('empresa_id',e.target.value);}},h('option',{value:''},'Seleccione empresa...'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
-      F('Camión cama baja',h('select',{value:form.camion_id,onChange:function(e){upd('camion_id',e.target.value);}},h('option',{value:''},'Seleccione camión...'),camiones.map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.patente_serie+(c.patente_carro?' + '+c.patente_carro:'')+' — '+c.nombre);}))),
+      F('Camión cama baja',h('select',{value:form.camion_id,onChange:function(e){
+        var cid=e.target.value;
+        upd('camion_id',cid);
+        // Auto-completar odómetro inicial con el último registrado para este camión
+        if(cid){
+          api('/trans/ultimo-odometro/'+cid,'GET',null,p.tok).then(function(r){
+            if(r && r.odometro_fin){
+              setForm(function(f){return Object.assign({},f,{odometro_inicio:r.odometro_fin});});
+            }
+          }).catch(function(){});
+        }
+      }},h('option',{value:''},'Seleccione camión...'),camiones.map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.patente_serie+(c.patente_carro?' + '+c.patente_carro:'')+' — '+c.nombre);}))),
       F('Chofer',h('select',{value:form.chofer_id,onChange:function(e){upd('chofer_id',e.target.value);}},h('option',{value:''},'Seleccione chofer...'),choferes.map(function(c){return h('option',{key:c.persona_id,value:c.persona_id},c.nombre_completo);}))),
       F('Faena',h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);}},h('option',{value:''},'—'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
       // Selector múltiple de equipos transportados (chips para móvil)
