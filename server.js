@@ -690,6 +690,32 @@ async function autoSetup() {
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS placa_patente VARCHAR(30)`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS num_chasis VARCHAR(50)`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)`);
+  // Proceso productivo (solo aplica a tipo_cargo='maquinaria')
+  await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS proceso_productivo VARCHAR(30)`);
+
+  // ─── FUNDOS: predio forestal donde se realiza el trabajo ───
+  await q(`CREATE TABLE IF NOT EXISTS fundos (
+    fundo_id SERIAL PRIMARY KEY,
+    nombre VARCHAR(150) NOT NULL,
+    empresa_mandante VARCHAR(120),
+    ubicacion VARCHAR(200),
+    descripcion TEXT,
+    activo BOOLEAN NOT NULL DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  // ─── RODALES: subdivisión de un fundo, con VMA (volumen medio por árbol) ───
+  await q(`CREATE TABLE IF NOT EXISTS rodales (
+    rodal_id SERIAL PRIMARY KEY,
+    fundo_id INT NOT NULL REFERENCES fundos(fundo_id) ON DELETE CASCADE,
+    nombre VARCHAR(100) NOT NULL,
+    vma NUMERIC(8,4) NOT NULL DEFAULT 0,
+    area_ha NUMERIC(8,2),
+    especie VARCHAR(50),
+    descripcion TEXT,
+    activo BOOLEAN NOT NULL DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  try{await q('CREATE INDEX IF NOT EXISTS idx_rodales_fundo ON rodales(fundo_id)');}catch(e){}
   // Tabla N:N para equipos multi-empresa (un equipo puede estar asignado a varias empresas)
   await q(`CREATE TABLE IF NOT EXISTS equipos_empresas (
     rel_id SERIAL PRIMARY KEY,
@@ -1474,12 +1500,11 @@ async function syncEquipoEmpresas(client,equipoId,empresaIds,empresaPrincipalId)
 eqR.post('/', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
-    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia,empresas_ids,empresa_principal_id}=req.body;
+    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia,empresas_ids,empresa_principal_id,proceso_productivo}=req.body;
     let empresa_id=await resolveEmpresaId(req.body.empresa_id);
     await client.query('BEGIN');
-    const r=await client.query('INSERT INTO equipos(codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,empresa_id,tipo_cargo,modelo_id,contacto_terreno,horas_productivas_dia) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12]);
+    const r=await client.query('INSERT INTO equipos(codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,empresa_id,tipo_cargo,modelo_id,contacto_terreno,horas_productivas_dia,proceso_productivo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12,proceso_productivo||null]);
     const equipoId=r.rows[0].equipo_id;
-    // Sincronizar tabla N:N: si vienen empresas_ids úsalo, sino solo la empresa_id principal
     const listaEmp=Array.isArray(empresas_ids)&&empresas_ids.length>0?empresas_ids:(empresa_id?[empresa_id]:[]);
     await syncEquipoEmpresas(client,equipoId,listaEmp,empresa_principal_id||empresa_id);
     await client.query('COMMIT');
@@ -1490,10 +1515,10 @@ eqR.post('/', auth, async(req,res)=>{
 eqR.put('/:id', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
-    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia,empresas_ids,empresa_principal_id}=req.body;
+    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia,empresas_ids,empresa_principal_id,proceso_productivo}=req.body;
     let empresa_id=await resolveEmpresaId(req.body.empresa_id);
     await client.query('BEGIN');
-    const r=await client.query('UPDATE equipos SET codigo=$1,nombre=$2,tipo=$3,faena_id=$4,patente_serie=$5,marca=$6,modelo=$7,anio=$8,placa_patente=$9,num_chasis=$10,empresa_id=$11,tipo_cargo=$12,modelo_id=$13,contacto_terreno=$14,horas_productivas_dia=$15 WHERE equipo_id=$16 RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12,req.params.id]);
+    const r=await client.query('UPDATE equipos SET codigo=$1,nombre=$2,tipo=$3,faena_id=$4,patente_serie=$5,marca=$6,modelo=$7,anio=$8,placa_patente=$9,num_chasis=$10,empresa_id=$11,tipo_cargo=$12,modelo_id=$13,contacto_terreno=$14,horas_productivas_dia=$15,proceso_productivo=$16 WHERE equipo_id=$17 RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12,proceso_productivo||null,req.params.id]);
     const listaEmp=Array.isArray(empresas_ids)&&empresas_ids.length>0?empresas_ids:(empresa_id?[empresa_id]:[]);
     await syncEquipoEmpresas(client,parseInt(req.params.id),listaEmp,empresa_principal_id||empresa_id);
     await client.query('COMMIT');
@@ -5603,6 +5628,13 @@ async function setupRendiciones(q){
     creado_en TIMESTAMP DEFAULT NOW(),
     UNIQUE(fecha,equipo_id)
   )`);
+  // ── ALTER terreno_registros: producción forestal ──
+  try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS operador_id INT REFERENCES personal(persona_id)');}catch(e){}
+  try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS fundo_id INT REFERENCES fundos(fundo_id)');}catch(e){}
+  try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS rodal_id INT REFERENCES rodales(rodal_id)');}catch(e){}
+  try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS arboles_producidos INT');}catch(e){}
+  try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS vma_aplicado NUMERIC(8,4)');}catch(e){}
+  try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS m3_producidos NUMERIC(10,3) GENERATED ALWAYS AS (COALESCE(arboles_producidos,0)*COALESCE(vma_aplicado,0)) STORED');}catch(e){}
   await q(`CREATE TABLE IF NOT EXISTS terreno_tob_detalle (
     detalle_id SERIAL PRIMARY KEY,
     registro_id INT NOT NULL REFERENCES terreno_registros(registro_id) ON DELETE CASCADE,
@@ -6114,6 +6146,99 @@ app.delete('/api/vacaciones/:id', auth, async(req,res)=>{
 app.get('/api/terreno/tob-categorias', auth, async(req,res)=>{
   try{res.json((await pool.query('SELECT * FROM terreno_tob_categorias WHERE activo=true ORDER BY orden,causa')).rows);}catch(e){res.status(500).json({error:e.message});}
 });
+// ═══════════════════════════════════════════════════════════════
+// FUNDOS y RODALES — para producción forestal
+// ═══════════════════════════════════════════════════════════════
+app.get('/api/fundos', auth, async(req,res)=>{
+  try{
+    const{activo}=req.query;
+    let where=['1=1'],vals=[];
+    if(activo!==undefined){vals.push(activo==='true');where.push(`f.activo=$${vals.length}`);}
+    const r=await pool.query(`
+      SELECT f.*, 
+        (SELECT COUNT(*) FROM rodales rd WHERE rd.fundo_id=f.fundo_id AND rd.activo=true) AS num_rodales
+      FROM fundos f
+      WHERE ${where.join(' AND ')}
+      ORDER BY f.nombre`,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.post('/api/fundos', auth, async(req,res)=>{
+  try{
+    const{nombre,empresa_mandante,ubicacion,descripcion,activo}=req.body||{};
+    if(!nombre) return res.status(400).json({error:'Nombre requerido'});
+    const r=await pool.query(
+      'INSERT INTO fundos(nombre,empresa_mandante,ubicacion,descripcion,activo) VALUES($1,$2,$3,$4,$5) RETURNING *',
+      [nombre,empresa_mandante||null,ubicacion||null,descripcion||null,activo!==false]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.put('/api/fundos/:id', auth, async(req,res)=>{
+  try{
+    const{nombre,empresa_mandante,ubicacion,descripcion,activo}=req.body||{};
+    const r=await pool.query(
+      'UPDATE fundos SET nombre=$1,empresa_mandante=$2,ubicacion=$3,descripcion=$4,activo=$5 WHERE fundo_id=$6 RETURNING *',
+      [nombre,empresa_mandante||null,ubicacion||null,descripcion||null,activo!==false,req.params.id]);
+    if(!r.rows.length) return res.status(404).json({error:'Fundo no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.delete('/api/fundos/:id', auth, async(req,res)=>{
+  try{
+    await pool.query('DELETE FROM fundos WHERE fundo_id=$1',[req.params.id]);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// Rodales: listar por fundo o todos
+app.get('/api/rodales', auth, async(req,res)=>{
+  try{
+    const{fundo_id,activo}=req.query;
+    let where=['1=1'],vals=[];
+    if(fundo_id){vals.push(fundo_id);where.push(`rd.fundo_id=$${vals.length}`);}
+    if(activo!==undefined){vals.push(activo==='true');where.push(`rd.activo=$${vals.length}`);}
+    const r=await pool.query(`
+      SELECT rd.*, f.nombre AS fundo_nombre
+      FROM rodales rd
+      LEFT JOIN fundos f ON rd.fundo_id=f.fundo_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY f.nombre, rd.nombre`,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.post('/api/rodales', auth, async(req,res)=>{
+  try{
+    const{fundo_id,nombre,vma,area_ha,especie,descripcion,activo}=req.body||{};
+    if(!fundo_id||!nombre) return res.status(400).json({error:'Fundo y nombre requeridos'});
+    const r=await pool.query(
+      'INSERT INTO rodales(fundo_id,nombre,vma,area_ha,especie,descripcion,activo) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+      [fundo_id,nombre,parseFloat(vma)||0,area_ha?parseFloat(area_ha):null,especie||null,descripcion||null,activo!==false]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.put('/api/rodales/:id', auth, async(req,res)=>{
+  try{
+    const{fundo_id,nombre,vma,area_ha,especie,descripcion,activo}=req.body||{};
+    const r=await pool.query(
+      'UPDATE rodales SET fundo_id=$1,nombre=$2,vma=$3,area_ha=$4,especie=$5,descripcion=$6,activo=$7 WHERE rodal_id=$8 RETURNING *',
+      [fundo_id,nombre,parseFloat(vma)||0,area_ha?parseFloat(area_ha):null,especie||null,descripcion||null,activo!==false,req.params.id]);
+    if(!r.rows.length) return res.status(404).json({error:'Rodal no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.delete('/api/rodales/:id', auth, async(req,res)=>{
+  try{
+    await pool.query('DELETE FROM rodales WHERE rodal_id=$1',[req.params.id]);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 app.get('/api/terreno/registros', auth, async(req,res)=>{
   try{
     const{equipo_id,faena_id,desde,hasta,mes}=req.query;
@@ -6123,7 +6248,22 @@ app.get('/api/terreno/registros', auth, async(req,res)=>{
     if(desde){v.push(desde);w.push(`r.fecha>=$${v.length}`);}
     if(hasta){v.push(hasta);w.push(`r.fecha<=$${v.length}`);}
     if(mes){v.push(mes);w.push(`TO_CHAR(r.fecha,'YYYY-MM')=$${v.length}`);}
-    const rs=await pool.query(`SELECT r.*,e.codigo AS equipo_codigo,e.nombre AS equipo_nombre,f.nombre AS faena_nombre,es.codigo AS estanque_codigo,es.nombre AS estanque_nombre FROM terreno_registros r JOIN equipos e ON r.equipo_id=e.equipo_id JOIN faenas f ON r.faena_id=f.faena_id LEFT JOIN comb_estanques es ON r.estanque_id=es.estanque_id WHERE ${w.join(' AND ')} ORDER BY r.fecha DESC, r.registro_id DESC`,v);
+    const rs=await pool.query(`
+      SELECT r.*, e.codigo AS equipo_codigo, e.nombre AS equipo_nombre, e.proceso_productivo,
+             f.nombre AS faena_nombre, 
+             es.codigo AS estanque_codigo, es.nombre AS estanque_nombre,
+             op.nombre_completo AS operador_nombre,
+             fu.nombre AS fundo_nombre,
+             rd.nombre AS rodal_nombre, rd.vma AS rodal_vma
+      FROM terreno_registros r 
+      JOIN equipos e ON r.equipo_id=e.equipo_id 
+      JOIN faenas f ON r.faena_id=f.faena_id 
+      LEFT JOIN comb_estanques es ON r.estanque_id=es.estanque_id 
+      LEFT JOIN personal op ON r.operador_id=op.persona_id
+      LEFT JOIN fundos fu ON r.fundo_id=fu.fundo_id
+      LEFT JOIN rodales rd ON r.rodal_id=rd.rodal_id
+      WHERE ${w.join(' AND ')} 
+      ORDER BY r.fecha DESC, r.registro_id DESC`,v);
     res.json(rs.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -6144,10 +6284,13 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
     // Detalle completo de registros (incluye datos para resumen y detalle)
     const detSQL=`
       SELECT r.*, 
-             e.codigo AS equipo_codigo, e.nombre AS equipo_nombre, e.tipo_cargo, e.empresa_id,
+             e.codigo AS equipo_codigo, e.nombre AS equipo_nombre, e.tipo_cargo, e.empresa_id, e.proceso_productivo,
              emp.razon_social AS empresa_nombre,
              f.nombre AS faena_nombre,
              es.codigo AS estanque_codigo, es.nombre AS estanque_nombre,
+             op.nombre_completo AS operador_nombre,
+             fu.nombre AS fundo_nombre,
+             rd.nombre AS rodal_nombre,
              COALESCE((SELECT SUM(t.horas) FROM terreno_tob_detalle t WHERE t.registro_id=r.registro_id AND t.clasificacion='E'),0) AS tob_horas_e,
              COALESCE((SELECT SUM(t.horas) FROM terreno_tob_detalle t WHERE t.registro_id=r.registro_id AND t.clasificacion='F'),0) AS tob_horas_f,
              COALESCE((SELECT SUM(t.horas) FROM terreno_tob_detalle t WHERE t.registro_id=r.registro_id AND t.clasificacion NOT IN ('E','F')),0) AS tob_horas_otros
@@ -6156,6 +6299,9 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
         LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
         JOIN faenas f ON r.faena_id=f.faena_id
         LEFT JOIN comb_estanques es ON r.estanque_id=es.estanque_id
+        LEFT JOIN personal op ON r.operador_id=op.persona_id
+        LEFT JOIN fundos fu ON r.fundo_id=fu.fundo_id
+        LEFT JOIN rodales rd ON r.rodal_id=rd.rodal_id
        WHERE ${w.join(' AND ')}
        ORDER BY emp.razon_social, f.nombre, e.codigo, r.fecha`;
     const det=await pool.query(detSQL,v);
@@ -6258,11 +6404,75 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
     res.json({resumen:resumen,detalle:det.rows,totales:tot,tob_top:tobTop.rows});
   }catch(e){res.status(500).json({error:e.message});}
 });
+// ─── GET: TOBs con clasificación inválida (no es 'E' ni 'F') ───
+// Útil para corregir registros heredados donde la clasificación quedó como "E - F"
+app.get('/api/terreno/tob-corregir', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`
+      SELECT t.detalle_id, t.clasificacion, t.horas, t.observacion,
+             r.fecha, r.registro_id,
+             eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
+             emp.razon_social AS empresa_nombre,
+             f.nombre AS faena_nombre,
+             c.causa, c.tob_cat_id
+        FROM terreno_tob_detalle t
+        JOIN terreno_registros r ON t.registro_id=r.registro_id
+        JOIN equipos eq ON r.equipo_id=eq.equipo_id
+        LEFT JOIN empresas emp ON eq.empresa_id=emp.empresa_id
+        JOIN faenas f ON r.faena_id=f.faena_id
+        JOIN terreno_tob_categorias c ON t.tob_cat_id=c.tob_cat_id
+       WHERE t.clasificacion NOT IN ('E','F') OR t.clasificacion IS NULL
+       ORDER BY r.fecha DESC, t.detalle_id`);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ─── PATCH: cambiar clasificación de un TOB individual ───
+app.patch('/api/terreno/tob/:detalleId/clasificacion', auth, async(req,res)=>{
+  try{
+    const{clasificacion}=req.body||{};
+    if(['E','F'].indexOf(clasificacion)<0) return res.status(400).json({error:'Clasificación debe ser E o F'});
+    const r=await pool.query('UPDATE terreno_tob_detalle SET clasificacion=$1 WHERE detalle_id=$2 RETURNING *',[clasificacion,req.params.detalleId]);
+    if(!r.rows.length) return res.status(404).json({error:'TOB no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ─── PATCH: clasificar TODOS los TOBs sin clasificar como E o F (con filtros opcionales) ───
+app.patch('/api/terreno/tob-clasificar-masivo', auth, async(req,res)=>{
+  try{
+    const{clasificacion,causa,equipo_id,empresa_id,faena_id,desde,hasta}=req.body||{};
+    if(['E','F'].indexOf(clasificacion)<0) return res.status(400).json({error:'Clasificación debe ser E o F'});
+    let w=["(t.clasificacion NOT IN ('E','F') OR t.clasificacion IS NULL)"], vals=[];
+    if(causa){vals.push(causa);w.push(`c.causa=$${vals.length}`);}
+    if(equipo_id){vals.push(equipo_id);w.push(`r.equipo_id=$${vals.length}`);}
+    if(empresa_id){vals.push(empresa_id);w.push(`eq.empresa_id=$${vals.length}`);}
+    if(faena_id){vals.push(faena_id);w.push(`r.faena_id=$${vals.length}`);}
+    if(desde){vals.push(desde);w.push(`r.fecha>=$${vals.length}`);}
+    if(hasta){vals.push(hasta);w.push(`r.fecha<=$${vals.length}`);}
+    vals.push(clasificacion);
+    const sql=`
+      UPDATE terreno_tob_detalle 
+      SET clasificacion=$${vals.length}
+      WHERE detalle_id IN (
+        SELECT t.detalle_id 
+        FROM terreno_tob_detalle t
+        JOIN terreno_registros r ON t.registro_id=r.registro_id
+        JOIN equipos eq ON r.equipo_id=eq.equipo_id
+        JOIN terreno_tob_categorias c ON t.tob_cat_id=c.tob_cat_id
+        WHERE ${w.join(' AND ')}
+      )`;
+    const r=await pool.query(sql,vals);
+    res.json({ok:true,actualizados:r.rowCount});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 app.post('/api/terreno/registros', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
-    const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle}=req.body;
+    const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle,
+          operador_id,fundo_id,rodal_id,arboles_producidos}=req.body;
     if(!fecha||!faena_id||!equipo_id||horometro_inicial==null||horometro_final==null)throw new Error('Fecha, faena, equipo y horómetros son obligatorios');
     if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
     // Validate TOB sum = horas_perdidas
@@ -6270,8 +6480,18 @@ app.post('/api/terreno/registros', auth, async(req,res)=>{
     const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
     const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
     if(hp>0&&Math.abs(hp-sumTob)>0.01)throw new Error(`La suma del desglose de tiempos obvios (${sumTob}) no coincide con las horas perdidas (${hp})`);
-    const r=await client.query('INSERT INTO terreno_registros(fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *',
-      [fecha,faena_id,equipo_id,parseFloat(horometro_inicial),parseFloat(horometro_final),hp,parseFloat(litros_combustible||0),estanque_id||null,observaciones||null,req.user.email]);
+    // Producción: obtener VMA del rodal (snapshot)
+    let vmaSnapshot=null;
+    if(rodal_id){
+      const rd=await client.query('SELECT vma FROM rodales WHERE rodal_id=$1',[rodal_id]);
+      if(rd.rows.length) vmaSnapshot=parseFloat(rd.rows[0].vma)||0;
+    }
+    const r=await client.query(
+      `INSERT INTO terreno_registros(fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,usuario,
+        operador_id,fundo_id,rodal_id,arboles_producidos,vma_aplicado) 
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+      [fecha,faena_id,equipo_id,parseFloat(horometro_inicial),parseFloat(horometro_final),hp,parseFloat(litros_combustible||0),estanque_id||null,observaciones||null,req.user.email,
+       operador_id||null,fundo_id||null,rodal_id||null,arboles_producidos?parseInt(arboles_producidos):null,vmaSnapshot]);
     const regId=r.rows[0].registro_id;
     for(const d of detalle){
       if(d.tob_cat_id&&parseFloat(d.horas)>0){
@@ -6289,14 +6509,26 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
-    const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle}=req.body;
+    const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle,
+          operador_id,fundo_id,rodal_id,arboles_producidos}=req.body;
     if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
     const hp=parseFloat(horas_perdidas||0);
     const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
     const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
     if(hp>0&&Math.abs(hp-sumTob)>0.01)throw new Error(`La suma del desglose (${sumTob}) no coincide con las horas perdidas (${hp})`);
-    await client.query('UPDATE terreno_registros SET fecha=$1,faena_id=$2,equipo_id=$3,horometro_inicial=$4,horometro_final=$5,horas_perdidas=$6,litros_combustible=$7,estanque_id=$8,observaciones=$9 WHERE registro_id=$10',
-      [fecha,faena_id,equipo_id,parseFloat(horometro_inicial),parseFloat(horometro_final),hp,parseFloat(litros_combustible||0),estanque_id||null,observaciones||null,req.params.id]);
+    // Producción: VMA snapshot del rodal
+    let vmaSnapshot=null;
+    if(rodal_id){
+      const rd=await client.query('SELECT vma FROM rodales WHERE rodal_id=$1',[rodal_id]);
+      if(rd.rows.length) vmaSnapshot=parseFloat(rd.rows[0].vma)||0;
+    }
+    await client.query(
+      `UPDATE terreno_registros SET fecha=$1,faena_id=$2,equipo_id=$3,horometro_inicial=$4,horometro_final=$5,horas_perdidas=$6,litros_combustible=$7,estanque_id=$8,observaciones=$9,
+        operador_id=$10,fundo_id=$11,rodal_id=$12,arboles_producidos=$13,vma_aplicado=$14
+       WHERE registro_id=$15`,
+      [fecha,faena_id,equipo_id,parseFloat(horometro_inicial),parseFloat(horometro_final),hp,parseFloat(litros_combustible||0),estanque_id||null,observaciones||null,
+       operador_id||null,fundo_id||null,rodal_id||null,arboles_producidos?parseInt(arboles_producidos):null,vmaSnapshot,
+       req.params.id]);
     await client.query('DELETE FROM terreno_tob_detalle WHERE registro_id=$1',[req.params.id]);
     for(const d of detalle){
       if(d.tob_cat_id&&parseFloat(d.horas)>0){
