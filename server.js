@@ -6982,6 +6982,21 @@ app.get('/api/trans/traslados', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
+// ─── GET: último odómetro registrado de un camión ───
+// Devuelve el odometro_fin más reciente para autocompletar el odometro_inicio del próximo traslado
+app.get('/api/trans/ultimo-odometro/:camion_id', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`
+      SELECT odometro_fin, fecha, traslado_id, origen, destino
+      FROM trans_traslados
+      WHERE camion_id=$1 AND odometro_fin IS NOT NULL AND odometro_fin > 0
+      ORDER BY fecha DESC, traslado_id DESC
+      LIMIT 1`,[req.params.camion_id]);
+    if(!r.rows.length) return res.json({odometro_fin:null, fecha:null});
+    res.json(r.rows[0]);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 app.post('/api/trans/traslados', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
