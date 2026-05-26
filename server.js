@@ -5664,6 +5664,22 @@ async function setupRendiciones(q){
       console.log('  [OK] Categorías TOB cargadas ('+cats.length+')');
     }
   }catch(e){console.log('[WARN] seed tob:',e.message);}
+
+  // Inserciones incrementales de TOB (se ejecutan siempre, no chocan si ya existen)
+  // Cada nueva causa va al final, después del orden máximo actual
+  try{
+    const nuevasCausas=['REMATE DE LÍNEA','DISTANCIA DE SEGURIDAD','INSTALACIÓN DE ASISTENCIA'];
+    const maxOrd=await pool.query('SELECT COALESCE(MAX(orden),0) AS maxo FROM terreno_tob_categorias');
+    let ordSig=parseInt(maxOrd.rows[0].maxo)||0;
+    for(const nueva of nuevasCausas){
+      const existe=await pool.query('SELECT 1 FROM terreno_tob_categorias WHERE causa=$1',[nueva]);
+      if(!existe.rows.length){
+        ordSig++;
+        await pool.query("INSERT INTO terreno_tob_categorias(clasificacion,causa,orden,activo) VALUES('E - F',$1,$2,true)",[nueva,ordSig]);
+        console.log('  [+] TOB agregada: '+nueva);
+      }
+    }
+  }catch(e){console.log('[WARN] incrementales tob:',e.message);}
 }
 
 // ── Entregas de fondos ──
