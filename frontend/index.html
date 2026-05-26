@@ -13914,6 +13914,7 @@ function FiniquitosView(p){
     remuneracion_pendiente:0,descuentos:0,saldo_afc_empleador:0,observaciones:''
   };
   var[form,setForm]=useState(emptyForm);
+  var[editFini,setEditFini]=useState(null);
   // Carta de término
   var emptyCarta={
     persona_id:'',empresa_id:'',
@@ -14141,18 +14142,55 @@ function FiniquitosView(p){
       descuentos:descuentos,
       saldo_afc_empleador:saldoAFC
     });
-    api('/finiquitos','POST',body,p.tok).then(function(r){
-      var msg='✅ Finiquito guardado.';
+    api(editFini?'/finiquitos/'+editFini:'/finiquitos', editFini?'PUT':'POST', body, p.tok).then(function(r){
+      var msg=editFini?'✅ Finiquito actualizado.':'✅ Finiquito guardado.';
       if(r.cartas_actualizadas>0)msg+=' Se actualizó '+r.cartas_actualizadas+' carta(s) de término con los valores calculados.';
-      msg+=' Generando documento...';
+      if(!editFini) msg+=' Generando documento...';
       alert(msg);
-      load();setForm(emptyForm);
-      if(r.finiquito_id)setTimeout(function(){generarFiniquitoDoc(r.finiquito_id,'pdf');},300);
+      load();setForm(emptyForm);setEditFini(null);
+      if(!editFini && r.finiquito_id)setTimeout(function(){generarFiniquitoDoc(r.finiquito_id,'pdf');},300);
+      // Si se editó, volver al historial
+      if(editFini) setModo('listar');
     }).catch(function(e){alert('Error: '+e.message);});
   }
   function eliminar(id){
     if(!confirm('¿Eliminar este finiquito?'))return;
     api('/finiquitos/'+id,'DELETE',null,p.tok).then(load).catch(function(e){alert(e.message);});
+  }
+  // Cargar un finiquito existente al form para editarlo
+  function editarFini(f){
+    api('/finiquitos/'+f.finiquito_id,'GET',null,p.tok).then(function(d){
+      // d trae todos los campos. Llenar el form con sus valores.
+      setForm({
+        persona_id:d.persona_id||'',empresa_id:d.empresa_id||'',
+        causal:d.causal||'',
+        fecha_inicio:(d.fecha_inicio||'').slice(0,10),
+        fecha_termino:(d.fecha_termino||'').slice(0,10),
+        fecha_aviso:(d.fecha_aviso||'').slice(0,10),
+        es_zona_extrema:!!d.es_zona_extrema,
+        valor_sueldo_minimo:parseFloat(d.valor_sueldo_minimo)||0,
+        valor_uf:parseFloat(d.valor_uf)||0,
+        tipo_sueldo:d.tipo_sueldo||'Fijo',
+        sueldo_base:parseFloat(d.sueldo_base)||0,
+        bono_fijo:parseFloat(d.bono_fijo)||0,
+        gratificacion_mensual:d.gratificacion_mensual!==false,
+        asignacion_colacion:parseFloat(d.asignacion_colacion)||0,
+        asignacion_movilizacion:parseFloat(d.asignacion_movilizacion)||0,
+        haber_var_mes1:parseFloat(d.haber_var_mes1)||0,
+        haber_var_mes2:parseFloat(d.haber_var_mes2)||0,
+        haber_var_mes3:parseFloat(d.haber_var_mes3)||0,
+        dias_feriado_tomados:parseFloat(d.dias_feriado_tomados)||0,
+        dias_inhabiles:parseFloat(d.dias_inhabiles)||0,
+        remuneracion_pendiente:parseFloat(d.remuneracion_pendiente)||0,
+        descuentos:parseFloat(d.descuentos)||0,
+        saldo_afc_empleador:parseFloat(d.saldo_afc_empleador)||0,
+        indem_mutuo_acuerdo:parseFloat(d.indem_mutuo_acuerdo)||0,
+        observaciones:d.observaciones||''
+      });
+      setEditFini(f.finiquito_id);
+      setModo('calcular');
+      window.scrollTo(0,0);
+    }).catch(function(e){alert('Error al cargar el finiquito: '+e.message);});
   }
   function eliminarCarta(id){
     if(!confirm('¿Eliminar esta carta?'))return;
@@ -14280,6 +14318,13 @@ function FiniquitosView(p){
     ),
     // CALCULAR FINIQUITO
     modo==='calcular'&&h('div',null,
+      editFini&&h('div',{style:{padding:12,background:'#FEF3C7',border:'1px solid #F59E0B',borderRadius:6,marginBottom:12,display:'flex',justifyContent:'space-between',alignItems:'center'}},
+        h('div',null,
+          h('strong',{style:{color:'#92400E',fontSize:13}},'✏ Modo edición'),
+          h('div',{style:{fontSize:11,color:'#78350F',marginTop:2}},'Estás modificando el finiquito Nº'+editFini+'. Los cambios sobreescribirán los valores guardados al hacer click en "Guardar".')
+        ),
+        h('button',{onClick:function(){setEditFini(null);setForm(emptyForm);setModo('listar');},style:{padding:'6px 12px',background:'#fff',border:'1px solid #F59E0B',color:'#92400E',borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:600}},'✕ Cancelar edición')
+      ),
       // Datos básicos
       h('div',{className:'card',style:{padding:14,marginBottom:12}},
         h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#1E3A2D'}},'Datos básicos'),
@@ -14464,6 +14509,7 @@ function FiniquitosView(p){
               h('td',null,f.anios_servicio||0),
               h('td',null,h('span',{style:{fontFamily:'monospace',fontWeight:700,color:'#15803D'}},CLPF(f.total_finiquito))),
               h('td',null,h('div',{style:{display:'flex',gap:3}},
+                h(Btn,{v:'b',sm:true,onClick:function(){editarFini(f);},title:'Cargar al formulario y editar'},null,'✏ Editar'),
                 h(Btn,{v:'a',sm:true,onClick:function(){generarFiniquitoDoc(f.finiquito_id,'pdf');}},null,'📑 PDF'),
                 h(Btn,{v:'a',sm:true,onClick:function(){generarFiniquitoDoc(f.finiquito_id,'word');}},null,'📄 Word'),
                 h(Btn,{v:'r',sm:true,onClick:function(){eliminar(f.finiquito_id);}},null,'🗑')
