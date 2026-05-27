@@ -2325,22 +2325,41 @@ app.post('/api/inv/recalcular-cpp', auth, async(req,res)=>{
     var w='1=1', vals=[];
     if(producto_id&&bodega_id){w='md.producto_id=$1 AND me.bodega_id=$2';vals=[producto_id,bodega_id];}
     await client.query('BEGIN');
-    // Recorre por (producto, bodega) en orden cronológico, recalcula CPP
+    // Recorre TODOS los movimientos activos en orden cronológico GLOBAL
+    // Procesa todas las bodegas a la vez para que el CPP de origen al momento del traspaso esté disponible
+    var globalWhere = (producto_id && bodega_id) ? 'md.producto_id=$1' : '1=1';
+    var globalVals = (producto_id && bodega_id) ? [producto_id] : [];
     const movs=await client.query(`
       SELECT md.producto_id, me.bodega_id, me.tipo_movimiento, md.cantidad, md.costo_unitario,
-             me.movimiento_id, me.fecha, me.creado_en
+             me.movimiento_id, me.fecha, me.creado_en, me.referencia_transfer_id
       FROM movimiento_detalle md
       JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
-      WHERE me.estado='ACTIVO' AND ${w}
-      ORDER BY md.producto_id, me.bodega_id, me.fecha, me.creado_en, me.movimiento_id`,vals);
+      WHERE me.estado='ACTIVO' AND ${globalWhere}
+      ORDER BY md.producto_id, me.fecha, me.creado_en, me.movimiento_id`,globalVals);
+    // Mapa de movimiento_id -> bodega_id (para encontrar bodega origen de traspasos)
+    const bodegaPorMov={};
+    movs.rows.forEach(function(m){bodegaPorMov[m.movimiento_id]=m.bodega_id;});
     // Acumulador por (prod,bod)
     var acc={};
+    var avisos=[];
     for(const m of movs.rows){
       const k=m.producto_id+'_'+m.bodega_id;
       if(!acc[k]) acc[k]={stock:0, cpp:0};
       const cant=parseFloat(m.cantidad)||0;
       if(m.tipo_movimiento==='INGRESO'||m.tipo_movimiento==='TRASPASO_INGRESO'){
-        const cu=parseFloat(m.costo_unitario)||0;
+        var cu=parseFloat(m.costo_unitario)||0;
+        // Si es TRASPASO_INGRESO con costo inválido (<=0), usar el CPP de la bodega origen en ese momento
+        if(m.tipo_movimiento==='TRASPASO_INGRESO' && cu<=0 && m.referencia_transfer_id){
+          const bodegaOrigen=bodegaPorMov[m.referencia_transfer_id];
+          if(bodegaOrigen){
+            const kOrigen=m.producto_id+'_'+bodegaOrigen;
+            const cppOrigen=acc[kOrigen]?acc[kOrigen].cpp:0;
+            if(cppOrigen>0){
+              cu=cppOrigen;
+              avisos.push('Mov '+m.movimiento_id+': costo inválido en TRASPASO_INGRESO, se usó CPP de bodega origen ($'+Math.round(cppOrigen)+')');
+            }
+          }
+        }
         const newStock=acc[k].stock+cant;
         if(newStock>0) acc[k].cpp=(acc[k].stock*acc[k].cpp + cant*cu)/newStock;
         acc[k].stock=newStock;
@@ -2348,17 +2367,115 @@ app.post('/api/inv/recalcular-cpp', auth, async(req,res)=>{
         acc[k].stock=Math.max(0,acc[k].stock-cant);
       }
     }
-    // Actualizar stock_actual con los CPPs recalculados
+    // Filtrar acc por bodega si se especificó
     var actualizados=0;
     for(const k of Object.keys(acc)){
       const[pid,bid]=k.split('_');
+      if(producto_id && bodega_id && (String(pid)!==String(producto_id) || String(bid)!==String(bodega_id))) continue;
       const r=await client.query(
         'UPDATE stock_actual SET costo_promedio_actual=$1, ultima_actualizacion=NOW() WHERE producto_id=$2 AND bodega_id=$3',
         [Math.max(0,acc[k].cpp), pid, bid]);
       actualizados+=r.rowCount;
     }
     await client.query('COMMIT');
-    res.json({ok:true,filas_actualizadas:actualizados});
+    res.json({ok:true,filas_actualizadas:actualizados,avisos:avisos.slice(0,20)});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// ─── GET: detectar traspasos con costo inválido (≤0 o lados inconsistentes) ───
+app.get('/api/inv/traspasos-problemas', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`
+      SELECT me.movimiento_id, me.tipo_movimiento, me.fecha, me.referencia_transfer_id,
+             md.detalle_id, md.producto_id, md.cantidad, md.costo_unitario,
+             p.codigo AS producto_codigo, p.nombre AS producto_nombre,
+             b.nombre AS bodega_nombre,
+             (SELECT me2.bodega_id FROM movimiento_encabezado me2 WHERE me2.movimiento_id=me.referencia_transfer_id) AS bodega_par_id,
+             (SELECT b2.nombre FROM movimiento_encabezado me2 JOIN bodegas b2 ON me2.bodega_id=b2.bodega_id WHERE me2.movimiento_id=me.referencia_transfer_id) AS bodega_par_nombre,
+             (SELECT md2.costo_unitario FROM movimiento_detalle md2 WHERE md2.movimiento_id=me.referencia_transfer_id AND md2.producto_id=md.producto_id LIMIT 1) AS costo_par,
+             (SELECT md2.detalle_id FROM movimiento_detalle md2 WHERE md2.movimiento_id=me.referencia_transfer_id AND md2.producto_id=md.producto_id LIMIT 1) AS detalle_par_id,
+             sa.costo_promedio_actual AS cpp_actual_origen
+      FROM movimiento_encabezado me
+      JOIN movimiento_detalle md ON md.movimiento_id=me.movimiento_id
+      JOIN productos p ON md.producto_id=p.producto_id
+      JOIN bodegas b ON me.bodega_id=b.bodega_id
+      LEFT JOIN stock_actual sa ON sa.producto_id=md.producto_id AND sa.bodega_id=(SELECT me3.bodega_id FROM movimiento_encabezado me3 WHERE me3.movimiento_id=me.referencia_transfer_id AND me.tipo_movimiento='TRASPASO_INGRESO')
+      WHERE me.tipo_movimiento IN ('TRASPASO_SALIDA','TRASPASO_INGRESO') 
+        AND me.estado='ACTIVO'
+        AND (md.costo_unitario <= 0 OR md.costo_unitario IS NULL)
+      ORDER BY me.fecha DESC, me.movimiento_id DESC`);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ─── POST: reparar costos de traspasos con costo ≤ 0 ───
+// Estrategia: si el lado pareja tiene costo > 0, usar ese. Si no, usar el CPP del producto en bodega origen.
+app.post('/api/inv/reparar-traspasos', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    // Traer todas las líneas problemáticas con su pareja
+    const probs=await client.query(`
+      SELECT me.movimiento_id, me.tipo_movimiento, me.referencia_transfer_id,
+             md.detalle_id, md.producto_id, md.cantidad, md.costo_unitario,
+             (SELECT md2.detalle_id FROM movimiento_detalle md2 WHERE md2.movimiento_id=me.referencia_transfer_id AND md2.producto_id=md.producto_id LIMIT 1) AS detalle_par_id,
+             (SELECT md2.costo_unitario FROM movimiento_detalle md2 WHERE md2.movimiento_id=me.referencia_transfer_id AND md2.producto_id=md.producto_id LIMIT 1) AS costo_par
+      FROM movimiento_encabezado me
+      JOIN movimiento_detalle md ON md.movimiento_id=me.movimiento_id
+      WHERE me.tipo_movimiento IN ('TRASPASO_SALIDA','TRASPASO_INGRESO')
+        AND me.estado='ACTIVO'
+        AND (md.costo_unitario <= 0 OR md.costo_unitario IS NULL)`);
+    var reparados=0, sinReparar=0, detalle=[];
+    const procesados=new Set();
+    for(const p of probs.rows){
+      // Evitar procesar dos veces el mismo par (el SALIDA y el INGRESO comparten la misma realidad)
+      const parKey = [p.detalle_id, p.detalle_par_id].sort().join('-');
+      if(procesados.has(parKey)) continue;
+      procesados.add(parKey);
+      var costoNew = null;
+      var origen = '';
+      // 1. Si el lado pareja tiene costo > 0, usar ese
+      if(p.costo_par && parseFloat(p.costo_par) > 0){
+        costoNew = parseFloat(p.costo_par);
+        origen = 'lado pareja';
+      } else {
+        // 2. Buscar bodega origen del traspaso (el lado SALIDA siempre es origen)
+        var bodegaOrigenQ;
+        if(p.tipo_movimiento === 'TRASPASO_SALIDA'){
+          bodegaOrigenQ = await client.query('SELECT bodega_id FROM movimiento_encabezado WHERE movimiento_id=$1',[p.movimiento_id]);
+        } else {
+          bodegaOrigenQ = await client.query('SELECT bodega_id FROM movimiento_encabezado WHERE movimiento_id=$1',[p.referencia_transfer_id]);
+        }
+        if(bodegaOrigenQ.rows.length){
+          // Buscar el último INGRESO con costo > 0 del producto en bodega origen
+          const ultimoIng = await client.query(`
+            SELECT md.costo_unitario FROM movimiento_detalle md
+            JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
+            WHERE me.tipo_movimiento='INGRESO' AND me.estado='ACTIVO'
+              AND md.producto_id=$1 AND me.bodega_id=$2 AND md.costo_unitario > 0
+            ORDER BY me.fecha DESC, me.creado_en DESC LIMIT 1`,
+            [p.producto_id, bodegaOrigenQ.rows[0].bodega_id]);
+          if(ultimoIng.rows.length){
+            costoNew = parseFloat(ultimoIng.rows[0].costo_unitario);
+            origen = 'último ingreso bodega origen';
+          }
+        }
+      }
+      if(costoNew && costoNew > 0){
+        // Aplicar a ambos lados del traspaso
+        await client.query('UPDATE movimiento_detalle SET costo_unitario=$1 WHERE detalle_id=$2',[costoNew, p.detalle_id]);
+        if(p.detalle_par_id){
+          await client.query('UPDATE movimiento_detalle SET costo_unitario=$1 WHERE detalle_id=$2',[costoNew, p.detalle_par_id]);
+        }
+        reparados++;
+        detalle.push({mov:p.movimiento_id, detalle:p.detalle_id, costo_anterior:p.costo_unitario, costo_nuevo:costoNew, origen:origen});
+      } else {
+        sinReparar++;
+      }
+    }
+    await client.query('COMMIT');
+    res.json({ok:true, reparados:reparados, sin_reparar:sinReparar, detalle:detalle.slice(0,30)});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
