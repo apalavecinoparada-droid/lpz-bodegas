@@ -2601,7 +2601,7 @@ app.get('/api/reportes/ingresos', auth, async(req,res)=>{
 const ocR=express.Router();
 ocR.get('/', auth, async(req,res)=>{
   try{
-    const{estado,proveedor_id,desde,hasta,empresa_id,numero_documento}=req.query;
+    const{estado,proveedor_id,desde,hasta,empresa_id,numero_documento,numero_factura}=req.query;
     let where=['1=1'],vals=[];
     if(estado){vals.push(estado);where.push(`oc.estado=$${vals.length}`);}
     if(proveedor_id){vals.push(proveedor_id);where.push(`oc.proveedor_id=$${vals.length}`);}
@@ -2609,7 +2609,19 @@ ocR.get('/', auth, async(req,res)=>{
     if(desde){vals.push(desde);where.push(`oc.fecha_emision>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`oc.fecha_emision<=$${vals.length}`);}
     if(numero_documento){vals.push('%'+numero_documento+'%');where.push(`oc.numero_documento ILIKE $${vals.length}`);}
-    const r=await pool.query(`SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,pr.rut AS proveedor_rut,cp.nombre AS condicion_nombre,td.nombre AS tipo_doc_nombre,uc.nombre AS usuario_nombre,uk.nombre AS cerrada_por_nombre FROM ordenes_compra oc LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id LEFT JOIN condiciones_pago cp ON oc.condicion_id=cp.condicion_id LEFT JOIN tipos_documento td ON oc.tipo_doc_id=td.tipo_doc_id LEFT JOIN usuarios uc ON LOWER(uc.email)=LOWER(oc.usuario) LEFT JOIN usuarios uk ON LOWER(uk.email)=LOWER(oc.cerrada_por) WHERE ${where.join(' AND ')} ORDER BY oc.oc_id DESC`,vals);
+    if(numero_factura){vals.push('%'+numero_factura+'%');where.push(`fac.numero_factura ILIKE $${vals.length}`);}
+    const r=await pool.query(`SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,pr.rut AS proveedor_rut,cp.nombre AS condicion_nombre,td.nombre AS tipo_doc_nombre,uc.nombre AS usuario_nombre,uk.nombre AS cerrada_por_nombre,
+      fac.numero_factura AS factura_asociada_numero, fac.fecha_factura AS factura_asociada_fecha, fac.total AS factura_asociada_total
+      FROM ordenes_compra oc 
+      LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id 
+      LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id 
+      LEFT JOIN condiciones_pago cp ON oc.condicion_id=cp.condicion_id 
+      LEFT JOIN tipos_documento td ON oc.tipo_doc_id=td.tipo_doc_id 
+      LEFT JOIN usuarios uc ON LOWER(uc.email)=LOWER(oc.usuario) 
+      LEFT JOIN usuarios uk ON LOWER(uk.email)=LOWER(oc.cerrada_por) 
+      LEFT JOIN oc_factura_guias fac ON oc.factura_guia_id=fac.factura_id
+      WHERE ${where.join(' AND ')} 
+      ORDER BY oc.oc_id DESC`,vals);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -7968,18 +7980,53 @@ app.post('/api/oc-guias/facturar', auth, async(req,res)=>{
 // Listar facturas de guías
 app.get('/api/oc-guias/facturas', auth, async(req,res)=>{
   try{
-    const{proveedor_id}=req.query;
+    const{proveedor_id,buscar,fecha_desde,fecha_hasta,empresa_id}=req.query;
     let w=['1=1'],v=[];
     if(proveedor_id){v.push(proveedor_id);w.push(`f.proveedor_id=$${v.length}`);}
-    const r=await pool.query(`SELECT f.*,pr.nombre AS proveedor_nombre,e.razon_social AS empresa_nombre,
+    if(empresa_id){v.push(empresa_id);w.push(`f.empresa_id=$${v.length}`);}
+    if(buscar){
+      v.push('%'+buscar+'%');
+      w.push(`(f.numero_factura ILIKE $${v.length} OR pr.nombre ILIKE $${v.length} OR f.observaciones ILIKE $${v.length} OR EXISTS(SELECT 1 FROM ordenes_compra oc2 WHERE oc2.factura_guia_id=f.factura_id AND oc2.numero_oc ILIKE $${v.length}))`);
+    }
+    if(fecha_desde){v.push(fecha_desde);w.push(`f.fecha_factura>=$${v.length}`);}
+    if(fecha_hasta){v.push(fecha_hasta);w.push(`f.fecha_factura<=$${v.length}`);}
+    const r=await pool.query(`SELECT f.*,pr.nombre AS proveedor_nombre,pr.rut AS proveedor_rut,e.razon_social AS empresa_nombre,
       (SELECT COUNT(*) FROM ordenes_compra oc WHERE oc.factura_guia_id=f.factura_id) AS num_guias,
-      (SELECT STRING_AGG(oc.numero_oc,', ') FROM ordenes_compra oc WHERE oc.factura_guia_id=f.factura_id) AS guias_str
+      (SELECT STRING_AGG(oc.numero_oc,', ' ORDER BY oc.numero_oc) FROM ordenes_compra oc WHERE oc.factura_guia_id=f.factura_id) AS guias_str,
+      (SELECT STRING_AGG(DISTINCT oc.numero_guia_despacho,', ' ORDER BY oc.numero_guia_despacho) FROM ordenes_compra oc WHERE oc.factura_guia_id=f.factura_id AND oc.numero_guia_despacho IS NOT NULL) AS guias_despacho_str
       FROM oc_factura_guias f
       LEFT JOIN proveedores pr ON f.proveedor_id=pr.proveedor_id
       LEFT JOIN empresas e ON f.empresa_id=e.empresa_id
       WHERE ${w.join(' AND ')}
-      ORDER BY f.creado_en DESC`,v);
+      ORDER BY f.fecha_factura DESC NULLS LAST, f.creado_en DESC`,v);
     res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ─── GET: detalle de una factura con todas las OC y guías asociadas ───
+app.get('/api/oc-guias/facturas/:id', auth, async(req,res)=>{
+  try{
+    const head=await pool.query(`
+      SELECT f.*, pr.nombre AS proveedor_nombre, pr.rut AS proveedor_rut, 
+             e.razon_social AS empresa_nombre, u.nombre AS usuario_nombre
+      FROM oc_factura_guias f
+      LEFT JOIN proveedores pr ON f.proveedor_id=pr.proveedor_id
+      LEFT JOIN empresas e ON f.empresa_id=e.empresa_id
+      LEFT JOIN usuarios u ON LOWER(u.email)=LOWER(f.usuario)
+      WHERE f.factura_id=$1`,[req.params.id]);
+    if(!head.rows.length) return res.status(404).json({error:'Factura no encontrada'});
+    const ocs=await pool.query(`
+      SELECT oc.oc_id, oc.numero_oc, oc.fecha_emision, oc.numero_guia_despacho, oc.fecha_guia_despacho,
+             oc.total, oc.neto, oc.iva, oc.estado, oc.solicitante,
+             em.razon_social AS empresa_nombre,
+             f.nombre AS faena_nombre,
+             (SELECT COUNT(*) FROM oc_detalle d WHERE d.oc_id=oc.oc_id) AS num_lineas
+      FROM ordenes_compra oc
+      LEFT JOIN empresas em ON oc.empresa_id=em.empresa_id
+      LEFT JOIN faenas f ON oc.faena_id=f.faena_id
+      WHERE oc.factura_guia_id=$1
+      ORDER BY oc.fecha_emision DESC, oc.numero_oc`,[req.params.id]);
+    res.json({encabezado:head.rows[0], ordenes_compra:ocs.rows});
   }catch(e){res.status(500).json({error:e.message});}
 });
 
