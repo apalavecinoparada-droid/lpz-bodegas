@@ -7993,7 +7993,7 @@ app.get('/api/oc-guias/facturas', auth, async(req,res)=>{
     const r=await pool.query(`SELECT f.*,pr.nombre AS proveedor_nombre,pr.rut AS proveedor_rut,e.razon_social AS empresa_nombre,
       (SELECT COUNT(*) FROM ordenes_compra oc WHERE oc.factura_guia_id=f.factura_id) AS num_guias,
       (SELECT STRING_AGG(oc.numero_oc,', ' ORDER BY oc.numero_oc) FROM ordenes_compra oc WHERE oc.factura_guia_id=f.factura_id) AS guias_str,
-      (SELECT STRING_AGG(DISTINCT oc.numero_guia_despacho,', ' ORDER BY oc.numero_guia_despacho) FROM ordenes_compra oc WHERE oc.factura_guia_id=f.factura_id AND oc.numero_guia_despacho IS NOT NULL) AS guias_despacho_str
+      (SELECT STRING_AGG(DISTINCT oc.numero_documento,', ' ORDER BY oc.numero_documento) FROM ordenes_compra oc WHERE oc.factura_guia_id=f.factura_id AND oc.numero_documento IS NOT NULL) AS guias_despacho_str
       FROM oc_factura_guias f
       LEFT JOIN proveedores pr ON f.proveedor_id=pr.proveedor_id
       LEFT JOIN empresas e ON f.empresa_id=e.empresa_id
@@ -8016,7 +8016,10 @@ app.get('/api/oc-guias/facturas/:id', auth, async(req,res)=>{
       WHERE f.factura_id=$1`,[req.params.id]);
     if(!head.rows.length) return res.status(404).json({error:'Factura no encontrada'});
     const ocs=await pool.query(`
-      SELECT oc.oc_id, oc.numero_oc, oc.fecha_emision, oc.numero_guia_despacho, oc.fecha_guia_despacho,
+      SELECT oc.oc_id, oc.numero_oc, oc.fecha_emision, 
+             oc.numero_documento AS numero_guia_despacho, 
+             oc.fecha_documento AS fecha_guia_despacho,
+             td.nombre AS tipo_doc_nombre,
              oc.total, oc.neto, oc.iva, oc.estado, oc.solicitante,
              em.razon_social AS empresa_nombre,
              (SELECT STRING_AGG(DISTINCT fa.nombre, ', ') 
@@ -8026,6 +8029,7 @@ app.get('/api/oc-guias/facturas/:id', auth, async(req,res)=>{
              (SELECT COUNT(*) FROM ordenes_compra_detalle d WHERE d.oc_id=oc.oc_id) AS num_lineas
       FROM ordenes_compra oc
       LEFT JOIN empresas em ON oc.empresa_id=em.empresa_id
+      LEFT JOIN tipos_documento td ON oc.tipo_doc_id=td.tipo_doc_id
       WHERE oc.factura_guia_id=$1
       ORDER BY oc.fecha_emision DESC, oc.numero_oc`,[req.params.id]);
     res.json({encabezado:head.rows[0], ordenes_compra:ocs.rows});
