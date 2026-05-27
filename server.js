@@ -8019,11 +8019,13 @@ app.get('/api/oc-guias/facturas/:id', auth, async(req,res)=>{
       SELECT oc.oc_id, oc.numero_oc, oc.fecha_emision, oc.numero_guia_despacho, oc.fecha_guia_despacho,
              oc.total, oc.neto, oc.iva, oc.estado, oc.solicitante,
              em.razon_social AS empresa_nombre,
-             f.nombre AS faena_nombre,
-             (SELECT COUNT(*) FROM oc_detalle d WHERE d.oc_id=oc.oc_id) AS num_lineas
+             (SELECT STRING_AGG(DISTINCT fa.nombre, ', ') 
+              FROM ordenes_compra_detalle d 
+              LEFT JOIN faenas fa ON d.faena_id=fa.faena_id 
+              WHERE d.oc_id=oc.oc_id AND fa.nombre IS NOT NULL) AS faena_nombre,
+             (SELECT COUNT(*) FROM ordenes_compra_detalle d WHERE d.oc_id=oc.oc_id) AS num_lineas
       FROM ordenes_compra oc
       LEFT JOIN empresas em ON oc.empresa_id=em.empresa_id
-      LEFT JOIN faenas f ON oc.faena_id=f.faena_id
       WHERE oc.factura_guia_id=$1
       ORDER BY oc.fecha_emision DESC, oc.numero_oc`,[req.params.id]);
     res.json({encabezado:head.rows[0], ordenes_compra:ocs.rows});
