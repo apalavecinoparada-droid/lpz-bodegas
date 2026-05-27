@@ -2137,7 +2137,27 @@ function InvAuditoriaView(p){
     h('div',{className:'tb'},
       h(Btn,{onClick:cargar,disabled:loading||busy},loading?'⏳ Analizando...':'🔄 Volver a analizar'),
       h(Btn,{v:'r',onClick:function(){recalcularTodo('stock');},disabled:busy,title:'Recalcula stock_actual desde movimientos para TODOS los productos'},'⚙ Recalcular Stock TODOS'),
-      h(Btn,{v:'r',onClick:function(){recalcularTodo('cpp');},disabled:busy,title:'Recalcula CPP desde ingresos para TODOS los productos'},'⚙ Recalcular CPP TODOS')
+      h(Btn,{v:'r',onClick:function(){recalcularTodo('cpp');},disabled:busy,title:'Recalcula CPP desde ingresos para TODOS los productos'},'⚙ Recalcular CPP TODOS'),
+      h(Btn,{v:'y',onClick:function(){
+        if(!confirm('¿Reparar costos de TRASPASOS con valor ≤ 0?\n\nEl sistema:\n1. Encuentra traspasos con costo unitario inválido\n2. Toma el costo de la línea pareja si está disponible\n3. Si no, busca el último ingreso del producto en bodega origen\n4. Aplica el costo correcto a AMBOS lados del traspaso\n\nDespués corre "Recalcular CPP TODOS" para propagar el cambio al stock.'))return;
+        setBusy(true);
+        api('/inv/reparar-traspasos','POST',{},p.tok)
+          .then(function(r){
+            var msg='✓ Reparados: '+r.reparados+' traspasos.\n';
+            if(r.sin_reparar>0) msg+='⚠ No se pudieron reparar: '+r.sin_reparar+' (no había referencia válida)\n';
+            if(r.detalle && r.detalle.length){
+              msg+='\nDetalle:\n'+r.detalle.slice(0,10).map(function(d){return '• Mov '+d.mov+': $'+d.costo_anterior+' → $'+Math.round(d.costo_nuevo)+' ('+d.origen+')';}).join('\n');
+            }
+            alert(msg);
+            // Sugerir recalcular CPP después
+            if(r.reparados>0){
+              if(confirm('¿Ejecutar "Recalcular CPP TODOS" ahora para actualizar el stock?')) recalcularTodo('cpp');
+              else cargar();
+            } else cargar();
+          })
+          .catch(function(e){alert('Error: '+e.message);})
+          .finally(function(){setBusy(false);});
+      },disabled:busy,title:'Repara traspasos con costo unitario ≤ 0 usando el costo del lado pareja o el último ingreso de la bodega origen'},'🔧 Reparar Traspasos')
     ),
     err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
 
