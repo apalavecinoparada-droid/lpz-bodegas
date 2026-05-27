@@ -1250,6 +1250,7 @@ function IngresoView(p){
   const[movs,setMovs]=useState([]);const[modal,setModal]=useState(false);
   const[anularId,setAnularId]=useState(null);const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
   const[verDetalle,setVerDetalle]=useState(null);
+  const[editMov,setEditMov]=useState(null);
   const blank={fecha:TODAY,bodega_id:'',prov_id:'',tdoc_id:'',ndoc:'',fdoc:TODAY,obs:'',lineas:[{prod_id:'',qty:'1',cu:'0'}]};
   const[form,setForm]=useState(blank);
   function load(){api('/movimientos?tipo=INGRESO','GET',null,p.tok).then(function(r){setMovs(Array.isArray(r)?r:[]);}).catch(function(){});}
@@ -1296,10 +1297,12 @@ function IngresoView(p){
       {lbl:'Estado',render:r=>h(Bg,{c:r.estado==='ACTIVO'?'g':'r'},r.estado),c:true},
       {lbl:'',c:true,render:function(r){return h('div',{style:{display:'flex',gap:3}},
         h('button',{className:'btn btn-blue btn-xs',onClick:function(){setVerDetalle(r);},title:'Ver detalle de líneas / editar cantidades'},'👁'),
+        r.estado==='ACTIVO'&&canEditInv()?h('button',{className:'btn btn-blue btn-xs',onClick:function(){setEditMov(r);},title:'Editar proveedor, documento u observaciones'},'✏'):'',
         r.estado==='ACTIVO'&&canEditInv()?h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular'):''
       );}}
     ],rows:movs,empty:'Sin ingresos'})),
     verDetalle&&h(MovDetalleModal,{tok:p.tok,user:p.user,mov:verDetalle,onClose:function(){setVerDetalle(null);load();}}),
+    editMov&&h(MovEditModal,{tok:p.tok,m:p.m,mov:editMov,onClose:function(){setEditMov(null);},onSave:function(){setEditMov(null);load();}}),
     anularId&&h(AnularMovModal,{tok:p.tok,movId:anularId,onClose:function(){setAnularId(null);},onDone:function(){load();p.onMov&&p.onMov();}}),
     modal&&h(Modal,{title:'Registrar Ingreso',onClose:function(){setModal(false);},lg:true},
       h(EB,null,
@@ -1434,6 +1437,10 @@ function MovEditModal(p){
   var faenas=(p.m&&p.m.faenas||[]).filter(function(f){return f.activo;});
   var equipos=(p.m&&p.m.equipos||[]).filter(function(e){return e.activo;});
   var motivos=(p.m&&p.m.motivos||[]).filter(function(m){return m.activo;});
+  var proveedores=(p.m&&p.m.provs||[]).filter(function(pr){return pr.activo!==false;});
+  var tiposDoc=(p.m&&p.m.tdocs||[]).filter(function(t){return t.activo!==false;});
+  var esIngreso=mov.tipo_movimiento==='INGRESO';
+  var esTraspaso=mov.tipo_movimiento==='TRASPASO_SALIDA'||mov.tipo_movimiento==='TRASPASO_INGRESO';
   var[form,setForm]=useState({
     fecha:(mov.fecha||'').slice(0,10),
     faena_id:mov.faena_id||'',
@@ -1442,6 +1449,8 @@ function MovEditModal(p){
     observaciones:mov.observaciones||'',
     responsable_entrega:mov.responsable_entrega||'',
     responsable_recepcion:mov.responsable_recepcion||'',
+    proveedor_id:mov.proveedor_id||'',
+    tipo_doc_id:mov.tipo_doc_id||'',
     numero_documento:mov.numero_documento||'',
     fecha_documento:(mov.fecha_documento||'').slice(0,10)
   });
@@ -1457,8 +1466,13 @@ function MovEditModal(p){
       numero_documento:form.numero_documento||null,
       fecha_documento:form.fecha_documento||null
     };
-    // Solo enviar faena/equipo/motivo si NO es traspaso (los traspasos no usan esos campos)
-    if(mov.tipo_movimiento!=='TRASPASO_SALIDA'&&mov.tipo_movimiento!=='TRASPASO_INGRESO'){
+    // En INGRESOS también editamos proveedor y tipo de documento
+    if(esIngreso){
+      body.proveedor_id=form.proveedor_id||null;
+      body.tipo_doc_id=form.tipo_doc_id||null;
+    }
+    // Solo enviar faena/equipo/motivo si NO es traspaso ni ingreso (los ingresos no usan esos campos)
+    if(!esTraspaso&&!esIngreso){
       body.faena_id=form.faena_id||null;
       body.equipo_id=form.equipo_id||null;
       body.motivo_id=form.motivo_id||null;
@@ -1467,14 +1481,45 @@ function MovEditModal(p){
       p.onSave&&p.onSave();
     }).catch(function(e){setErr(e.message);}).finally(function(){setSaving(false);});
   }
-  var esTraspaso=mov.tipo_movimiento==='TRASPASO_SALIDA'||mov.tipo_movimiento==='TRASPASO_INGRESO';
   var equiposFilt=form.faena_id?equipos.filter(function(e){return String(e.faena_id)===String(form.faena_id);}):equipos;
-  return h(Modal,{title:'✏ Editar '+(esTraspaso?'Traspaso':'Salida')+' #'+mov.movimiento_id,onClose:p.onClose,lg:true},
+  var titulo=esIngreso?'Ingreso':esTraspaso?'Traspaso':'Salida';
+  return h(Modal,{title:'✏ Editar '+titulo+' #'+mov.movimiento_id,onClose:p.onClose,lg:true},
     h('div',{style:{padding:14}},
       err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
       h('div',{className:'al al-i',style:{marginBottom:12,fontSize:12}},
-        '💡 Solo se pueden editar metadatos (fecha, faena, equipo, motivo, observaciones). ',
-        h('strong',null,'Para cambiar productos o cantidades'),', anula este movimiento y crea uno nuevo.'
+        '💡 Solo se pueden editar metadatos (fecha, '+(esIngreso?'proveedor, documento, ':'')+'observaciones). ',
+        h('strong',null,'Para cambiar productos o cantidades'),', usa el botón 👁 ver detalle.'
+      ),
+      // Para INGRESOS: bloque de proveedor + documento (prominente)
+      esIngreso&&h('div',{style:{padding:10,background:'#F0FDF4',border:'1px solid #86EFAC',borderRadius:6,marginBottom:12}},
+        h('div',{style:{fontSize:11,fontWeight:700,marginBottom:6,color:'#166534'}},'📋 Información de documento'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'2fr 1fr 1fr 1fr',gap:8}},
+          h('div',null,
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Proveedor'),
+            h('select',{value:form.proveedor_id||'',onChange:function(e){sf('proveedor_id',e.target.value);},style:{width:'100%',padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:11,boxSizing:'border-box'}},
+              h('option',{value:''},'— Sin proveedor (ingreso interno) —'),
+              proveedores.map(function(pr){return h('option',{key:pr.proveedor_id,value:pr.proveedor_id},pr.nombre);})
+            )
+          ),
+          h('div',null,
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Tipo doc.'),
+            h('select',{value:form.tipo_doc_id||'',onChange:function(e){sf('tipo_doc_id',e.target.value);},style:{width:'100%',padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:11,boxSizing:'border-box'}},
+              h('option',{value:''},'— Sin documento —'),
+              tiposDoc.map(function(t){return h('option',{key:t.tipo_doc_id,value:t.tipo_doc_id},t.nombre);})
+            )
+          ),
+          h('div',null,
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'N° documento'),
+            h('input',{type:'text',value:form.numero_documento||'',onChange:function(e){sf('numero_documento',e.target.value);},placeholder:'Ej: Stock inicial',style:{width:'100%',padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:11,boxSizing:'border-box'}})
+          ),
+          h('div',null,
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha doc.'),
+            h('input',{type:'date',value:form.fecha_documento||'',onChange:function(e){sf('fecha_documento',e.target.value);},style:{width:'100%',padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:11,boxSizing:'border-box'}})
+          )
+        ),
+        h('div',{style:{fontSize:10,color:'#475569',marginTop:6,fontStyle:'italic'}},
+          '💡 Para ingresos internos sin factura (ej. stock inicial), deja el proveedor y tipo de documento vacíos y escribe el motivo en el N° de documento (ej. "Stock inicial", "Reposición manual", "Ajuste auditoría").'
+        )
       ),
       h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
         h('div',null,
@@ -1485,21 +1530,21 @@ function MovEditModal(p){
           h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Bodega'),
           h('input',{type:'text',value:mov.bodega_nombre||'—',disabled:true,style:{width:'100%',padding:'7px 10px',border:'1px solid #E2E8F0',borderRadius:5,fontSize:12,boxSizing:'border-box',background:'#F8FAFC',color:'#94A3B8'}})
         ),
-        !esTraspaso&&h('div',null,
+        !esTraspaso&&!esIngreso&&h('div',null,
           h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena'),
           h('select',{value:form.faena_id,onChange:function(e){sf('faena_id',e.target.value);sf('equipo_id','');},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}},
             h('option',{value:''},'Sin faena'),
             faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.codigo+' — '+f.nombre);})
           )
         ),
-        !esTraspaso&&h('div',null,
+        !esTraspaso&&!esIngreso&&h('div',null,
           h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Equipo / Cargo'),
           h('select',{value:form.equipo_id,onChange:function(e){sf('equipo_id',e.target.value);},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}},
             h('option',{value:''},'Sin equipo'),
             equiposFilt.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);})
           )
         ),
-        !esTraspaso&&h('div',{style:{gridColumn:'span 2'}},
+        !esTraspaso&&!esIngreso&&h('div',{style:{gridColumn:'span 2'}},
           h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Motivo'),
           h('select',{value:form.motivo_id,onChange:function(e){sf('motivo_id',e.target.value);},style:{width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}},
             h('option',{value:''},'Sin motivo'),
