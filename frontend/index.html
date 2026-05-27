@@ -1078,19 +1078,51 @@ function MovDetalleModal(p){
     var cu=parseFloat(editCu);
     if(isNaN(cant)||cant<0||isNaN(cu)||cu<0){setErr('Cantidad y costo deben ser >= 0');return;}
     var delta=cant-parseFloat(linea.cantidad);
+    var esIngreso=data&&data.encabezado&&data.encabezado.tipo_movimiento==='INGRESO';
     var msg='¿Confirmar cambio?\n\n'+
       'Producto: '+linea.producto_codigo+' — '+linea.producto_nombre+'\n'+
       'Cantidad: '+linea.cantidad+' → '+cant+' ('+(delta>0?'+':'')+delta+')\n'+
-      'Costo unit: $'+linea.costo_unitario+' → $'+cu+'\n\n'+
-      'Esto ajustará el stock del producto en '+delta+' unidades y recalculará el CPP.';
+      (esIngreso?'Costo unit: $'+linea.costo_unitario+' → $'+cu+'\n':'')+
+      '\nEsto ajustará el stock del producto en '+(esIngreso?delta:-delta)+' unidades'+(esIngreso?' y recalculará el CPP.':'.');
     if(!confirm(msg))return;
     setSaving(true);setErr('');
     api('/movimientos/detalle/'+linea.detalle_id,'PUT',{cantidad:cant,costo_unitario:cu},p.tok)
       .then(function(r){
-        alert('✓ Línea actualizada. Delta de stock: '+r.delta_cantidad+', nuevo CPP: $'+Math.round(r.nuevo_cpp));
+        alert('✓ Línea actualizada (delta cantidad: '+r.delta_cantidad+')');
         cancelarEdicion();
         load();
       })
+      .catch(function(e){setErr(e.message);})
+      .finally(function(){setSaving(false);});
+  }
+
+  function eliminarLinea(linea){
+    if(!confirm('¿Eliminar la línea?\n\n'+linea.producto_codigo+' — '+linea.producto_nombre+'\nCantidad: '+linea.cantidad+'\n\nEsto revertirá el efecto sobre el stock.'))return;
+    setSaving(true);setErr('');
+    api('/movimientos/detalle/'+linea.detalle_id,'DELETE',null,p.tok)
+      .then(function(){load();})
+      .catch(function(e){setErr(e.message);})
+      .finally(function(){setSaving(false);});
+  }
+
+  // Estado para "agregar nueva línea"
+  const[showAdd,setShowAdd]=useState(false);
+  const[addProd,setAddProd]=useState('');
+  const[addCant,setAddCant]=useState('');
+  const[addCu,setAddCu]=useState('');
+  const[productos,setProductos]=useState([]);
+  useEffect(function(){
+    if(showAdd&&productos.length===0){
+      api('/productos','GET',null,p.tok).then(function(r){setProductos(Array.isArray(r)?r:[]);}).catch(function(){});
+    }
+  },[showAdd]);
+  function agregarLinea(){
+    if(!addProd||!addCant){setErr('Producto y cantidad requeridos');return;}
+    setSaving(true);setErr('');
+    var body={producto_id:addProd, cantidad:parseFloat(addCant)};
+    if(addCu) body.costo_unitario=parseFloat(addCu);
+    api('/movimientos/'+data.encabezado.movimiento_id+'/detalle/agregar','POST',body,p.tok)
+      .then(function(){setShowAdd(false);setAddProd('');setAddCant('');setAddCu('');load();})
       .catch(function(e){setErr(e.message);})
       .finally(function(){setSaving(false);});
   }
@@ -1122,8 +1154,11 @@ function MovDetalleModal(p){
         data.encabezado.tipo_movimiento==='INGRESO'&&data.encabezado.estado==='ACTIVO'&&canEditInv()&&h('div',{className:'al al-w',style:{marginBottom:10,fontSize:11}},
           '⚠ ',h('strong',null,'Editar cantidad o costo de una línea'),' ajusta el stock del producto y recalcula el CPP automáticamente. Usar solo para corregir errores reales (ej. factor de conversión equivocado).'
         ),
-        data.encabezado.tipo_movimiento!=='INGRESO'&&h('div',{className:'al al-i',style:{marginBottom:10,fontSize:11}},
-          'ℹ️ Las líneas de salidas y traspasos no se pueden editar directamente. Si hay error, anular el movimiento y crear uno nuevo.'
+        data.encabezado.tipo_movimiento==='SALIDA'&&data.encabezado.estado==='ACTIVO'&&canEditInv()&&h('div',{className:'al al-w',style:{marginBottom:10,fontSize:11}},
+          '⚠ ',h('strong',null,'Editar cantidad de una línea o agregar productos'),' ajusta el stock automáticamente. El costo unitario se mantiene fijo (CPP histórico del descuento). No se puede dejar el stock en negativo.'
+        ),
+        data.encabezado.tipo_movimiento!=='INGRESO'&&data.encabezado.tipo_movimiento!=='SALIDA'&&h('div',{className:'al al-i',style:{marginBottom:10,fontSize:11}},
+          'ℹ️ Las líneas de traspasos no se pueden editar directamente. Si hay error, anular el movimiento y crear uno nuevo.'
         ),
 
         // Tabla líneas
@@ -1153,20 +1188,43 @@ function MovDetalleModal(p){
                 ? h('td',null,h('input',{type:'number',min:0,step:'0.001',value:editCant,onChange:function(e){setEditCant(e.target.value);},style:inpS}))
                 : h('td',{className:'r mono'},fmtN(l.cantidad)),
               enEdicion
-                ? h('td',null,h('input',{type:'number',min:0,step:'0.01',value:editCu,onChange:function(e){setEditCu(e.target.value);},style:inpS}))
+                ? h('td',null,h('input',{type:'number',min:0,step:'0.01',value:editCu,onChange:function(e){setEditCu(e.target.value);},style:inpS,disabled:data.encabezado.tipo_movimiento==='SALIDA',title:data.encabezado.tipo_movimiento==='SALIDA'?'En salidas el costo no se edita (CPP histórico)':''}))
                 : h('td',{className:'r mono'},fmtCLP(l.costo_unitario)),
               h('td',{className:'r mono',style:{fontWeight:600}},fmtCLP(parseFloat(l.cantidad||0)*parseFloat(l.costo_unitario||0))),
               h('td',{className:'c'},
                 enEdicion?h('div',{style:{display:'flex',gap:3}},
                   h('button',{onClick:function(){guardar(l);},disabled:saving,style:{padding:'3px 6px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},saving?'⏳':'✓'),
                   h('button',{onClick:cancelarEdicion,style:{padding:'3px 6px',background:'#E2E8F0',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'✕')
-                ):(data.encabezado.tipo_movimiento==='INGRESO'&&data.encabezado.estado==='ACTIVO'&&canEditInv()
-                  ? h('button',{onClick:function(){iniciarEdicion(l);},style:{padding:'3px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'✏')
+                ):((data.encabezado.tipo_movimiento==='INGRESO'||data.encabezado.tipo_movimiento==='SALIDA')&&data.encabezado.estado==='ACTIVO'&&canEditInv()
+                  ? h('div',{style:{display:'flex',gap:3,justifyContent:'center'}},
+                      h('button',{onClick:function(){iniciarEdicion(l);},title:'Editar cantidad'+(data.encabezado.tipo_movimiento==='INGRESO'?' o costo':''),style:{padding:'3px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'✏'),
+                      h('button',{onClick:function(){eliminarLinea(l);},title:'Eliminar línea',style:{padding:'3px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'🗑')
+                    )
                   : null
                 )
               )
             );
           }))
+        ),
+
+        // ── Bloque agregar nueva línea (solo INGRESO o SALIDA activos con permisos) ──
+        (data.encabezado.tipo_movimiento==='INGRESO'||data.encabezado.tipo_movimiento==='SALIDA')&&data.encabezado.estado==='ACTIVO'&&canEditInv()&&h('div',{style:{marginTop:10}},
+          !showAdd
+            ? h('button',{onClick:function(){setShowAdd(true);},style:{padding:'6px 12px',background:'#10B981',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:600}},'+ Agregar producto')
+            : h('div',{style:{padding:10,background:'#F0FDF4',border:'1px solid #86EFAC',borderRadius:6}},
+                h('div',{style:{fontSize:12,fontWeight:600,marginBottom:6,color:'#166534'}},'Agregar nueva línea al movimiento'),
+                h('div',{style:{display:'grid',gridTemplateColumns:'3fr 1fr '+(data.encabezado.tipo_movimiento==='INGRESO'?'1fr ':'')+'auto auto',gap:6}},
+                  h('select',{value:addProd,onChange:function(e){setAddProd(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:11}},
+                    h('option',{value:''},'Seleccione producto...'),
+                    productos.map(function(pr){return h('option',{key:pr.producto_id,value:pr.producto_id},pr.codigo+' — '+pr.nombre+(pr.unidad_medida?' ('+pr.unidad_medida+')':''));})
+                  ),
+                  h('input',{type:'number',min:'0.001',step:'0.001',placeholder:'Cantidad *',value:addCant,onChange:function(e){setAddCant(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:11,textAlign:'right'}}),
+                  data.encabezado.tipo_movimiento==='INGRESO'&&h('input',{type:'number',min:'0',step:'0.01',placeholder:'Costo unit. *',value:addCu,onChange:function(e){setAddCu(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:11,textAlign:'right'}}),
+                  h('button',{onClick:agregarLinea,disabled:saving,style:{padding:'6px 12px',background:'#10B981',color:'#fff',border:'none',borderRadius:4,cursor:'pointer',fontSize:11,fontWeight:600}},saving?'⏳':'✓ Agregar'),
+                  h('button',{onClick:function(){setShowAdd(false);setAddProd('');setAddCant('');setAddCu('');},style:{padding:'6px 10px',background:'#E2E8F0',color:'#475569',border:'none',borderRadius:4,cursor:'pointer',fontSize:11}},'✕')
+                ),
+                data.encabezado.tipo_movimiento==='SALIDA'&&h('div',{style:{fontSize:10,color:'#64748B',marginTop:4,fontStyle:'italic'}},'En salidas el costo se toma automáticamente del CPP actual del producto en la bodega.')
+              )
         ),
 
         // Totales
