@@ -5504,6 +5504,100 @@ function OCGuiasView(p){
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// FacturaDetalleModal: muestra una factura y todas las OC vinculadas
+// ═══════════════════════════════════════════════════════════════════════
+function FacturaDetalleModal(p){
+  const[data,setData]=useState(null);
+  const[err,setErr]=useState('');
+  useEffect(function(){
+    api('/oc-guias/facturas/'+p.facturaId,'GET',null,p.tok)
+      .then(function(r){setData(r);})
+      .catch(function(e){setErr(e.message);});
+  },[p.facturaId]);
+  if(err) return h(Modal,{title:'Error',onClose:p.onClose},h('div',{className:'al al-e',style:{margin:14}},err));
+  if(!data) return h(Modal,{title:'Cargando factura...',onClose:p.onClose},h('div',{style:{padding:30,textAlign:'center'}},h('div',{className:'spin'},'⏳')));
+  var f=data.encabezado||{};
+  var ocs=data.ordenes_compra||[];
+  var sumNeto=ocs.reduce(function(s,o){return s+(parseFloat(o.neto)||0);},0);
+  var sumTotal=ocs.reduce(function(s,o){return s+(parseFloat(o.total)||0);},0);
+  return h(Modal,{title:'🧾 Factura '+f.numero_factura+' — OC asociadas',onClose:p.onClose,xl:true},
+    h('div',{style:{padding:14}},
+      // Cabecera factura
+      h('div',{style:{padding:12,background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6,marginBottom:12}},
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,fontSize:12}},
+          h('div',null,h('strong',null,'N° Factura: '),h('span',{style:{fontFamily:'monospace',fontWeight:700,color:'#1D4ED8'}},f.numero_factura)),
+          h('div',null,h('strong',null,'Fecha: '),f.fecha_factura?new Date(f.fecha_factura).toLocaleDateString('es-CL'):'—'),
+          h('div',null,h('strong',null,'Proveedor: '),f.proveedor_nombre+(f.proveedor_rut?' ('+f.proveedor_rut+')':'')),
+          h('div',null,h('strong',null,'Empresa: '),f.empresa_nombre||'—'),
+          h('div',null,h('strong',null,'Neto: '),h('span',{style:{fontFamily:'monospace'}},'$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(f.neto)||0)))),
+          h('div',null,h('strong',null,'IVA: '),h('span',{style:{fontFamily:'monospace'}},'$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(f.iva)||0)))),
+          parseFloat(f.ie_total)>0&&h('div',null,h('strong',null,'IE: '),h('span',{style:{fontFamily:'monospace'}},'$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(f.ie_total)||0)))),
+          h('div',null,h('strong',null,'Total: '),h('span',{style:{fontFamily:'monospace',fontWeight:700,color:'#15803D'}},'$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(f.total)||0)))),
+          f.observaciones&&h('div',{style:{gridColumn:'1/-1'}},h('strong',null,'Observaciones: '),h('span',{style:{fontStyle:'italic'}},f.observaciones)),
+          f.usuario&&h('div',{style:{gridColumn:'1/-1',color:'#64748B'}},h('strong',null,'Registrada por: '),f.usuario_nombre||f.usuario)
+        )
+      ),
+      // Tabla de OCs asociadas
+      h('div',{style:{fontSize:13,fontWeight:700,marginBottom:8,color:'#1E3A2D'}},'Órdenes de Compra cerradas con esta factura ('+ocs.length+')'),
+      ocs.length===0
+        ? h('div',{style:{padding:20,textAlign:'center',color:'#64748B',background:'#F8FAFC',borderRadius:6}},'No hay OCs vinculadas a esta factura.')
+        : h('table',{className:'tb',style:{fontSize:11,width:'100%'}},
+            h('thead',null,h('tr',null,
+              h('th',null,'N° OC'),
+              h('th',null,'Fecha'),
+              h('th',null,'Empresa'),
+              h('th',null,'Faena'),
+              h('th',null,'Solicitante'),
+              h('th',null,'N° Guía Despacho'),
+              h('th',null,'Fecha Guía'),
+              h('th',{className:'c'},'Líneas'),
+              h('th',{className:'r'},'Neto'),
+              h('th',{className:'r'},'IVA'),
+              h('th',{className:'r'},'Total'),
+              h('th',null,'Estado')
+            )),
+            h('tbody',null,ocs.map(function(o){
+              return h('tr',{key:o.oc_id},
+                h('td',{style:{fontFamily:'monospace',fontWeight:600}},o.numero_oc),
+                h('td',null,o.fecha_emision?new Date(o.fecha_emision).toLocaleDateString('es-CL'):'—'),
+                h('td',{style:{fontSize:10}},o.empresa_nombre||'—'),
+                h('td',{style:{fontSize:10}},o.faena_nombre||'—'),
+                h('td',{style:{fontSize:10}},o.solicitante||'—'),
+                h('td',{style:{fontFamily:'monospace',fontWeight:600,color:'#0F766E'}},'📋 '+(o.numero_guia_despacho||'—')),
+                h('td',{style:{fontSize:10}},o.fecha_guia_despacho?new Date(o.fecha_guia_despacho).toLocaleDateString('es-CL'):'—'),
+                h('td',{className:'c'},o.num_lineas||0),
+                h('td',{className:'r mono'},'$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(o.neto)||0))),
+                h('td',{className:'r mono'},'$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(o.iva)||0))),
+                h('td',{className:'r mono',style:{fontWeight:600}},'$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(o.total)||0))),
+                h('td',null,h(Bg,{c:o.estado==='CERRADA'?'g':o.estado==='ANULADA'?'r':'gray'},o.estado))
+              );
+            })),
+            // Totales
+            h('tfoot',null,h('tr',{style:{background:'#F0FDF4',fontWeight:700}},
+              h('td',{colSpan:8,style:{padding:8,textAlign:'right'}},'TOTAL ('+ocs.length+' OCs):'),
+              h('td',{className:'r mono'},'$'+new Intl.NumberFormat('es-CL').format(Math.round(sumNeto))),
+              h('td'),
+              h('td',{className:'r mono',style:{color:'#15803D'}},'$'+new Intl.NumberFormat('es-CL').format(Math.round(sumTotal))),
+              h('td')
+            ))
+          ),
+      // Diferencia con la factura
+      ocs.length>0&&h('div',{style:{marginTop:10,padding:10,background:'#F8FAFC',borderRadius:6,fontSize:11}},
+        h('div',{style:{display:'flex',justifyContent:'space-between'}},
+          h('span',null,'Total OCs vs Factura:'),
+          (function(){
+            var diff=parseFloat(f.total||0)-sumTotal;
+            if(Math.abs(diff)<1) return h('span',{style:{color:'#15803D',fontWeight:600}},'✓ Cuadra ($'+new Intl.NumberFormat('es-CL').format(sumTotal)+')');
+            return h('span',{style:{color:'#DC2626',fontWeight:600}},'⚠ Diferencia: $'+new Intl.NumberFormat('es-CL').format(Math.round(diff)));
+          })()
+        )
+      ),
+      h('div',{style:{marginTop:14,textAlign:'right'}},h(Btn,{onClick:p.onClose},'Cerrar'))
+    )
+  );
+}
+
 function OCView(p){
   const empresas=p.m&&Array.isArray(p.m.empresas)?p.m.empresas:[];
   const provs=p.m&&Array.isArray(p.m.provs)?p.m.provs:[];
@@ -5521,6 +5615,8 @@ function OCView(p){
   const[filtFaena,setFiltFaena]=useState('');
   const[filtEquipo,setFiltEquipo]=useState('');
   const[filtNdoc,setFiltNdoc]=useState('');
+  const[filtFactura,setFiltFactura]=useState('');
+  const[verFactura,setVerFactura]=useState(null); // factura_id para abrir modal con OCs vinculadas
   const[sortField,setSortField]=useState('oc_id');
   const[sortDir,setSortDir]=useState('desc');
   const[showCalc,setShowCalc]=useState(false);
@@ -5538,10 +5634,11 @@ function OCView(p){
     if(filtFaena)qs+='faena_id='+filtFaena+'&';
     if(filtEquipo)qs+='equipo_id='+filtEquipo+'&';
     if(filtNdoc)qs+='numero_documento='+encodeURIComponent(filtNdoc)+'&';
+    if(filtFactura)qs+='numero_factura='+encodeURIComponent(filtFactura)+'&';
     const ep=(hasDetail||filtNdoc)?'/ordenes-compra/buscar/filtros':'/ordenes-compra';
     api(ep+qs,'GET',null,p.tok).then(function(r){setOCs(Array.isArray(r)?r:[]);}).catch(function(){setOCs([]);}).finally(function(){setLoad(false);});
   }
-  useEffect(function(){load2();},[p.tok,filtEst,filtProv,filtDesde,filtHasta,filtEmp,filtSubcat,filtFaena,filtEquipo,filtNdoc]);
+  useEffect(function(){load2();},[p.tok,filtEst,filtProv,filtDesde,filtHasta,filtEmp,filtSubcat,filtFaena,filtEquipo,filtNdoc,filtFactura]);
   function anular(id){
     if(!window.confirm('Anular esta OC? Esta accion no se puede deshacer.'))return;
     api('/ordenes-compra/'+id+'/anular','PATCH',{},p.tok).then(function(){load2();}).catch(function(ex){alert(ex.message);});
@@ -5619,6 +5716,7 @@ function OCView(p){
       h('select',{value:filtFaena,onChange:function(e){setFiltFaena(e.target.value);},style:{minWidth:120,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todas faenas'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})),
       h('select',{value:filtEquipo,onChange:function(e){setFiltEquipo(e.target.value);},style:{minWidth:120,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todos equipos'),equipos.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.nombre);})),
       h('input',{value:filtNdoc||'',onChange:function(e){setFiltNdoc(e.target.value);},placeholder:'N° doc tributario',style:{padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,width:140}}),
+      h('input',{value:filtFactura||'',onChange:function(e){setFiltFactura(e.target.value);},placeholder:'N° factura cierre',title:'Buscar OCs cerradas con una factura específica',style:{padding:'6px 7px',border:'1px solid #15803D',borderRadius:5,fontSize:12,width:140,background:'#F0FDF4'}}),
       h(Btn,{v:'teal',sm:true,onClick:exportFiltered},null,'⬇ Excel filtrado'),
       h(Btn,{v:'g',sm:true,onClick:exportDetalle},null,'⬇ Informe masivo')
     ),
@@ -5628,6 +5726,20 @@ function OCView(p){
       {lbl:h(SortHdr,{field:'numero_oc',label:'N° OC'}),k:'numero_oc',mono:true},{lbl:h(SortHdr,{field:'empresa_nombre',label:'Empresa'}),render:function(r){return r.empresa_nombre||r.empresa||'—';}},{lbl:h(SortHdr,{field:'proveedor_nombre',label:'Proveedor'}),render:function(r){return r.proveedor_nombre||r.proveedor||'—';}},
       {lbl:'DT',render:function(r){var isNC=(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0||(r.tipo_doc_nombre||'').toLowerCase().indexOf('nota')>=0&&(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0;return r.tipo_doc_nombre?h('div',{style:{fontSize:10}},h('span',{style:{fontWeight:600,color:isNC?'#DC2626':'#475569'}},r.tipo_doc_nombre),r.numero_documento?h('div',{style:{fontFamily:'monospace',color:'#64748B'}},'#'+r.numero_documento):null):'—';}},
       {lbl:h(SortHdr,{field:'fecha_emision',label:'Fecha'}),render:function(r){return fmtD(r.fecha_emision);}},{lbl:h(SortHdr,{field:'estado',label:'Estado'}),render:function(r){return h(Bg,{c:estadoColor[r.estado]||'gray'},r.estado);}},
+      {lbl:'Guía Despacho',render:function(r){
+        if(!r.numero_guia_despacho) return h('span',{style:{color:'#CBD5E1',fontSize:10}},'—');
+        return h('div',null,
+          h('div',{style:{fontFamily:'monospace',fontSize:11,fontWeight:600,color:'#0F766E'}},'📋 '+r.numero_guia_despacho),
+          r.fecha_guia_despacho&&h('div',{style:{fontSize:9,color:'#64748B'}},fmtD(r.fecha_guia_despacho))
+        );
+      }},
+      {lbl:'Factura asociada',render:function(r){
+        if(!r.factura_asociada_numero) return h('span',{style:{color:'#CBD5E1',fontSize:10}},'—');
+        return h('div',{onClick:function(){setVerFactura(r.factura_guia_id);},style:{cursor:'pointer'},title:'Click para ver todas las OC asociadas a esta factura'},
+          h('div',{style:{fontFamily:'monospace',fontSize:11,fontWeight:600,color:'#1D4ED8',textDecoration:'underline'}},'🧾 '+r.factura_asociada_numero),
+          r.factura_asociada_fecha&&h('div',{style:{fontSize:9,color:'#64748B'}},fmtD(r.factura_asociada_fecha))
+        );
+      }},
       {lbl:'Neto',r:true,mono:true,render:function(r){var isNC=(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0;return h('span',{style:{color:isNC?'#DC2626':'inherit'}},CLP(r.neto));}},
       {lbl:h(SortHdr,{field:'total',label:'Total'}),r:true,mono:true,render:function(r){var isNC=(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0;return h('strong',{style:{color:isNC?'#DC2626':'inherit'}},CLP(r.total));}},
       {lbl:'Acciones',render:function(r){
@@ -5661,6 +5773,7 @@ function OCView(p){
     reabrirOC&&h(OCReabrirModal,{tok:p.tok,oc:reabrirOC,onClose:function(){setReabrirOC(null);},onSave:function(){setReabrirOC(null);load2();}}),
     verOC&&h(OCDocView,{oc:verOC,m:p.m,onClose:function(){setVerOC(null);},onAbrirTermica:function(oc){setVerOC(null);setVerTermica(oc);}}),
     verTermica&&h(OCTermicaView,{oc:verTermica,m:p.m,onClose:function(){setVerTermica(null);}}),
+    verFactura&&h(FacturaDetalleModal,{tok:p.tok,facturaId:verFactura,onClose:function(){setVerFactura(null);}}),
     showCalc&&h(CalcCombustible,{onClose:function(){setShowCalc(false);}}),
     showZipImport&&h(ImportZipDTE,{tok:p.tok,m:p.m,onClose:function(){setShowZipImport(false);},onRefresh:load2}),
     linkOT&&h(Modal,{title:'Asignar lineas OC '+(linkOT.numero_oc||'')+' a Ordenes de Trabajo',onClose:function(){setLinkOT(null);load2();}},
