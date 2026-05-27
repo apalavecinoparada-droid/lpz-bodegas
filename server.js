@@ -1692,7 +1692,25 @@ mvR.get('/', auth, async(req,res)=>{
     if(equipo_id){vals.push(equipo_id);where.push(`me.equipo_id=$${vals.length}`);}
     if(desde){vals.push(desde);where.push(`me.fecha>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`me.fecha<=$${vals.length}`);}
-    const r=await pool.query(`SELECT me.*,b.nombre AS bodega_nombre,f.nombre AS faena_nombre,e.nombre AS equipo_nombre,pr.nombre AS proveedor_nombre,td.nombre AS tipo_doc_nombre,mot.nombre AS motivo_nombre,u.nombre AS usuario_nombre,(SELECT SUM(md.costo_total) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS total,(SELECT SUM(md.costo_total) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS total_ingreso,(SELECT COUNT(*) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS num_lineas,(SELECT string_agg(DISTINCT sc.nombre, ', ') FROM movimiento_detalle md JOIN productos p ON md.producto_id=p.producto_id LEFT JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id WHERE md.movimiento_id=me.movimiento_id) AS subcategorias,(SELECT string_agg(p.nombre||' ('||md.cantidad||')', ', ' ORDER BY md.detalle_id) FROM movimiento_detalle md JOIN productos p ON md.producto_id=p.producto_id WHERE md.movimiento_id=me.movimiento_id) AS detalle_productos FROM movimiento_encabezado me LEFT JOIN bodegas b ON me.bodega_id=b.bodega_id LEFT JOIN faenas f ON me.faena_id=f.faena_id LEFT JOIN equipos e ON me.equipo_id=e.equipo_id LEFT JOIN proveedores pr ON me.proveedor_id=pr.proveedor_id LEFT JOIN tipos_documento td ON me.tipo_doc_id=td.tipo_doc_id LEFT JOIN motivos_movimiento mot ON me.motivo_id=mot.motivo_id LEFT JOIN usuarios u ON LOWER(u.email)=LOWER(me.usuario) WHERE ${where.join(' AND ')} ORDER BY me.movimiento_id DESC`,vals);
+    const r=await pool.query(`SELECT me.*,b.nombre AS bodega_nombre,f.nombre AS faena_nombre,e.nombre AS equipo_nombre,pr.nombre AS proveedor_nombre,td.nombre AS tipo_doc_nombre,mot.nombre AS motivo_nombre,u.nombre AS usuario_nombre,
+      bd.nombre AS bodega_destino_nombre,
+      (SELECT SUM(md.costo_total) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS total,
+      (SELECT SUM(md.costo_total) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS total_ingreso,
+      (SELECT COUNT(*) FROM movimiento_detalle md WHERE md.movimiento_id=me.movimiento_id) AS num_lineas,
+      (SELECT string_agg(DISTINCT sc.nombre, ', ') FROM movimiento_detalle md JOIN productos p ON md.producto_id=p.producto_id LEFT JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id WHERE md.movimiento_id=me.movimiento_id) AS subcategorias,
+      (SELECT string_agg(p.nombre||' ('||md.cantidad||')', ', ' ORDER BY md.detalle_id) FROM movimiento_detalle md JOIN productos p ON md.producto_id=p.producto_id WHERE md.movimiento_id=me.movimiento_id) AS detalle_productos 
+      FROM movimiento_encabezado me 
+      LEFT JOIN bodegas b ON me.bodega_id=b.bodega_id 
+      LEFT JOIN movimiento_encabezado moe ON me.referencia_transfer_id=moe.movimiento_id
+      LEFT JOIN bodegas bd ON moe.bodega_id=bd.bodega_id
+      LEFT JOIN faenas f ON me.faena_id=f.faena_id 
+      LEFT JOIN equipos e ON me.equipo_id=e.equipo_id 
+      LEFT JOIN proveedores pr ON me.proveedor_id=pr.proveedor_id 
+      LEFT JOIN tipos_documento td ON me.tipo_doc_id=td.tipo_doc_id 
+      LEFT JOIN motivos_movimiento mot ON me.motivo_id=mot.motivo_id 
+      LEFT JOIN usuarios u ON LOWER(u.email)=LOWER(me.usuario) 
+      WHERE ${where.join(' AND ')} 
+      ORDER BY me.movimiento_id DESC`,vals);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -1738,9 +1756,12 @@ mvR.get('/:id/detalle', auth, async(req,res)=>{
   try{
     const head=await pool.query(`
       SELECT me.*, b.nombre AS bodega_nombre, pr.nombre AS proveedor_nombre, pr.rut AS proveedor_rut,
-             td.nombre AS tipo_doc_nombre, u.nombre AS usuario_nombre
+             td.nombre AS tipo_doc_nombre, u.nombre AS usuario_nombre,
+             bd.nombre AS bodega_destino_nombre, moe.movimiento_id AS movimiento_otro_lado
       FROM movimiento_encabezado me
       LEFT JOIN bodegas b ON me.bodega_id=b.bodega_id
+      LEFT JOIN movimiento_encabezado moe ON me.referencia_transfer_id=moe.movimiento_id
+      LEFT JOIN bodegas bd ON moe.bodega_id=bd.bodega_id
       LEFT JOIN proveedores pr ON me.proveedor_id=pr.proveedor_id
       LEFT JOIN tipos_documento td ON me.tipo_doc_id=td.tipo_doc_id
       LEFT JOIN usuarios u ON LOWER(u.email)=LOWER(me.usuario)
@@ -1768,51 +1789,80 @@ mvR.put('/detalle/:detalleId', auth, requireModulo('inventario-editar'), async(r
     if(cantidad===undefined&&costo_unitario===undefined) return res.status(400).json({error:'Indica cantidad o costo_unitario'});
     await client.query('BEGIN');
     const r=await client.query(`
-      SELECT md.*, me.tipo_movimiento, me.bodega_id, me.estado
+      SELECT md.*, me.tipo_movimiento, me.bodega_id, me.estado, me.referencia_transfer_id, me.movimiento_id AS mov_id
       FROM movimiento_detalle md
       JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
       WHERE md.detalle_id=$1`,[req.params.detalleId]);
     if(!r.rows.length){await client.query('ROLLBACK');return res.status(404).json({error:'Línea no encontrada'});}
     const linea=r.rows[0];
     if(linea.estado!=='ACTIVO'){await client.query('ROLLBACK');return res.status(400).json({error:'Solo se pueden editar movimientos ACTIVOS'});}
-    // Permitir editar INGRESO y SALIDA. Para TRASPASOS (compuestos) sigue siendo seguro pedir anular.
-    if(linea.tipo_movimiento!=='INGRESO'&&linea.tipo_movimiento!=='SALIDA'){
+    if(['INGRESO','SALIDA','TRASPASO_SALIDA','TRASPASO_INGRESO'].indexOf(linea.tipo_movimiento)<0){
       await client.query('ROLLBACK');
-      return res.status(400).json({error:'Para traspasos: anular el movimiento y crear uno nuevo'});
+      return res.status(400).json({error:'Tipo de movimiento no soportado para edición'});
     }
     const esIngreso = linea.tipo_movimiento==='INGRESO';
+    const esTraspaso = linea.tipo_movimiento==='TRASPASO_SALIDA' || linea.tipo_movimiento==='TRASPASO_INGRESO';
 
     const cantAnt=parseFloat(linea.cantidad)||0;
     const cuAnt=parseFloat(linea.costo_unitario)||0;
     const cantNew=cantidad!==undefined?parseFloat(cantidad):cantAnt;
-    // En SALIDA el costo no se edita (es el CPP histórico al momento del descuento)
-    const cuNew=(esIngreso && costo_unitario!==undefined)?parseFloat(costo_unitario):cuAnt;
+    // En SALIDA simple el costo no se edita (CPP histórico). En INGRESO y TRASPASO sí (para corregir datos).
+    const permiteEditarCosto = esIngreso || esTraspaso;
+    const cuNew=(permiteEditarCosto && costo_unitario!==undefined)?parseFloat(costo_unitario):cuAnt;
     if(cantNew<0||cuNew<0){await client.query('ROLLBACK');return res.status(400).json({error:'Cantidad y costo no pueden ser negativos'});}
 
-    // Para SALIDA: verificar que haya stock suficiente al aumentar
-    if(!esIngreso && cantNew>cantAnt){
+    // Validar stock para SALIDA / TRASPASO_SALIDA al aumentar cantidad
+    const esLadoSalida = linea.tipo_movimiento==='SALIDA' || linea.tipo_movimiento==='TRASPASO_SALIDA';
+    if(esLadoSalida && cantNew>cantAnt){
       const st=await client.query('SELECT cantidad_disponible FROM stock_actual WHERE producto_id=$1 AND bodega_id=$2',[linea.producto_id, linea.bodega_id]);
       const stockActual=st.rows.length?parseFloat(st.rows[0].cantidad_disponible)||0:0;
       const adicional=cantNew-cantAnt;
       if(stockActual<adicional){
         await client.query('ROLLBACK');
-        return res.status(400).json({error:'Stock insuficiente para aumentar la salida. Disponible: '+stockActual+', necesario adicional: '+adicional});
+        return res.status(400).json({error:'Stock insuficiente en bodega origen. Disponible: '+stockActual+', necesario adicional: '+adicional});
       }
     }
 
-    // Actualizar línea (costo_total es columna calculada en BD, no se setea directamente)
+    // Actualizar línea
     await client.query(
       'UPDATE movimiento_detalle SET cantidad=$1, costo_unitario=$2 WHERE detalle_id=$3',
       [cantNew, cuNew, req.params.detalleId]);
 
-    // Ajustar stock_actual con la diferencia de cantidad
+    // Ajustar stock en bodega del propio movimiento
     const deltaCant = cantNew - cantAnt;
     if(deltaCant !== 0){
-      // INGRESO: delta positivo sube stock. SALIDA: delta positivo baja stock (se sale más).
-      const deltaStock = esIngreso ? deltaCant : -deltaCant;
+      // INGRESO/TRASPASO_INGRESO: delta positivo sube stock. SALIDA/TRASPASO_SALIDA: delta positivo baja stock.
+      const subeStock = linea.tipo_movimiento==='INGRESO' || linea.tipo_movimiento==='TRASPASO_INGRESO';
+      const deltaStock = subeStock ? deltaCant : -deltaCant;
       await client.query(
         'UPDATE stock_actual SET cantidad_disponible = GREATEST(0, cantidad_disponible + $1), ultima_actualizacion=NOW() WHERE producto_id=$2 AND bodega_id=$3',
         [deltaStock, linea.producto_id, linea.bodega_id]);
+    }
+
+    // ── Si es traspaso: sincronizar la línea del otro lado y su stock ──
+    if(esTraspaso && linea.referencia_transfer_id){
+      // Buscar línea pareja: mismo producto en el movimiento contrario
+      const par=await client.query(`
+        SELECT md.detalle_id, md.cantidad AS cant_par, md.costo_unitario AS cu_par, me.bodega_id AS bod_par
+        FROM movimiento_detalle md
+        JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
+        WHERE md.movimiento_id=$1 AND md.producto_id=$2
+        LIMIT 1`,[linea.referencia_transfer_id, linea.producto_id]);
+      if(par.rows.length){
+        const p=par.rows[0];
+        const cantParAnt=parseFloat(p.cant_par)||0;
+        await client.query('UPDATE movimiento_detalle SET cantidad=$1, costo_unitario=$2 WHERE detalle_id=$3',[cantNew, cuNew, p.detalle_id]);
+        // Ajustar stock de la bodega del otro lado
+        const deltaPar = cantNew - cantParAnt;
+        if(deltaPar !== 0){
+          // En el otro lado: si esta línea era TRASPASO_SALIDA, la pareja es TRASPASO_INGRESO (sube stock); y viceversa
+          const subePar = linea.tipo_movimiento==='TRASPASO_SALIDA' ? true : false;
+          const deltaStockPar = subePar ? deltaPar : -deltaPar;
+          await client.query(
+            'UPDATE stock_actual SET cantidad_disponible = GREATEST(0, cantidad_disponible + $1), ultima_actualizacion=NOW() WHERE producto_id=$2 AND bodega_id=$3',
+            [deltaStockPar, linea.producto_id, p.bod_par]);
+        }
+      }
     }
 
     // Recalcular CPP solo si se editó un INGRESO (las salidas no afectan el CPP, solo lo usan)
