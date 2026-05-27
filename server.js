@@ -2480,6 +2480,77 @@ app.post('/api/inv/reparar-traspasos', auth, async(req,res)=>{
   finally{client.release();}
 });
 
+// ─── POST: reparar costos de SALIDAS y TRASPASO_INGRESO con costo_unitario = 0 ───
+// Recorre cronológicamente todos los movimientos por (producto, bodega).
+// Mantiene el CPP acumulado. Cuando encuentra una SALIDA o TRASPASO_INGRESO con costo 0,
+// le asigna el CPP del momento. Actualiza la línea (md.costo_unitario).
+app.post('/api/inv/reparar-salidas-cero', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    // Traer todos los movimientos activos ordenados cronológicamente
+    const movs=await client.query(`
+      SELECT md.detalle_id, md.producto_id, md.cantidad, md.costo_unitario,
+             me.movimiento_id, me.bodega_id, me.tipo_movimiento, me.fecha, me.creado_en, me.referencia_transfer_id
+      FROM movimiento_detalle md
+      JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
+      WHERE me.estado='ACTIVO'
+      ORDER BY md.producto_id, me.fecha, me.creado_en, me.movimiento_id`);
+    // Acumular CPP por (producto, bodega) cronológicamente
+    var acc={};
+    var bodegaPorMov={};
+    movs.rows.forEach(function(m){bodegaPorMov[m.movimiento_id]=m.bodega_id;});
+    var reparadas=0, detalle=[];
+    for(const m of movs.rows){
+      const k=m.producto_id+'_'+m.bodega_id;
+      if(!acc[k]) acc[k]={stock:0, cpp:0};
+      const cant=parseFloat(m.cantidad)||0;
+      const cuActual=parseFloat(m.costo_unitario)||0;
+      if(m.tipo_movimiento==='INGRESO'||m.tipo_movimiento==='TRASPASO_INGRESO'){
+        var cu=cuActual;
+        // Si es TRASPASO_INGRESO con costo <=0, usar CPP de bodega origen
+        if(m.tipo_movimiento==='TRASPASO_INGRESO' && cu<=0 && m.referencia_transfer_id){
+          const bodegaOrigen=bodegaPorMov[m.referencia_transfer_id];
+          if(bodegaOrigen){
+            const kOrigen=m.producto_id+'_'+bodegaOrigen;
+            if(acc[kOrigen] && acc[kOrigen].cpp>0){
+              cu=acc[kOrigen].cpp;
+              // Reparar la línea del TRASPASO_INGRESO con el CPP de la bodega origen
+              await client.query('UPDATE movimiento_detalle SET costo_unitario=$1 WHERE detalle_id=$2',[cu, m.detalle_id]);
+              reparadas++;
+              detalle.push({mov:m.movimiento_id, detalle:m.detalle_id, tipo:m.tipo_movimiento, costo_anterior:cuActual, costo_nuevo:Math.round(cu)});
+            }
+          }
+        }
+        const newStock=acc[k].stock+cant;
+        if(newStock>0) acc[k].cpp=(acc[k].stock*acc[k].cpp + cant*cu)/newStock;
+        acc[k].stock=newStock;
+      } else {
+        // SALIDA o TRASPASO_SALIDA
+        // Si el costo unitario es 0 o negativo y hay CPP positivo en el acumulador, reparar
+        if(cuActual<=0 && acc[k].cpp>0){
+          await client.query('UPDATE movimiento_detalle SET costo_unitario=$1 WHERE detalle_id=$2',[acc[k].cpp, m.detalle_id]);
+          reparadas++;
+          detalle.push({mov:m.movimiento_id, detalle:m.detalle_id, tipo:m.tipo_movimiento, costo_anterior:cuActual, costo_nuevo:Math.round(acc[k].cpp)});
+          // Si es TRASPASO_SALIDA, también reparar la línea pareja (TRASPASO_INGRESO)
+          if(m.tipo_movimiento==='TRASPASO_SALIDA' && m.referencia_transfer_id){
+            const parR=await client.query(
+              'SELECT detalle_id FROM movimiento_detalle WHERE movimiento_id=$1 AND producto_id=$2 LIMIT 1',
+              [m.referencia_transfer_id, m.producto_id]);
+            if(parR.rows.length){
+              await client.query('UPDATE movimiento_detalle SET costo_unitario=$1 WHERE detalle_id=$2',[acc[k].cpp, parR.rows[0].detalle_id]);
+            }
+          }
+        }
+        acc[k].stock=Math.max(0,acc[k].stock-cant);
+      }
+    }
+    await client.query('COMMIT');
+    res.json({ok:true, reparadas:reparadas, detalle:detalle.slice(0,30)});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
 app.get('/api/stock', auth, async(req,res)=>{
   try{const r=await pool.query('SELECT sa.producto_id,p.codigo,p.nombre AS producto_nombre,p.unidad_medida,p.stock_minimo,sc.nombre AS subcategoria,ca.nombre AS categoria,ca.categoria_id,sa.bodega_id,b.nombre AS bodega_nombre,b.codigo AS bodega_codigo,sa.cantidad_disponible,sa.costo_promedio_actual,ROUND(sa.cantidad_disponible*sa.costo_promedio_actual,0) AS valor_total,CASE WHEN sa.cantidad_disponible<=p.stock_minimo THEN true ELSE false END AS bajo_minimo FROM stock_actual sa JOIN productos p ON sa.producto_id=p.producto_id JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id JOIN categorias ca ON sc.categoria_id=ca.categoria_id JOIN bodegas b ON sa.bodega_id=b.bodega_id WHERE p.activo=true AND b.activo=true ORDER BY ca.nombre,sc.nombre,p.nombre');res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
 });
