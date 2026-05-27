@@ -1142,8 +1142,9 @@ function MovDetalleModal(p){
           h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,fontSize:12}},
             h('div',null,h('strong',null,'Tipo: '),h('span',{style:{padding:'2px 6px',background:data.encabezado.tipo_movimiento==='INGRESO'?'#DCFCE7':data.encabezado.tipo_movimiento==='SALIDA'?'#FEE2E2':'#E0E7FF',color:'#1E40AF',borderRadius:3,fontSize:11,fontWeight:600}},data.encabezado.tipo_movimiento)),
             h('div',null,h('strong',null,'Fecha: '),new Date(data.encabezado.fecha).toLocaleDateString('es-CL')),
-            h('div',null,h('strong',null,'Bodega: '),data.encabezado.bodega_nombre||'—'),
+            h('div',null,h('strong',null,(data.encabezado.tipo_movimiento==='TRASPASO_SALIDA'?'Bodega Origen: ':'Bodega: ')),data.encabezado.bodega_nombre||'—'),
             h('div',null,h('strong',null,'Estado: '),h('span',{style:{color:data.encabezado.estado==='ACTIVO'?'#10B981':'#DC2626',fontWeight:700}},data.encabezado.estado)),
+            data.encabezado.bodega_destino_nombre&&h('div',{style:{gridColumn:'span 2'}},h('strong',null,(data.encabezado.tipo_movimiento==='TRASPASO_INGRESO'?'Bodega Origen: ':'Bodega Destino: ')),h('span',{style:{color:'#0F766E',fontWeight:600}},data.encabezado.bodega_destino_nombre)),
             data.encabezado.proveedor_nombre&&h('div',{style:{gridColumn:'span 2'}},h('strong',null,'Proveedor: '),data.encabezado.proveedor_nombre+(data.encabezado.proveedor_rut?' ('+data.encabezado.proveedor_rut+')':'')),
             data.encabezado.numero_documento&&h('div',null,h('strong',null,'Documento: '),(data.encabezado.tipo_doc_nombre||'')+' '+data.encabezado.numero_documento),
             data.encabezado.usuario&&h('div',null,h('strong',null,'Usuario: '),data.encabezado.usuario_nombre||data.encabezado.usuario)
@@ -1157,8 +1158,11 @@ function MovDetalleModal(p){
         data.encabezado.tipo_movimiento==='SALIDA'&&data.encabezado.estado==='ACTIVO'&&canEditInv()&&h('div',{className:'al al-w',style:{marginBottom:10,fontSize:11}},
           '⚠ ',h('strong',null,'Editar cantidad de una línea o agregar productos'),' ajusta el stock automáticamente. El costo unitario se mantiene fijo (CPP histórico del descuento). No se puede dejar el stock en negativo.'
         ),
-        data.encabezado.tipo_movimiento!=='INGRESO'&&data.encabezado.tipo_movimiento!=='SALIDA'&&h('div',{className:'al al-i',style:{marginBottom:10,fontSize:11}},
-          'ℹ️ Las líneas de traspasos no se pueden editar directamente. Si hay error, anular el movimiento y crear uno nuevo.'
+        (data.encabezado.tipo_movimiento==='TRASPASO_SALIDA'||data.encabezado.tipo_movimiento==='TRASPASO_INGRESO')&&data.encabezado.estado==='ACTIVO'&&canEditInv()&&h('div',{className:'al al-w',style:{marginBottom:10,fontSize:11}},
+          '⚠ ',h('strong',null,'Editar cantidad o costo de un traspaso'),' ajusta el stock en AMBAS bodegas (origen y destino) y sincroniza la línea pareja del otro lado automáticamente. Útil para corregir traspasos con valor negativo o cantidades equivocadas.'
+        ),
+        data.encabezado.tipo_movimiento!=='INGRESO'&&data.encabezado.tipo_movimiento!=='SALIDA'&&data.encabezado.tipo_movimiento!=='TRASPASO_SALIDA'&&data.encabezado.tipo_movimiento!=='TRASPASO_INGRESO'&&h('div',{className:'al al-i',style:{marginBottom:10,fontSize:11}},
+          'ℹ️ Este tipo de movimiento no permite edición directa de líneas.'
         ),
 
         // Tabla líneas
@@ -1195,10 +1199,11 @@ function MovDetalleModal(p){
                 enEdicion?h('div',{style:{display:'flex',gap:3}},
                   h('button',{onClick:function(){guardar(l);},disabled:saving,style:{padding:'3px 6px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},saving?'⏳':'✓'),
                   h('button',{onClick:cancelarEdicion,style:{padding:'3px 6px',background:'#E2E8F0',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'✕')
-                ):((data.encabezado.tipo_movimiento==='INGRESO'||data.encabezado.tipo_movimiento==='SALIDA')&&data.encabezado.estado==='ACTIVO'&&canEditInv()
+                ):((['INGRESO','SALIDA','TRASPASO_SALIDA','TRASPASO_INGRESO'].indexOf(data.encabezado.tipo_movimiento)>=0)&&data.encabezado.estado==='ACTIVO'&&canEditInv()
                   ? h('div',{style:{display:'flex',gap:3,justifyContent:'center'}},
-                      h('button',{onClick:function(){iniciarEdicion(l);},title:'Editar cantidad'+(data.encabezado.tipo_movimiento==='INGRESO'?' o costo':''),style:{padding:'3px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'✏'),
-                      h('button',{onClick:function(){eliminarLinea(l);},title:'Eliminar línea',style:{padding:'3px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'🗑')
+                      h('button',{onClick:function(){iniciarEdicion(l);},title:'Editar cantidad'+(data.encabezado.tipo_movimiento==='INGRESO'||data.encabezado.tipo_movimiento==='TRASPASO_SALIDA'||data.encabezado.tipo_movimiento==='TRASPASO_INGRESO'?' o costo':''),style:{padding:'3px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'✏'),
+                      // Solo permitir eliminar línea en INGRESOS y SALIDAS (no en traspasos por seguridad)
+                      (data.encabezado.tipo_movimiento==='INGRESO'||data.encabezado.tipo_movimiento==='SALIDA')&&h('button',{onClick:function(){eliminarLinea(l);},title:'Eliminar línea',style:{padding:'3px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'🗑')
                     )
                   : null
                 )
@@ -1838,6 +1843,7 @@ function TraspasoView(p){
       {lbl:'N°',k:'movimiento_id',w:50},
       {lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},
       {lbl:'Bodega Origen',k:'bodega_nombre'},
+      {lbl:'Bodega Destino',render:function(r){return r.bodega_destino_nombre?h('span',{style:{fontSize:11,color:'#0F766E',fontWeight:600}},'→ '+r.bodega_destino_nombre):'—';}},
       {lbl:'Subcategoría',render:function(r){return h('span',{style:{fontSize:11}},r.subcategorias||'—');}},
       {lbl:'Detalle',render:function(r){return h('span',{style:{fontSize:11,color:'#475569',maxWidth:280,display:'inline-block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},title:r.detalle_productos||''},r.detalle_productos||'—');}},
       {lbl:'Total CPP',r:true,render:r=>CLP(r.total||0)},
