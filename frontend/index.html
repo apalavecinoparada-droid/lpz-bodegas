@@ -5633,6 +5633,200 @@ function FacturaDetalleModal(p){
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// AUDITORÍA DE COMPRAS — cruce robusto de información sobre OCs
+// ═══════════════════════════════════════════════════════════════════════
+function CompraAuditoriaView(p){
+  const[data,setData]=useState(null);
+  const[loading,setLoading]=useState(false);
+  const[err,setErr]=useState('');
+  const[tab,setTab]=useState('producto_repetido');
+  // Parámetros configurables
+  const[diasDup,setDiasDup]=useState(7);
+  const[diasProd,setDiasProd]=useState(15);
+  const[umbralPrecio,setUmbralPrecio]=useState(30);
+  const[simUmbral,setSimUmbral]=useState(0.45);
+  const[desde,setDesde]=useState('');
+  const[hasta,setHasta]=useState('');
+
+  function fmtMonto(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+  function fmtFecha(f){return f?new Date(f).toLocaleDateString('es-CL'):'—';}
+
+  function analizar(){
+    setLoading(true);setErr('');
+    var qs='?dias_duplicado='+diasDup+'&dias_producto='+diasProd+'&umbral_precio='+umbralPrecio+'&umbral_similitud='+simUmbral;
+    if(desde)qs+='&desde='+desde;
+    if(hasta)qs+='&hasta='+hasta;
+    api('/ordenes-compra/auditoria/analisis'+qs,'GET',null,p.tok)
+      .then(function(r){setData(r);})
+      .catch(function(e){setErr(e.message);})
+      .finally(function(){setLoading(false);});
+  }
+  useEffect(function(){analizar();},[]);
+
+  var inpS={padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:12,width:60};
+  var R=data?data.resumen:{};
+
+  function Card(props){
+    return h('div',{onClick:function(){setTab(props.tabKey);},style:{cursor:'pointer',padding:'12px 10px',background:'#fff',borderRadius:8,border:tab===props.tabKey?'2px solid '+props.color:'1px solid #E2E8F0',borderLeft:'5px solid '+props.color,textAlign:'center',transition:'all .15s'}},
+      h('div',{style:{fontSize:24,fontWeight:700,color:(props.n>0?props.color:'#94A3B8')}},props.n||0),
+      h('div',{style:{fontSize:10,color:'#64748B',marginTop:2}},props.label)
+    );
+  }
+  function TabBtn(props){
+    return h('button',{onClick:function(){setTab(props.tabKey);},style:{padding:'6px 12px',background:tab===props.tabKey?'#1E3A2D':'#F1F5F9',color:tab===props.tabKey?'#fff':'#475569',border:'none',borderRadius:5,cursor:'pointer',fontSize:11,fontWeight:600,marginRight:4,marginBottom:4}},props.label+' ('+(props.n||0)+')');
+  }
+
+  return h('div',null,
+    // Barra de parámetros
+    h('div',{className:'card',style:{marginBottom:12,padding:12}},
+      h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#1E3A2D'}},'⚙ Parámetros de análisis'),
+      h('div',{style:{display:'flex',gap:14,flexWrap:'wrap',alignItems:'flex-end'}},
+        h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Días duplicado OC'),h('input',{type:'number',value:diasDup,onChange:function(e){setDiasDup(e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Días producto/equipo'),h('input',{type:'number',value:diasProd,onChange:function(e){setDiasProd(e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'% variación precio'),h('input',{type:'number',value:umbralPrecio,onChange:function(e){setUmbralPrecio(e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Similitud (0-1)'),h('input',{type:'number',step:'0.05',min:'0',max:'1',value:simUmbral,onChange:function(e){setSimUmbral(e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Desde'),h('input',{type:'date',value:desde,onChange:function(e){setDesde(e.target.value);},style:Object.assign({},inpS,{width:'auto'})})),
+        h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Hasta'),h('input',{type:'date',value:hasta,onChange:function(e){setHasta(e.target.value);},style:Object.assign({},inpS,{width:'auto'})})),
+        h(Btn,{onClick:analizar,disabled:loading},loading?'⏳ Analizando...':'🔍 Analizar')
+      )
+    ),
+    err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+    loading&&!data&&h('div',{className:'spin'},'Analizando compras...'),
+    data&&h('div',null,
+      // Cards resumen
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:8,marginBottom:14}},
+        h(Card,{tabKey:'producto_repetido',n:R.producto_repetido,label:'Producto repetido / equipo',color:'#DC2626'}),
+        h(Card,{tabKey:'productos_similares',n:R.productos_similares,label:'Productos similares',color:'#EA580C'}),
+        h(Card,{tabKey:'oc_duplicadas',n:R.oc_duplicadas,label:'OC duplicadas',color:'#D97706'}),
+        h(Card,{tabKey:'doc_duplicado',n:R.doc_duplicado,label:'N° doc. duplicado',color:'#CA8A04'}),
+        h(Card,{tabKey:'precio_variable',n:R.precio_variable,label:'Variación de precio',color:'#7C3AED'}),
+        h(Card,{tabKey:'compra_fraccionada',n:R.compra_fraccionada,label:'Compra fraccionada',color:'#2563EB'})
+      ),
+      // Tabs
+      h('div',{style:{marginBottom:10}},
+        h(TabBtn,{tabKey:'producto_repetido',label:'🔁 Producto repetido',n:R.producto_repetido}),
+        h(TabBtn,{tabKey:'productos_similares',label:'🔀 Similares',n:R.productos_similares}),
+        h(TabBtn,{tabKey:'oc_duplicadas',label:'📑 OC duplicadas',n:R.oc_duplicadas}),
+        h(TabBtn,{tabKey:'doc_duplicado',label:'🧾 Doc duplicado',n:R.doc_duplicado}),
+        h(TabBtn,{tabKey:'precio_variable',label:'💲 Precio variable',n:R.precio_variable}),
+        h(TabBtn,{tabKey:'compra_fraccionada',label:'✂ Fraccionada',n:R.compra_fraccionada})
+      ),
+      h('div',{className:'card',style:{padding:0,overflow:'hidden'}},
+        // ── Producto repetido ──
+        tab==='producto_repetido'&&h('div',null,
+          h('div',{style:{padding:'8px 12px',background:'#FEF2F2',fontSize:11,color:'#991B1B'}},'Mismo producto comprado para el mismo equipo más de una vez dentro de '+(data.parametros.dias_producto)+' días. Posible doble compra o falta de control de stock.'),
+          data.producto_repetido.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin coincidencias.'):
+          h('table',{className:'tb',style:{fontSize:11,width:'100%'}},
+            h('thead',null,h('tr',null,h('th',null,'Producto'),h('th',null,'Equipo'),h('th',{className:'c'},'Veces'),h('th',{className:'r'},'Cant. total'),h('th',{className:'r'},'Monto'),h('th',{className:'c'},'Rango'),h('th',null,'OCs'))),
+            h('tbody',null,data.producto_repetido.map(function(r,i){
+              return h('tr',{key:i},
+                h('td',null,h('strong',null,r.producto_codigo),' ',r.producto_nombre),
+                h('td',null,r.equipo_codigo+' — '+r.equipo_nombre),
+                h('td',{className:'c'},h('span',{style:{padding:'2px 7px',background:'#FEE2E2',color:'#991B1B',borderRadius:10,fontWeight:700}},r.veces)),
+                h('td',{className:'r mono'},parseFloat(r.cantidad_total).toFixed(0)),
+                h('td',{className:'r mono',style:{fontWeight:600}},fmtMonto(r.monto_total)),
+                h('td',{className:'c'},r.rango_dias+'d'),
+                h('td',{style:{fontSize:10}},r.ocs)
+              );
+            }))
+          )
+        ),
+        // ── Productos similares ──
+        tab==='productos_similares'&&h('div',null,
+          h('div',{style:{padding:'8px 12px',background:'#FFF7ED',fontSize:11,color:'#9A3412'}},'Productos con nombres parecidos (no idénticos) comprados para el mismo equipo en '+(data.parametros.dias_producto)+' días. Puede ser el mismo insumo cargado con códigos distintos.'),
+          data.similares_error&&h('div',{style:{padding:'8px 12px',background:'#FEE2E2',fontSize:11,color:'#991B1B'}},'⚠ '+data.similares_error),
+          data.productos_similares.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin coincidencias.'):
+          h('table',{className:'tb',style:{fontSize:11,width:'100%'}},
+            h('thead',null,h('tr',null,h('th',null,'Producto A'),h('th',null,'Producto B'),h('th',null,'Equipo'),h('th',{className:'c'},'Similitud'),h('th',{className:'c'},'Días'),h('th',null,'OCs'))),
+            h('tbody',null,data.productos_similares.map(function(r,i){
+              return h('tr',{key:i},
+                h('td',null,h('strong',null,r.cod_a),' ',r.nom_a),
+                h('td',null,h('strong',null,r.cod_b),' ',r.nom_b),
+                h('td',{style:{fontSize:10}},r.equipo_codigo),
+                h('td',{className:'c'},h('span',{style:{padding:'2px 7px',background:'#FFEDD5',color:'#9A3412',borderRadius:10,fontWeight:700}},Math.round(r.similitud*100)+'%')),
+                h('td',{className:'c'},r.dias_diferencia),
+                h('td',{style:{fontSize:10}},r.oc_a+' / '+r.oc_b)
+              );
+            }))
+          )
+        ),
+        // ── OC duplicadas ──
+        tab==='oc_duplicadas'&&h('div',null,
+          h('div',{style:{padding:'8px 12px',background:'#FFFBEB',fontSize:11,color:'#92400E'}},'Pares de OC del mismo proveedor y empresa con monto casi idéntico (±1%) emitidas dentro de '+(data.parametros.dias_duplicado)+' días. Posible orden duplicada.'),
+          data.oc_duplicadas.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin coincidencias.'):
+          h('table',{className:'tb',style:{fontSize:11,width:'100%'}},
+            h('thead',null,h('tr',null,h('th',null,'Proveedor'),h('th',null,'Empresa'),h('th',null,'OC A'),h('th',null,'OC B'),h('th',{className:'r'},'Total A'),h('th',{className:'r'},'Total B'),h('th',{className:'c'},'Días dif.'))),
+            h('tbody',null,data.oc_duplicadas.map(function(r,i){
+              return h('tr',{key:i},
+                h('td',null,r.proveedor_nombre),
+                h('td',{style:{fontSize:10}},r.empresa_nombre),
+                h('td',null,h('strong',null,r.num_a),h('div',{style:{fontSize:9,color:'#64748B'}},fmtFecha(r.fecha_a))),
+                h('td',null,h('strong',null,r.num_b),h('div',{style:{fontSize:9,color:'#64748B'}},fmtFecha(r.fecha_b))),
+                h('td',{className:'r mono'},fmtMonto(r.total_a)),
+                h('td',{className:'r mono'},fmtMonto(r.total_b)),
+                h('td',{className:'c'},h('span',{style:{padding:'2px 7px',background:r.dias_diferencia===0?'#FEE2E2':'#FEF3C7',borderRadius:10,fontWeight:700}},r.dias_diferencia))
+              );
+            }))
+          )
+        ),
+        // ── Doc duplicado ──
+        tab==='doc_duplicado'&&h('div',null,
+          h('div',{style:{padding:'8px 12px',background:'#FEFCE8',fontSize:11,color:'#854D0E'}},'Mismo número de documento tributario usado en más de una OC del mismo proveedor.'),
+          data.doc_duplicado.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin coincidencias.'):
+          h('table',{className:'tb',style:{fontSize:11,width:'100%'}},
+            h('thead',null,h('tr',null,h('th',null,'N° Documento'),h('th',null,'Tipo'),h('th',null,'Proveedor'),h('th',{className:'c'},'Veces'),h('th',null,'OCs'))),
+            h('tbody',null,data.doc_duplicado.map(function(r,i){
+              return h('tr',{key:i},
+                h('td',null,h('strong',{style:{fontFamily:'monospace'}},r.numero_documento)),
+                h('td',{style:{fontSize:10}},r.tipo_doc||'—'),
+                h('td',null,r.proveedor_nombre),
+                h('td',{className:'c'},h('span',{style:{padding:'2px 7px',background:'#FEF9C3',color:'#854D0E',borderRadius:10,fontWeight:700}},r.veces)),
+                h('td',{style:{fontSize:10}},r.ocs)
+              );
+            }))
+          )
+        ),
+        // ── Precio variable ──
+        tab==='precio_variable'&&h('div',null,
+          h('div',{style:{padding:'8px 12px',background:'#F5F3FF',fontSize:11,color:'#5B21B6'}},'Productos cuyo precio unitario varió más de '+(data.parametros.umbral_precio)+'% entre compras. Revisar alzas o errores de digitación.'),
+          data.precio_variable.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin coincidencias.'):
+          h('table',{className:'tb',style:{fontSize:11,width:'100%'}},
+            h('thead',null,h('tr',null,h('th',null,'Producto'),h('th',{className:'r'},'Precio mín.'),h('th',{className:'r'},'Precio máx.'),h('th',{className:'c'},'Variación'),h('th',{className:'c'},'Compras'))),
+            h('tbody',null,data.precio_variable.map(function(r,i){
+              return h('tr',{key:i},
+                h('td',null,h('strong',null,r.producto_codigo),' ',r.producto_nombre),
+                h('td',{className:'r mono'},fmtMonto(r.precio_min)),
+                h('td',{className:'r mono'},fmtMonto(r.precio_max)),
+                h('td',{className:'c'},h('span',{style:{padding:'2px 7px',background:'#EDE9FE',color:'#5B21B6',borderRadius:10,fontWeight:700}},'+'+r.variacion_pct+'%')),
+                h('td',{className:'c'},r.compras)
+              );
+            }))
+          )
+        ),
+        // ── Compra fraccionada ──
+        tab==='compra_fraccionada'&&h('div',null,
+          h('div',{style:{padding:'8px 12px',background:'#EFF6FF',fontSize:11,color:'#1E40AF'}},'3 o más OC al mismo proveedor el mismo día. Puede indicar fraccionamiento para evitar límites de aprobación, o ser operación normal.'),
+          data.compra_fraccionada.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin coincidencias.'):
+          h('table',{className:'tb',style:{fontSize:11,width:'100%'}},
+            h('thead',null,h('tr',null,h('th',null,'Proveedor'),h('th',null,'Empresa'),h('th',null,'Fecha'),h('th',{className:'c'},'N° OCs'),h('th',{className:'r'},'Monto total'),h('th',null,'OCs'))),
+            h('tbody',null,data.compra_fraccionada.map(function(r,i){
+              return h('tr',{key:i},
+                h('td',null,r.proveedor_nombre),
+                h('td',{style:{fontSize:10}},r.empresa_nombre),
+                h('td',null,fmtFecha(r.fecha_emision)),
+                h('td',{className:'c'},h('span',{style:{padding:'2px 7px',background:'#DBEAFE',color:'#1E40AF',borderRadius:10,fontWeight:700}},r.num_ocs)),
+                h('td',{className:'r mono',style:{fontWeight:600}},fmtMonto(r.monto_total)),
+                h('td',{style:{fontSize:10}},r.ocs)
+              );
+            }))
+          )
+        )
+      )
+    )
+  );
+}
+
 function OCView(p){
   const empresas=p.m&&Array.isArray(p.m.empresas)?p.m.empresas:[];
   const provs=p.m&&Array.isArray(p.m.provs)?p.m.provs:[];
@@ -17749,7 +17943,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -18395,7 +18589,7 @@ function App(){
   function canSee(mod){if(!user)return false;if(user.es_admin)return true;if(!user.modulos||user.modulos.length===0)return false;return user.modulos.indexOf(mod)>=0;}
   // Mapa view → módulo requerido. Si la view no está aquí, no requiere módulo.
   var VIEW_MOD={
-    'ordenes':'ordenes','oc-guias':'ordenes','dte-recibidos':'ordenes','bandeja-dte-oc':'ordenes',
+    'ordenes':'ordenes','oc-guias':'ordenes','dte-recibidos':'ordenes','bandeja-dte-oc':'ordenes','compra-auditoria':'ordenes',
     'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-auditoria':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
     'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-auditoria':'inventario','inv-reportes':'inventario',
     'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion','mant-planes':'mantencion','mant-vencimientos':'mantencion','mant-programacion':'mantencion','mant-avisos':'mantencion',
@@ -18544,7 +18738,7 @@ function App(){
       h('div',{className:'sb-logo'},h('h1',null,'Empresas Poo'),h('p',null,'Sistema de Gestión')),
       h('div',{style:{padding:'4px 0',flex:1}},
         canSee('ordenes')&&grpHdr('oc','ORDENES DE COMPRA'),
-        canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true),navI('oc-guias','📋','Guías de Despacho',true),navI('dte-recibidos','📥','DTE Recibidos',true),navI('bandeja-dte-oc','🔗','Bandeja DTE-OC',true)),
+        canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true),navI('oc-guias','📋','Guías de Despacho',true),navI('dte-recibidos','📥','DTE Recibidos',true),navI('bandeja-dte-oc','🔗','Bandeja DTE-OC',true),navI('compra-auditoria','🔍','Auditoría Compras',true)),
         canSee('ordenes')&&h('div',{className:'sb-sep'}),
         canSee('combustibles')&&grpHdr('comb','CONTROL DE COMBUSTIBLES'),
         canSee('combustibles')&&grp.comb&&h('div',null,
@@ -18689,6 +18883,7 @@ function App(){
           view==='inv-auditoria'&&h(InvAuditoriaView,{tok,m}),
           view==='reportes'&&h(ReportesView,{tok,m}),
           view==='ordenes'&&h(OCView,{tok,m,user,setView}),
+          view==='compra-auditoria'&&h(CompraAuditoriaView,{tok,m}),
           view==='oc-guias'&&h(OCGuiasView,{tok,m}),
           view==='dte-recibidos'&&h(DTERecibidosView,{tok,m,user,setView}),
           view==='bandeja-dte-oc'&&h(BandejaDTEOC,{tok,m,user,setView}),
