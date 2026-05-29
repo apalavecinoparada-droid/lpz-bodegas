@@ -8660,7 +8660,18 @@ function CombKardex(p){
   const[desde,setDesde]=useState(FIRST);
   const[hasta,setHasta]=useState(TODAY);
   const[rows,setRows]=useState([]);const[loading,setLoading]=useState(false);const[saldoIni,setSaldoIni]=useState(0);
+  const[diag,setDiag]=useState(null);
+  const[diagLoading,setDiagLoading]=useState(false);
   const combEstanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
+
+  function diagnosticar(){
+    if(!estanque){alert('Selecciona un estanque primero');return;}
+    setDiagLoading(true);setDiag(null);
+    api('/comb/diagnostico-negativo/'+estanque,'GET',null,p.tok)
+      .then(function(r){setDiag(r);})
+      .catch(function(ex){alert('Error: '+ex.message);})
+      .finally(function(){setDiagLoading(false);});
+  }
 
   function load(){
     if(!estanque){setRows([]);return;}
@@ -8732,7 +8743,81 @@ function CombKardex(p){
           h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:2}},'Hasta'),
           h('input',{type:'date',value:hasta,onChange:function(e){setHasta(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}})
         ),
-        rows.length>0&&h(Btn,{v:'teal',sm:true,onClick:exportar,style:{alignSelf:'flex-end'}},'⬇ Excel')
+        rows.length>0&&h(Btn,{v:'teal',sm:true,onClick:exportar,style:{alignSelf:'flex-end'}},'⬇ Excel'),
+        estanque&&h(Btn,{v:'y',sm:true,onClick:diagnosticar,disabled:diagLoading,style:{alignSelf:'flex-end'},title:'Detecta en qué movimiento el saldo cruzó a negativo y qué cambios lo pudieron causar'},diagLoading?'⏳ Analizando...':'🔍 Diagnosticar negativo')
+      )
+    ),
+    // ═══ PANEL DE DIAGNÓSTICO DE SALDO NEGATIVO ═══
+    diag&&h('div',{className:'card',style:{marginBottom:12,padding:14,border:'2px solid '+(diag.es_negativo?'#DC2626':'#15803D')}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
+        h('div',{style:{fontSize:14,fontWeight:700,color:diag.es_negativo?'#DC2626':'#15803D'}},
+          diag.es_negativo?'⚠ Diagnóstico: Saldo NEGATIVO detectado':'✓ Diagnóstico: Saldo correcto'),
+        h('button',{onClick:function(){setDiag(null);},style:{padding:'3px 10px',background:'#E2E8F0',border:'none',borderRadius:4,cursor:'pointer',fontSize:11}},'✕ Cerrar')
+      ),
+      h('div',{style:{fontSize:12,marginBottom:10}},
+        'Saldo final histórico (todos los movimientos activos): ',
+        h('strong',{style:{color:diag.es_negativo?'#DC2626':'#15803D',fontSize:14}},parseFloat(diag.saldo_final).toFixed(1)+' lts'),
+        ' — ',diag.total_movimientos+' movimientos activos analizados'
+      ),
+      // Punto de quiebre
+      diag.punto_quiebre&&h('div',{style:{padding:10,background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:6,marginBottom:10}},
+        h('div',{style:{fontSize:12,fontWeight:700,color:'#991B1B',marginBottom:4}},'📍 Punto exacto donde el saldo cruzó a negativo:'),
+        h('div',{style:{fontSize:12}},
+          'Movimiento #',diag.punto_quiebre.mov_id,' del ',fmtD(diag.punto_quiebre.fecha),
+          ' — ',h('strong',null,diag.punto_quiebre.tipo_mov),' ',(diag.punto_quiebre.tipo_nombre||''),
+          diag.punto_quiebre.equipo_nombre?' ('+diag.punto_quiebre.equipo_nombre+')':'',
+          diag.punto_quiebre.numero_documento?' Doc: '+diag.punto_quiebre.numero_documento:''
+        ),
+        h('div',{style:{fontSize:12,marginTop:4}},
+          'Saldo antes: ',h('strong',null,parseFloat(diag.punto_quiebre.saldo_antes).toFixed(1)+' lts'),
+          ' → salida de ',h('strong',null,parseFloat(diag.punto_quiebre.salida).toFixed(1)+' lts'),
+          ' → ',h('strong',{style:{color:'#DC2626'}},'saldo: '+parseFloat(diag.punto_quiebre.saldo_despues).toFixed(1)+' lts')
+        )
+      ),
+      // Anulados que eran entradas
+      diag.anulados_entrada&&diag.anulados_entrada.length>0&&h('div',{style:{padding:10,background:'#FFFBEB',border:'1px solid #FCD34D',borderRadius:6,marginBottom:10}},
+        h('div',{style:{fontSize:12,fontWeight:700,color:'#92400E',marginBottom:6}},'🔑 Ingresos/traspasos ANULADOS (probable causa — ej. reapertura de OC):'),
+        h('table',{style:{fontSize:11,width:'100%'}},
+          h('thead',null,h('tr',{style:{textAlign:'left',color:'#78350F'}},h('th',null,'Mov'),h('th',null,'Fecha'),h('th',null,'Litros'),h('th',null,'Documento/OC'),h('th',null,'Anulado'),h('th',null,'Motivo'))),
+          h('tbody',null,diag.anulados_entrada.map(function(a){
+            return h('tr',{key:a.mov_id,style:{borderTop:'1px solid #FDE68A'}},
+              h('td',null,'#'+a.mov_id),
+              h('td',null,fmtD(a.fecha)),
+              h('td',{style:{fontWeight:600,color:'#DC2626'}},'-'+parseFloat(a.litros).toFixed(0)),
+              h('td',null,a.numero_documento||a.oc_referencia||'—'),
+              h('td',{style:{fontSize:10}},a.anulado_en?fmtD(a.anulado_en):'—'),
+              h('td',{style:{fontSize:10}},a.motivo_anulacion||'—')
+            );
+          }))
+        ),
+        h('div',{style:{fontSize:10,color:'#78350F',marginTop:6,fontStyle:'italic'}},
+          '💡 Si alguno de estos ingresos se anuló por error (ej. reapertura de OC), su reactivación corregiría el saldo. Suma de litros anulados: '+
+          diag.anulados_entrada.reduce(function(s,a){return s+parseFloat(a.litros);},0).toFixed(0)+' lts.'
+        )
+      ),
+      // Inserciones retroactivas
+      diag.retroactivos&&diag.retroactivos.length>0&&h('div',{style:{padding:10,background:'#EFF6FF',border:'1px solid #93C5FD',borderRadius:6}},
+        h('div',{style:{fontSize:12,fontWeight:700,color:'#1E40AF',marginBottom:6}},'🕐 Movimientos cargados con fecha retroactiva (alteraron el saldo histórico):'),
+        h('table',{style:{fontSize:11,width:'100%'}},
+          h('thead',null,h('tr',{style:{textAlign:'left',color:'#1E3A8A'}},h('th',null,'Mov'),h('th',null,'Fecha contable'),h('th',null,'Cargado'),h('th',null,'Desfase'),h('th',null,'Tipo'),h('th',null,'Litros'),h('th',null,'Estado'))),
+          h('tbody',null,diag.retroactivos.map(function(rt){
+            return h('tr',{key:rt.mov_id,style:{borderTop:'1px solid #BFDBFE'}},
+              h('td',null,'#'+rt.mov_id),
+              h('td',null,fmtD(rt.fecha)),
+              h('td',{style:{fontSize:10}},fmtD(rt.creado_en)),
+              h('td',{style:{fontWeight:600,color:'#1D4ED8'}},rt.dias_desfase+' días'),
+              h('td',{style:{fontSize:10}},rt.tipo_mov),
+              h('td',null,parseFloat(rt.litros).toFixed(0)),
+              h('td',null,h(Bg,{c:rt.estado==='ACTIVO'?'g':'r'},rt.estado))
+            );
+          }))
+        ),
+        h('div',{style:{fontSize:10,color:'#1E3A8A',marginTop:6,fontStyle:'italic'}},
+          '💡 Estos movimientos se registraron días después de su fecha. Si una salida se cargó con fecha anterior a un ingreso que aún no existía, el saldo pudo cruzar a negativo temporalmente.'
+        )
+      ),
+      !diag.punto_quiebre&&!diag.es_negativo&&h('div',{style:{padding:10,background:'#F0FDF4',borderRadius:6,fontSize:12,color:'#166534'}},
+        '✓ El saldo nunca cruzó a negativo en el recorrido cronológico. El estanque está consistente.'
       )
     ),
     !estanque&&h('div',{className:'al al-i'},'Seleccione un estanque para ver su kardex.'),
