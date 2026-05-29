@@ -3692,6 +3692,97 @@ app.get('/api/comb/panel-stats', auth, async(req,res)=>{
 });
 
 // KARDEX POR ESTANQUE
+// ─── GET: diagnóstico de saldo negativo de un estanque ───
+// Recorre TODOS los movimientos cronológicamente y detecta:
+// 1. El punto exacto donde el saldo cruzó a negativo por primera vez
+// 2. Movimientos ANULADOS (especialmente ingresos) que pudieron causar el descuadre
+// 3. Inserciones retroactivas (movimiento con fecha antigua pero creado/anulado recientemente)
+app.get('/api/comb/diagnostico-negativo/:estanque_id', auth, async(req,res)=>{
+  try{
+    const estId=parseInt(req.params.estanque_id);
+    const{tipo_id}=req.query;
+    // Traer TODOS los movimientos (activos y anulados) del estanque
+    let where=["(m.estanque_origen_id=$1 OR m.estanque_destino_id=$1)"],vals=[estId];
+    if(tipo_id){vals.push(tipo_id);where.push(`m.tipo_id=$${vals.length}`);}
+    const all=await pool.query(`
+      SELECT m.mov_id, m.tipo_mov, m.fecha, m.litros, m.estanque_origen_id, m.estanque_destino_id,
+             m.estado, m.creado_en, m.anulado_en, m.anulado_por, m.motivo_anulacion,
+             m.numero_documento, m.oc_referencia, m.usuario, m.observaciones,
+             ct.nombre AS tipo_nombre, eq.nombre AS equipo_nombre, emp.razon_social AS empresa_nombre,
+             eo.nombre AS estanque_origen, ed.nombre AS estanque_destino
+      FROM comb_movimientos m
+      LEFT JOIN comb_tipos ct ON m.tipo_id=ct.tipo_id
+      LEFT JOIN equipos eq ON m.equipo_id=eq.equipo_id
+      LEFT JOIN empresas emp ON m.empresa_id=emp.empresa_id
+      LEFT JOIN comb_estanques eo ON m.estanque_origen_id=eo.estanque_id
+      LEFT JOIN comb_estanques ed ON m.estanque_destino_id=ed.estanque_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY m.fecha ASC, m.mov_id ASC`,vals);
+
+    // 1. Recorrer SOLO activos cronológicamente y detectar punto de quiebre
+    var saldo=0, puntoQuiebre=null, kardex=[];
+    all.rows.forEach(function(m){
+      if(m.estado!=='ACTIVO') return;
+      var entrada=0, salida=0;
+      if(m.tipo_mov==='INGRESO_STOCK'&&m.estanque_destino_id===estId) entrada=parseFloat(m.litros);
+      else if(m.tipo_mov==='DISTRIBUCION'&&m.estanque_origen_id===estId) salida=parseFloat(m.litros);
+      else if(m.tipo_mov==='TRASPASO'){
+        if(m.estanque_destino_id===estId) entrada=parseFloat(m.litros);
+        else if(m.estanque_origen_id===estId) salida=parseFloat(m.litros);
+      }
+      var saldoAnt=saldo;
+      saldo=parseFloat((saldo+entrada-salida).toFixed(3));
+      var fila={mov_id:m.mov_id,fecha:m.fecha,tipo_mov:m.tipo_mov,tipo_nombre:m.tipo_nombre,
+        equipo_nombre:m.equipo_nombre,numero_documento:m.numero_documento,oc_referencia:m.oc_referencia,
+        entrada:entrada,salida:salida,saldo_antes:saldoAnt,saldo_despues:saldo,creado_en:m.creado_en,usuario:m.usuario};
+      kardex.push(fila);
+      if(puntoQuiebre===null && saldo<0){
+        puntoQuiebre=fila;
+      }
+    });
+
+    // 2. Movimientos ANULADOS que eran ingresos o traspasos de entrada (su anulación pudo causar el negativo)
+    var anuladosRelevantes=all.rows.filter(function(m){
+      if(m.estado!=='ANULADO') return false;
+      var eraEntrada=(m.tipo_mov==='INGRESO_STOCK'&&m.estanque_destino_id===estId)||
+                     (m.tipo_mov==='TRASPASO'&&m.estanque_destino_id===estId);
+      return eraEntrada;
+    }).map(function(m){
+      return {mov_id:m.mov_id,fecha:m.fecha,tipo_mov:m.tipo_mov,tipo_nombre:m.tipo_nombre,
+        litros:parseFloat(m.litros),numero_documento:m.numero_documento,oc_referencia:m.oc_referencia,
+        anulado_en:m.anulado_en,anulado_por:m.anulado_por,motivo_anulacion:m.motivo_anulacion,
+        equipo_nombre:m.equipo_nombre};
+    });
+
+    // 3. Inserciones/anulaciones retroactivas: movimiento cuya acción (creado_en o anulado_en)
+    //    ocurrió mucho después de su fecha contable (>2 días) → alteró el saldo histórico
+    var retroactivos=all.rows.filter(function(m){
+      if(!m.creado_en) return false;
+      var fMov=new Date(m.fecha);
+      var fCreado=new Date(m.creado_en);
+      var diffDias=(fCreado-fMov)/(1000*60*60*24);
+      return diffDias>2; // creado más de 2 días después de la fecha contable
+    }).map(function(m){
+      var fMov=new Date(m.fecha);
+      var fCreado=new Date(m.creado_en);
+      var diffDias=Math.round((fCreado-fMov)/(1000*60*60*24));
+      return {mov_id:m.mov_id,fecha:m.fecha,tipo_mov:m.tipo_mov,tipo_nombre:m.tipo_nombre,
+        litros:parseFloat(m.litros),estado:m.estado,creado_en:m.creado_en,dias_desfase:diffDias,
+        numero_documento:m.numero_documento,oc_referencia:m.oc_referencia,usuario:m.usuario};
+    });
+
+    res.json({
+      saldo_final:saldo,
+      es_negativo:saldo<0,
+      punto_quiebre:puntoQuiebre,
+      total_movimientos:kardex.length,
+      anulados_entrada:anuladosRelevantes,
+      retroactivos:retroactivos,
+      kardex:kardex
+    });
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 app.get('/api/comb/kardex-est', auth, async(req,res)=>{
   try{
     const{estanque_id,tipo_id,desde,hasta}=req.query;
