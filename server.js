@@ -744,6 +744,8 @@ async function autoSetup() {
   try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS faena_id INT REFERENCES faenas(faena_id)');}catch(e){}
   await q(`CREATE TABLE IF NOT EXISTS roles (rol_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, descripcion VARCHAR(200), modulos JSONB DEFAULT '[]', es_admin BOOLEAN DEFAULT false, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
   try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS rol_id INT REFERENCES roles(rol_id)');}catch(e){}
+  // ── Extensión pg_trgm para similitud de texto (auditoría de compras) ──
+  try{await q('CREATE EXTENSION IF NOT EXISTS pg_trgm');}catch(e){console.log('[WARN] pg_trgm no disponible:',e.message);}
   // ── Tablas nuevas v2 ─────────────────────────────────────
   await q(`CREATE TABLE IF NOT EXISTS empresas (empresa_id SERIAL PRIMARY KEY, rut VARCHAR(15) NOT NULL UNIQUE, razon_social VARCHAR(150) NOT NULL, direccion VARCHAR(200), ciudad VARCHAR(100), giro VARCHAR(200), telefono VARCHAR(30), email VARCHAR(100), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW(), modificado_en TIMESTAMP DEFAULT NOW())`);
   await q(`CREATE TABLE IF NOT EXISTS condiciones_pago (condicion_id SERIAL PRIMARY KEY, nombre VARCHAR(100) NOT NULL UNIQUE, descripcion TEXT, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
@@ -3014,6 +3016,161 @@ ocR.patch('/:id/reabrir', auth, async(req,res)=>{
 });
 
 // OC con filtros adicionales (subcategoria, faena, equipo)
+// ═══════════════════════════════════════════════════════════════════════
+// AUDITORÍA DE COMPRAS — cruce robusto de información sobre OCs
+// ═══════════════════════════════════════════════════════════════════════
+ocR.get('/auditoria/analisis', auth, async(req,res)=>{
+  try{
+    // Parámetros configurables con defaults
+    const diasDup = parseInt(req.query.dias_duplicado)||7;       // ventana para OC duplicadas
+    const diasProd = parseInt(req.query.dias_producto)||15;      // ventana para producto repetido por equipo
+    const diasFracc = parseInt(req.query.dias_fraccion)||3;      // ventana para compra fraccionada
+    const umbralPrecio = parseFloat(req.query.umbral_precio)||30;// % variación de precio
+    const simUmbral = parseFloat(req.query.umbral_similitud)||0.45; // similitud de nombres
+    const desde = req.query.desde||null;
+    const hasta = req.query.hasta||null;
+    var fechaFiltro = '';
+    var baseVals = [];
+    if(desde){baseVals.push(desde);fechaFiltro+=` AND oc.fecha_emision>=$${baseVals.length}`;}
+    if(hasta){baseVals.push(hasta);fechaFiltro+=` AND oc.fecha_emision<=$${baseVals.length}`;}
+
+    // ─── CHECK 1: OC potencialmente duplicadas (mismo proveedor + mismo total + fechas cercanas) ───
+    const dupMonto = await pool.query(`
+      SELECT a.oc_id AS oc_a, a.numero_oc AS num_a, a.fecha_emision AS fecha_a, a.total AS total_a,
+             b.oc_id AS oc_b, b.numero_oc AS num_b, b.fecha_emision AS fecha_b, b.total AS total_b,
+             pr.nombre AS proveedor_nombre, e.razon_social AS empresa_nombre,
+             ABS(a.fecha_emision - b.fecha_emision) AS dias_diferencia
+      FROM ordenes_compra a
+      JOIN ordenes_compra b ON a.proveedor_id=b.proveedor_id 
+        AND a.empresa_id=b.empresa_id
+        AND a.oc_id < b.oc_id
+        AND ABS(a.total - b.total) <= GREATEST(a.total,b.total)*0.01
+        AND a.total > 0
+        AND ABS(a.fecha_emision - b.fecha_emision) <= ${diasDup}
+      LEFT JOIN proveedores pr ON a.proveedor_id=pr.proveedor_id
+      LEFT JOIN empresas e ON a.empresa_id=e.empresa_id
+      WHERE a.estado!='ANULADA' AND b.estado!='ANULADA' ${fechaFiltro.replace(/oc\./g,'a.')}
+      ORDER BY a.fecha_emision DESC
+      LIMIT 100`, baseVals);
+
+    // ─── CHECK 2: Mismo N° de documento tributario en OCs distintas ───
+    const dupDoc = await pool.query(`
+      SELECT oc.numero_documento, td.nombre AS tipo_doc, pr.nombre AS proveedor_nombre,
+             COUNT(*) AS veces, STRING_AGG(oc.numero_oc, ', ' ORDER BY oc.numero_oc) AS ocs,
+             STRING_AGG(DISTINCT oc.oc_id::text, ',') AS oc_ids
+      FROM ordenes_compra oc
+      LEFT JOIN tipos_documento td ON oc.tipo_doc_id=td.tipo_doc_id
+      LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
+      WHERE oc.numero_documento IS NOT NULL AND oc.numero_documento != '' AND oc.estado!='ANULADA' ${fechaFiltro}
+      GROUP BY oc.numero_documento, oc.proveedor_id, td.nombre, pr.nombre
+      HAVING COUNT(*) > 1
+      ORDER BY COUNT(*) DESC
+      LIMIT 100`, baseVals);
+
+    // ─── CHECK 3: Mismo producto comprado para el mismo equipo en poco tiempo ───
+    const prodRepetido = await pool.query(`
+      SELECT p.codigo AS producto_codigo, p.nombre AS producto_nombre,
+             eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
+             COUNT(*) AS veces,
+             SUM(d.cantidad) AS cantidad_total,
+             SUM(d.total_linea) AS monto_total,
+             MIN(oc.fecha_emision) AS primera,
+             MAX(oc.fecha_emision) AS ultima,
+             MAX(oc.fecha_emision) - MIN(oc.fecha_emision) AS rango_dias,
+             STRING_AGG(DISTINCT oc.numero_oc, ', ' ORDER BY oc.numero_oc) AS ocs
+      FROM ordenes_compra_detalle d
+      JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
+      JOIN productos p ON d.producto_id=p.producto_id
+      JOIN equipos eq ON d.equipo_id=eq.equipo_id
+      WHERE oc.estado!='ANULADA' AND d.equipo_id IS NOT NULL AND d.producto_id IS NOT NULL ${fechaFiltro}
+      GROUP BY p.producto_id, p.codigo, p.nombre, eq.equipo_id, eq.codigo, eq.nombre
+      HAVING COUNT(*) > 1 AND (MAX(oc.fecha_emision) - MIN(oc.fecha_emision)) <= ${diasProd}
+      ORDER BY COUNT(*) DESC, monto_total DESC
+      LIMIT 100`, baseVals);
+
+    // ─── CHECK 4: Productos de nombre SIMILAR para el mismo equipo en poco tiempo ───
+    // Usa pg_trgm. Compara líneas de OC del mismo equipo, productos distintos pero nombres similares.
+    var similares = {rows:[]};
+    try{
+      similares = await pool.query(`
+        SELECT pa.codigo AS cod_a, pa.nombre AS nom_a, pb.codigo AS cod_b, pb.nombre AS nom_b,
+               eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
+               oca.numero_oc AS oc_a, ocb.numero_oc AS oc_b,
+               oca.fecha_emision AS fecha_a, ocb.fecha_emision AS fecha_b,
+               ROUND(similarity(pa.nombre, pb.nombre)::numeric, 2) AS similitud,
+               ABS(oca.fecha_emision - ocb.fecha_emision) AS dias_diferencia
+        FROM ordenes_compra_detalle da
+        JOIN ordenes_compra_detalle db ON da.equipo_id=db.equipo_id AND da.producto_id < db.producto_id
+        JOIN ordenes_compra oca ON da.oc_id=oca.oc_id
+        JOIN ordenes_compra ocb ON db.oc_id=ocb.oc_id
+        JOIN productos pa ON da.producto_id=pa.producto_id
+        JOIN productos pb ON db.producto_id=pb.producto_id
+        JOIN equipos eq ON da.equipo_id=eq.equipo_id
+        WHERE oca.estado!='ANULADA' AND ocb.estado!='ANULADA'
+          AND similarity(pa.nombre, pb.nombre) >= ${simUmbral}
+          AND similarity(pa.nombre, pb.nombre) < 1
+          AND ABS(oca.fecha_emision - ocb.fecha_emision) <= ${diasProd}
+          ${fechaFiltro.replace(/oc\./g,'oca.')}
+        ORDER BY similarity(pa.nombre, pb.nombre) DESC
+        LIMIT 80`, baseVals);
+    }catch(e){ similares = {rows:[], error:'pg_trgm no disponible: '+e.message}; }
+
+    // ─── CHECK 5: Variación de precio del mismo producto en poco tiempo ───
+    const precioVar = await pool.query(`
+      WITH precios AS (
+        SELECT d.producto_id, p.codigo, p.nombre,
+               MIN(d.precio_unitario) FILTER (WHERE d.precio_unitario>0) AS precio_min,
+               MAX(d.precio_unitario) AS precio_max,
+               COUNT(*) AS compras
+        FROM ordenes_compra_detalle d
+        JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
+        JOIN productos p ON d.producto_id=p.producto_id
+        WHERE oc.estado!='ANULADA' AND d.precio_unitario>0 ${fechaFiltro}
+        GROUP BY d.producto_id, p.codigo, p.nombre
+        HAVING COUNT(*) > 1
+      )
+      SELECT codigo AS producto_codigo, nombre AS producto_nombre, precio_min, precio_max, compras,
+             ROUND(((precio_max - precio_min) / NULLIF(precio_min,0) * 100)::numeric, 1) AS variacion_pct
+      FROM precios
+      WHERE precio_min>0 AND ((precio_max - precio_min) / precio_min * 100) >= ${umbralPrecio}
+      ORDER BY variacion_pct DESC
+      LIMIT 100`, baseVals);
+
+    // ─── CHECK 6: Compra fraccionada (varias OC al mismo proveedor en pocos días) ───
+    const fraccionada = await pool.query(`
+      SELECT pr.nombre AS proveedor_nombre, e.razon_social AS empresa_nombre,
+             oc.fecha_emision, COUNT(*) AS num_ocs, SUM(oc.total) AS monto_total,
+             STRING_AGG(oc.numero_oc, ', ' ORDER BY oc.numero_oc) AS ocs
+      FROM ordenes_compra oc
+      LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
+      LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id
+      WHERE oc.estado!='ANULADA' ${fechaFiltro}
+      GROUP BY oc.proveedor_id, oc.empresa_id, oc.fecha_emision, pr.nombre, e.razon_social
+      HAVING COUNT(*) >= 3
+      ORDER BY num_ocs DESC, monto_total DESC
+      LIMIT 100`, baseVals);
+
+    res.json({
+      parametros:{dias_duplicado:diasDup,dias_producto:diasProd,dias_fraccion:diasFracc,umbral_precio:umbralPrecio,umbral_similitud:simUmbral,desde,hasta},
+      resumen:{
+        oc_duplicadas:dupMonto.rows.length,
+        doc_duplicado:dupDoc.rows.length,
+        producto_repetido:prodRepetido.rows.length,
+        productos_similares:similares.rows.length,
+        precio_variable:precioVar.rows.length,
+        compra_fraccionada:fraccionada.rows.length
+      },
+      oc_duplicadas:dupMonto.rows,
+      doc_duplicado:dupDoc.rows,
+      producto_repetido:prodRepetido.rows,
+      productos_similares:similares.rows,
+      similares_error:similares.error||null,
+      precio_variable:precioVar.rows,
+      compra_fraccionada:fraccionada.rows
+    });
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 ocR.get('/buscar/filtros', auth, async(req,res)=>{
   try{
     const{estado,proveedor_id,empresa_id,desde,hasta,subcategoria_id,faena_id,equipo_id,numero_documento}=req.query;
