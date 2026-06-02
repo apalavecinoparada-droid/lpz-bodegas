@@ -2603,7 +2603,7 @@ app.get('/api/reportes/ingresos', auth, async(req,res)=>{
 const ocR=express.Router();
 ocR.get('/', auth, async(req,res)=>{
   try{
-    const{estado,proveedor_id,desde,hasta,empresa_id,numero_documento,numero_factura}=req.query;
+    const{estado,proveedor_id,desde,hasta,empresa_id,numero_documento,numero_factura,numero_oc}=req.query;
     let where=['1=1'],vals=[];
     if(estado){vals.push(estado);where.push(`oc.estado=$${vals.length}`);}
     if(proveedor_id){vals.push(proveedor_id);where.push(`oc.proveedor_id=$${vals.length}`);}
@@ -2612,6 +2612,7 @@ ocR.get('/', auth, async(req,res)=>{
     if(hasta){vals.push(hasta);where.push(`oc.fecha_emision<=$${vals.length}`);}
     if(numero_documento){vals.push('%'+numero_documento+'%');where.push(`oc.numero_documento ILIKE $${vals.length}`);}
     if(numero_factura){vals.push('%'+numero_factura+'%');where.push(`fac.numero_factura ILIKE $${vals.length}`);}
+    if(numero_oc){vals.push('%'+numero_oc+'%');where.push(`oc.numero_oc ILIKE $${vals.length}`);}
     const r=await pool.query(`SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,pr.rut AS proveedor_rut,cp.nombre AS condicion_nombre,td.nombre AS tipo_doc_nombre,uc.nombre AS usuario_nombre,uk.nombre AS cerrada_por_nombre,
       fac.numero_factura AS factura_asociada_numero, fac.fecha_factura AS factura_asociada_fecha, fac.total AS factura_asociada_total
       FROM ordenes_compra oc 
@@ -2652,7 +2653,7 @@ ocR.post('/', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
-    const{empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,observaciones,lineas}=req.body;
+    const{empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,observaciones,lineas,es_activo_fijo,af_vida_util_meses,af_valor_residual,af_descripcion}=req.body;
     if(!proveedor_id||!fecha_emision) throw new Error('Proveedor y fecha son obligatorios');
     if(!lineas||!lineas.length) throw new Error('Debe ingresar al menos una linea');
     const year=new Date().getFullYear();
@@ -2664,7 +2665,7 @@ ocR.post('/', auth, async(req,res)=>{
     const iva=Math.round(netoAfecto*0.19);
     const imp=Math.round(parseFloat(impuesto_adicional)||0);
     const total=neto+iva+imp;
-    const ocR2=await client.query('INSERT INTO ordenes_compra(numero_oc,empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,neto,iva,total,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING oc_id',[numero_oc,empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,req.user.email]);
+    const ocR2=await client.query('INSERT INTO ordenes_compra(numero_oc,empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,neto,iva,total,observaciones,usuario,es_activo_fijo,af_vida_util_meses,af_valor_residual,af_descripcion) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING oc_id',[numero_oc,empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,req.user.email,es_activo_fijo||false,es_activo_fijo?(parseInt(af_vida_util_meses)||60):null,es_activo_fijo?(parseFloat(af_valor_residual)||0):null,es_activo_fijo?(af_descripcion||null):null]);
     const ocId=ocR2.rows[0].oc_id;
     for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[ocId,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
     await client.query('COMMIT');
@@ -2679,7 +2680,7 @@ ocR.put('/:id', auth, async(req,res)=>{
     const chk=await client.query('SELECT estado FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length) throw new Error('OC no encontrada');
     if(chk.rows[0].estado!=='PENDIENTE') throw new Error('Solo se pueden editar ordenes PENDIENTES');
-    const{empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,observaciones,lineas,tipo_doc_id,numero_documento,fecha_documento}=req.body;
+    const{empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,observaciones,lineas,tipo_doc_id,numero_documento,fecha_documento,es_activo_fijo,af_vida_util_meses,af_valor_residual,af_descripcion}=req.body;
     const netoAfecto=lineas.filter(l=>!l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
     const netoExento=lineas.filter(l=>l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
     const neto=Math.round(netoAfecto+netoExento);const iva=Math.round(netoAfecto*0.19);const imp=Math.round(parseFloat(impuesto_adicional)||0);const total=neto+iva+imp;
@@ -2687,7 +2688,7 @@ ocR.put('/:id', auth, async(req,res)=>{
     const _tipoDoc = tipo_doc_id || null;
     const _numDoc = (numero_documento && String(numero_documento).trim()) ? String(numero_documento).trim() : null;
     const _fechaDoc = fecha_documento || null;
-    await client.query('UPDATE ordenes_compra SET empresa_id=$1,proveedor_id=$2,fecha_emision=$3,solicitante=$4,retira=$5,condicion_id=$6,impuesto_adicional=$7,neto=$8,iva=$9,total=$10,observaciones=$11,tipo_doc_id=$12,numero_documento=$13,fecha_documento=$14,modificado_en=NOW() WHERE oc_id=$15',[empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,_tipoDoc,_numDoc,_fechaDoc,req.params.id]);
+    await client.query('UPDATE ordenes_compra SET empresa_id=$1,proveedor_id=$2,fecha_emision=$3,solicitante=$4,retira=$5,condicion_id=$6,impuesto_adicional=$7,neto=$8,iva=$9,total=$10,observaciones=$11,tipo_doc_id=$12,numero_documento=$13,fecha_documento=$14,es_activo_fijo=$15,af_vida_util_meses=$16,af_valor_residual=$17,af_descripcion=$18,modificado_en=NOW() WHERE oc_id=$19',[empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,_tipoDoc,_numDoc,_fechaDoc,es_activo_fijo||false,es_activo_fijo?(parseInt(af_vida_util_meses)||60):null,es_activo_fijo?(parseFloat(af_valor_residual)||0):null,es_activo_fijo?(af_descripcion||null):null,req.params.id]);
     await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
     for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[req.params.id,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
     // Si se asignó un DTE manualmente y existe en dte_recibidos del mismo proveedor → vincular automáticamente en dte_oc
@@ -2760,6 +2761,30 @@ ocR.patch('/:id/cerrar', auth, async(req,res)=>{
       return res.status(400).json({error:'No se puede cerrar: hay '+incompletas.rows.length+' línea(s) incompleta(s). '+detalle});
     }
     await pool.query("UPDATE ordenes_compra SET estado='CERRADA',tipo_doc_id=$1,numero_documento=$2,fecha_documento=$3,cerrada_por=$4,fecha_cierre=NOW(),modificado_en=NOW() WHERE oc_id=$5",[_tipoDoc,_numDoc,_fechaDoc,req.user.email,req.params.id]);
+    // ── Si la OC es activo fijo y aún no se ha capitalizado, crear el registro ──
+    try{
+      const ocFull=await pool.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
+      const oc=ocFull.rows[0];
+      if(oc && oc.es_activo_fijo){
+        const yaExiste=await pool.query('SELECT activo_id FROM activos_fijos WHERE oc_id=$1',[req.params.id]);
+        if(!yaExiste.rows.length){
+          // Tomar categoría, faena y equipo de la primera línea
+          const ln=await pool.query(`
+            SELECT d.faena_id, d.equipo_id, ca.nombre AS categoria
+            FROM ordenes_compra_detalle d
+            LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,(SELECT subcategoria_id FROM productos WHERE producto_id=d.producto_id))=sc.subcategoria_id
+            LEFT JOIN categorias ca ON sc.categoria_id=ca.categoria_id
+            WHERE d.oc_id=$1 ORDER BY d.linea_num LIMIT 1`,[req.params.id]);
+          const info=ln.rows[0]||{};
+          // Valor de adquisición = neto (sin IVA, criterio contable estándar para activo fijo recuperable)
+          const valorAdq = parseFloat(oc.neto)||0;
+          const descAct = oc.af_descripcion || ('Activo de '+oc.numero_oc);
+          await pool.query(`INSERT INTO activos_fijos(descripcion,oc_id,empresa_id,faena_id,equipo_id,categoria,valor_adquisicion,fecha_compra,vida_util_meses,valor_residual,metodo,estado,usuario)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'lineal','ACTIVO',$11)`,
+            [descAct,req.params.id,oc.empresa_id||null,info.faena_id||null,info.equipo_id||null,info.categoria||null,valorAdq,oc.fecha_documento||oc.fecha_emision,oc.af_vida_util_meses||60,oc.af_valor_residual||0,req.user.email]);
+        }
+      }
+    }catch(afErr){console.log('[WARN] auto-crear activo fijo:',afErr.message);}
     res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -3173,7 +3198,7 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
 
 ocR.get('/buscar/filtros', auth, async(req,res)=>{
   try{
-    const{estado,proveedor_id,empresa_id,desde,hasta,subcategoria_id,faena_id,equipo_id,numero_documento}=req.query;
+    const{estado,proveedor_id,empresa_id,desde,hasta,subcategoria_id,faena_id,equipo_id,numero_documento,numero_oc,numero_factura}=req.query;
     let where=['1=1'],vals=[];
     if(estado){vals.push(estado);where.push(`oc.estado=$${vals.length}`);}
     if(proveedor_id){vals.push(proveedor_id);where.push(`oc.proveedor_id=$${vals.length}`);}
@@ -3184,6 +3209,8 @@ ocR.get('/buscar/filtros', auth, async(req,res)=>{
     if(faena_id){vals.push(faena_id);where.push(`d.faena_id=$${vals.length}`);}
     if(equipo_id){vals.push(equipo_id);where.push(`d.equipo_id=$${vals.length}`);}
     if(numero_documento){vals.push('%'+numero_documento+'%');where.push(`oc.numero_documento ILIKE $${vals.length}`);}
+    if(numero_oc){vals.push('%'+numero_oc+'%');where.push(`oc.numero_oc ILIKE $${vals.length}`);}
+    if(numero_factura){vals.push('%'+numero_factura+'%');where.push(`oc.factura_guia_id IN (SELECT factura_id FROM oc_factura_guias WHERE numero_factura ILIKE $${vals.length})`);}
     const r=await pool.query(`
       SELECT DISTINCT oc.oc_id,oc.numero_oc,oc.fecha_emision,oc.estado,oc.solicitante,oc.retira,
              oc.fecha_documento,oc.numero_documento,oc.neto,oc.iva,oc.impuesto_adicional,oc.total,oc.usuario,
@@ -6518,6 +6545,7 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
       LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
       LEFT JOIN faenas f ON d.faena_id=f.faena_id
       WHERE oc.estado='CERRADA' AND COALESCE(d.ingresa_bodega,false)=false
+        AND COALESCE(oc.es_activo_fijo,false)=false
         AND oc.fecha_emision BETWEEN $1 AND $2
         ${empresaId?'AND oc.empresa_id=$3':''}
       GROUP BY ca.categoria_id, ca.nombre, oc.empresa_id, emp.razon_social, d.faena_id, f.nombre, d.equipo_id, eq.codigo, eq.nombre, oc.proveedor_id, pr.nombre, TO_CHAR(oc.fecha_emision,'YYYY-MM')`,
@@ -6531,6 +6559,17 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
     const combActual=await pool.query(`
       SELECT COALESCE(SUM(cs.litros_disponibles*cs.costo_promedio),0) AS valor
       FROM comb_stock cs WHERE cs.litros_disponibles>0`);
+
+    // ── 6. DEPRECIACIÓN del período (activos fijos vigentes) ──
+    const activosF=await pool.query(`
+      SELECT af.*, f.nombre AS faena_nombre, eq.equipo_id, eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
+             emp.razon_social AS empresa_nombre
+      FROM activos_fijos af
+      LEFT JOIN faenas f ON af.faena_id=f.faena_id
+      LEFT JOIN equipos eq ON af.equipo_id=eq.equipo_id
+      LEFT JOIN empresas emp ON af.empresa_id=emp.empresa_id
+      WHERE 1=1 ${empresaId?'AND af.empresa_id=$1':''}`,
+      empresaId?[empresaId]:[]);
 
     // ── Procesar y combinar en JS ──
     const num=function(x){return parseFloat(x)||0;};
@@ -6571,7 +6610,23 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
       acum(porMes,r.mes,r.mes,c);
     });
 
-    var costoTotal=totInventario+totCombustible+totDirectas;
+    // Depreciación del período (cuota prorrateada de cada activo vigente)
+    var totDepreciacion=0;
+    var valorActivosFijos=0; // valor neto contable total (activo en balance)
+    activosF.rows.forEach(function(a){
+      var dep=calcularDepreciacion(a, desde, hasta);
+      var c=dep.cuota_periodo;
+      valorActivosFijos+=dep.valor_neto;
+      if(c>0){
+        totDepreciacion+=c;
+        acum(porCategoria,'depreciacion','Depreciación activo fijo',c);
+        acum(porEmpresa,'emp_'+(a.empresa_id||'sn'),a.empresa_nombre||'Sin empresa',c);
+        if(a.faena_id) acum(porFaena,'fae_'+a.faena_id,a.faena_nombre,c,a.faena_id);
+        if(a.equipo_id) acum(porEquipo,'eq_'+a.equipo_id,(a.equipo_codigo||'')+' '+(a.equipo_nombre||''),c,a.equipo_id);
+      }
+    });
+
+    var costoTotal=totInventario+totCombustible+totDirectas+totDepreciacion;
     function ordenar(obj){return Object.values(obj).map(function(x){return{nombre:x.nombre,costo:Math.round(x.costo),id_key:x.id_key};}).filter(function(x){return x.costo!==0;}).sort(function(a,b){return b.costo-a.costo;});}
 
     res.json({
@@ -6581,8 +6636,10 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
         consumo_combustible:Math.round(totCombustible),
         consumo_inventario:Math.round(totInventario),
         compras_directas:Math.round(totDirectas),
+        depreciacion:Math.round(totDepreciacion),
         valor_inventario_actual:Math.round(num(invActual.rows[0].valor)),
-        valor_combustible_actual:Math.round(num(combActual.rows[0].valor))
+        valor_combustible_actual:Math.round(num(combActual.rows[0].valor)),
+        valor_activos_fijos:Math.round(valorActivosFijos)
       },
       por_categoria:ordenar(porCategoria),
       por_empresa:ordenar(porEmpresa),
@@ -6662,6 +6719,114 @@ app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
     rows=inv.rows.concat(comb.rows).concat(dir.rows).sort(function(a,b){return new Date(b.fecha)-new Date(a.fecha);});
     res.json({rows:rows});
   }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// ACTIVOS FIJOS — registro y depreciación lineal con prorrateo diario
+// ═══════════════════════════════════════════════════════════════════════
+// Calcula la depreciación de un activo dentro de un período [desde, hasta]
+// usando prorrateo diario desde la fecha de compra.
+function calcularDepreciacion(activo, desde, hasta){
+  const valor=parseFloat(activo.valor_adquisicion)||0;
+  const residual=parseFloat(activo.valor_residual)||0;
+  const vidaMeses=parseInt(activo.vida_util_meses)||60;
+  const base=valor-residual;
+  if(base<=0||vidaMeses<=0) return {cuota_periodo:0, dep_acumulada_total:0, valor_neto:valor, dep_diaria:0, dias_periodo:0};
+  // Vida útil en días (promedio 30.4375 días/mes)
+  const diasVidaTotal=Math.round(vidaMeses*30.4375);
+  const depDiaria=base/diasVidaTotal;
+  const fCompra=new Date(activo.fecha_compra);
+  const fFinVida=new Date(fCompra.getTime()+diasVidaTotal*86400000);
+  // Helper: días depreciados entre dos fechas (acotado a la vida del activo)
+  function diasEntre(d1,d2){
+    var ini=fCompra>d1?fCompra:d1;
+    var fin=fFinVida<d2?fFinVida:d2;
+    if(fin<=ini) return 0;
+    return Math.round((fin-ini)/86400000);
+  }
+  // Depreciación del período solicitado
+  var fDesde=new Date(desde), fHasta=new Date(hasta+'T23:59:59');
+  // Si dado de baja antes, acotar
+  if(activo.estado==='BAJA'&&activo.fecha_baja){
+    var fBaja=new Date(activo.fecha_baja);
+    if(fBaja<fHasta) fHasta=fBaja;
+  }
+  var diasPeriodo=diasEntre(fDesde,fHasta);
+  var cuotaPeriodo=Math.round(diasPeriodo*depDiaria);
+  // Depreciación acumulada total hasta 'hasta'
+  var diasAcum=diasEntre(new Date('1900-01-01'),fHasta);
+  var depAcum=Math.min(base,Math.round(diasAcum*depDiaria));
+  var valorNeto=valor-depAcum;
+  return {cuota_periodo:cuotaPeriodo, dep_acumulada_total:depAcum, valor_neto:valorNeto, dep_diaria:Math.round(depDiaria), dias_periodo:diasPeriodo, dias_vida_total:diasVidaTotal};
+}
+
+app.get('/api/activos-fijos', auth, async(req,res)=>{
+  try{
+    const{estado,empresa_id,desde,hasta}=req.query;
+    let w=['1=1'],v=[];
+    if(estado){v.push(estado);w.push(`af.estado=$${v.length}`);}
+    if(empresa_id){v.push(empresa_id);w.push(`af.empresa_id=$${v.length}`);}
+    const r=await pool.query(`
+      SELECT af.*, e.razon_social AS empresa_nombre, f.nombre AS faena_nombre,
+             eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre, oc.numero_oc
+      FROM activos_fijos af
+      LEFT JOIN empresas e ON af.empresa_id=e.empresa_id
+      LEFT JOIN faenas f ON af.faena_id=f.faena_id
+      LEFT JOIN equipos eq ON af.equipo_id=eq.equipo_id
+      LEFT JOIN ordenes_compra oc ON af.oc_id=oc.oc_id
+      WHERE ${w.join(' AND ')}
+      ORDER BY af.fecha_compra DESC, af.activo_id DESC`,v);
+    // Calcular depreciación a la fecha (si se pide período) o a hoy
+    const hoy=new Date().toISOString().slice(0,10);
+    const dHasta=hasta||hoy;
+    const dDesde=desde||'1900-01-01';
+    const rows=r.rows.map(function(a){
+      const dep=calcularDepreciacion(a, dDesde, dHasta);
+      return Object.assign({}, a, {
+        dep_mensual:Math.round((parseFloat(a.valor_adquisicion)-parseFloat(a.valor_residual))/(parseInt(a.vida_util_meses)||60)),
+        dep_acumulada:dep.dep_acumulada_total,
+        valor_neto:dep.valor_neto,
+        cuota_periodo:dep.cuota_periodo
+      });
+    });
+    res.json(rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.post('/api/activos-fijos', auth, async(req,res)=>{
+  try{
+    const{descripcion,empresa_id,faena_id,equipo_id,categoria,valor_adquisicion,fecha_compra,vida_util_meses,valor_residual,observaciones,oc_id}=req.body||{};
+    if(!descripcion||!valor_adquisicion||!fecha_compra) return res.status(400).json({error:'Descripción, valor y fecha de compra son obligatorios'});
+    const r=await pool.query(`INSERT INTO activos_fijos(descripcion,oc_id,empresa_id,faena_id,equipo_id,categoria,valor_adquisicion,fecha_compra,vida_util_meses,valor_residual,metodo,estado,observaciones,usuario)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'lineal','ACTIVO',$11,$12) RETURNING *`,
+      [descripcion,oc_id||null,empresa_id||null,faena_id||null,equipo_id||null,categoria||null,parseFloat(valor_adquisicion),fecha_compra,parseInt(vida_util_meses)||60,parseFloat(valor_residual)||0,observaciones||null,req.user.email]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.put('/api/activos-fijos/:id', auth, async(req,res)=>{
+  try{
+    const{descripcion,empresa_id,faena_id,equipo_id,categoria,valor_adquisicion,fecha_compra,vida_util_meses,valor_residual,observaciones}=req.body||{};
+    const r=await pool.query(`UPDATE activos_fijos SET descripcion=$1,empresa_id=$2,faena_id=$3,equipo_id=$4,categoria=$5,valor_adquisicion=$6,fecha_compra=$7,vida_util_meses=$8,valor_residual=$9,observaciones=$10 WHERE activo_id=$11 RETURNING *`,
+      [descripcion,empresa_id||null,faena_id||null,equipo_id||null,categoria||null,parseFloat(valor_adquisicion),fecha_compra,parseInt(vida_util_meses)||60,parseFloat(valor_residual)||0,observaciones||null,req.params.id]);
+    if(!r.rows.length) return res.status(404).json({error:'Activo no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.post('/api/activos-fijos/:id/baja', auth, async(req,res)=>{
+  try{
+    const{fecha_baja,motivo_baja}=req.body||{};
+    const r=await pool.query("UPDATE activos_fijos SET estado='BAJA',fecha_baja=$1,motivo_baja=$2 WHERE activo_id=$3 RETURNING *",
+      [fecha_baja||new Date().toISOString().slice(0,10),motivo_baja||null,req.params.id]);
+    if(!r.rows.length) return res.status(404).json({error:'Activo no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.delete('/api/activos-fijos/:id', auth, async(req,res)=>{
+  try{await pool.query('DELETE FROM activos_fijos WHERE activo_id=$1',[req.params.id]);res.json({ok:true});}
+  catch(e){res.status(400).json({error:e.message});}
 });
 
 // ══ FINANZAS — CUENTAS BANCARIAS Y CHEQUES ══
@@ -8279,6 +8444,33 @@ async function setupFacturaGuias(q){
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
   await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS factura_guia_id INT REFERENCES oc_factura_guias(factura_id)');
+  // ── Activo fijo: marca y parámetros de depreciación en la OC ──
+  try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS es_activo_fijo BOOLEAN DEFAULT false')}catch(e){}
+  try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS af_vida_util_meses INT')}catch(e){}
+  try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS af_valor_residual NUMERIC(14,2) DEFAULT 0')}catch(e){}
+  try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS af_descripcion VARCHAR(200)')}catch(e){}
+  // ── Tabla maestra de activos fijos ──
+  await q(`CREATE TABLE IF NOT EXISTS activos_fijos (
+    activo_id SERIAL PRIMARY KEY,
+    descripcion VARCHAR(200) NOT NULL,
+    oc_id INT REFERENCES ordenes_compra(oc_id),
+    empresa_id INT REFERENCES empresas(empresa_id),
+    faena_id INT REFERENCES faenas(faena_id),
+    equipo_id INT REFERENCES equipos(equipo_id),
+    categoria VARCHAR(100),
+    valor_adquisicion NUMERIC(14,2) NOT NULL,
+    fecha_compra DATE NOT NULL,
+    vida_util_meses INT NOT NULL DEFAULT 60,
+    valor_residual NUMERIC(14,2) NOT NULL DEFAULT 0,
+    metodo VARCHAR(20) NOT NULL DEFAULT 'lineal',
+    estado VARCHAR(15) NOT NULL DEFAULT 'ACTIVO',
+    fecha_baja DATE,
+    motivo_baja TEXT,
+    observaciones TEXT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  try{await q('CREATE INDEX IF NOT EXISTS idx_af_oc ON activos_fijos(oc_id)');}catch(e){}
 }
 
 // Listar OCs con guía de despacho pendientes de facturar
