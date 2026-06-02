@@ -3737,6 +3737,178 @@ function FinChequesImportModal(p){
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// INFORME DE COSTOS DE OPERACIÓN (vista CEO)
+// ═══════════════════════════════════════════════════════════════════════
+function InformeCostosView(p){
+  var hoy=new Date();
+  var primerDiaMes=new Date(hoy.getFullYear(),hoy.getMonth(),1).toISOString().slice(0,10);
+  var hoyStr=hoy.toISOString().slice(0,10);
+  const[desde,setDesde]=useState(primerDiaMes);
+  const[hasta,setHasta]=useState(hoyStr);
+  const[empresaId,setEmpresaId]=useState('');
+  const[data,setData]=useState(null);
+  const[loading,setLoading]=useState(false);
+  const[err,setErr]=useState('');
+  const[drill,setDrill]=useState(null); // {dimension, valor, nombre}
+  const empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+
+  function fmt(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+  function fmtFecha(f){return f?new Date(f).toLocaleDateString('es-CL'):'—';}
+
+  function generar(){
+    setLoading(true);setErr('');setData(null);
+    var qs='?desde='+desde+'&hasta='+hasta;
+    if(empresaId)qs+='&empresa_id='+empresaId;
+    api('/finanzas/informe-costos'+qs,'GET',null,p.tok)
+      .then(function(r){setData(r);})
+      .catch(function(e){setErr(e.message);})
+      .finally(function(){setLoading(false);});
+  }
+  useEffect(function(){generar();},[]);
+
+  var inpS={padding:'6px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
+
+  // Barra superior
+  var barra=h('div',{className:'card',style:{marginBottom:14,padding:12}},
+    h('div',{style:{display:'flex',gap:12,flexWrap:'wrap',alignItems:'flex-end'}},
+      h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Desde'),h('input',{type:'date',value:desde,onChange:function(e){setDesde(e.target.value);},style:inpS})),
+      h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Hasta'),h('input',{type:'date',value:hasta,onChange:function(e){setHasta(e.target.value);},style:inpS})),
+      h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Empresa'),h('select',{value:empresaId,onChange:function(e){setEmpresaId(e.target.value);},style:inpS},h('option',{value:''},'Todas las empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+      h(Btn,{onClick:generar,disabled:loading},loading?'⏳ Calculando...':'📊 Generar informe')
+    )
+  );
+
+  if(err) return h('div',null,barra,h('div',{className:'al al-e'},err));
+  if(loading&&!data) return h('div',null,barra,h('div',{className:'spin'},'Calculando costos del período...'));
+  if(!data) return h('div',null,barra);
+
+  var R=data.resumen;
+  var ct=R.costo_total||1;
+  function pct(n){return ((n/ct)*100).toFixed(1)+'%';}
+
+  // KPI grande
+  function Kpi(props){
+    return h('div',{style:{padding:'14px 16px',background:props.bg||'#fff',borderRadius:10,border:'1px solid #E2E8F0',borderTop:'4px solid '+props.color,flex:1,minWidth:180}},
+      h('div',{style:{fontSize:11,color:'#64748B',textTransform:'uppercase',letterSpacing:0.5,marginBottom:4}},props.label),
+      h('div',{style:{fontSize:props.big?26:20,fontWeight:700,color:props.color,fontFamily:'monospace'}},fmt(props.value)),
+      props.sub&&h('div',{style:{fontSize:11,color:'#94A3B8',marginTop:3}},props.sub)
+    );
+  }
+
+  // Tabla con barras y drill-down
+  function TablaCosto(props){
+    var datos=props.datos||[];
+    var maxC=datos.length?Math.max.apply(null,datos.map(function(x){return Math.abs(x.costo);})):1;
+    var totalSec=datos.reduce(function(s,x){return s+x.costo;},0);
+    return h('div',{className:'card',style:{padding:14,marginBottom:14}},
+      h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10,color:'#1E3A2D',display:'flex',justifyContent:'space-between'}},
+        h('span',null,props.titulo),
+        h('span',{style:{fontSize:12,color:'#64748B'}},fmt(totalSec))
+      ),
+      datos.length===0?h('div',{style:{padding:14,textAlign:'center',color:'#94A3B8',fontSize:12}},'Sin datos en el período.'):
+      h('div',null,datos.slice(0,props.limite||15).map(function(x,i){
+        var w=(Math.abs(x.costo)/maxC*100).toFixed(1);
+        var clickable=props.dimension&&x.id_key;
+        return h('div',{key:i,onClick:clickable?function(){setDrill({dimension:props.dimension,valor:x.id_key,nombre:x.nombre});}:null,
+          style:{marginBottom:7,cursor:clickable?'pointer':'default'}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',fontSize:12,marginBottom:2}},
+            h('span',{style:{color:'#334155',fontWeight:clickable?600:400,textDecoration:clickable?'underline dotted':'none'}},x.nombre),
+            h('span',{style:{fontFamily:'monospace',fontWeight:600}},fmt(x.costo)+' ',h('span',{style:{color:'#94A3B8',fontSize:10}},'('+((x.costo/totalSec)*100||0).toFixed(0)+'%)'))
+          ),
+          h('div',{style:{height:6,background:'#F1F5F9',borderRadius:3,overflow:'hidden'}},
+            h('div',{style:{height:'100%',width:w+'%',background:props.color||'#1E3A2D',borderRadius:3}})
+          )
+        );
+      }))
+    );
+  }
+
+  // Añadir id_key a las dimensiones que soportan drill-down (equipo y faena vienen como "EG-05 Nombre")
+  // El backend ya no devuelve el id; para drill-down lo resolvemos por nombre via el detalle.
+  // Para simplificar, drill-down de equipo/faena usa el nombre. Mejor: backend debería devolver id.
+
+  return h('div',null,
+    barra,
+    // Leyenda contable
+    h('div',{className:'al al-i',style:{marginBottom:14,fontSize:12}},
+      h('strong',null,'Criterio contable: '),'el costo se reconoce al ',h('strong',null,'consumir'),', no al comprar. Las compras que ingresan a bodega permanecen como ',h('strong',null,'activo (existencias)'),' hasta su salida. Período: ',fmtFecha(data.periodo.desde),' al ',fmtFecha(data.periodo.hasta),'.'
+    ),
+    // ═══ KPIs ═══
+    h('div',{style:{display:'flex',gap:12,flexWrap:'wrap',marginBottom:8}},
+      h(Kpi,{label:'COSTO TOTAL DEL PERÍODO',value:R.costo_total,color:'#1E3A2D',big:true,bg:'#F0FDF4'})
+    ),
+    h('div',{style:{display:'flex',gap:12,flexWrap:'wrap',marginBottom:14}},
+      h(Kpi,{label:'⛽ Combustible',value:R.consumo_combustible,color:'#DC2626',sub:pct(R.consumo_combustible)+' del costo'}),
+      h(Kpi,{label:'📦 Inventario consumido',value:R.consumo_inventario,color:'#EA580C',sub:pct(R.consumo_inventario)+' del costo'}),
+      h(Kpi,{label:'🧾 Compras directas (gasto)',value:R.compras_directas,color:'#7C3AED',sub:pct(R.compras_directas)+' del costo'})
+    ),
+    // ═══ Activos (no son costo) ═══
+    h('div',{style:{display:'flex',gap:12,flexWrap:'wrap',marginBottom:16}},
+      h('div',{style:{flex:1,minWidth:240,padding:12,background:'#EFF6FF',border:'1px dashed #93C5FD',borderRadius:8}},
+        h('div',{style:{fontSize:11,color:'#1E40AF',fontWeight:700,marginBottom:6}},'💼 ACTIVOS — Existencias valorizadas (no imputado a costo)'),
+        h('div',{style:{display:'flex',gap:20}},
+          h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Inventario en bodega'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_inventario_actual))),
+          h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Combustible en estanques'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_combustible_actual))),
+          h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Total inmovilizado'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_inventario_actual+R.valor_combustible_actual)))
+        )
+      )
+    ),
+    // ═══ Desgloses en 2 columnas ═══
+    h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:14}},
+      h(TablaCosto,{titulo:'Costo por categoría',datos:data.por_categoria,color:'#DC2626'}),
+      h(TablaCosto,{titulo:'Costo por empresa',datos:data.por_empresa,color:'#0F766E'}),
+      h(TablaCosto,{titulo:'Top equipos por costo',datos:data.por_equipo,color:'#EA580C',limite:15,dimension:'equipo'}),
+      h(TablaCosto,{titulo:'Costo por faena',datos:data.por_faena,color:'#2563EB',dimension:'faena'}),
+      h(TablaCosto,{titulo:'Top proveedores (compras directas)',datos:data.por_proveedor,color:'#7C3AED',limite:12,dimension:'proveedor'}),
+      h(TablaCosto,{titulo:'Evolución mensual',datos:(data.por_mes||[]).map(function(m){return{nombre:m.mes,costo:m.costo};}),color:'#1E3A2D'})
+    ),
+    drill&&h(CostoDetalleModal,{tok:p.tok,desde:desde,hasta:hasta,dimension:drill.dimension,valor:drill.valor,nombre:drill.nombre,onClose:function(){setDrill(null);}})
+  );
+}
+
+function CostoDetalleModal(p){
+  const[rows,setRows]=useState(null);
+  const[err,setErr]=useState('');
+  useEffect(function(){
+    var qs='?desde='+p.desde+'&hasta='+p.hasta+'&dimension='+p.dimension+'&valor='+encodeURIComponent(p.valor);
+    api('/finanzas/informe-costos/detalle'+qs,'GET',null,p.tok)
+      .then(function(r){setRows(r.rows||[]);})
+      .catch(function(e){setErr(e.message);});
+  },[]);
+  function fmt(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+  var total=(rows||[]).reduce(function(s,r){return s+(parseFloat(r.costo)||0);},0);
+  return h(Modal,{title:'Detalle de costos — '+p.nombre,onClose:p.onClose,xl:true},
+    h('div',{style:{padding:14}},
+      err&&h('div',{className:'al al-e'},err),
+      !rows&&!err&&h('div',{className:'spin'},'Cargando detalle...'),
+      rows&&h('div',null,
+        h('div',{style:{fontSize:12,marginBottom:8,color:'#64748B'}},rows.length+' movimientos — Total: ',h('strong',{style:{color:'#1E3A2D'}},fmt(total))),
+        h('div',{style:{maxHeight:'55vh',overflowY:'auto'}},
+          h('table',{style:{fontSize:11,width:'100%',borderCollapse:'collapse'}},
+            h('thead',null,h('tr',null,h('th',null,'Fecha'),h('th',null,'Origen'),h('th',null,'Código'),h('th',null,'Detalle'),h('th',null,'Equipo'),h('th',null,'Faena'),h('th',{className:'r'},'Cant.'),h('th',{className:'r'},'C.Unit'),h('th',{className:'r'},'Costo'))),
+            h('tbody',null,rows.map(function(r,i){
+              var colOrigen=r.origen==='Combustible'?'#DC2626':r.origen==='Inventario'?'#EA580C':'#7C3AED';
+              return h('tr',{key:i},
+                h('td',null,new Date(r.fecha).toLocaleDateString('es-CL')),
+                h('td',null,h('span',{style:{fontSize:10,padding:'1px 6px',background:colOrigen+'20',color:colOrigen,borderRadius:8,fontWeight:600}},r.origen)),
+                h('td',{style:{fontFamily:'monospace',fontSize:10}},r.codigo||'—'),
+                h('td',null,r.detalle||'—'),
+                h('td',{style:{fontSize:10}},r.equipo||'—'),
+                h('td',{style:{fontSize:10}},r.faena||'—'),
+                h('td',{className:'r mono'},parseFloat(r.cantidad||0).toFixed(1)),
+                h('td',{className:'r mono'},fmt(r.costo_unitario)),
+                h('td',{className:'r mono',style:{fontWeight:600}},fmt(r.costo))
+              );
+            }))
+          )
+        ),
+        h('div',{style:{marginTop:12,textAlign:'right'}},h(Btn,{onClick:p.onClose},'Cerrar'))
+      )
+    )
+  );
+}
+
 function FinChequesView(p){
   var provs=(p.m.provs||[]);
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
@@ -17943,7 +18115,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','terreno':'Terreno — Registros Diarios','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','terreno':'Terreno — Registros Diarios','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -18599,7 +18771,7 @@ function App(){
     'transporte':'transporte',
     'personal':'contratos','contratos':'contratos','vacaciones':'contratos','finiquitos':'contratos','cartas':'contratos',
     'mantenedores':'mantenedores',
-    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas',
+    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas',
     'rem-parametros':'remuneraciones','rem-periodos':'remuneraciones','rem-movimientos':'remuneraciones','rem-liquidaciones':'remuneraciones','rem-prestamos':'remuneraciones','rem-previred':'remuneraciones','rem-prevision':'remuneraciones'
   };
   function viewAllowed(v){
@@ -18789,7 +18961,7 @@ function App(){
         canSee('solicitudes')&&grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
         canSee('solicitudes')&&h('div',{className:'sb-sep'}),
         canSee('finanzas')&&grpHdr('fin','FINANZAS'),
-        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true)),
+        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true),navI('fin-costos','📊','Informe de Costos',true)),
         canSee('finanzas')&&h('div',{className:'sb-sep'}),
         canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
         canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
@@ -18892,6 +19064,7 @@ function App(){
           view==='solicitudes'&&h(SolicitudesView,{tok,m,user}),
           view==='terreno'&&h(TerrenoView,{tok,m,user}),
           view==='fin-cheques'&&h(FinChequesView,{tok,m}),
+          view==='fin-costos'&&h(InformeCostosView,{tok,m}),
           view==='trans-traslados'&&h(TransporteView,{tok,m}),
           view==='trans-planificacion'&&h(PlanificacionView,{tok,m}),
           view==='trans-tarifas'&&h(TransporteTarifas,{tok,m}),
