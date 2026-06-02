@@ -3738,6 +3738,174 @@ function FinChequesImportModal(p){
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// ACTIVOS FIJOS — registro y depreciación
+// ═══════════════════════════════════════════════════════════════════════
+function ActivosFijosView(p){
+  const[activos,setActivos]=useState([]);
+  const[loading,setLoading]=useState(false);
+  const[err,setErr]=useState('');
+  const[showForm,setShowForm]=useState(null);
+  const[showBaja,setShowBaja]=useState(null);
+  const empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  const faenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
+  const equipos=(p.m.equipos||[]).filter(function(e){return e.activo;});
+
+  function fmt(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+  function fmtFecha(f){return f?new Date(f).toLocaleDateString('es-CL'):'—';}
+  function load(){
+    setLoading(true);setErr('');
+    api('/activos-fijos','GET',null,p.tok)
+      .then(function(r){setActivos(Array.isArray(r)?r:[]);})
+      .catch(function(e){setErr(e.message);})
+      .finally(function(){setLoading(false);});
+  }
+  useEffect(load,[p.tok]);
+
+  function eliminar(a){
+    if(!confirm('¿Eliminar el activo "'+a.descripcion+'"? Esto no elimina la OC de origen.'))return;
+    api('/activos-fijos/'+a.activo_id,'DELETE',null,p.tok).then(load).catch(function(e){alert(e.message);});
+  }
+
+  var totAdq=activos.reduce(function(s,a){return s+(parseFloat(a.valor_adquisicion)||0);},0);
+  var totDepAcum=activos.reduce(function(s,a){return s+(parseFloat(a.dep_acumulada)||0);},0);
+  var totNeto=activos.reduce(function(s,a){return s+(parseFloat(a.valor_neto)||0);},0);
+  var activosVigentes=activos.filter(function(a){return a.estado==='ACTIVO';});
+  var totDepMensual=activosVigentes.reduce(function(s,a){return s+(parseFloat(a.dep_mensual)||0);},0);
+
+  return h('div',null,
+    h('div',{className:'tb'},
+      h(Btn,{onClick:function(){setShowForm({});}},'+ Registrar activo manual')
+    ),
+    err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+    h('div',{className:'al al-i',style:{marginBottom:12,fontSize:12}},
+      'Los activos fijos se crean automáticamente al ',h('strong',null,'cerrar una OC marcada como activo fijo'),'. También puedes registrar uno manualmente (ej. activos antiguos). La depreciación es ',h('strong',null,'lineal con prorrateo diario'),' desde la fecha de compra.'
+    ),
+    // KPIs
+    h('div',{style:{display:'flex',gap:12,flexWrap:'wrap',marginBottom:14}},
+      h('div',{style:{flex:1,minWidth:160,padding:12,background:'#fff',borderRadius:8,border:'1px solid #E2E8F0',borderTop:'4px solid #1E40AF'}},
+        h('div',{style:{fontSize:10,color:'#64748B',textTransform:'uppercase'}},'Valor adquisición'),
+        h('div',{style:{fontSize:18,fontWeight:700,fontFamily:'monospace',color:'#1E40AF'}},fmt(totAdq))),
+      h('div',{style:{flex:1,minWidth:160,padding:12,background:'#fff',borderRadius:8,border:'1px solid #E2E8F0',borderTop:'4px solid #EA580C'}},
+        h('div',{style:{fontSize:10,color:'#64748B',textTransform:'uppercase'}},'Depreciación acumulada'),
+        h('div',{style:{fontSize:18,fontWeight:700,fontFamily:'monospace',color:'#EA580C'}},fmt(totDepAcum))),
+      h('div',{style:{flex:1,minWidth:160,padding:12,background:'#fff',borderRadius:8,border:'1px solid #E2E8F0',borderTop:'4px solid #15803D'}},
+        h('div',{style:{fontSize:10,color:'#64748B',textTransform:'uppercase'}},'Valor neto (libro)'),
+        h('div',{style:{fontSize:18,fontWeight:700,fontFamily:'monospace',color:'#15803D'}},fmt(totNeto))),
+      h('div',{style:{flex:1,minWidth:160,padding:12,background:'#fff',borderRadius:8,border:'1px solid #E2E8F0',borderTop:'4px solid #7C3AED'}},
+        h('div',{style:{fontSize:10,color:'#64748B',textTransform:'uppercase'}},'Depreciación mensual'),
+        h('div',{style:{fontSize:18,fontWeight:700,fontFamily:'monospace',color:'#7C3AED'}},fmt(totDepMensual)))
+    ),
+    loading&&h('div',{className:'spin'},'Cargando...'),
+    !loading&&h('div',{className:'card',style:{padding:0,overflow:'hidden'}},
+      h('table',{style:{fontSize:11,width:'100%',borderCollapse:'collapse'}},
+        h('thead',null,h('tr',null,
+          h('th',null,'Activo'),h('th',null,'OC'),h('th',null,'Empresa'),h('th',null,'Equipo/Faena'),
+          h('th',null,'F. compra'),h('th',{className:'r'},'Valor adq.'),h('th',{className:'c'},'Vida útil'),
+          h('th',{className:'r'},'Dep. mensual'),h('th',{className:'r'},'Dep. acum.'),h('th',{className:'r'},'Valor neto'),
+          h('th',{className:'c'},'Estado'),h('th',{className:'c'},'')
+        )),
+        h('tbody',null,activos.map(function(a){
+          var pctDep=parseFloat(a.valor_adquisicion)>0?(parseFloat(a.dep_acumulada)/(parseFloat(a.valor_adquisicion)-parseFloat(a.valor_residual))*100):0;
+          return h('tr',{key:a.activo_id,style:{opacity:a.estado==='BAJA'?0.55:1}},
+            h('td',null,h('strong',null,a.descripcion),a.categoria&&h('div',{style:{fontSize:9,color:'#94A3B8'}},a.categoria)),
+            h('td',{style:{fontSize:10}},a.numero_oc||'—'),
+            h('td',{style:{fontSize:10}},a.empresa_nombre||'—'),
+            h('td',{style:{fontSize:10}},a.equipo_codigo?(a.equipo_codigo):(a.faena_nombre||'—')),
+            h('td',{style:{fontSize:10}},fmtFecha(a.fecha_compra)),
+            h('td',{className:'r mono'},fmt(a.valor_adquisicion)),
+            h('td',{className:'c',style:{fontSize:10}},a.vida_util_meses+'m'),
+            h('td',{className:'r mono',style:{color:'#7C3AED'}},fmt(a.dep_mensual)),
+            h('td',{className:'r'},h('div',null,
+              h('div',{className:'mono',style:{fontSize:10}},fmt(a.dep_acumulada)),
+              h('div',{style:{height:3,background:'#F1F5F9',borderRadius:2,marginTop:2}},h('div',{style:{height:'100%',width:Math.min(100,pctDep)+'%',background:'#EA580C',borderRadius:2}}))
+            )),
+            h('td',{className:'r mono',style:{fontWeight:600,color:'#15803D'}},fmt(a.valor_neto)),
+            h('td',{className:'c'},h(Bg,{c:a.estado==='ACTIVO'?'g':'gray'},a.estado)),
+            h('td',{className:'c'},h('div',{style:{display:'flex',gap:3,justifyContent:'center'}},
+              h('button',{onClick:function(){setShowForm(a);},style:{padding:'3px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'✏'),
+              a.estado==='ACTIVO'&&h('button',{onClick:function(){setShowBaja(a);},title:'Dar de baja',style:{padding:'3px 6px',background:'#F59E0B',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'⬇'),
+              h('button',{onClick:function(){eliminar(a);},style:{padding:'3px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'🗑')
+            ))
+          );
+        }))
+      ),
+      activos.length===0&&!loading&&h('div',{style:{padding:30,textAlign:'center',color:'#64748B'}},'Sin activos fijos registrados.')
+    ),
+    showForm&&h(ActivoFijoFormModal,{tok:p.tok,activo:showForm,empresas:empresas,faenas:faenas,equipos:equipos,onClose:function(){setShowForm(null);},onSave:function(){setShowForm(null);load();}}),
+    showBaja&&h(ActivoBajaModal,{tok:p.tok,activo:showBaja,onClose:function(){setShowBaja(null);},onSave:function(){setShowBaja(null);load();}})
+  );
+}
+
+function ActivoFijoFormModal(p){
+  const esNuevo=!p.activo.activo_id;
+  const[form,setForm]=useState({
+    descripcion:p.activo.descripcion||'',empresa_id:p.activo.empresa_id||'',faena_id:p.activo.faena_id||'',
+    equipo_id:p.activo.equipo_id||'',categoria:p.activo.categoria||'',valor_adquisicion:p.activo.valor_adquisicion||'',
+    fecha_compra:(p.activo.fecha_compra||'').slice(0,10)||new Date().toISOString().slice(0,10),
+    vida_util_meses:p.activo.vida_util_meses||60,valor_residual:p.activo.valor_residual||0,observaciones:p.activo.observaciones||''
+  });
+  const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
+  function sf(k,v){setForm(function(f){var x=Object.assign({},f);x[k]=v;return x;});}
+  function save(){
+    if(!form.descripcion||!form.valor_adquisicion||!form.fecha_compra){setErr('Descripción, valor y fecha son obligatorios');return;}
+    setSaving(true);setErr('');
+    var url=esNuevo?'/activos-fijos':'/activos-fijos/'+p.activo.activo_id;
+    api(url,esNuevo?'POST':'PUT',form,p.tok).then(p.onSave).catch(function(e){setErr(e.message);}).finally(function(){setSaving(false);});
+  }
+  var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var val=parseFloat(form.valor_adquisicion)||0,res=parseFloat(form.valor_residual)||0,vm=parseInt(form.vida_util_meses)||60;
+  var cuota=vm>0?Math.round((val-res)/vm):0;
+  return h(Modal,{title:(esNuevo?'+ Registrar':'✏ Editar')+' Activo Fijo',onClose:p.onClose,lg:true},
+    h('div',{style:{padding:14}},
+      err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+      h('div',{style:{display:'grid',gridTemplateColumns:'2fr 1fr',gap:10,marginBottom:10}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Descripción *'),h('input',{value:form.descripcion,onChange:function(e){sf('descripcion',e.target.value);},placeholder:'Ej: Excavadora CAT 320',style:inpS})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Categoría'),h('input',{value:form.categoria,onChange:function(e){sf('categoria',e.target.value);},placeholder:'Maquinaria, Vehículo...',style:inpS}))
+      ),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa'),h('select',{value:form.empresa_id,onChange:function(e){sf('empresa_id',e.target.value);},style:inpS},h('option',{value:''},'—'),p.empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena'),h('select',{value:form.faena_id,onChange:function(e){sf('faena_id',e.target.value);},style:inpS},h('option',{value:''},'—'),p.faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Equipo asociado'),h('select',{value:form.equipo_id,onChange:function(e){sf('equipo_id',e.target.value);},style:inpS},h('option',{value:''},'—'),p.equipos.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);})))
+      ),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10,marginBottom:12}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Valor adquisición $ *'),h('input',{type:'number',value:form.valor_adquisicion,onChange:function(e){sf('valor_adquisicion',e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha compra *'),h('input',{type:'date',value:form.fecha_compra,onChange:function(e){sf('fecha_compra',e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Vida útil (meses)'),h('input',{type:'number',value:form.vida_util_meses,onChange:function(e){sf('vida_util_meses',e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Valor residual $'),h('input',{type:'number',value:form.valor_residual,onChange:function(e){sf('valor_residual',e.target.value);},style:inpS}))
+      ),
+      h('div',{style:{padding:10,background:'#DBEAFE',borderRadius:6,fontSize:12,color:'#1E40AF',marginBottom:12}},
+        '💡 Depreciación mensual ≈ ',h('strong',null,'$'+new Intl.NumberFormat('es-CL').format(cuota)),' — Vida útil: '+vm+' meses ('+(vm/12).toFixed(1)+' años)'
+      ),
+      h('div',{style:{display:'flex',gap:8,justifyContent:'flex-end',borderTop:'1px solid #E2E8F0',paddingTop:10}},
+        h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),
+        h(Btn,{onClick:save,disabled:saving},saving?'Guardando...':'💾 Guardar')
+      )
+    )
+  );
+}
+
+function ActivoBajaModal(p){
+  const[fecha,setFecha]=useState(new Date().toISOString().slice(0,10));
+  const[motivo,setMotivo]=useState('');
+  function confirmar(){
+    api('/activos-fijos/'+p.activo.activo_id+'/baja','POST',{fecha_baja:fecha,motivo_baja:motivo},p.tok)
+      .then(p.onSave).catch(function(e){alert(e.message);});
+  }
+  var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  return h(Modal,{title:'⬇ Dar de baja — '+p.activo.descripcion,onClose:p.onClose},
+    h('div',{style:{padding:14}},
+      h('div',{className:'al al-w',style:{marginBottom:12,fontSize:12}},'Al dar de baja, el activo deja de depreciarse desde la fecha indicada.'),
+      h('div',{style:{marginBottom:10}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha de baja'),h('input',{type:'date',value:fecha,onChange:function(e){setFecha(e.target.value);},style:inpS})),
+      h('div',{style:{marginBottom:14}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Motivo'),h('textarea',{value:motivo,onChange:function(e){setMotivo(e.target.value);},rows:2,placeholder:'Venta, obsolescencia, siniestro...',style:Object.assign({},inpS,{resize:'vertical',fontFamily:'inherit'})})),
+      h('div',{style:{display:'flex',gap:8,justifyContent:'flex-end'}},
+        h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),
+        h(Btn,{v:'y',onClick:confirmar},'⬇ Confirmar baja')
+      )
+    )
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // INFORME DE COSTOS DE OPERACIÓN (vista CEO)
 // ═══════════════════════════════════════════════════════════════════════
 function InformeCostosView(p){
@@ -3841,16 +4009,18 @@ function InformeCostosView(p){
     h('div',{style:{display:'flex',gap:12,flexWrap:'wrap',marginBottom:14}},
       h(Kpi,{label:'⛽ Combustible',value:R.consumo_combustible,color:'#DC2626',sub:pct(R.consumo_combustible)+' del costo'}),
       h(Kpi,{label:'📦 Inventario consumido',value:R.consumo_inventario,color:'#EA580C',sub:pct(R.consumo_inventario)+' del costo'}),
-      h(Kpi,{label:'🧾 Compras directas (gasto)',value:R.compras_directas,color:'#7C3AED',sub:pct(R.compras_directas)+' del costo'})
+      h(Kpi,{label:'🧾 Compras directas (gasto)',value:R.compras_directas,color:'#7C3AED',sub:pct(R.compras_directas)+' del costo'}),
+      h(Kpi,{label:'🏗 Depreciación activo fijo',value:R.depreciacion||0,color:'#0891B2',sub:pct(R.depreciacion||0)+' del costo'})
     ),
     // ═══ Activos (no son costo) ═══
     h('div',{style:{display:'flex',gap:12,flexWrap:'wrap',marginBottom:16}},
       h('div',{style:{flex:1,minWidth:240,padding:12,background:'#EFF6FF',border:'1px dashed #93C5FD',borderRadius:8}},
         h('div',{style:{fontSize:11,color:'#1E40AF',fontWeight:700,marginBottom:6}},'💼 ACTIVOS — Existencias valorizadas (no imputado a costo)'),
-        h('div',{style:{display:'flex',gap:20}},
+        h('div',{style:{display:'flex',gap:20,flexWrap:'wrap'}},
           h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Inventario en bodega'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_inventario_actual))),
           h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Combustible en estanques'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_combustible_actual))),
-          h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Total inmovilizado'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_inventario_actual+R.valor_combustible_actual)))
+          h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Activos fijos (valor neto)'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_activos_fijos||0))),
+          h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Total inmovilizado'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_inventario_actual+R.valor_combustible_actual+(R.valor_activos_fijos||0))))
         )
       )
     ),
@@ -6017,6 +6187,7 @@ function OCView(p){
   const[filtEquipo,setFiltEquipo]=useState('');
   const[filtNdoc,setFiltNdoc]=useState('');
   const[filtFactura,setFiltFactura]=useState('');
+  const[filtNoc,setFiltNoc]=useState('');
   const[verFactura,setVerFactura]=useState(null); // factura_id para abrir modal con OCs vinculadas
   const[sortField,setSortField]=useState('oc_id');
   const[sortDir,setSortDir]=useState('desc');
@@ -6036,10 +6207,11 @@ function OCView(p){
     if(filtEquipo)qs+='equipo_id='+filtEquipo+'&';
     if(filtNdoc)qs+='numero_documento='+encodeURIComponent(filtNdoc)+'&';
     if(filtFactura)qs+='numero_factura='+encodeURIComponent(filtFactura)+'&';
+    if(filtNoc)qs+='numero_oc='+encodeURIComponent(filtNoc)+'&';
     const ep=(hasDetail||filtNdoc)?'/ordenes-compra/buscar/filtros':'/ordenes-compra';
     api(ep+qs,'GET',null,p.tok).then(function(r){setOCs(Array.isArray(r)?r:[]);}).catch(function(){setOCs([]);}).finally(function(){setLoad(false);});
   }
-  useEffect(function(){load2();},[p.tok,filtEst,filtProv,filtDesde,filtHasta,filtEmp,filtSubcat,filtFaena,filtEquipo,filtNdoc,filtFactura]);
+  useEffect(function(){load2();},[p.tok,filtEst,filtProv,filtDesde,filtHasta,filtEmp,filtSubcat,filtFaena,filtEquipo,filtNdoc,filtFactura,filtNoc]);
   function anular(id){
     if(!window.confirm('Anular esta OC? Esta accion no se puede deshacer.'))return;
     api('/ordenes-compra/'+id+'/anular','PATCH',{},p.tok).then(function(){load2();}).catch(function(ex){alert(ex.message);});
@@ -6107,7 +6279,6 @@ function OCView(p){
     h('div',{style:{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap',alignItems:'center'}},
       h(Btn,{onClick:function(){setFormOC({});}},'+ Nueva OC'),
       h(Btn,{v:'a',onClick:function(){setShowZipImport(true);}},'📦 Importar ZIP'),
-      h(Btn,{v:'teal',sm:true,onClick:function(){setShowCalc(true);},title:'Calculadora de valor neto del litro de combustible'},'🧮 Calc. Litro Neto'),
       h('select',{value:filtEst,onChange:function(e){setFiltEst(e.target.value);},style:{minWidth:115,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todos estados'),h('option',{value:'PENDIENTE'},'Pendiente'),h('option',{value:'CERRADA'},'Cerrada'),h('option',{value:'ANULADA'},'Anulada')),
       h('select',{value:filtEmp,onChange:function(e){setFiltEmp(e.target.value);},style:{minWidth:130,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todas empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})),
       h('select',{value:filtProv,onChange:function(e){setFiltProv(e.target.value);},style:{minWidth:130,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todos proveedores'),provs.map(function(q){return h('option',{key:q.proveedor_id,value:q.proveedor_id},q.nombre);})),
@@ -6116,6 +6287,7 @@ function OCView(p){
       h('select',{value:filtSubcat,onChange:function(e){setFiltSubcat(e.target.value);},style:{minWidth:140,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Clasif. producto'),subcats.map(function(s){return h('option',{key:s.subcategoria_id,value:s.subcategoria_id},s.nombre);})),
       h('select',{value:filtFaena,onChange:function(e){setFiltFaena(e.target.value);},style:{minWidth:120,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todas faenas'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})),
       h('select',{value:filtEquipo,onChange:function(e){setFiltEquipo(e.target.value);},style:{minWidth:120,padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todos equipos'),equipos.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.nombre);})),
+      h('input',{value:filtNoc||'',onChange:function(e){setFiltNoc(e.target.value);},placeholder:'N° orden de compra',title:'Buscar por número de OC',style:{padding:'6px 7px',border:'1px solid #2563EB',borderRadius:5,fontSize:12,width:150,background:'#EFF6FF'}}),
       h('input',{value:filtNdoc||'',onChange:function(e){setFiltNdoc(e.target.value);},placeholder:'N° doc tributario',style:{padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,width:140}}),
       h('input',{value:filtFactura||'',onChange:function(e){setFiltFactura(e.target.value);},placeholder:'N° factura cierre',title:'Buscar OCs cerradas con una factura específica',style:{padding:'6px 7px',border:'1px solid #15803D',borderRadius:5,fontSize:12,width:140,background:'#F0FDF4'}}),
       h(Btn,{v:'teal',sm:true,onClick:exportFiltered},null,'⬇ Excel filtrado'),
@@ -7093,8 +7265,8 @@ function OCFormModal(p){
   // Helper para normalizar fechas que vienen del backend (timestamp ISO o YYYY-MM-DD)
   // al formato YYYY-MM-DD que entiende <input type="date">
   function dateToInput(d){if(!d)return '';var s=String(d);return s.length>=10?s.slice(0,10):s;}
-  const blank={empresa_id:'',proveedor_id:'',fecha_emision:TODAY,solicitante:'',retira:'',condicion_id:'',impuesto_adicional:'0',observaciones:'',tipo_doc_id:'',numero_documento:'',fecha_documento:'',lineas:[{descripcion:'',prod_id:'',subcat_id:'',faena_id:'',eq_id:'',cantidad:'1',precio_unitario:'0',ingresa_bodega:false,bodega_destino_id:'',exenta:false}]};
-  const[form,setForm]=useState(isNew?blank:{empresa_id:str(p.oc.empresa_id||''),proveedor_id:str(p.oc.proveedor_id||''),fecha_emision:dateToInput(p.oc.fecha_emision)||TODAY,solicitante:p.oc.solicitante||'',retira:p.oc.retira||'',condicion_id:str(p.oc.condicion_id||''),impuesto_adicional:str(p.oc.impuesto_adicional||0),observaciones:p.oc.observaciones||'',tipo_doc_id:str(p.oc.tipo_doc_id||''),numero_documento:str(p.oc.numero_documento||''),fecha_documento:dateToInput(p.oc.fecha_documento),lineas:(p.oc.lineas||[]).map(l=>({descripcion:l.descripcion||'',prod_id:str(l.producto_id||''),subcat_id:str(l.subcategoria_id||''),faena_id:str(l.faena_id||''),eq_id:str(l.equipo_id||''),cantidad:str(l.cantidad||1),precio_unitario:str(l.precio_unitario||0),ingresa_bodega:!!l.ingresa_bodega,bodega_destino_id:str(l.bodega_destino_id||''),exenta:!!l.exenta}))});
+  const blank={empresa_id:'',proveedor_id:'',fecha_emision:TODAY,solicitante:'',retira:'',condicion_id:'',impuesto_adicional:'0',observaciones:'',tipo_doc_id:'',numero_documento:'',fecha_documento:'',es_activo_fijo:false,af_vida_util_meses:'60',af_valor_residual:'0',af_descripcion:'',lineas:[{descripcion:'',prod_id:'',subcat_id:'',faena_id:'',eq_id:'',cantidad:'1',precio_unitario:'0',ingresa_bodega:false,bodega_destino_id:'',exenta:false}]};
+  const[form,setForm]=useState(isNew?blank:{empresa_id:str(p.oc.empresa_id||''),proveedor_id:str(p.oc.proveedor_id||''),fecha_emision:dateToInput(p.oc.fecha_emision)||TODAY,solicitante:p.oc.solicitante||'',retira:p.oc.retira||'',condicion_id:str(p.oc.condicion_id||''),impuesto_adicional:str(p.oc.impuesto_adicional||0),observaciones:p.oc.observaciones||'',tipo_doc_id:str(p.oc.tipo_doc_id||''),numero_documento:str(p.oc.numero_documento||''),fecha_documento:dateToInput(p.oc.fecha_documento),es_activo_fijo:!!p.oc.es_activo_fijo,af_vida_util_meses:str(p.oc.af_vida_util_meses||60),af_valor_residual:str(p.oc.af_valor_residual||0),af_descripcion:p.oc.af_descripcion||'',lineas:(p.oc.lineas||[]).map(l=>({descripcion:l.descripcion||'',prod_id:str(l.producto_id||''),subcat_id:str(l.subcategoria_id||''),faena_id:str(l.faena_id||''),eq_id:str(l.equipo_id||''),cantidad:str(l.cantidad||1),precio_unitario:str(l.precio_unitario||0),ingresa_bodega:!!l.ingresa_bodega,bodega_destino_id:str(l.bodega_destino_id||''),exenta:!!l.exenta}))});
   const[err,setErr]=useState('');const[saving,setSaving]=useState(false);const[showCalcOC,setShowCalcOC]=useState(false);const[showOCR,setShowOCR]=useState(false);const[ocrLoading,setOcrLoading]=useState(false);const[ocrMsg,setOcrMsg]=useState('');
   const[preciosIVA,setPreciosIVA]=useState(false);
   const[importProvData,setImportProvData]=useState(null);
@@ -7133,7 +7305,7 @@ function OCFormModal(p){
     if(!form.proveedor_id||!form.fecha_emision){setErr('Proveedor y fecha son obligatorios');return;}
     if(!form.lineas.length){setErr('Debe ingresar al menos una linea');return;}
     setSaving(true);
-    const body={empresa_id:form.empresa_id||null,proveedor_id:parseInt(form.proveedor_id),fecha_emision:form.fecha_emision,solicitante:form.solicitante||null,retira:form.retira||null,condicion_id:form.condicion_id||null,impuesto_adicional:imp,observaciones:form.observaciones||null,tipo_doc_id:form.tipo_doc_id||null,numero_documento:form.numero_documento||null,fecha_documento:form.fecha_documento||null,lineas:form.lineas.map(function(l){var pu=parseFloat(l.precio_unitario)||0;if(preciosIVA&&!l.exenta)pu=pu/1.19;return{descripcion:l.descripcion||null,producto_id:l.prod_id||null,subcategoria_id:l.subcat_id||null,faena_id:l.faena_id||null,equipo_id:l.eq_id||null,cantidad:parseFloat(l.cantidad)||0,precio_unitario:pu,ingresa_bodega:l.ingresa_bodega||false,bodega_destino_id:l.bodega_destino_id||null,exenta:!!l.exenta};})};
+    const body={empresa_id:form.empresa_id||null,proveedor_id:parseInt(form.proveedor_id),fecha_emision:form.fecha_emision,solicitante:form.solicitante||null,retira:form.retira||null,condicion_id:form.condicion_id||null,impuesto_adicional:imp,observaciones:form.observaciones||null,tipo_doc_id:form.tipo_doc_id||null,numero_documento:form.numero_documento||null,fecha_documento:form.fecha_documento||null,es_activo_fijo:!!form.es_activo_fijo,af_vida_util_meses:form.af_vida_util_meses||60,af_valor_residual:form.af_valor_residual||0,af_descripcion:form.af_descripcion||null,lineas:form.lineas.map(function(l){var pu=parseFloat(l.precio_unitario)||0;if(preciosIVA&&!l.exenta)pu=pu/1.19;return{descripcion:l.descripcion||null,producto_id:l.prod_id||null,subcategoria_id:l.subcat_id||null,faena_id:l.faena_id||null,equipo_id:l.eq_id||null,cantidad:parseFloat(l.cantidad)||0,precio_unitario:pu,ingresa_bodega:l.ingresa_bodega||false,bodega_destino_id:l.bodega_destino_id||null,exenta:!!l.exenta};})};
     const method=isNew?'POST':'PUT';
     const path=isNew?'/ordenes-compra':'/ordenes-compra/'+p.oc.oc_id;
     api(path,method,body,p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
@@ -7180,6 +7352,36 @@ function OCFormModal(p){
           h(FR,{label:'Condicion de pago'},h(Sel,{value:form.condicion_id,onChange:v=>sf('condicion_id',v)},h('option',{value:''},'Sin especificar'),conds.filter(c=>c.activo).map(c=>h('option',{key:c.condicion_id,value:c.condicion_id},c.nombre)))),
           h(FR,{label:'Impuesto adicional $'},h(Inp,{value:form.impuesto_adicional,onChange:v=>sf('impuesto_adicional',v),type:'number',min:0})),
           h(FR,{label:'Observaciones',style:{gridColumn:'span 2'}},h(Inp,{value:form.observaciones,onChange:v=>sf('observaciones',v),ph:'Notas internas...'}))
+        ),
+        // ── Sección: Activo Fijo (capitalización + depreciación) ──
+        h('div',{style:{marginTop:14,padding:12,background:form.es_activo_fijo?'#EFF6FF':'#F8FAFC',borderRadius:8,border:'1px solid '+(form.es_activo_fijo?'#93C5FD':'#E2E8F0')}},
+          h('label',{style:{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}},
+            h('input',{type:'checkbox',checked:!!form.es_activo_fijo,onChange:function(e){sf('es_activo_fijo',e.target.checked);},style:{width:16,height:16}}),
+            h('span',{style:{fontSize:13,fontWeight:700,color:'#1E293B'}},'🏗 Esta compra es un ACTIVO FIJO'),
+            h('span',{style:{fontSize:11,color:'#64748B'}},'(se capitaliza y deprecia, no se imputa todo al costo del período)')
+          ),
+          form.es_activo_fijo&&h('div',{style:{marginTop:10,display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:10}},
+            h('div',null,
+              h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Descripción del activo'),
+              h('input',{value:form.af_descripcion||'',onChange:function(e){sf('af_descripcion',e.target.value);},placeholder:'Ej: Camioneta Toyota Hilux 2026',style:{width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}})
+            ),
+            h('div',null,
+              h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Vida útil (meses)'),
+              h('input',{type:'number',min:1,value:form.af_vida_util_meses||'',onChange:function(e){sf('af_vida_util_meses',e.target.value);},placeholder:'60',style:{width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}})
+            ),
+            h('div',null,
+              h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Valor residual $'),
+              h('input',{type:'number',min:0,value:form.af_valor_residual||'',onChange:function(e){sf('af_valor_residual',e.target.value);},placeholder:'0',style:{width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}})
+            ),
+            h('div',{style:{gridColumn:'1/-1',fontSize:11,color:'#1E40AF',background:'#DBEAFE',padding:8,borderRadius:5}},
+              (function(){
+                var val=neto;var res=parseFloat(form.af_valor_residual)||0;var vm=parseInt(form.af_vida_util_meses)||60;
+                var cuota=vm>0?Math.round((val-res)/vm):0;
+                return '💡 Vidas útiles SII referenciales: camionetas 7 años (84m), maquinaria pesada 9-15 años, computadores 6 años (72m). '+
+                  'Con estos datos, la depreciación mensual sería ≈ $'+new Intl.NumberFormat('es-CL').format(cuota)+' (sobre neto $'+new Intl.NumberFormat('es-CL').format(Math.round(val))+'). El activo se crea automáticamente al CERRAR la OC.';
+              })()
+            )
+          )
         ),
         // ── Sección: DTE asociado (opcional al editar, requerido para cerrar) ──
         h('div',{style:{marginTop:14,padding:12,background:'#F1F5F9',borderRadius:8,border:'1px solid #CBD5E1'}},
@@ -18115,7 +18317,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','terreno':'Terreno — Registros Diarios','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -18771,7 +18973,7 @@ function App(){
     'transporte':'transporte',
     'personal':'contratos','contratos':'contratos','vacaciones':'contratos','finiquitos':'contratos','cartas':'contratos',
     'mantenedores':'mantenedores',
-    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas',
+    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas','fin-activos':'finanzas',
     'rem-parametros':'remuneraciones','rem-periodos':'remuneraciones','rem-movimientos':'remuneraciones','rem-liquidaciones':'remuneraciones','rem-prestamos':'remuneraciones','rem-previred':'remuneraciones','rem-prevision':'remuneraciones'
   };
   function viewAllowed(v){
@@ -18961,7 +19163,7 @@ function App(){
         canSee('solicitudes')&&grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
         canSee('solicitudes')&&h('div',{className:'sb-sep'}),
         canSee('finanzas')&&grpHdr('fin','FINANZAS'),
-        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true),navI('fin-costos','📊','Informe de Costos',true)),
+        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true),navI('fin-costos','📊','Informe de Costos',true),navI('fin-activos','🏗','Activos Fijos',true)),
         canSee('finanzas')&&h('div',{className:'sb-sep'}),
         canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
         canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
@@ -19065,6 +19267,7 @@ function App(){
           view==='terreno'&&h(TerrenoView,{tok,m,user}),
           view==='fin-cheques'&&h(FinChequesView,{tok,m}),
           view==='fin-costos'&&h(InformeCostosView,{tok,m}),
+          view==='fin-activos'&&h(ActivosFijosView,{tok,m}),
           view==='trans-traslados'&&h(TransporteView,{tok,m}),
           view==='trans-planificacion'&&h(PlanificacionView,{tok,m}),
           view==='trans-tarifas'&&h(TransporteTarifas,{tok,m}),
