@@ -6438,6 +6438,232 @@ app.get('/api/rend/saldos', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// INFORME DE COSTOS (vista CEO)
+// Lógica contable: el COSTO se reconoce al CONSUMIR, no al comprar.
+//  - Consumo de inventario (salidas valorizadas a CPP)
+//  - Consumo de combustible (distribuciones valorizadas a CPP del estanque)
+//  - Compras directas a gasto (OC cerradas con líneas que NO ingresan a bodega)
+//  - El inventario en bodega permanece como ACTIVO (no es costo hasta su salida)
+// ═══════════════════════════════════════════════════════════════════════
+app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
+  try{
+    const desde=req.query.desde, hasta=req.query.hasta;
+    const empresaId=req.query.empresa_id||null;
+    if(!desde||!hasta) return res.status(400).json({error:'Indica desde y hasta'});
+
+    // Filtro de empresa para salidas: por la empresa del equipo
+    function empFiltroEquipo(alias){return empresaId?` AND ${alias}.empresa_id=${parseInt(empresaId)}`:'';}
+
+    // ── 1. CONSUMO DE INVENTARIO (salidas de bodega valorizadas) ──
+    const invSalidas=await pool.query(`
+      SELECT 
+        ca.categoria_id, ca.nombre AS categoria_nombre,
+        eq.empresa_id, emp.razon_social AS empresa_nombre,
+        me.faena_id, f.nombre AS faena_nombre,
+        me.equipo_id, eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
+        SUM(md.costo_total) AS costo,
+        TO_CHAR(me.fecha,'YYYY-MM') AS mes
+      FROM movimiento_encabezado me
+      JOIN movimiento_detalle md ON md.movimiento_id=me.movimiento_id
+      JOIN productos p ON md.producto_id=p.producto_id
+      LEFT JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id
+      LEFT JOIN categorias ca ON sc.categoria_id=ca.categoria_id
+      LEFT JOIN equipos eq ON me.equipo_id=eq.equipo_id
+      LEFT JOIN empresas emp ON eq.empresa_id=emp.empresa_id
+      LEFT JOIN faenas f ON me.faena_id=f.faena_id
+      WHERE me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'
+        AND me.fecha BETWEEN $1 AND $2
+        ${empresaId?'AND eq.empresa_id=$3':''}
+      GROUP BY ca.categoria_id, ca.nombre, eq.empresa_id, emp.razon_social, me.faena_id, f.nombre, me.equipo_id, eq.codigo, eq.nombre, TO_CHAR(me.fecha,'YYYY-MM')`,
+      empresaId?[desde,hasta,empresaId]:[desde,hasta]);
+
+    // ── 2. CONSUMO DE COMBUSTIBLE (distribuciones valorizadas) ──
+    const combDist=await pool.query(`
+      SELECT 
+        ct.nombre AS tipo_combustible,
+        m.empresa_id, emp.razon_social AS empresa_nombre,
+        m.faena_id, f.nombre AS faena_nombre,
+        m.equipo_id, eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
+        SUM(m.costo_total) AS costo, SUM(m.litros) AS litros,
+        TO_CHAR(m.fecha,'YYYY-MM') AS mes
+      FROM comb_movimientos m
+      LEFT JOIN comb_tipos ct ON m.tipo_id=ct.tipo_id
+      LEFT JOIN empresas emp ON m.empresa_id=emp.empresa_id
+      LEFT JOIN equipos eq ON m.equipo_id=eq.equipo_id
+      LEFT JOIN faenas f ON m.faena_id=f.faena_id
+      WHERE m.tipo_mov='DISTRIBUCION' AND m.estado='ACTIVO'
+        AND m.fecha BETWEEN $1 AND $2
+        ${empresaId?'AND m.empresa_id=$3':''}
+      GROUP BY ct.nombre, m.empresa_id, emp.razon_social, m.faena_id, f.nombre, m.equipo_id, eq.codigo, eq.nombre, TO_CHAR(m.fecha,'YYYY-MM')`,
+      empresaId?[desde,hasta,empresaId]:[desde,hasta]);
+
+    // ── 3. COMPRAS DIRECTAS A GASTO (OC cerradas, líneas no inventariables) ──
+    const comprasDirectas=await pool.query(`
+      SELECT 
+        ca.categoria_id, ca.nombre AS categoria_nombre,
+        oc.empresa_id, emp.razon_social AS empresa_nombre,
+        d.faena_id, f.nombre AS faena_nombre,
+        d.equipo_id, eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
+        oc.proveedor_id, pr.nombre AS proveedor_nombre,
+        SUM(d.total_linea) AS costo,
+        TO_CHAR(oc.fecha_emision,'YYYY-MM') AS mes
+      FROM ordenes_compra oc
+      JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
+      LEFT JOIN productos p ON d.producto_id=p.producto_id
+      LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,p.subcategoria_id)=sc.subcategoria_id
+      LEFT JOIN categorias ca ON sc.categoria_id=ca.categoria_id
+      LEFT JOIN empresas emp ON oc.empresa_id=emp.empresa_id
+      LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
+      LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
+      LEFT JOIN faenas f ON d.faena_id=f.faena_id
+      WHERE oc.estado='CERRADA' AND COALESCE(d.ingresa_bodega,false)=false
+        AND oc.fecha_emision BETWEEN $1 AND $2
+        ${empresaId?'AND oc.empresa_id=$3':''}
+      GROUP BY ca.categoria_id, ca.nombre, oc.empresa_id, emp.razon_social, d.faena_id, f.nombre, d.equipo_id, eq.codigo, eq.nombre, oc.proveedor_id, pr.nombre, TO_CHAR(oc.fecha_emision,'YYYY-MM')`,
+      empresaId?[desde,hasta,empresaId]:[desde,hasta]);
+
+    // ── 4. ACTIVO: valor de inventario actual en bodega (no es costo) ──
+    const invActual=await pool.query(`
+      SELECT COALESCE(SUM(sa.cantidad_disponible*sa.costo_promedio_actual),0) AS valor
+      FROM stock_actual sa WHERE sa.cantidad_disponible>0`);
+    // ── 5. ACTIVO: valor de combustible en estanques ──
+    const combActual=await pool.query(`
+      SELECT COALESCE(SUM(cs.litros_disponibles*cs.costo_promedio),0) AS valor
+      FROM comb_stock cs WHERE cs.litros_disponibles>0`);
+
+    // ── Procesar y combinar en JS ──
+    const num=function(x){return parseFloat(x)||0;};
+    // Acumuladores
+    var porCategoria={}, porEmpresa={}, porFaena={}, porEquipo={}, porProveedor={}, porMes={};
+    function acum(obj,key,nombre,costo,idKey){
+      if(!obj[key]) obj[key]={nombre:nombre,costo:0,id_key:idKey!==undefined?idKey:null};
+      obj[key].costo+=costo;
+    }
+    var totInventario=0, totCombustible=0, totDirectas=0;
+
+    // Inventario
+    invSalidas.rows.forEach(function(r){
+      var c=num(r.costo); totInventario+=c;
+      acum(porCategoria,'cat_'+(r.categoria_id||'sc'),r.categoria_nombre||'Sin categoría',c);
+      acum(porEmpresa,'emp_'+(r.empresa_id||'sn'),r.empresa_nombre||'Sin empresa',c);
+      if(r.faena_id) acum(porFaena,'fae_'+r.faena_id,r.faena_nombre,c,r.faena_id);
+      if(r.equipo_id) acum(porEquipo,'eq_'+r.equipo_id,(r.equipo_codigo||'')+' '+(r.equipo_nombre||''),c,r.equipo_id);
+      acum(porMes,r.mes,r.mes,c);
+    });
+    // Combustible — categoría fija "Combustible"
+    combDist.rows.forEach(function(r){
+      var c=num(r.costo); totCombustible+=c;
+      acum(porCategoria,'combustible','Combustible',c);
+      acum(porEmpresa,'emp_'+(r.empresa_id||'sn'),r.empresa_nombre||'Sin empresa',c);
+      if(r.faena_id) acum(porFaena,'fae_'+r.faena_id,r.faena_nombre,c,r.faena_id);
+      if(r.equipo_id) acum(porEquipo,'eq_'+r.equipo_id,(r.equipo_codigo||'')+' '+(r.equipo_nombre||''),c,r.equipo_id);
+      acum(porMes,r.mes,r.mes,c);
+    });
+    // Compras directas
+    comprasDirectas.rows.forEach(function(r){
+      var c=num(r.costo); totDirectas+=c;
+      acum(porCategoria,'cat_'+(r.categoria_id||'serv'),r.categoria_nombre||'Servicios / Gasto directo',c);
+      acum(porEmpresa,'emp_'+(r.empresa_id||'sn'),r.empresa_nombre||'Sin empresa',c);
+      if(r.faena_id) acum(porFaena,'fae_'+r.faena_id,r.faena_nombre,c,r.faena_id);
+      if(r.equipo_id) acum(porEquipo,'eq_'+r.equipo_id,(r.equipo_codigo||'')+' '+(r.equipo_nombre||''),c,r.equipo_id);
+      if(r.proveedor_id) acum(porProveedor,'prov_'+r.proveedor_id,r.proveedor_nombre,c,r.proveedor_id);
+      acum(porMes,r.mes,r.mes,c);
+    });
+
+    var costoTotal=totInventario+totCombustible+totDirectas;
+    function ordenar(obj){return Object.values(obj).map(function(x){return{nombre:x.nombre,costo:Math.round(x.costo),id_key:x.id_key};}).filter(function(x){return x.costo!==0;}).sort(function(a,b){return b.costo-a.costo;});}
+
+    res.json({
+      periodo:{desde,hasta},
+      resumen:{
+        costo_total:Math.round(costoTotal),
+        consumo_combustible:Math.round(totCombustible),
+        consumo_inventario:Math.round(totInventario),
+        compras_directas:Math.round(totDirectas),
+        valor_inventario_actual:Math.round(num(invActual.rows[0].valor)),
+        valor_combustible_actual:Math.round(num(combActual.rows[0].valor))
+      },
+      por_categoria:ordenar(porCategoria),
+      por_empresa:ordenar(porEmpresa),
+      por_faena:ordenar(porFaena),
+      por_equipo:ordenar(porEquipo),
+      por_proveedor:ordenar(porProveedor),
+      por_mes:Object.values(porMes).map(function(x){return{mes:x.nombre,costo:Math.round(x.costo)};}).sort(function(a,b){return a.mes<b.mes?-1:1;})
+    });
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// Detalle drill-down: movimientos que componen el costo de una dimensión
+app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
+  try{
+    const{desde,hasta,dimension,valor,empresa_id}=req.query;
+    if(!desde||!hasta||!dimension||valor===undefined) return res.status(400).json({error:'Faltan parámetros'});
+    // Filtro por la dimensión solicitada
+    var filtroInv='', filtroComb='', filtroDir='', extraVals=[];
+    var idVal=valor;
+    // dimension: equipo | faena | empresa | categoria | proveedor
+    var rows=[];
+
+    // Helper: arma los 3 orígenes y los une
+    // 1. Inventario
+    var pInv=[desde,hasta], wInv=["me.tipo_movimiento='SALIDA'","me.estado='ACTIVO'","me.fecha BETWEEN $1 AND $2"];
+    var pComb=[desde,hasta], wComb=["m.tipo_mov='DISTRIBUCION'","m.estado='ACTIVO'","m.fecha BETWEEN $1 AND $2"];
+    var pDir=[desde,hasta], wDir=["oc.estado='CERRADA'","COALESCE(d.ingresa_bodega,false)=false","oc.fecha_emision BETWEEN $1 AND $2"];
+
+    if(dimension==='equipo'){
+      wInv.push('me.equipo_id=$3');pInv.push(idVal);
+      wComb.push('m.equipo_id=$3');pComb.push(idVal);
+      wDir.push('d.equipo_id=$3');pDir.push(idVal);
+    }else if(dimension==='faena'){
+      wInv.push('me.faena_id=$3');pInv.push(idVal);
+      wComb.push('m.faena_id=$3');pComb.push(idVal);
+      wDir.push('d.faena_id=$3');pDir.push(idVal);
+    }else if(dimension==='proveedor'){
+      // Solo compras directas tienen proveedor
+      wDir.push('oc.proveedor_id=$3');pDir.push(idVal);
+      wInv.push('1=0'); wComb.push('1=0');
+    }else if(dimension==='combustible'){
+      // Solo combustible
+      wInv.push('1=0'); wDir.push('1=0');
+    }
+
+    const inv=await pool.query(`
+      SELECT me.fecha, 'Inventario' AS origen, p.codigo AS codigo, p.nombre AS detalle,
+             eq.codigo AS equipo, f.nombre AS faena, md.cantidad, md.costo_unitario, md.costo_total AS costo,
+             me.numero_documento AS documento
+      FROM movimiento_encabezado me
+      JOIN movimiento_detalle md ON md.movimiento_id=me.movimiento_id
+      JOIN productos p ON md.producto_id=p.producto_id
+      LEFT JOIN equipos eq ON me.equipo_id=eq.equipo_id
+      LEFT JOIN faenas f ON me.faena_id=f.faena_id
+      WHERE ${wInv.join(' AND ')} ORDER BY me.fecha DESC LIMIT 500`, pInv);
+    const comb=await pool.query(`
+      SELECT m.fecha, 'Combustible' AS origen, ct.nombre AS codigo, ct.nombre AS detalle,
+             eq.codigo AS equipo, f.nombre AS faena, m.litros AS cantidad, m.precio_unitario AS costo_unitario, m.costo_total AS costo,
+             m.numero_documento AS documento
+      FROM comb_movimientos m
+      LEFT JOIN comb_tipos ct ON m.tipo_id=ct.tipo_id
+      LEFT JOIN equipos eq ON m.equipo_id=eq.equipo_id
+      LEFT JOIN faenas f ON m.faena_id=f.faena_id
+      WHERE ${wComb.join(' AND ')} ORDER BY m.fecha DESC LIMIT 500`, pComb);
+    const dir=await pool.query(`
+      SELECT oc.fecha_emision AS fecha, 'Compra directa' AS origen, oc.numero_oc AS codigo,
+             COALESCE(p.nombre,d.descripcion) AS detalle,
+             eq.codigo AS equipo, f.nombre AS faena, d.cantidad, d.precio_unitario AS costo_unitario, d.total_linea AS costo,
+             oc.numero_documento AS documento
+      FROM ordenes_compra oc
+      JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
+      LEFT JOIN productos p ON d.producto_id=p.producto_id
+      LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
+      LEFT JOIN faenas f ON d.faena_id=f.faena_id
+      WHERE ${wDir.join(' AND ')} ORDER BY oc.fecha_emision DESC LIMIT 500`, pDir);
+
+    rows=inv.rows.concat(comb.rows).concat(dir.rows).sort(function(a,b){return new Date(b.fecha)-new Date(a.fecha);});
+    res.json({rows:rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 // ══ FINANZAS — CUENTAS BANCARIAS Y CHEQUES ══
 app.get('/api/fin/cuentas', auth, async(req,res)=>{
   try{res.json((await pool.query('SELECT c.*,e.razon_social AS empresa_nombre FROM fin_cuentas_bancarias c JOIN empresas e ON c.empresa_id=e.empresa_id ORDER BY e.razon_social,c.banco')).rows);}catch(e){res.status(500).json({error:e.message});}
