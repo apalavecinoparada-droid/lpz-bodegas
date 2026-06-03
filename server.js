@@ -6798,7 +6798,8 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
       WITH mismatches AS (
         SELECT 'Combustible' AS origen, m.fecha::text AS fecha, eq.codigo AS equipo,
                f.nombre AS faena, m.empresa_id AS emp_mov_id, f.empresa_id AS emp_fae_id,
-               m.costo_total AS costo, ct.nombre AS detalle
+               m.costo_total AS costo, ct.nombre AS detalle,
+               NULL::varchar AS oc_numero, m.numero_documento AS oc_doc
         FROM comb_movimientos m
         JOIN faenas f ON m.faena_id=f.faena_id
         LEFT JOIN equipos eq ON m.equipo_id=eq.equipo_id
@@ -6808,7 +6809,8 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
           AND m.empresa_id<>f.empresa_id ${empComb}
         UNION ALL
         SELECT 'Inventario', me.fecha::text, eq.codigo, f.nombre,
-               eq.empresa_id, f.empresa_id, md.costo_total, p.nombre
+               eq.empresa_id, f.empresa_id, md.costo_total, p.nombre,
+               NULL::varchar, NULL::varchar
         FROM movimiento_encabezado me
         JOIN movimiento_detalle md ON md.movimiento_id=me.movimiento_id
         JOIN productos p ON md.producto_id=p.producto_id
@@ -6819,7 +6821,8 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
           AND eq.empresa_id<>f.empresa_id ${empInv}
         UNION ALL
         SELECT 'Compra directa', oc.fecha_emision::text, eq.codigo, f.nombre,
-               oc.empresa_id, f.empresa_id, d.total_linea, COALESCE(p.nombre,d.descripcion)
+               oc.empresa_id, f.empresa_id, d.total_linea, COALESCE(p.nombre,d.descripcion),
+               oc.numero_oc, oc.numero_documento
         FROM ordenes_compra oc
         JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
         JOIN faenas f ON d.faena_id=f.faena_id
@@ -6831,6 +6834,7 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
           AND oc.empresa_id<>f.empresa_id ${empDir}
       )
       SELECT mm.origen, mm.fecha, mm.equipo, mm.faena, mm.costo, mm.detalle,
+             mm.oc_numero, mm.oc_doc,
              em.razon_social AS empresa_mov, ef.razon_social AS empresa_faena
       FROM mismatches mm
       LEFT JOIN empresas em ON mm.emp_mov_id=em.empresa_id
