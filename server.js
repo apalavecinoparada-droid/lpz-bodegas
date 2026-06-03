@@ -565,6 +565,16 @@ async function setupMantenciones(q){
     observacion TEXT
   )`);
 
+  // ── Tabla puente: una OT puede cerrar varios planes (mantenciones múltiplo, ej: 250h dentro de 500h) ──
+  await q(`CREATE TABLE IF NOT EXISTS mant_ot_planes (
+    id SERIAL PRIMARY KEY,
+    ot_id INT NOT NULL REFERENCES mant_ot(ot_id) ON DELETE CASCADE,
+    plan_id INT NOT NULL REFERENCES mant_planes(plan_id) ON DELETE CASCADE,
+    UNIQUE(ot_id,plan_id)
+  )`);
+  try{await q('CREATE INDEX IF NOT EXISTS idx_mant_ot_planes_ot ON mant_ot_planes(ot_id)');}catch(e){}
+  try{await q('CREATE INDEX IF NOT EXISTS idx_mant_ot_planes_plan ON mant_ot_planes(plan_id)');}catch(e){}
+
   // ── ALTER tareas OT: agregar sistema_id y tarea_std_id ──
   try{await q('ALTER TABLE mant_ot_tareas ADD COLUMN IF NOT EXISTS sistema_id INT REFERENCES mant_sistemas(sistema_id)');}catch(e){}
   try{await q('ALTER TABLE mant_ot_tareas ADD COLUMN IF NOT EXISTS tarea_std_id INT REFERENCES mant_tareas_std(tarea_std_id)');}catch(e){}
@@ -4613,11 +4623,18 @@ app.get('/api/mant/vencimientos', auth, async(req,res)=>{
     if(empresa_id){vals.push(empresa_id);where.push(`p.empresa_id=$${vals.length}`);}
 
     const sql=`
-      WITH ult_ot AS (
-        SELECT plan_id, MAX(horometro_servicio) AS ult_hrs_ot, MAX(kilometraje_servicio) AS ult_km_ot, MAX(fecha_termino) AS ult_fecha_ot
-        FROM mant_ot
-        WHERE estado IN ('cerrada','completada') AND plan_id IS NOT NULL
-        GROUP BY plan_id
+      WITH ot_plan_map AS (
+        -- Una OT cierra su plan_id directo Y todos los planes vinculados por la tabla puente
+        SELECT ot_id, plan_id FROM mant_ot WHERE plan_id IS NOT NULL
+        UNION
+        SELECT ot_id, plan_id FROM mant_ot_planes
+      ),
+      ult_ot AS (
+        SELECT mp.plan_id, MAX(o.horometro_servicio) AS ult_hrs_ot, MAX(o.kilometraje_servicio) AS ult_km_ot, MAX(o.fecha_termino) AS ult_fecha_ot
+        FROM ot_plan_map mp
+        JOIN mant_ot o ON o.ot_id=mp.ot_id
+        WHERE o.estado IN ('cerrada','completada')
+        GROUP BY mp.plan_id
       ),
       ult_comb AS (
         -- Último horómetro registrado en distribución de combustible (fuente confiable según política operativa)
@@ -4642,7 +4659,7 @@ app.get('/api/mant/vencimientos', auth, async(req,res)=>{
         GREATEST(COALESCE(u.ult_hrs_ot,0), COALESCE(p.ultimo_servicio_hrs,0)) AS ultimo_hrs,
         GREATEST(COALESCE(u.ult_km_ot,0), COALESCE(p.ultimo_servicio_km,0)) AS ultimo_km,
         (SELECT COUNT(*) FROM mant_plan_tareas pt WHERE pt.plan_id=p.plan_id) AS num_tareas,
-        (SELECT COUNT(*) FROM mant_ot ot WHERE ot.plan_id=p.plan_id AND ot.estado IN ('abierta','en_ejecucion','programada')) AS ots_abiertas
+        (SELECT COUNT(*) FROM mant_ot ot WHERE ot.estado IN ('abierta','en_ejecucion','programada') AND (ot.plan_id=p.plan_id OR ot.ot_id IN (SELECT op.ot_id FROM mant_ot_planes op WHERE op.plan_id=p.plan_id))) AS ots_abiertas
       FROM mant_planes p
       LEFT JOIN equipos eq ON p.equipo_id=eq.equipo_id
       LEFT JOIN empresas emp ON p.empresa_id=emp.empresa_id
@@ -5473,6 +5490,120 @@ app.post('/api/mant/ot', auth, async(req,res)=>{
     res.status(201).json(ot);
   }catch(e){res.status(400).json({error:e.message});}
 });
+
+// ═══════════════════════════════════════════════════════════════
+// GENERAR OT DESDE PLAN(ES) DE VENCIMIENTO
+// ───────────────────────────────────────────────────────────────
+// Crea UNA sola OT que puede cerrar varias mantenciones programadas
+// del mismo equipo (ej: la de 250h queda incluida al hacer la de 500h).
+// El plan principal queda en mant_ot.plan_id; todos los planes cubiertos
+// se registran en la tabla puente mant_ot_planes. Las tareas de todos
+// los planes se consolidan (deduplicadas) en el checklist de la OT.
+// Si estado='cerrada', ejecuta el cierre (horómetro equipo, lectura,
+// programación) para TODOS los planes cubiertos.
+// Body: { plan_id, plan_ids:[adicionales], fecha_apertura, fecha_programada,
+//         horometro_servicio, kilometraje_servicio, estado, prioridad,
+//         responsable, mecanico_asignado, taller_tipo, taller_nombre, observaciones }
+// ═══════════════════════════════════════════════════════════════
+app.post('/api/mant/ot/desde-plan', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const{plan_id,plan_ids,fecha_apertura,fecha_programada,horometro_servicio,kilometraje_servicio,estado,prioridad,responsable,mecanico_asignado,taller_tipo,taller_nombre,observaciones}=req.body;
+    if(!plan_id) return res.status(400).json({error:'plan_id (plan principal) requerido'});
+    const est=estado||'abierta';
+    if(est==='cerrada' && !horometro_servicio && !kilometraje_servicio) return res.status(400).json({error:'Para crear la OT ya cerrada debes indicar el horómetro (o kilometraje) del servicio'});
+
+    // Lista de planes cubiertos (principal + adicionales, únicos)
+    const adic=Array.isArray(plan_ids)?plan_ids:[];
+    const cubiertos=[...new Set([Number(plan_id),...adic.map(Number)].filter(Boolean))];
+
+    // Cargar planes y validar mismo equipo
+    const planesQ=await client.query('SELECT * FROM mant_planes WHERE plan_id=ANY($1::int[])',[cubiertos]);
+    if(!planesQ.rows.length) return res.status(404).json({error:'Plan no encontrado'});
+    const principal=planesQ.rows.find(p=>p.plan_id===Number(plan_id));
+    if(!principal) return res.status(404).json({error:'Plan principal no encontrado'});
+    const equipoId=principal.equipo_id;
+    if(planesQ.rows.some(p=>p.equipo_id!==equipoId)) return res.status(400).json({error:'Todos los planes deben pertenecer al mismo equipo'});
+
+    await client.query('BEGIN');
+
+    // faena del equipo
+    const eqQ=await client.query('SELECT faena_id,horometro_actual,kilometraje_actual FROM equipos WHERE equipo_id=$1',[equipoId]);
+    const faenaId=eqQ.rows[0]?.faena_id||null;
+
+    // Número OT
+    const yr=new Date().getFullYear();
+    const cnt=await client.query("SELECT COUNT(*)+1 AS n FROM mant_ot WHERE EXTRACT(YEAR FROM creado_en)=$1",[yr]);
+    const num=`OT-${yr}-${String(cnt.rows[0].n).padStart(4,'0')}`;
+
+    // Nota de consolidación
+    const planesOrdenados=planesQ.rows.slice().sort((a,b)=>(parseFloat(a.intervalo_horas)||0)-(parseFloat(b.intervalo_horas)||0));
+    const etiquetas=planesOrdenados.map(p=>p.intervalo_horas?(parseFloat(p.intervalo_horas)+'h'):(p.intervalo_km?(p.intervalo_km+'km'):p.nombre));
+    const notaConsolida=cubiertos.length>1?('Mantención consolidada — cubre: '+etiquetas.join(' + ')):null;
+    const obsFinal=[observaciones,notaConsolida].filter(Boolean).join(' | ')||null;
+
+    const fApertura=fecha_apertura||new Date().toISOString().split('T')[0];
+    const fInicio=est==='cerrada'||est==='en_ejecucion'?new Date().toISOString():null;
+    const fTermino=est==='cerrada'?new Date().toISOString():null;
+
+    const r=await client.query(`INSERT INTO mant_ot(numero_ot,empresa_id,equipo_id,faena_id,plan_id,tipo_mantencion,origen,fecha_apertura,fecha_programada,fecha_inicio,fecha_termino,horometro_servicio,kilometraje_servicio,estado,prioridad,sistema,responsable,mecanico_asignado,taller_tipo,taller_nombre,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
+      [num,principal.empresa_id||null,equipoId,faenaId,principal.plan_id,'preventivo','plan',fApertura,fecha_programada||null,fInicio,fTermino,horometro_servicio||null,kilometraje_servicio||null,est,prioridad||principal.prioridad||'normal',principal.sistema||null,responsable||null,mecanico_asignado||null,taller_tipo||'interno',taller_nombre||null,obsFinal,req.user.email]);
+    const ot=r.rows[0];
+
+    // Tabla puente: registrar TODOS los planes cubiertos
+    for(const pid of cubiertos){
+      await client.query('INSERT INTO mant_ot_planes(ot_id,plan_id) VALUES($1,$2) ON CONFLICT(ot_id,plan_id) DO NOTHING',[ot.ot_id,pid]);
+    }
+
+    // Consolidar tareas de todos los planes (dedup por descripción normalizada)
+    const tareasQ=await client.query(
+      `SELECT pt.sistema,pt.descripcion,pt.tipo,pt.orden,p.intervalo_horas
+       FROM mant_plan_tareas pt JOIN mant_planes p ON pt.plan_id=p.plan_id
+       WHERE pt.plan_id=ANY($1::int[]) AND pt.activo=true
+       ORDER BY p.intervalo_horas NULLS LAST, pt.orden, pt.tarea_plan_id`,[cubiertos]);
+    const vistas=new Set();
+    let orden=0;
+    for(const t of tareasQ.rows){
+      const key=String(t.descripcion||'').trim().toLowerCase();
+      if(!key||vistas.has(key)) continue;
+      vistas.add(key);
+      orden++;
+      await client.query('INSERT INTO mant_ot_tareas(ot_id,orden,descripcion,sistema,tipo,desde_plan) VALUES($1,$2,$3,$4,$5,true)',
+        [ot.ot_id,orden,t.descripcion,t.sistema||null,t.tipo||'tarea']);
+    }
+    // Fallback: si ningún plan tiene tareas detalladas, usar checklist_items del principal
+    if(orden===0 && principal.checklist_items && Array.isArray(principal.checklist_items)){
+      for(let i=0;i<principal.checklist_items.length;i++){
+        const it=principal.checklist_items[i];
+        await client.query('INSERT INTO mant_ot_tareas(ot_id,orden,descripcion,desde_plan) VALUES($1,$2,$3,true)',[ot.ot_id,i+1,it.descripcion||it]);
+      }
+    }
+
+    // Si se crea ya CERRADA: ejecutar efectos de cierre para todos los planes cubiertos
+    if(est==='cerrada'){
+      if(horometro_servicio) await client.query('UPDATE equipos SET horometro_actual=$1 WHERE equipo_id=$2',[horometro_servicio,equipoId]);
+      if(kilometraje_servicio) await client.query('UPDATE equipos SET kilometraje_actual=$1 WHERE equipo_id=$2',[kilometraje_servicio,equipoId]);
+      await client.query("UPDATE equipos SET estado_operativo='operativo' WHERE equipo_id=$1 AND estado_operativo='detenido'",[equipoId]);
+      await client.query('INSERT INTO mant_lecturas(equipo_id,fecha,horometro,kilometraje,origen,ot_id,usuario) VALUES($1,$2,$3,$4,$5,$6,$7)',
+        [equipoId,new Date().toISOString().split('T')[0],horometro_servicio||null,kilometraje_servicio||null,'ot',ot.ot_id,req.user.email]);
+      for(const pl of planesQ.rows){
+        const proxFecha=pl.intervalo_dias?new Date(Date.now()+pl.intervalo_dias*86400000).toISOString().split('T')[0]:null;
+        const proxHoras=pl.intervalo_horas&&horometro_servicio?parseFloat(horometro_servicio)+parseFloat(pl.intervalo_horas):null;
+        const proxKm=pl.intervalo_km&&kilometraje_servicio?parseInt(kilometraje_servicio)+parseInt(pl.intervalo_km):null;
+        await client.query(`INSERT INTO mant_programacion(equipo_id,plan_id,empresa_id,proxima_fecha,proxima_horas,proxima_km,ultima_ejecucion_fecha,ultima_ejecucion_horas,ultima_ejecucion_km,ultima_ot_id,estado) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'vigente') ON CONFLICT(equipo_id,plan_id) DO UPDATE SET proxima_fecha=$4,proxima_horas=$5,proxima_km=$6,ultima_ejecucion_fecha=$7,ultima_ejecucion_horas=$8,ultima_ejecucion_km=$9,ultima_ot_id=$10,estado='vigente',actualizado_en=NOW()`,
+          [equipoId,pl.plan_id,ot.empresa_id,proxFecha,proxHoras,proxKm,new Date().toISOString().split('T')[0],horometro_servicio||null,kilometraje_servicio||null,ot.ot_id]);
+      }
+    } else if(est==='en_ejecucion'||est==='abierta'){
+      await client.query("UPDATE equipos SET estado_operativo='detenido' WHERE equipo_id=$1",[equipoId]);
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json(Object.assign({},ot,{planes_cubiertos:cubiertos.length,tareas_cargadas:orden}));
+  }catch(e){
+    try{await client.query('ROLLBACK');}catch(_){}
+    res.status(400).json({error:e.message});
+  }finally{client.release();}
+});
 app.put('/api/mant/ot/:id', auth, async(req,res)=>{
   try{
     const{estado,fecha_inicio,fecha_termino,horometro_servicio,kilometraje_servicio,diagnostico,causa,trabajo_realizado,observaciones,responsable,mecanico_asignado,taller_tipo,taller_nombre,tiempo_detenido_hrs,costo_mano_obra_interna,costo_mano_obra_externa,costo_servicios,costo_traslado,costo_otros,prioridad,sistema,vehiculo_traslado,distancia_km,costo_combustible_traslado}=req.body;
@@ -5535,17 +5666,18 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
       await pool.query("UPDATE equipos SET estado_operativo='operativo' WHERE equipo_id=$1 AND estado_operativo='detenido'",[ot.equipo_id]);
       // Registrar lectura
       await pool.query('INSERT INTO mant_lecturas(equipo_id,fecha,horometro,kilometraje,origen,ot_id,usuario) VALUES($1,$2,$3,$4,$5,$6,$7)',[ot.equipo_id,new Date().toISOString().split('T')[0],horometro_servicio||null,kilometraje_servicio||null,'ot',ot.ot_id,req.user.email]);
-      // Recalcular programación si viene de plan
-      if(ot.plan_id){
-        const plan=await pool.query('SELECT * FROM mant_planes WHERE plan_id=$1',[ot.plan_id]);
-        if(plan.rows.length){
-          const p=plan.rows[0];
-          const proxFecha=p.intervalo_dias?new Date(Date.now()+p.intervalo_dias*86400000).toISOString().split('T')[0]:null;
-          const proxHoras=p.intervalo_horas&&horometro_servicio?parseFloat(horometro_servicio)+parseFloat(p.intervalo_horas):null;
-          const proxKm=p.intervalo_km&&kilometraje_servicio?parseInt(kilometraje_servicio)+parseInt(p.intervalo_km):null;
-          await pool.query(`INSERT INTO mant_programacion(equipo_id,plan_id,empresa_id,proxima_fecha,proxima_horas,proxima_km,ultima_ejecucion_fecha,ultima_ejecucion_horas,ultima_ejecucion_km,ultima_ot_id,estado) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'vigente') ON CONFLICT(equipo_id,plan_id) DO UPDATE SET proxima_fecha=$4,proxima_horas=$5,proxima_km=$6,ultima_ejecucion_fecha=$7,ultima_ejecucion_horas=$8,ultima_ejecucion_km=$9,ultima_ot_id=$10,estado='vigente',actualizado_en=NOW()`,
-            [ot.equipo_id,ot.plan_id,ot.empresa_id,proxFecha,proxHoras,proxKm,new Date().toISOString().split('T')[0],horometro_servicio||null,kilometraje_servicio||null,ot.ot_id]);
-        }
+      // Recalcular programación para TODOS los planes cubiertos (plan_id directo + tabla puente)
+      const planesCubQ=await pool.query(
+        `SELECT DISTINCT p.* FROM mant_planes p
+         WHERE p.plan_id=$1
+            OR p.plan_id IN (SELECT plan_id FROM mant_ot_planes WHERE ot_id=$2)`,
+        [ot.plan_id||0,ot.ot_id]);
+      for(const p of planesCubQ.rows){
+        const proxFecha=p.intervalo_dias?new Date(Date.now()+p.intervalo_dias*86400000).toISOString().split('T')[0]:null;
+        const proxHoras=p.intervalo_horas&&horometro_servicio?parseFloat(horometro_servicio)+parseFloat(p.intervalo_horas):null;
+        const proxKm=p.intervalo_km&&kilometraje_servicio?parseInt(kilometraje_servicio)+parseInt(p.intervalo_km):null;
+        await pool.query(`INSERT INTO mant_programacion(equipo_id,plan_id,empresa_id,proxima_fecha,proxima_horas,proxima_km,ultima_ejecucion_fecha,ultima_ejecucion_horas,ultima_ejecucion_km,ultima_ot_id,estado) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'vigente') ON CONFLICT(equipo_id,plan_id) DO UPDATE SET proxima_fecha=$4,proxima_horas=$5,proxima_km=$6,ultima_ejecucion_fecha=$7,ultima_ejecucion_horas=$8,ultima_ejecucion_km=$9,ultima_ot_id=$10,estado='vigente',actualizado_en=NOW()`,
+          [ot.equipo_id,p.plan_id,ot.empresa_id,proxFecha,proxHoras,proxKm,new Date().toISOString().split('T')[0],horometro_servicio||null,kilometraje_servicio||null,ot.ot_id]);
       }
     }
     // Re-fetch con joins para devolver datos completos
