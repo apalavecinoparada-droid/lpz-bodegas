@@ -3997,6 +3997,82 @@ app.get('/api/comb/diagnostico-negativo/:estanque_id', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
+// ═══════════════════════════════════════════════════════════════════════
+// RENDIMIENTOS DE COMBUSTIBLE por equipo, agrupados por faena.
+// Máquinas: L/h (litros consumidos / horas trabajadas en terreno).
+// Vehículos: km/L (km recorridos / litros), km desde el span de kilometraje
+// registrado en las distribuciones de combustible del período.
+// ═══════════════════════════════════════════════════════════════════════
+app.get('/api/comb/rendimientos', auth, async(req,res)=>{
+  try{
+    const{desde,hasta,empresa_id}=req.query;
+    if(!desde||!hasta) return res.status(400).json({error:'Rango de fechas requerido (desde, hasta)'});
+    const vals=[desde,hasta];
+    let wEq='';
+    if(empresa_id){vals.push(empresa_id);wEq=' WHERE eq.empresa_id=$3';}
+    const r=await pool.query(`
+      WITH litros AS (
+        SELECT equipo_id,
+               SUM(litros) AS litros, SUM(costo_total) AS costo, COUNT(*) AS n_dist,
+               MAX(kilometraje) FILTER (WHERE kilometraje IS NOT NULL AND kilometraje>0) AS km_max,
+               MIN(kilometraje) FILTER (WHERE kilometraje IS NOT NULL AND kilometraje>0) AS km_min,
+               MAX(horometro)  FILTER (WHERE horometro  IS NOT NULL AND horometro>0)  AS h_max,
+               MIN(horometro)  FILTER (WHERE horometro  IS NOT NULL AND horometro>0)  AS h_min
+        FROM comb_movimientos
+        WHERE tipo_mov='DISTRIBUCION' AND estado='ACTIVO' AND fecha BETWEEN $1 AND $2 AND equipo_id IS NOT NULL
+        GROUP BY equipo_id
+      ),
+      horas AS (
+        SELECT equipo_id, COALESCE(SUM(horas_trabajadas),0) AS horas
+        FROM terreno_registros WHERE fecha BETWEEN $1 AND $2 GROUP BY equipo_id
+      )
+      SELECT eq.equipo_id, eq.codigo, eq.nombre, eq.tipo, eq.faena_id,
+             f.nombre AS faena_nombre, emp.razon_social AS empresa_nombre,
+             COALESCE(l.litros,0) AS litros, COALESCE(l.costo,0) AS costo, COALESCE(l.n_dist,0) AS n_dist,
+             l.km_max, l.km_min, l.h_max, l.h_min,
+             COALESCE(h.horas,0) AS horas_terreno
+      FROM litros l
+      JOIN equipos eq ON l.equipo_id=eq.equipo_id
+      LEFT JOIN horas h ON h.equipo_id=eq.equipo_id
+      LEFT JOIN faenas f ON eq.faena_id=f.faena_id
+      LEFT JOIN empresas emp ON eq.empresa_id=emp.empresa_id
+      ${wEq}
+      ORDER BY f.nombre NULLS LAST, eq.codigo`, vals);
+
+    const VEH=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'];
+    const rows=r.rows.map(function(x){
+      const esVeh=VEH.indexOf(x.tipo)>=0;
+      const litros=parseFloat(x.litros)||0;
+      const horasTerreno=parseFloat(x.horas_terreno)||0;
+      // span de horómetro/km a partir de las distribuciones (fallback / vehículos)
+      const hSpan=(x.h_max!=null&&x.h_min!=null&&x.h_max>x.h_min)?(parseFloat(x.h_max)-parseFloat(x.h_min)):null;
+      const kmSpan=(x.km_max!=null&&x.km_min!=null&&x.km_max>x.km_min)?(parseFloat(x.km_max)-parseFloat(x.km_min)):null;
+      var horas=horasTerreno>0?horasTerreno:(hSpan||0);
+      var horas_origen=horasTerreno>0?'terreno':(hSpan?'horómetro distrib.':null);
+      var rendimiento=null, unidad=null, secundario=null;
+      if(esVeh){
+        unidad='km/L';
+        if(kmSpan&&litros>0)rendimiento=kmSpan/litros;
+        if(kmSpan&&kmSpan>0)secundario=litros/kmSpan*100; // L/100km
+      }else{
+        unidad='L/h';
+        if(horas>0)rendimiento=litros/horas;
+      }
+      return{
+        equipo_id:x.equipo_id, codigo:x.codigo, nombre:x.nombre, tipo:x.tipo,
+        faena_id:x.faena_id, faena_nombre:x.faena_nombre||'Sin faena', empresa_nombre:x.empresa_nombre||'',
+        es_vehiculo:esVeh, litros:Math.round(litros*10)/10, costo:Math.round(parseFloat(x.costo)||0),
+        n_dist:parseInt(x.n_dist)||0,
+        horas:Math.round(horas*10)/10, horas_origen:horas_origen,
+        km:kmSpan!=null?Math.round(kmSpan):null,
+        rendimiento:rendimiento!=null?Math.round(rendimiento*100)/100:null, rendimiento_unidad:unidad,
+        l_por_100km:secundario!=null?Math.round(secundario*100)/100:null
+      };
+    });
+    res.json({desde,hasta,rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 app.get('/api/comb/kardex-est', auth, async(req,res)=>{
   try{
     const{estanque_id,tipo_id,desde,hasta}=req.query;
