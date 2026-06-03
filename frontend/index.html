@@ -10683,6 +10683,7 @@ function MantVencimientos(p){
         }},
         {lbl:'',c:true,render:function(r){return h('div',{style:{display:'flex',gap:3}},
           h('button',{onClick:function(){setShowSemilla(r);},title:'Editar último servicio manualmente',style:{padding:'3px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'✏'),
+          h('button',{onClick:function(){api('/mant/planes/'+r.plan_id+'/tareas','GET',null,p.tok).then(function(ts){imprimirChecklistMant(r,Array.isArray(ts)?ts:[]);}).catch(function(e){alert('No se pudo cargar el checklist: '+e.message);});},title:'Imprimir checklist para terreno',style:{padding:'3px 6px',background:'#fff',color:'#475569',border:'1px solid #CBD5E1',borderRadius:3,cursor:'pointer',fontSize:10}},'🖨'),
           parseInt(r.ots_abiertas||0)===0&&h('button',{onClick:function(){setShowGenOT(r);},title:r.estado_vencimiento==='vigente'||r.estado_vencimiento==='sin_referencia'?'Crear OT anticipada (aún faltan horas, pero puede ejecutarse antes)':'Crear OT desde este plan (puede cerrar varias mantenciones a la vez)',style:{padding:'3px 6px',background:r.estado_vencimiento==='vencida'||r.estado_vencimiento==='proxima'?'#10B981':'#0EA5E9',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},r.estado_vencimiento==='vencida'||r.estado_vencimiento==='proxima'?'+ OT':'+ OT ⏱')
         );}}
       ],rows:vencsFilt,empty:'Sin planes programados. Importa la pauta desde el módulo Plan Maestro.'})
@@ -11207,6 +11208,77 @@ function MantPlanImportModal(p){
 // ═══════════════════════════════════════════════════════════════════════
 // DETALLE DE TAREAS DE UN PLAN (drill-in con edición)
 // ═══════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// Checklist imprimible de un plan de mantención (para terreno, marcado a mano)
+// plan: {nombre|plan_nombre, equipo_codigo, equipo_nombre, empresa_nombre,
+//        intervalo_horas, intervalo_km, tipo_mantencion, horometro_actual}
+// tareas: [{sistema, descripcion, tipo, insumo_sugerido, cantidad_sugerida}]
+// ═══════════════════════════════════════════════════════════════════════
+function imprimirChecklistMant(plan, tareas){
+  var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
+  var fmtN=function(n){return n==null||n===''?'':new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));};
+  // Agrupar por sistema preservando el orden de aparición
+  var grupos=[],idx={};
+  (tareas||[]).forEach(function(t){
+    var s=t.sistema||'Sin sistema';
+    if(idx[s]===undefined){idx[s]=grupos.length;grupos.push({sistema:s,items:[]});}
+    grupos[idx[s]].items.push(t);
+  });
+  var n=0;
+  var filas=grupos.map(function(g){
+    var head='<tr class="sys"><td colspan="5">'+esc(g.sistema)+'</td></tr>';
+    var rows=g.items.map(function(t){
+      n++;
+      var insumo=esc(t.insumo_sugerido||'')+(t.cantidad_sugerida?(' ('+esc(t.cantidad_sugerida)+')'):'');
+      return '<tr><td class="c">'+n+'</td>'+
+        '<td>'+esc(t.descripcion)+'</td>'+
+        '<td class="ti">'+(t.tipo==='trabajo'?'Trabajo':'Inspección')+'</td>'+
+        '<td>'+insumo+'</td>'+
+        '<td class="chk"><span class="box"></span></td></tr>';
+    }).join('');
+    return head+rows;
+  }).join('');
+  if(!filas) filas='<tr><td colspan="5" class="c">Este plan no tiene tareas detalladas.</td></tr>';
+
+  var planNombre=plan.nombre||plan.plan_nombre||'';
+  var interval=plan.intervalo_horas?(parseFloat(plan.intervalo_horas)+' h'):(plan.intervalo_km?(plan.intervalo_km+' km'):'—');
+  var html='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Checklist '+esc(planNombre)+'</title>'+
+    '<style>'+
+    '*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:18px;font-size:12px}'+
+    'h1{font-size:16px;margin:0 0 2px}.sub{font-size:11px;color:#444;margin-bottom:10px}'+
+    'table.hd{width:100%;border-collapse:collapse;margin-bottom:10px}'+
+    'table.hd td{border:1px solid #999;padding:5px 7px;font-size:11px}'+
+    'table.hd .lbl{background:#f0f0f0;font-weight:bold;width:95px;white-space:nowrap}'+
+    'table.tk{width:100%;border-collapse:collapse}'+
+    'table.tk th{background:#222;color:#fff;border:1px solid #222;padding:5px 6px;font-size:11px;text-align:left}'+
+    'table.tk td{border:1px solid #999;padding:5px 6px;vertical-align:top}'+
+    'table.tk td.c{text-align:center;width:26px}table.tk td.ti{width:74px;white-space:nowrap}table.tk td.chk{width:50px;text-align:center}'+
+    'tr.sys td{background:#e8e8e8;font-weight:bold;font-size:11px}'+
+    '.box{display:inline-block;width:16px;height:16px;border:1.5px solid #333;border-radius:2px}'+
+    '.foot{margin-top:14px;font-size:11px}.obs-lbl{font-weight:bold}.obs{border:1px solid #999;min-height:64px;margin-top:4px}'+
+    '.firmas{display:flex;gap:36px;margin-top:38px}.firma{flex:1;text-align:center;border-top:1px solid #333;padding-top:4px;font-size:11px}'+
+    '@page{size:letter;margin:12mm}'+
+    '@media print{body{margin:0}th{-webkit-print-color-adjust:exact;print-color-adjust:exact}tr.sys td{-webkit-print-color-adjust:exact;print-color-adjust:exact}}'+
+    '</style></head><body>'+
+    '<h1>CHECK LIST DE MANTENCIÓN</h1>'+
+    '<div class="sub">Lista de verificación de tareas — marcar en terreno a medida que se ejecutan</div>'+
+    '<table class="hd">'+
+      '<tr><td class="lbl">Equipo</td><td>'+esc((plan.equipo_codigo||'')+'  '+(plan.equipo_nombre||''))+'</td><td class="lbl">Empresa</td><td>'+esc(plan.empresa_nombre||'')+'</td></tr>'+
+      '<tr><td class="lbl">Plan</td><td>'+esc(planNombre)+'</td><td class="lbl">Intervalo</td><td>'+esc(interval)+'</td></tr>'+
+      '<tr><td class="lbl">Horóm. actual</td><td>'+fmtN(plan.horometro_actual)+(plan.horometro_actual!=null&&plan.horometro_actual!==''?' h':'')+'</td><td class="lbl">Tipo</td><td>'+esc(plan.tipo_mantencion||'preventivo')+'</td></tr>'+
+      '<tr><td class="lbl">Fecha</td><td>&nbsp;</td><td class="lbl">Horóm. servicio</td><td>&nbsp;</td></tr>'+
+      '<tr><td class="lbl">Mecánico</td><td>&nbsp;</td><td class="lbl">OT N°</td><td>&nbsp;</td></tr>'+
+    '</table>'+
+    '<table class="tk"><thead><tr><th class="c">N°</th><th>Tarea / Descripción</th><th>Tipo</th><th>Insumo sugerido</th><th class="chk">Realiz.</th></tr></thead><tbody>'+filas+'</tbody></table>'+
+    '<div class="foot"><div class="obs-lbl">Observaciones / hallazgos:</div><div class="obs"></div>'+
+      '<div class="firmas"><div class="firma">Firma Mecánico</div><div class="firma">Firma Supervisor / Jefe de Taller</div></div></div>'+
+    '<script>window.onload=function(){setTimeout(function(){window.print();},350);};<\/script>'+
+    '</body></html>';
+  var w=window.open('','_blank','width=900,height=850');
+  if(!w){alert('Habilita las ventanas emergentes para imprimir el checklist.');return;}
+  w.document.write(html);w.document.close();w.focus();
+}
+
 function MantPlanDetalleModal(p){
   const[tareas,setTareas]=useState([]);
   const[loading,setLoading]=useState(false);
@@ -11264,6 +11336,7 @@ function MantPlanDetalleModal(p){
         h('button',{onClick:function(){setFiltTipo('trabajo');},style:{padding:'5px 10px',fontSize:11,border:'1px solid #CBD5E1',background:filtTipo==='trabajo'?'#F59E0B':'#fff',color:filtTipo==='trabajo'?'#fff':'#475569',borderRadius:4,cursor:'pointer'}},'🔧 Trabajos ('+tareas.filter(function(t){return t.tipo==='trabajo';}).length+')'),
         h('button',{onClick:function(){setFiltTipo('inspeccion');},style:{padding:'5px 10px',fontSize:11,border:'1px solid #CBD5E1',background:filtTipo==='inspeccion'?'#6366F1':'#fff',color:filtTipo==='inspeccion'?'#fff':'#475569',borderRadius:4,cursor:'pointer'}},'🔍 Inspecciones ('+tareas.filter(function(t){return t.tipo==='inspeccion';}).length+')'),
         h('div',{style:{flex:1}}),
+        h('button',{onClick:function(){imprimirChecklistMant(p.plan,tareas);},title:'Imprimir checklist para terreno',style:{padding:'5px 10px',fontSize:11,border:'1px solid #CBD5E1',background:'#fff',color:'#475569',borderRadius:4,cursor:'pointer',marginRight:6}},'🖨 Imprimir checklist'),
         h(Btn,{onClick:function(){setShowAdd(!showAdd);},sm:true},showAdd?'Cancelar':'+ Agregar tarea')
       ),
       // Form agregar
@@ -11478,6 +11551,7 @@ function MantPlanes(p){
         {lbl:'Activo',c:true,render:function(r){return r.activo?h('span',{style:{color:'#10B981'}},'✓'):'✗';}},
         {lbl:'',c:true,render:function(r){return h('div',{style:{display:'flex',gap:4}},
           h('button',{className:'btn btn-blue btn-xs',onClick:function(){setDetallePlan(r);},title:'Ver tareas'},'👁'),
+          h('button',{className:'btn btn-g btn-xs',onClick:function(){api('/mant/planes/'+r.plan_id+'/tareas','GET',null,p.tok).then(function(ts){imprimirChecklistMant(r,Array.isArray(ts)?ts:[]);}).catch(function(e){alert('No se pudo cargar el checklist: '+e.message);});},title:'Imprimir checklist'},'🖨'),
           h('button',{className:'btn btn-teal btn-xs',onClick:function(){setEditPlan(r);setForm({nombre:r.nombre,equipo_id:r.equipo_id||'',tipo_mantencion:r.tipo_mantencion,intervalo_horas:r.intervalo_horas||'',intervalo_km:r.intervalo_km||'',intervalo_dias:r.intervalo_dias||'',prioridad:r.prioridad||'normal'});setShowForm(true);},title:'Editar'},'✏'),
           h('button',{className:'btn btn-d btn-xs',onClick:function(){eliminar(r);},title:'Eliminar'},'🗑')
         );}}
