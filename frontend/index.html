@@ -4038,25 +4038,91 @@ function InformeCostosView(p){
 }
 
 function CostoDetalleModal(p){
-  const[rows,setRows]=useState(null);
+  // nivel: 'categorias' (nivel 2) o 'movimientos' (nivel 3)
+  const[nivel,setNivel]=useState('categorias');
+  const[catSel,setCatSel]=useState(null);
+  const[catData,setCatData]=useState(null); // agrupado por categoría
+  const[rows,setRows]=useState(null);       // movimientos del nivel 3
   const[err,setErr]=useState('');
-  useEffect(function(){
+  const[loading,setLoading]=useState(false);
+
+  function fmt(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+
+  // Nivel 2: cargar agrupado por categoría
+  function cargarCategorias(){
+    setLoading(true);setErr('');
     var qs='?desde='+p.desde+'&hasta='+p.hasta+'&dimension='+p.dimension+'&valor='+encodeURIComponent(p.valor);
     api('/finanzas/informe-costos/detalle'+qs,'GET',null,p.tok)
-      .then(function(r){setRows(r.rows||[]);})
-      .catch(function(e){setErr(e.message);});
-  },[]);
-  function fmt(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
-  var total=(rows||[]).reduce(function(s,r){return s+(parseFloat(r.costo)||0);},0);
+      .then(function(r){setCatData(r.por_categoria||[]);})
+      .catch(function(e){setErr(e.message);})
+      .finally(function(){setLoading(false);});
+  }
+  // Nivel 3: cargar movimientos de una categoría
+  function cargarMovimientos(cat){
+    setLoading(true);setErr('');setCatSel(cat);
+    var qs='?desde='+p.desde+'&hasta='+p.hasta+'&dimension='+p.dimension+'&valor='+encodeURIComponent(p.valor)+'&categoria='+encodeURIComponent(cat);
+    api('/finanzas/informe-costos/detalle'+qs,'GET',null,p.tok)
+      .then(function(r){setRows(r.rows||[]);setNivel('movimientos');})
+      .catch(function(e){setErr(e.message);})
+      .finally(function(){setLoading(false);});
+  }
+  useEffect(function(){cargarCategorias();},[]);
+
+  var totalCat=(catData||[]).reduce(function(s,c){return s+(parseFloat(c.costo)||0);},0);
+  var totalMov=(rows||[]).reduce(function(s,r){return s+(parseFloat(r.costo)||0);},0);
+  var maxCat=(catData||[]).length?Math.max.apply(null,catData.map(function(c){return Math.abs(c.costo);})):1;
+
+  // Color por categoría
+  function colorCat(cat){
+    var c=(cat||'').toLowerCase();
+    if(c.indexOf('combustible')>=0) return '#DC2626';
+    if(c.indexOf('lubric')>=0) return '#EA580C';
+    if(c.indexOf('filtro')>=0) return '#D97706';
+    if(c.indexOf('repuesto')>=0) return '#7C3AED';
+    if(c.indexOf('grasa')>=0) return '#CA8A04';
+    if(c.indexOf('servicio')>=0||c.indexOf('gasto')>=0) return '#0891B2';
+    return '#475569';
+  }
+
   return h(Modal,{title:'Detalle de costos — '+p.nombre,onClose:p.onClose,xl:true},
     h('div',{style:{padding:14}},
+      // Breadcrumb tipo balance → mayor
+      h('div',{style:{display:'flex',alignItems:'center',gap:6,marginBottom:12,fontSize:12}},
+        h('span',{onClick:function(){setNivel('categorias');setRows(null);setCatSel(null);},style:{cursor:'pointer',color:'#1D4ED8',fontWeight:600}},'📊 '+p.nombre),
+        nivel==='movimientos'&&h('span',{style:{color:'#94A3B8'}},' ▸ '),
+        nivel==='movimientos'&&h('span',{style:{color:'#1E3A2D',fontWeight:600}},catSel)
+      ),
       err&&h('div',{className:'al al-e'},err),
-      !rows&&!err&&h('div',{className:'spin'},'Cargando detalle...'),
-      rows&&h('div',null,
-        h('div',{style:{fontSize:12,marginBottom:8,color:'#64748B'}},rows.length+' movimientos — Total: ',h('strong',{style:{color:'#1E3A2D'}},fmt(total))),
-        h('div',{style:{maxHeight:'55vh',overflowY:'auto'}},
+      loading&&h('div',{className:'spin'},'Cargando...'),
+
+      // ── NIVEL 2: agrupado por categoría ──
+      !loading&&nivel==='categorias'&&catData&&h('div',null,
+        h('div',{style:{fontSize:12,marginBottom:10,color:'#64748B'}},'Costo agrupado por categoría — Total: ',h('strong',{style:{color:'#1E3A2D'}},fmt(totalCat)),'. Haz click en una categoría para ver el detalle de sus movimientos.'),
+        catData.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#94A3B8'}},'Sin movimientos en el período.'):
+        h('div',null,catData.map(function(c,i){
+          var w=(Math.abs(c.costo)/maxCat*100).toFixed(1);
+          var col=colorCat(c.categoria);
+          return h('div',{key:i,onClick:function(){cargarMovimientos(c.categoria);},style:{marginBottom:8,cursor:'pointer',padding:'8px 10px',borderRadius:6,border:'1px solid #E2E8F0',transition:'background .1s'},
+            onMouseEnter:function(e){e.currentTarget.style.background='#F8FAFC';},onMouseLeave:function(e){e.currentTarget.style.background='#fff';}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:4}},
+              h('span',{style:{fontWeight:600,color:'#334155'}},c.categoria,' ',h('span',{style:{fontSize:10,color:'#94A3B8',fontWeight:400}},'('+c.items+' mov.)')),
+              h('span',null,h('span',{style:{fontFamily:'monospace',fontWeight:700}},fmt(c.costo)),' ',h('span',{style:{fontSize:10,color:'#94A3B8'}},'('+((c.costo/totalCat)*100||0).toFixed(0)+'%)'),h('span',{style:{marginLeft:8,color:col}},'▸'))
+            ),
+            h('div',{style:{height:6,background:'#F1F5F9',borderRadius:3,overflow:'hidden'}},
+              h('div',{style:{height:'100%',width:w+'%',background:col,borderRadius:3}}))
+          );
+        }))
+      ),
+
+      // ── NIVEL 3: movimientos de la categoría ──
+      !loading&&nivel==='movimientos'&&rows&&h('div',null,
+        h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:8}},
+          h('button',{onClick:function(){setNivel('categorias');setRows(null);},style:{padding:'4px 10px',background:'#E2E8F0',border:'none',borderRadius:5,cursor:'pointer',fontSize:11,fontWeight:600}},'← Volver a categorías'),
+          h('div',{style:{fontSize:12,color:'#64748B'}},rows.length+' movimientos — Total: ',h('strong',{style:{color:'#1E3A2D'}},fmt(totalMov)))
+        ),
+        h('div',{style:{maxHeight:'50vh',overflowY:'auto'}},
           h('table',{style:{fontSize:11,width:'100%',borderCollapse:'collapse'}},
-            h('thead',null,h('tr',null,h('th',null,'Fecha'),h('th',null,'Origen'),h('th',null,'Código'),h('th',null,'Detalle'),h('th',null,'Equipo'),h('th',null,'Faena'),h('th',{className:'r'},'Cant.'),h('th',{className:'r'},'C.Unit'),h('th',{className:'r'},'Costo'))),
+            h('thead',null,h('tr',null,h('th',null,'Fecha'),h('th',null,'Origen'),h('th',null,'Código/OC'),h('th',null,'Detalle'),h('th',null,'Equipo'),h('th',{className:'r'},'Cant.'),h('th',{className:'r'},'C.Unit'),h('th',{className:'r'},'Costo'))),
             h('tbody',null,rows.map(function(r,i){
               var colOrigen=r.origen==='Combustible'?'#DC2626':r.origen==='Inventario'?'#EA580C':'#7C3AED';
               return h('tr',{key:i},
@@ -4065,16 +4131,15 @@ function CostoDetalleModal(p){
                 h('td',{style:{fontFamily:'monospace',fontSize:10}},r.codigo||'—'),
                 h('td',null,r.detalle||'—'),
                 h('td',{style:{fontSize:10}},r.equipo||'—'),
-                h('td',{style:{fontSize:10}},r.faena||'—'),
                 h('td',{className:'r mono'},parseFloat(r.cantidad||0).toFixed(1)),
                 h('td',{className:'r mono'},fmt(r.costo_unitario)),
                 h('td',{className:'r mono',style:{fontWeight:600}},fmt(r.costo))
               );
             }))
           )
-        ),
-        h('div',{style:{marginTop:12,textAlign:'right'}},h(Btn,{onClick:p.onClose},'Cerrar'))
-      )
+        )
+      ),
+      h('div',{style:{marginTop:12,textAlign:'right'}},h(Btn,{onClick:p.onClose},'Cerrar'))
     )
   );
 }
