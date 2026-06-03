@@ -4046,28 +4046,39 @@ function CostoDetalleModal(p){
   const[err,setErr]=useState('');
   const[loading,setLoading]=useState(false);
   const[filtro,setFiltro]=useState('');
+  const[equipos,setEquipos]=useState([]);   // equipos con movimientos en la faena
+  const[eqSel,setEqSel]=useState('');        // equipo_id filtrado (cargo específico)
 
   function fmt(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
 
-  // Nivel 2: cargar agrupado por categoría
-  function cargarCategorias(){
+  // Nivel 2: cargar agrupado por categoría (respeta filtro de equipo si está activo)
+  function cargarCategorias(eqFiltro){
     setLoading(true);setErr('');
     var qs='?desde='+p.desde+'&hasta='+p.hasta+'&dimension='+p.dimension+'&valor='+encodeURIComponent(p.valor);
+    if(eqFiltro)qs+='&equipo_filtro='+encodeURIComponent(eqFiltro);
     api('/finanzas/informe-costos/detalle'+qs,'GET',null,p.tok)
-      .then(function(r){setCatData(r.por_categoria||[]);})
+      .then(function(r){setCatData(r.por_categoria||[]);if(r.equipos)setEquipos(r.equipos);})
       .catch(function(e){setErr(e.message);})
       .finally(function(){setLoading(false);});
   }
-  // Nivel 3: cargar movimientos de una categoría
-  function cargarMovimientos(cat){
+  // Nivel 3: cargar movimientos de una categoría (respeta filtro de equipo)
+  function cargarMovimientos(cat,eqFiltro){
     setLoading(true);setErr('');setCatSel(cat);
     var qs='?desde='+p.desde+'&hasta='+p.hasta+'&dimension='+p.dimension+'&valor='+encodeURIComponent(p.valor)+'&categoria='+encodeURIComponent(cat);
+    if(eqFiltro===undefined)eqFiltro=eqSel;
+    if(eqFiltro)qs+='&equipo_filtro='+encodeURIComponent(eqFiltro);
     api('/finanzas/informe-costos/detalle'+qs,'GET',null,p.tok)
       .then(function(r){setRows(r.rows||[]);setNivel('movimientos');})
       .catch(function(e){setErr(e.message);})
       .finally(function(){setLoading(false);});
   }
-  useEffect(function(){cargarCategorias();},[]);
+  // Cambiar el equipo filtrado: recarga el nivel donde se esté
+  function cambiarEquipo(eqId){
+    setEqSel(eqId);
+    if(nivel==='movimientos'&&catSel){cargarMovimientos(catSel,eqId);}
+    else{cargarCategorias(eqId);}
+  }
+  useEffect(function(){cargarCategorias('');},[]);
 
   var totalCat=(catData||[]).reduce(function(s,c){return s+(parseFloat(c.costo)||0);},0);
   var totalMov=(rows||[]).reduce(function(s,r){return s+(parseFloat(r.costo)||0);},0);
@@ -4108,12 +4119,20 @@ function CostoDetalleModal(p){
       err&&h('div',{className:'al al-e'},err),
       loading&&h('div',{className:'spin'},'Cargando...'),
 
-      // Buscador (filtra el nivel actual)
-      !loading&&(catData||rows)&&h('div',{style:{marginBottom:12}},
+      // Filtros: selector de equipo (cargo específico) + búsqueda de texto
+      !loading&&(catData||rows)&&h('div',{style:{display:'flex',gap:8,marginBottom:12,flexWrap:'wrap',alignItems:'center'}},
+        p.dimension==='faena'&&equipos.length>0&&h('select',{value:eqSel,onChange:function(e){cambiarEquipo(e.target.value);},
+          style:{padding:'8px 10px',border:'1px solid '+(eqSel?'#15803D':'#CBD5E1'),borderRadius:6,fontSize:12,minWidth:240,background:eqSel?'#F0FDF4':'#fff'}},
+          h('option',{value:''},'🚜 Todos los equipos de la faena ('+equipos.length+')'),
+          equipos.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},(eq.codigo||'')+' — '+(eq.nombre||'')+'  ('+fmt(eq.costo)+')');})
+        ),
         h('input',{value:filtro,onChange:function(e){setFiltro(e.target.value);},
-          placeholder:nivel==='categorias'?'🔍 Buscar tipo de producto...':'🔍 Buscar por código, descripción, equipo o documento...',
-          style:{width:'100%',padding:'8px 12px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:12,boxSizing:'border-box'}}),
-        fq&&h('div',{style:{fontSize:10,color:'#64748B',marginTop:3}},'Filtrando por: "'+filtro+'"')
+          placeholder:nivel==='categorias'?'🔍 Buscar tipo de producto...':'🔍 Buscar por código, descripción o documento...',
+          style:{flex:1,minWidth:200,padding:'8px 12px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:12,boxSizing:'border-box'}})
+      ),
+      eqSel&&h('div',{style:{fontSize:11,color:'#15803D',marginBottom:8,fontWeight:600}},
+        '🚜 Filtrando por equipo: ',(function(){var e=equipos.find(function(x){return String(x.equipo_id)===String(eqSel);});return e?(e.codigo+' — '+e.nombre):'';})(),
+        ' · ',h('span',{onClick:function(){cambiarEquipo('');},style:{cursor:'pointer',textDecoration:'underline',color:'#1D4ED8'}},'quitar filtro')
       ),
 
       // ── NIVEL 2: agrupado por categoría ──
