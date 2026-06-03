@@ -6654,70 +6654,96 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
 // Detalle drill-down: movimientos que componen el costo de una dimensión
 app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
   try{
-    const{desde,hasta,dimension,valor,empresa_id}=req.query;
+    const{desde,hasta,dimension,valor,empresa_id,categoria}=req.query;
     if(!desde||!hasta||!dimension||valor===undefined) return res.status(400).json({error:'Faltan parámetros'});
-    // Filtro por la dimensión solicitada
-    var filtroInv='', filtroComb='', filtroDir='', extraVals=[];
     var idVal=valor;
-    // dimension: equipo | faena | empresa | categoria | proveedor
     var rows=[];
 
-    // Helper: arma los 3 orígenes y los une
-    // 1. Inventario
+    // Filtros base por origen
     var pInv=[desde,hasta], wInv=["me.tipo_movimiento='SALIDA'","me.estado='ACTIVO'","me.fecha BETWEEN $1 AND $2"];
     var pComb=[desde,hasta], wComb=["m.tipo_mov='DISTRIBUCION'","m.estado='ACTIVO'","m.fecha BETWEEN $1 AND $2"];
-    var pDir=[desde,hasta], wDir=["oc.estado='CERRADA'","COALESCE(d.ingresa_bodega,false)=false","oc.fecha_emision BETWEEN $1 AND $2"];
+    var pDir=[desde,hasta], wDir=["oc.estado='CERRADA'","COALESCE(d.ingresa_bodega,false)=false","COALESCE(oc.es_activo_fijo,false)=false","oc.fecha_emision BETWEEN $1 AND $2"];
 
+    // Filtro por la dimensión (faena/equipo/proveedor/combustible)
     if(dimension==='equipo'){
-      wInv.push('me.equipo_id=$3');pInv.push(idVal);
-      wComb.push('m.equipo_id=$3');pComb.push(idVal);
-      wDir.push('d.equipo_id=$3');pDir.push(idVal);
+      wInv.push('me.equipo_id=$'+(pInv.length+1));pInv.push(idVal);
+      wComb.push('m.equipo_id=$'+(pComb.length+1));pComb.push(idVal);
+      wDir.push('d.equipo_id=$'+(pDir.length+1));pDir.push(idVal);
     }else if(dimension==='faena'){
-      wInv.push('me.faena_id=$3');pInv.push(idVal);
-      wComb.push('m.faena_id=$3');pComb.push(idVal);
-      wDir.push('d.faena_id=$3');pDir.push(idVal);
+      wInv.push('me.faena_id=$'+(pInv.length+1));pInv.push(idVal);
+      wComb.push('m.faena_id=$'+(pComb.length+1));pComb.push(idVal);
+      wDir.push('d.faena_id=$'+(pDir.length+1));pDir.push(idVal);
     }else if(dimension==='proveedor'){
-      // Solo compras directas tienen proveedor
-      wDir.push('oc.proveedor_id=$3');pDir.push(idVal);
+      wDir.push('oc.proveedor_id=$'+(pDir.length+1));pDir.push(idVal);
       wInv.push('1=0'); wComb.push('1=0');
     }else if(dimension==='combustible'){
-      // Solo combustible
       wInv.push('1=0'); wDir.push('1=0');
+    }
+
+    // Filtro adicional de NIVEL 3 por categoría (cuando se pide el detalle de una categoría puntual)
+    // La categoría 'Combustible' es especial: solo trae el origen combustible
+    var catFiltro = categoria||null;
+    if(catFiltro){
+      if(catFiltro==='Combustible'){
+        wInv.push('1=0'); wDir.push('1=0'); // solo combustible
+      }else{
+        wComb.push('1=0'); // combustible nunca cae en otra categoría
+        wInv.push('ca.nombre=$'+(pInv.length+1)); pInv.push(catFiltro);
+        wDir.push('ca.nombre=$'+(pDir.length+1)); pDir.push(catFiltro);
+      }
     }
 
     const inv=await pool.query(`
       SELECT me.fecha, 'Inventario' AS origen, p.codigo AS codigo, p.nombre AS detalle,
              eq.codigo AS equipo, f.nombre AS faena, md.cantidad, md.costo_unitario, md.costo_total AS costo,
-             me.numero_documento AS documento
+             me.numero_documento AS documento, COALESCE(ca.nombre,'Sin categoría') AS categoria
       FROM movimiento_encabezado me
       JOIN movimiento_detalle md ON md.movimiento_id=me.movimiento_id
       JOIN productos p ON md.producto_id=p.producto_id
+      LEFT JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id
+      LEFT JOIN categorias ca ON sc.categoria_id=ca.categoria_id
       LEFT JOIN equipos eq ON me.equipo_id=eq.equipo_id
       LEFT JOIN faenas f ON me.faena_id=f.faena_id
-      WHERE ${wInv.join(' AND ')} ORDER BY me.fecha DESC LIMIT 500`, pInv);
+      WHERE ${wInv.join(' AND ')} ORDER BY me.fecha DESC LIMIT 1000`, pInv);
     const comb=await pool.query(`
       SELECT m.fecha, 'Combustible' AS origen, ct.nombre AS codigo, ct.nombre AS detalle,
              eq.codigo AS equipo, f.nombre AS faena, m.litros AS cantidad, m.precio_unitario AS costo_unitario, m.costo_total AS costo,
-             m.numero_documento AS documento
+             m.numero_documento AS documento, 'Combustible' AS categoria
       FROM comb_movimientos m
       LEFT JOIN comb_tipos ct ON m.tipo_id=ct.tipo_id
       LEFT JOIN equipos eq ON m.equipo_id=eq.equipo_id
       LEFT JOIN faenas f ON m.faena_id=f.faena_id
-      WHERE ${wComb.join(' AND ')} ORDER BY m.fecha DESC LIMIT 500`, pComb);
+      WHERE ${wComb.join(' AND ')} ORDER BY m.fecha DESC LIMIT 1000`, pComb);
     const dir=await pool.query(`
       SELECT oc.fecha_emision AS fecha, 'Compra directa' AS origen, oc.numero_oc AS codigo,
              COALESCE(p.nombre,d.descripcion) AS detalle,
              eq.codigo AS equipo, f.nombre AS faena, d.cantidad, d.precio_unitario AS costo_unitario, d.total_linea AS costo,
-             oc.numero_documento AS documento
+             oc.numero_documento AS documento, COALESCE(ca.nombre,'Servicios / Gasto directo') AS categoria
       FROM ordenes_compra oc
       JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
       LEFT JOIN productos p ON d.producto_id=p.producto_id
+      LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,p.subcategoria_id)=sc.subcategoria_id
+      LEFT JOIN categorias ca ON sc.categoria_id=ca.categoria_id
       LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
       LEFT JOIN faenas f ON d.faena_id=f.faena_id
-      WHERE ${wDir.join(' AND ')} ORDER BY oc.fecha_emision DESC LIMIT 500`, pDir);
+      WHERE ${wDir.join(' AND ')} ORDER BY oc.fecha_emision DESC LIMIT 1000`, pDir);
 
     rows=inv.rows.concat(comb.rows).concat(dir.rows).sort(function(a,b){return new Date(b.fecha)-new Date(a.fecha);});
-    res.json({rows:rows});
+
+    // Si NO se pidió categoría puntual, devolver también el agrupado por categoría (NIVEL 2)
+    var porCategoria=null;
+    if(!catFiltro){
+      var acc={};
+      rows.forEach(function(r){
+        var k=r.categoria||'Sin categoría';
+        if(!acc[k]) acc[k]={categoria:k,costo:0,items:0};
+        acc[k].costo+=parseFloat(r.costo)||0;
+        acc[k].items+=1;
+      });
+      porCategoria=Object.values(acc).map(function(x){return{categoria:x.categoria,costo:Math.round(x.costo),items:x.items};}).sort(function(a,b){return b.costo-a.costo;});
+    }
+
+    res.json({rows:rows, por_categoria:porCategoria});
   }catch(e){res.status(500).json({error:e.message});}
 });
 
