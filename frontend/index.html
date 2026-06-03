@@ -10057,6 +10057,7 @@ function MantOTDetalle(p){
   const[catSistemas,setCatSistemas]=useState([]);const[catTareas,setCatTareas]=useState([]);
   const[salidasInv,setSalidasInv]=useState([]);const[expandTarea,setExpandTarea]=useState(null);const[tareaPersonal,setTareaPersonal]=useState({});
   const[newTareaForm,setNewTareaForm]=useState({sistema_id:'',tarea_std_id:'',descripcion:''});
+  const[showAdel,setShowAdel]=useState(false);
   const[trasForm,setTrasForm]=useState({vehiculo_traslado:p.ot.vehiculo_traslado||'',distancia_km:p.ot.distancia_km||'',costo_combustible_traslado:p.ot.costo_combustible_traslado||''});
   const[trasEditing,setTrasEditing]=useState(false);
   const[reabrirModal,setReabrirModal]=useState(false);
@@ -10274,7 +10275,10 @@ function MantOTDetalle(p){
     ),
         // Tareas (nueva estructura: sistema + tarea std + personal por tarea)
     h('div',{className:'card',style:{marginBottom:12}},
-      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Tareas / Intervenciones ('+tareasOk+'/'+tareas.length+')'),
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8}},
+        h('div',{style:{fontWeight:600,fontSize:13}},'Tareas / Intervenciones ('+tareasOk+'/'+tareas.length+')'),
+        h('button',{onClick:function(){setShowAdel(true);},title:'Registrar que esta OT ejecutó anticipadamente una tarea de un plan futuro',style:{padding:'4px 9px',background:'#FFFBEB',color:'#92400E',border:'1px solid #FCD34D',borderRadius:5,cursor:'pointer',fontSize:11,fontWeight:600}},'⏱ Registrar adelanto de plan')
+      ),
       tareas.length>0&&h('div',{style:{marginBottom:8}},
         tareas.map(function(t){
           var isExp=expandTarea===t.tarea_id;
@@ -10424,7 +10428,102 @@ function MantOTDetalle(p){
           )
         )
       )
-    )
+    ),
+    showAdel&&h(MantAdelantoModal,{tok:p.tok,m:p.m,ot:ot,onClose:function(){setShowAdel(false);},onSaved:function(){setShowAdel(false);loadDetail();}})
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Registrar tarea adelantada: esta OT ejecutó anticipadamente una tarea que
+// pertenece a un plan futuro (ej. cambio de aceite hidráulico hecho durante
+// una correctiva). Se descontará cuando ese plan venza y se genere su OT.
+// ═══════════════════════════════════════════════════════════════════════
+function MantAdelantoModal(p){
+  var ot=p.ot;
+  var fmtISO=function(d){return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);};
+  const[planes,setPlanes]=useState([]);
+  const[planId,setPlanId]=useState('');
+  const[tareas,setTareas]=useState([]);
+  const[tareaId,setTareaId]=useState('');
+  const[horo,setHoro]=useState(ot.horometro_servicio!=null?String(Math.round(parseFloat(ot.horometro_servicio))):(ot.horometro_actual!=null?String(Math.round(parseFloat(ot.horometro_actual))):''));
+  const[fecha,setFecha]=useState(fmtISO(new Date()));
+  const[registrados,setRegistrados]=useState([]);
+  const[saving,setSaving]=useState(false);
+  const[err,setErr]=useState('');
+
+  function loadReg(){api('/mant/tareas-adelantadas?ot_id='+ot.ot_id,'GET',null,p.tok).then(function(r){setRegistrados(Array.isArray(r)?r:[]);}).catch(function(){});}
+  useEffect(function(){
+    api('/mant/planes?equipo_id='+ot.equipo_id+'&activo=true','GET',null,p.tok).then(function(r){var l=(Array.isArray(r)?r:[]).filter(function(x){return x.intervalo_horas||x.intervalo_km||x.intervalo_dias;});setPlanes(l);}).catch(function(){});
+    loadReg();
+  },[]);
+  useEffect(function(){
+    if(!planId){setTareas([]);setTareaId('');return;}
+    api('/mant/planes/'+planId+'/tareas','GET',null,p.tok).then(function(r){setTareas(Array.isArray(r)?r:[]);}).catch(function(){});
+  },[planId]);
+
+  function guardar(){
+    if(!planId){setErr('Selecciona el plan al que pertenece la tarea.');return;}
+    if(!tareaId){setErr('Selecciona la tarea del plan que se ejecutó.');return;}
+    var t=tareas.find(function(x){return String(x.tarea_plan_id)===String(tareaId);});
+    setSaving(true);setErr('');
+    api('/mant/tareas-adelantadas','POST',{
+      equipo_id:ot.equipo_id, plan_id:parseInt(planId), tarea_plan_id:parseInt(tareaId),
+      descripcion:t?t.descripcion:null, ot_id:ot.ot_id,
+      horometro:horo?parseFloat(horo):null, fecha:fecha||null
+    },p.tok).then(function(){setTareaId('');setSaving(false);loadReg();})
+     .catch(function(e){setErr(e.message);setSaving(false);});
+  }
+  function eliminar(id){api('/mant/tareas-adelantadas/'+id,'DELETE',null,p.tok).then(loadReg).catch(function(e){alert(e.message);});}
+
+  var inp={padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,width:'100%',boxSizing:'border-box'};
+  var lbl={fontSize:11,fontWeight:600,color:'#475569',marginBottom:3,display:'block'};
+
+  return h(Modal,{title:'⏱ Registrar tarea adelantada',onClose:p.onClose,lg:true},
+    h('div',{style:{padding:10,background:'#FFFBEB',border:'1px solid #FCD34D',borderRadius:6,marginBottom:12,fontSize:12,color:'#92400E'}},
+      'Usa esto cuando en esta OT (correctiva u otra) se ejecutó ',h('strong',null,'una tarea que correspondía a un plan futuro'),' (ej. cambio de aceite hidráulico al romperse una manguera). No se reinicia el plan completo: la tarea quedará marcada como ',h('strong',null,'ya realizada'),' cuando ese plan venza y generes su OT.'
+    ),
+    h('div',{style:{fontSize:12,fontWeight:700,color:'#166534',marginBottom:8}},(ot.numero_ot||'')+' · '+(ot.equipo_nombre||'')),
+
+    h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:8}},
+      h('div',{style:{gridColumn:'1/-1'}},h('label',{style:lbl},'Plan al que pertenece la tarea'),
+        h('select',{value:planId,onChange:function(e){setPlanId(e.target.value);},style:inp},
+          h('option',{value:''},'— Selecciona plan —'),
+          planes.map(function(pl){return h('option',{key:pl.plan_id,value:pl.plan_id},(pl.intervalo_horas?(parseFloat(pl.intervalo_horas)+' h — '):'')+pl.nombre);})
+        )
+      ),
+      h('div',{style:{gridColumn:'1/-1'}},h('label',{style:lbl},'Tarea ejecutada anticipadamente'),
+        h('select',{value:tareaId,onChange:function(e){setTareaId(e.target.value);},style:inp,disabled:!planId},
+          h('option',{value:''},planId?(tareas.length?'— Selecciona tarea —':'(este plan no tiene tareas detalladas)'):'— Primero elige un plan —'),
+          tareas.map(function(t){return h('option',{key:t.tarea_plan_id,value:t.tarea_plan_id},(t.sistema?('['+t.sistema+'] '):'')+t.descripcion);})
+        )
+      ),
+      h('div',null,h('label',{style:lbl},'Horómetro al ejecutar'),
+        h('input',{type:'number',value:horo,onChange:function(e){setHoro(e.target.value);},style:inp,placeholder:'h'})
+      ),
+      h('div',null,h('label',{style:lbl},'Fecha'),
+        h('input',{type:'date',value:fecha,onChange:function(e){setFecha(e.target.value);},style:inp})
+      )
+    ),
+    err&&h('div',{style:{padding:8,background:'#FEE2E2',color:'#991B1B',borderRadius:5,fontSize:12,marginBottom:10}},err),
+    h('div',{style:{marginBottom:14}},h(Btn,{v:'p',onClick:guardar,disabled:saving},saving?'Guardando...':'+ Registrar adelanto')),
+
+    h('div',{style:{fontSize:12,fontWeight:700,color:'#334155',marginBottom:6}},'Adelantos registrados desde esta OT ('+registrados.length+')'),
+    registrados.length===0
+      ? h('div',{style:{fontSize:12,color:'#94A3B8',padding:'6px 0'}},'Aún no registras adelantos en esta OT.')
+      : h('div',{style:{border:'1px solid #E2E8F0',borderRadius:6,overflow:'hidden'}},
+          registrados.map(function(a){
+            var consumida=a.estado==='consumida';
+            return h('div',{key:a.id,style:{display:'flex',alignItems:'center',gap:8,padding:'7px 10px',borderBottom:'1px solid #F1F5F9',background:consumida?'#F0FDF4':'#fff'}},
+              h('span',{style:{flex:1,minWidth:0,fontSize:12}},
+                h('strong',null,a.descripcion||'(tarea)'),
+                h('span',{style:{fontSize:10,color:'#94A3B8',display:'block'}},'Plan '+(a.plan_nombre||'')+(a.horometro?(' · @ '+a.horometro+' h'):'')+(a.fecha?(' · '+String(a.fecha).slice(0,10)):''))
+              ),
+              consumida
+                ? h('span',{style:{fontSize:10,color:'#15803D',fontWeight:700,whiteSpace:'nowrap'}},'✓ consumida'+(a.consumida_ot_numero?(' ('+a.consumida_ot_numero+')'):''))
+                : h('button',{onClick:function(){eliminar(a.id);},title:'Eliminar adelanto',style:{padding:'2px 8px',background:'#FEF2F2',color:'#B91C1C',border:'1px solid #FECACA',borderRadius:4,cursor:'pointer',fontSize:10}},'Eliminar')
+            );
+          })
+        )
   );
 }
 
@@ -10584,7 +10683,7 @@ function MantVencimientos(p){
         }},
         {lbl:'',c:true,render:function(r){return h('div',{style:{display:'flex',gap:3}},
           h('button',{onClick:function(){setShowSemilla(r);},title:'Editar último servicio manualmente',style:{padding:'3px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'✏'),
-          (r.estado_vencimiento==='vencida'||r.estado_vencimiento==='proxima')&&parseInt(r.ots_abiertas||0)===0&&h('button',{onClick:function(){setShowGenOT(r);},title:'Crear OT desde este plan (puede cerrar varias mantenciones a la vez)',style:{padding:'3px 6px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'+ OT')
+          parseInt(r.ots_abiertas||0)===0&&h('button',{onClick:function(){setShowGenOT(r);},title:r.estado_vencimiento==='vigente'||r.estado_vencimiento==='sin_referencia'?'Crear OT anticipada (aún faltan horas, pero puede ejecutarse antes)':'Crear OT desde este plan (puede cerrar varias mantenciones a la vez)',style:{padding:'3px 6px',background:r.estado_vencimiento==='vencida'||r.estado_vencimiento==='proxima'?'#10B981':'#0EA5E9',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},r.estado_vencimiento==='vencida'||r.estado_vencimiento==='proxima'?'+ OT':'+ OT ⏱')
         );}}
       ],rows:vencsFilt,empty:'Sin planes programados. Importa la pauta desde el módulo Plan Maestro.'})
     ),
@@ -10621,9 +10720,20 @@ function MantGenerarOTModal(p){
   const[obs,setObs]=useState('');
   const[saving,setSaving]=useState(false);
   const[err,setErr]=useState('');
+  const[adel,setAdel]=useState([]);            // adelantos pendientes del equipo
+  const[adelSel,setAdelSel]=useState({});      // {id: bool} a descontar
+
+  useEffect(function(){
+    api('/mant/tareas-adelantadas?estado=pendiente&equipo_id='+plan.equipo_id,'GET',null,p.tok)
+      .then(function(r){var l=Array.isArray(r)?r:[];setAdel(l);var o={};l.forEach(function(a){o[a.id]=true;});setAdelSel(o);})
+      .catch(function(){});
+  },[]);
 
   var seleccionados=candidatos.filter(function(c){return sel[c.plan_id];});
   var totalPlanes=1+seleccionados.length;
+  // Planes cubiertos por esta OT (para mostrar solo los adelantos que se descontarían aquí)
+  var coveredIds=[plan.plan_id].concat(seleccionados.map(function(c){return c.plan_id;}));
+  var adelRelevantes=adel.filter(function(a){return coveredIds.indexOf(a.plan_id)>=0;});
 
   function guardar(){
     if(estado==='cerrada'&&!horo){setErr('Indica el horómetro del servicio para crear la OT ya cerrada.');return;}
@@ -10637,10 +10747,13 @@ function MantGenerarOTModal(p){
       horometro_servicio:horo?parseFloat(horo):null,
       prioridad:prioridad,
       responsable:resp||null,
-      observaciones:obs||null
+      observaciones:obs||null,
+      adelantos_consumir:adelRelevantes.filter(function(a){return adelSel[a.id];}).map(function(a){return a.id;})
     },p.tok)
       .then(function(r){
-        alert('✓ OT '+(r.numero_ot||'')+' creada — cubre '+(r.planes_cubiertos||totalPlanes)+' plan(es), '+(r.tareas_cargadas||0)+' tarea(s) cargadas.');
+        var msg='✓ OT '+(r.numero_ot||'')+' creada — cubre '+(r.planes_cubiertos||totalPlanes)+' plan(es), '+(r.tareas_cargadas||0)+' tarea(s) cargadas.';
+        if(r.adelantos_consumidos)msg+=' '+r.adelantos_consumidos+' tarea(s) ya adelantada(s) marcada(s) como realizadas.';
+        alert(msg);
         p.onSaved&&p.onSaved();
       })
       .catch(function(e){setErr(e.message);setSaving(false);});
@@ -10674,6 +10787,23 @@ function MantGenerarOTModal(p){
         })
       ),
       h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:4}},'Se preseleccionan los intervalos submúltiplo del principal (ej: 250 h dentro de 500 h). Las tareas de los planes elegidos se consolidan sin duplicar.')
+    ),
+
+    // Tareas ya adelantadas (ej. ejecutadas en una correctiva) que se descontarán de esta OT
+    adelRelevantes.length>0&&h('div',{style:{marginBottom:12}},
+      h('div',{style:{fontSize:12,fontWeight:700,color:'#334155',marginBottom:6}},'Tareas ya adelantadas — marcar como realizadas en esta OT:'),
+      h('div',{style:{border:'1px solid #FDE68A',borderRadius:6,overflow:'hidden',background:'#FFFBEB'}},
+        adelRelevantes.map(function(a){
+          return h('label',{key:a.id,style:{display:'flex',alignItems:'center',gap:10,padding:'7px 10px',borderBottom:'1px solid #FEF3C7',cursor:'pointer'}},
+            h('input',{type:'checkbox',checked:!!adelSel[a.id],onChange:function(e){var o=Object.assign({},adelSel);o[a.id]=e.target.checked;setAdelSel(o);},style:{width:16,height:16,flexShrink:0,margin:0,padding:0}}),
+            h('span',{style:{flex:1,minWidth:0,fontSize:12,color:'#92400E'}},
+              h('strong',null,a.descripcion||'(tarea)'),
+              h('span',{style:{fontSize:10,color:'#B45309',display:'block'}},'Ejecutada'+(a.fecha?(' el '+String(a.fecha).slice(0,10)):'')+(a.horometro?(' @ '+a.horometro+' h'):'')+(a.ot_numero?(' en '+a.ot_numero):'')+' · plan '+(a.plan_nombre||''))
+            )
+          );
+        })
+      ),
+      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:4}},'Estas tareas se ejecutaron antes (correctiva u otra OT). Si las marcas, quedarán como "ya realizadas" en esta OT y el adelanto se da por consumido.')
     ),
 
     h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
