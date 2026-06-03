@@ -2996,7 +2996,8 @@ function CombAuditoriaView(p){
   var[desde,setDesde]=useState(hoy);
   var[hasta,setHasta]=useState(hoy);
   var[empresaFilt,setEmpresaFilt]=useState('');
-  var[data,setData]=useState(null);
+  var[equipoFilt,setEquipoFilt]=useState('');
+  var[rawData,setRawData]=useState(null);
   var[loading,setLoading]=useState(false);
   var[err,setErr]=useState('');
   var[tab,setTab]=useState('sin_terreno');
@@ -3006,7 +3007,7 @@ function CombAuditoriaView(p){
     setLoading(true);setErr('');
     var qs='?desde='+desde+'&hasta='+hasta+(empresaFilt?'&empresa_id='+empresaFilt:'');
     api('/terreno/auditoria-diaria'+qs,'GET',null,p.tok)
-      .then(function(r){setData(r);})
+      .then(function(r){setRawData(r);setEquipoFilt('');})
       .catch(function(e){setErr(e.message);})
       .finally(function(){setLoading(false);});
   }
@@ -3032,7 +3033,18 @@ function CombAuditoriaView(p){
     alert('Info copiada al portapapeles:\n\n'+txt+'\n\nCierra este panel y crea el registro de '+r.codigo+' manualmente.');
   }
 
-  var res=data&&data.resumen||{};
+  // Lista de equipos presentes en la auditoría (para el selector) y filtrado por equipo
+  var CATS=['con_combustible_sin_terreno','discrepancias_litros','ok','terreno_sin_combustible','sin_registro_alguno'];
+  var equiposEnData=[];
+  if(rawData){var seen={};CATS.forEach(function(c){(rawData[c]||[]).forEach(function(r){if(r.equipo_id&&!seen[r.equipo_id]){seen[r.equipo_id]=true;equiposEnData.push({id:r.equipo_id,codigo:r.codigo,nombre:r.nombre});}});});equiposEnData.sort(function(a,b){return String(a.codigo||'').localeCompare(String(b.codigo||''));});}
+  function _filt(arr){return equipoFilt?(arr||[]).filter(function(r){return String(r.equipo_id)===String(equipoFilt);}):(arr||[]);}
+  var data=rawData?{desde:rawData.desde,hasta:rawData.hasta,
+    con_combustible_sin_terreno:_filt(rawData.con_combustible_sin_terreno),
+    discrepancias_litros:_filt(rawData.discrepancias_litros),
+    ok:_filt(rawData.ok),
+    terreno_sin_combustible:_filt(rawData.terreno_sin_combustible),
+    sin_registro_alguno:_filt(rawData.sin_registro_alguno)}:null;
+  var res=data?{con_combustible_sin_terreno:data.con_combustible_sin_terreno.length,discrepancias_litros:data.discrepancias_litros.length,ok:data.ok.length,terreno_sin_combustible:data.terreno_sin_combustible.length,sin_registro_alguno:data.sin_registro_alguno.length}:{};
   var diasRango=data?Math.round((new Date(data.hasta)-new Date(data.desde))/86400000)+1:1;
 
   return h('div',null,
@@ -3058,6 +3070,13 @@ function CombAuditoriaView(p){
             h('select',{value:empresaFilt,onChange:function(e){setEmpresaFilt(e.target.value);},style:{width:'100%',padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
               h('option',{value:''},'Todas las empresas'),
               empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})
+            )
+          ),
+          h('div',{style:{flex:1,minWidth:180}},
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Equipo (opcional)'),
+            h('select',{value:equipoFilt,onChange:function(e){setEquipoFilt(e.target.value);},style:{width:'100%',padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12},disabled:!rawData||equiposEnData.length===0},
+              h('option',{value:''},'Todos los equipos'+(equiposEnData.length?' ('+equiposEnData.length+')':'')),
+              equiposEnData.map(function(eq){return h('option',{key:eq.id,value:eq.id},eq.codigo+' — '+eq.nombre);})
             )
           ),
           h('button',{onClick:cargar,disabled:loading,style:{padding:'8px 14px',background:'#1E40AF',color:'#fff',border:'none',borderRadius:5,fontSize:12,cursor:loading?'not-allowed':'pointer',fontWeight:600}},loading?'⏳ Cargando...':'🔄 Refrescar')
@@ -9164,6 +9183,155 @@ function CombEstanques(p){
         )
       )
     )
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// RENDIMIENTOS DE COMBUSTIBLE — tabla por faena: máquinas (L/h) y vehículos (km/L)
+// ═══════════════════════════════════════════════════════════════════════
+function CombRendimientosView(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  function ym(d){return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2);}
+  function lastDay(m){var a=m.split('-');var d=new Date(+a[0],+a[1],0);return m+'-'+('0'+d.getDate()).slice(-2);}
+  var nowYM=ym(new Date());
+  const[mes,setMes]=useState(nowYM);
+  const[desde,setDesde]=useState(nowYM+'-01');
+  const[hasta,setHasta]=useState(lastDay(nowYM));
+  const[empresaId,setEmpresaId]=useState('');
+  const[data,setData]=useState(null);
+  const[loading,setLoading]=useState(false);
+  const[err,setErr]=useState('');
+
+  function setMesQuick(m){if(!m)return;setMes(m);setDesde(m+'-01');setHasta(lastDay(m));}
+  function load(){
+    setLoading(true);setErr('');
+    var qs='?desde='+desde+'&hasta='+hasta+(empresaId?'&empresa_id='+empresaId:'');
+    api('/comb/rendimientos'+qs,'GET',null,p.tok).then(function(r){setData(r);setLoading(false);}).catch(function(e){setErr(e.message);setLoading(false);});
+  }
+  useEffect(function(){load();},[]);
+
+  function nf(n,d){return new Intl.NumberFormat('es-CL',{minimumFractionDigits:d||0,maximumFractionDigits:d||0}).format(n||0);}
+  var rows=(data&&data.rows)||[];
+  var faenasMap={},orden=[];
+  rows.forEach(function(r){
+    var k=r.faena_id||('x'+r.faena_nombre);
+    if(!faenasMap[k]){faenasMap[k]={faena:r.faena_nombre,maquinas:[],vehiculos:[]};orden.push(k);}
+    (r.es_vehiculo?faenasMap[k].vehiculos:faenasMap[k].maquinas).push(r);
+  });
+
+  function exportar(){
+    exportXLSX(rows,[
+      {header:'Faena',value:function(r){return r.faena_nombre;}},
+      {header:'Tipo',value:function(r){return r.es_vehiculo?'Vehículo':'Máquina';}},
+      {header:'Código',value:function(r){return r.codigo;}},
+      {header:'Equipo',value:function(r){return r.nombre;}},
+      {header:'Litros',value:function(r){return r.litros;}},
+      {header:'Horas trabajadas',value:function(r){return r.es_vehiculo?'':r.horas;}},
+      {header:'Km recorridos',value:function(r){return r.es_vehiculo?(r.km==null?'':r.km):'';}},
+      {header:'Rendimiento',value:function(r){return r.rendimiento==null?'':r.rendimiento;}},
+      {header:'Unidad',value:function(r){return r.rendimiento_unidad;}},
+      {header:'L/100km',value:function(r){return r.l_por_100km==null?'':r.l_por_100km;}},
+      {header:'Costo',value:function(r){return r.costo;}}
+    ],'rendimientos_combustible_'+desde+'_'+hasta);
+  }
+
+  var th={padding:'6px 8px',background:'#F1F5F9',fontSize:10,color:'#475569',textAlign:'left',whiteSpace:'nowrap'};
+  var thR=Object.assign({},th,{textAlign:'right'});
+  var td={padding:'5px 8px',fontSize:11,borderBottom:'1px solid #F1F5F9'};
+  var tdR=Object.assign({},td,{textAlign:'right',fontFamily:'monospace'});
+  var inpF={padding:'6px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
+
+  function tablaMaq(items){
+    var litros=items.reduce(function(s,r){return s+r.litros;},0);
+    var horas=items.reduce(function(s,r){return s+r.horas;},0);
+    var costo=items.reduce(function(s,r){return s+r.costo;},0);
+    var rendProm=horas>0?litros/horas:null;
+    return h('div',{style:{marginBottom:10}},
+      h('div',{style:{fontSize:11,fontWeight:700,color:'#1E3A2D',margin:'6px 0 3px'}},'🚜 Máquinas (L/h)'),
+      h('table',{style:{width:'100%',borderCollapse:'collapse'}},
+        h('thead',null,h('tr',null,
+          h('th',{style:th},'Código'),h('th',{style:th},'Equipo'),
+          h('th',{style:thR},'Litros'),h('th',{style:thR},'Horas trab.'),h('th',{style:thR},'Rend. (L/h)'),h('th',{style:thR},'N° distr.'),h('th',{style:thR},'Costo')
+        )),
+        h('tbody',null,
+          items.map(function(r){return h('tr',{key:r.equipo_id},
+            h('td',{style:Object.assign({},td,{fontWeight:600,fontFamily:'monospace'})},r.codigo),
+            h('td',{style:td},r.nombre,r.horas_origen==='horómetro distrib.'&&h('span',{style:{marginLeft:5,fontSize:8,color:'#B45309',background:'#FEF3C7',padding:'1px 4px',borderRadius:6}},'horas estim.')),
+            h('td',{style:tdR},nf(r.litros,1)),
+            h('td',{style:tdR},r.horas>0?nf(r.horas,1):'—'),
+            h('td',{style:Object.assign({},tdR,{fontWeight:700,color:r.rendimiento==null?'#CBD5E1':'#1E3A2D'})},r.rendimiento==null?'—':nf(r.rendimiento,2)),
+            h('td',{style:tdR},r.n_dist),
+            h('td',{style:tdR},CLP(r.costo))
+          );}),
+          h('tr',{style:{background:'#F8FAFC',fontWeight:700}},
+            h('td',{style:td,colSpan:2},'Subtotal máquinas'),
+            h('td',{style:tdR},nf(litros,1)),h('td',{style:tdR},nf(horas,1)),
+            h('td',{style:tdR},rendProm==null?'—':nf(rendProm,2)),h('td',{style:tdR},''),h('td',{style:tdR},CLP(costo))
+          )
+        )
+      )
+    );
+  }
+  function tablaVeh(items){
+    var litros=items.reduce(function(s,r){return s+r.litros;},0);
+    var km=items.reduce(function(s,r){return s+(r.km||0);},0);
+    var costo=items.reduce(function(s,r){return s+r.costo;},0);
+    var rendProm=litros>0&&km>0?km/litros:null;
+    return h('div',{style:{marginBottom:6}},
+      h('div',{style:{fontSize:11,fontWeight:700,color:'#1E40AF',margin:'6px 0 3px'}},'🚐 Vehículos (km/L)'),
+      h('table',{style:{width:'100%',borderCollapse:'collapse'}},
+        h('thead',null,h('tr',null,
+          h('th',{style:th},'Código'),h('th',{style:th},'Equipo'),
+          h('th',{style:thR},'Litros'),h('th',{style:thR},'Km recorridos'),h('th',{style:thR},'Rend. (km/L)'),h('th',{style:thR},'L/100km'),h('th',{style:thR},'Costo')
+        )),
+        h('tbody',null,
+          items.map(function(r){return h('tr',{key:r.equipo_id},
+            h('td',{style:Object.assign({},td,{fontWeight:600,fontFamily:'monospace'})},r.codigo),
+            h('td',{style:td},r.nombre),
+            h('td',{style:tdR},nf(r.litros,1)),
+            h('td',{style:tdR},r.km==null?'—':nf(r.km,0)),
+            h('td',{style:Object.assign({},tdR,{fontWeight:700,color:r.rendimiento==null?'#CBD5E1':'#1E40AF'})},r.rendimiento==null?'—':nf(r.rendimiento,2)),
+            h('td',{style:tdR},r.l_por_100km==null?'—':nf(r.l_por_100km,2)),
+            h('td',{style:tdR},CLP(r.costo))
+          );}),
+          h('tr',{style:{background:'#F8FAFC',fontWeight:700}},
+            h('td',{style:td,colSpan:2},'Subtotal vehículos'),
+            h('td',{style:tdR},nf(litros,1)),h('td',{style:tdR},nf(km,0)),
+            h('td',{style:tdR},rendProm==null?'—':nf(rendProm,2)),h('td',{style:tdR},''),h('td',{style:tdR},CLP(costo))
+          )
+        )
+      )
+    );
+  }
+
+  return h('div',null,
+    h('div',{className:'card',style:{padding:16,marginBottom:16}},
+      h('div',{style:{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap'}},
+        h('div',null,h('label',{style:{fontSize:10,fontWeight:600,color:'#64748B',display:'block',marginBottom:3}},'Mes'),
+          h('input',{type:'month',value:mes,onChange:function(e){setMesQuick(e.target.value);},style:inpF})),
+        h('div',null,h('label',{style:{fontSize:10,fontWeight:600,color:'#64748B',display:'block',marginBottom:3}},'Desde'),
+          h('input',{type:'date',value:desde,onChange:function(e){setDesde(e.target.value);},style:inpF})),
+        h('div',null,h('label',{style:{fontSize:10,fontWeight:600,color:'#64748B',display:'block',marginBottom:3}},'Hasta'),
+          h('input',{type:'date',value:hasta,onChange:function(e){setHasta(e.target.value);},style:inpF})),
+        h('div',null,h('label',{style:{fontSize:10,fontWeight:600,color:'#64748B',display:'block',marginBottom:3}},'Empresa'),
+          h('select',{value:empresaId,onChange:function(e){setEmpresaId(e.target.value);},style:inpF},
+            h('option',{value:''},'Todas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+        h(Btn,{onClick:load},'Calcular'),
+        rows.length>0&&h(Btn,{v:'g',onClick:exportar},'Exportar Excel')
+      ),
+      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Litros desde las distribuciones de combustible. Máquinas: horas trabajadas de Terreno. Vehículos: km recorridos según el recorrido del odómetro registrado al cargar combustible en el período.')
+    ),
+    err&&h('div',{style:{padding:10,background:'#FEE2E2',color:'#991B1B',borderRadius:6,marginBottom:12,fontSize:12}},err),
+    loading?h('div',{style:{padding:30,textAlign:'center',color:'#94A3B8'}},'Calculando...'):
+    rows.length===0?h('div',{className:'card',style:{padding:30,textAlign:'center',color:'#94A3B8'}},'Sin distribuciones de combustible en el período.'):
+    orden.map(function(k){
+      var g=faenasMap[k];
+      return h('div',{key:k,className:'card',style:{padding:16,marginBottom:14}},
+        h('div',{style:{fontSize:14,fontWeight:700,color:'#1E3A2D',marginBottom:4}},'📍 '+g.faena),
+        g.maquinas.length>0?tablaMaq(g.maquinas):h('div',{style:{fontSize:11,color:'#94A3B8',margin:'4px 0'}},'Sin máquinas con consumo.'),
+        g.vehiculos.length>0&&tablaVeh(g.vehiculos)
+      );
+    })
   );
 }
 
@@ -18829,7 +18997,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -19476,7 +19644,7 @@ function App(){
   // Mapa view → módulo requerido. Si la view no está aquí, no requiere módulo.
   var VIEW_MOD={
     'ordenes':'ordenes','oc-guias':'ordenes','dte-recibidos':'ordenes','bandeja-dte-oc':'ordenes','compra-auditoria':'ordenes',
-    'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-auditoria':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
+    'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-auditoria':'combustibles','comb-rendimientos':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
     'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-auditoria':'inventario','inv-reportes':'inventario',
     'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion','mant-planes':'mantencion','mant-vencimientos':'mantencion','mant-programacion':'mantencion','mant-avisos':'mantencion',
     'rendiciones':'rendiciones',
@@ -19633,6 +19801,7 @@ function App(){
           navI('comb-traspasos','⇄','Traspasos Estanques',true),
           navI('comb-distribuciones','↑','Distribuciones',true),
           navI('comb-auditoria','🔍','Auditoría vs Terreno',true),
+          navI('comb-rendimientos','📊','Rendimientos',true),
           navI('comb-reportes','◈','Reportes',true),
           navI('comb-kardex','≡','Kardex Estanque',true)
         ),
@@ -19747,6 +19916,7 @@ function App(){
           view==='comb-traspasos'&&h(CombTraspasos,{tok,m}),
           view==='comb-distribuciones'&&h(CombDistribuciones,{tok,m}),
           view==='comb-auditoria'&&h(CombAuditoriaView,{tok,m,user}),
+          view==='comb-rendimientos'&&h(CombRendimientosView,{tok,m}),
           view==='comb-reportes'&&h(CombReportes,{tok,m}),
           view==='comb-estanques'&&h(CombEstanques,{tok,m}),
           view==='mant-panel'&&h(MantPanel,{tok,m,onNav:setView}),
