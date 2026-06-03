@@ -575,6 +575,25 @@ async function setupMantenciones(q){
   try{await q('CREATE INDEX IF NOT EXISTS idx_mant_ot_planes_ot ON mant_ot_planes(ot_id)');}catch(e){}
   try{await q('CREATE INDEX IF NOT EXISTS idx_mant_ot_planes_plan ON mant_ot_planes(plan_id)');}catch(e){}
 
+  // ── Tareas adelantadas: una tarea de un plan ejecutada anticipadamente (ej. en una
+  //    correctiva) que debe descontarse del paquete cuando ese plan venza. ──
+  await q(`CREATE TABLE IF NOT EXISTS mant_tareas_adelantadas (
+    id SERIAL PRIMARY KEY,
+    equipo_id INT NOT NULL REFERENCES equipos(equipo_id) ON DELETE CASCADE,
+    plan_id INT NOT NULL REFERENCES mant_planes(plan_id) ON DELETE CASCADE,
+    tarea_plan_id INT REFERENCES mant_plan_tareas(tarea_plan_id) ON DELETE SET NULL,
+    descripcion TEXT,
+    ot_id INT REFERENCES mant_ot(ot_id) ON DELETE SET NULL,
+    horometro NUMERIC(10,1),
+    fecha DATE,
+    estado VARCHAR(15) DEFAULT 'pendiente',
+    consumida_ot_id INT REFERENCES mant_ot(ot_id) ON DELETE SET NULL,
+    consumida_en TIMESTAMP,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  try{await q('CREATE INDEX IF NOT EXISTS idx_mant_tadel_equipo ON mant_tareas_adelantadas(equipo_id,estado)');}catch(e){}
+
   // ── ALTER tareas OT: agregar sistema_id y tarea_std_id ──
   try{await q('ALTER TABLE mant_ot_tareas ADD COLUMN IF NOT EXISTS sistema_id INT REFERENCES mant_sistemas(sistema_id)');}catch(e){}
   try{await q('ALTER TABLE mant_ot_tareas ADD COLUMN IF NOT EXISTS tarea_std_id INT REFERENCES mant_tareas_std(tarea_std_id)');}catch(e){}
@@ -5598,12 +5617,77 @@ app.post('/api/mant/ot/desde-plan', auth, async(req,res)=>{
       await client.query("UPDATE equipos SET estado_operativo='detenido' WHERE equipo_id=$1",[equipoId]);
     }
 
+    // ── Consumir tareas adelantadas: marcar como ya realizadas las tareas de esta OT
+    //    que fueron ejecutadas anticipadamente (ej. en una correctiva previa). ──
+    var adelantosConsumidos=0;
+    const adIds=Array.isArray(req.body.adelantos_consumir)?req.body.adelantos_consumir.map(Number).filter(Boolean):[];
+    if(adIds.length){
+      const adQ=await client.query("SELECT * FROM mant_tareas_adelantadas WHERE id=ANY($1::int[]) AND equipo_id=$2 AND estado='pendiente'",[adIds,equipoId]);
+      const fmtDl=function(f){return f?String(f).slice(0,10):'';};
+      for(const ad of adQ.rows){
+        const key=String(ad.descripcion||'').trim().toLowerCase();
+        const nota='Ejecutada anticipadamente'+(ad.fecha?(' el '+fmtDl(ad.fecha)):'')+(ad.horometro?(' @ '+ad.horometro+' h'):'')+(ad.ot_id?(' (OT origen #'+ad.ot_id+')'):'');
+        // Marcar la tarea coincidente de la OT como ejecutada (estado 'ok')
+        if(key){
+          await client.query("UPDATE mant_ot_tareas SET estado='ok', observacion=$1 WHERE ot_id=$2 AND lower(trim(descripcion))=$3",[nota,ot.ot_id,key]);
+        }
+        await client.query("UPDATE mant_tareas_adelantadas SET estado='consumida', consumida_ot_id=$1, consumida_en=NOW() WHERE id=$2",[ot.ot_id,ad.id]);
+        adelantosConsumidos++;
+      }
+    }
+
     await client.query('COMMIT');
-    res.status(201).json(Object.assign({},ot,{planes_cubiertos:cubiertos.length,tareas_cargadas:orden}));
+    res.status(201).json(Object.assign({},ot,{planes_cubiertos:cubiertos.length,tareas_cargadas:orden,adelantos_consumidos:adelantosConsumidos}));
   }catch(e){
     try{await client.query('ROLLBACK');}catch(_){}
     res.status(400).json({error:e.message});
   }finally{client.release();}
+});
+
+// ═══ TAREAS ADELANTADAS (crédito de tarea ejecutada anticipadamente) ═══
+// Listar (por equipo / estado)
+app.get('/api/mant/tareas-adelantadas', auth, async(req,res)=>{
+  try{
+    const{equipo_id,estado,plan_id,ot_id}=req.query;
+    let where=['1=1'],vals=[];
+    if(equipo_id){vals.push(equipo_id);where.push('ta.equipo_id=$'+vals.length);}
+    if(estado){vals.push(estado);where.push('ta.estado=$'+vals.length);}
+    if(plan_id){vals.push(plan_id);where.push('ta.plan_id=$'+vals.length);}
+    if(ot_id){vals.push(ot_id);where.push('ta.ot_id=$'+vals.length);}
+    const r=await pool.query(`
+      SELECT ta.*, pl.nombre AS plan_nombre, pl.intervalo_horas, eq.codigo AS equipo_codigo,
+             o.numero_ot AS ot_numero, co.numero_ot AS consumida_ot_numero
+      FROM mant_tareas_adelantadas ta
+      LEFT JOIN mant_planes pl ON ta.plan_id=pl.plan_id
+      LEFT JOIN equipos eq ON ta.equipo_id=eq.equipo_id
+      LEFT JOIN mant_ot o ON ta.ot_id=o.ot_id
+      LEFT JOIN mant_ot co ON ta.consumida_ot_id=co.ot_id
+      WHERE ${where.join(' AND ')}
+      ORDER BY ta.creado_en DESC`,vals);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// Registrar un adelanto
+app.post('/api/mant/tareas-adelantadas', auth, async(req,res)=>{
+  try{
+    const{equipo_id,plan_id,tarea_plan_id,descripcion,ot_id,horometro,fecha}=req.body;
+    if(!equipo_id||!plan_id) return res.status(400).json({error:'equipo_id y plan_id requeridos'});
+    var desc=descripcion;
+    if(!desc&&tarea_plan_id){
+      const t=await pool.query('SELECT descripcion FROM mant_plan_tareas WHERE tarea_plan_id=$1',[tarea_plan_id]);
+      desc=t.rows[0]?.descripcion||null;
+    }
+    const r=await pool.query(`INSERT INTO mant_tareas_adelantadas(equipo_id,plan_id,tarea_plan_id,descripcion,ot_id,horometro,fecha,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`,
+      [equipo_id,plan_id,tarea_plan_id||null,desc||null,ot_id||null,horometro||null,fecha||new Date().toISOString().split('T')[0],req.user.email]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+// Eliminar / deshacer un adelanto (solo si sigue pendiente)
+app.delete('/api/mant/tareas-adelantadas/:id', auth, async(req,res)=>{
+  try{
+    await pool.query('DELETE FROM mant_tareas_adelantadas WHERE id=$1 AND estado=$2',[req.params.id,'pendiente']);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
 });
 app.put('/api/mant/ot/:id', auth, async(req,res)=>{
   try{
