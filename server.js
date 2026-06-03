@@ -6652,7 +6652,7 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
 // Detalle drill-down: movimientos que componen el costo de una dimensión
 app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
   try{
-    const{desde,hasta,dimension,valor,empresa_id,categoria}=req.query;
+    const{desde,hasta,dimension,valor,empresa_id,categoria,equipo_filtro}=req.query;
     if(!desde||!hasta||!dimension||valor===undefined) return res.status(400).json({error:'Faltan parámetros'});
     var idVal=valor;
     var rows=[];
@@ -6676,6 +6676,13 @@ app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
       wInv.push('1=0'); wComb.push('1=0');
     }else if(dimension==='combustible'){
       wInv.push('1=0'); wDir.push('1=0');
+    }
+
+    // Filtro adicional por EQUIPO específico (cruza con la dimensión, ej: dentro de una faena, una sola máquina)
+    if(equipo_filtro){
+      wInv.push('me.equipo_id=$'+(pInv.length+1));pInv.push(equipo_filtro);
+      wComb.push('m.equipo_id=$'+(pComb.length+1));pComb.push(equipo_filtro);
+      wDir.push('d.equipo_id=$'+(pDir.length+1));pDir.push(equipo_filtro);
     }
 
     // Filtro adicional de NIVEL 3 por categoría (cuando se pide el detalle de una categoría puntual)
@@ -6739,7 +6746,32 @@ app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
       porCategoria=Object.values(acc).map(function(x){return{categoria:x.categoria,costo:Math.round(x.costo),items:x.items};}).sort(function(a,b){return b.costo-a.costo;});
     }
 
-    res.json({rows:rows, por_categoria:porCategoria});
+    // Lista de equipos con movimientos en este contexto (faena/proveedor) — para poblar el selector.
+    // Solo tiene sentido cuando la dimensión NO es 'equipo' (ahí ya estás en un solo equipo).
+    var equipos=null;
+    if(dimension==='faena'){
+      // Consulta los equipos distintos que tienen movimientos en esta faena en el período
+      var eqRows=await pool.query(`
+        SELECT eq.equipo_id, eq.codigo, eq.nombre, SUM(t.costo) AS costo FROM (
+          SELECT me.equipo_id, md.costo_total AS costo
+          FROM movimiento_encabezado me JOIN movimiento_detalle md ON md.movimiento_id=me.movimiento_id
+          WHERE me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO' AND me.fecha BETWEEN $1 AND $2 AND me.faena_id=$3 AND me.equipo_id IS NOT NULL
+          UNION ALL
+          SELECT m.equipo_id, m.costo_total AS costo
+          FROM comb_movimientos m
+          WHERE m.tipo_mov='DISTRIBUCION' AND m.estado='ACTIVO' AND m.fecha BETWEEN $1 AND $2 AND m.faena_id=$3 AND m.equipo_id IS NOT NULL
+          UNION ALL
+          SELECT d.equipo_id, d.total_linea AS costo
+          FROM ordenes_compra oc JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
+          WHERE oc.estado='CERRADA' AND COALESCE(d.ingresa_bodega,false)=false AND COALESCE(oc.es_activo_fijo,false)=false
+            AND oc.fecha_emision BETWEEN $1 AND $2 AND d.faena_id=$3 AND d.equipo_id IS NOT NULL
+        ) t JOIN equipos eq ON t.equipo_id=eq.equipo_id
+        GROUP BY eq.equipo_id, eq.codigo, eq.nombre
+        ORDER BY SUM(t.costo) DESC`, [desde,hasta,idVal]);
+      equipos=eqRows.rows.map(function(e){return{equipo_id:e.equipo_id,codigo:e.codigo,nombre:e.nombre,costo:Math.round(parseFloat(e.costo)||0)};});
+    }
+
+    res.json({rows:rows, por_categoria:porCategoria, equipos:equipos});
   }catch(e){res.status(500).json({error:e.message});}
 });
 
