@@ -693,6 +693,7 @@ async function autoSetup() {
   await q(`ALTER TABLE proveedores ADD COLUMN IF NOT EXISTS favorito BOOLEAN NOT NULL DEFAULT false`);
   await q(`CREATE TABLE IF NOT EXISTS productos (producto_id SERIAL PRIMARY KEY, codigo VARCHAR(30) NOT NULL UNIQUE, codigo_alternativo VARCHAR(50), nombre VARCHAR(150) NOT NULL, descripcion TEXT, subcategoria_id INT NOT NULL REFERENCES subcategorias(subcategoria_id), unidad_medida VARCHAR(20) NOT NULL DEFAULT 'UN', stock_minimo NUMERIC(12,3) DEFAULT 0, stock_maximo NUMERIC(12,3), costo_referencia NUMERIC(14,2) DEFAULT 0, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW(), modificado_en TIMESTAMP DEFAULT NOW())`);
   await q(`CREATE TABLE IF NOT EXISTS faenas (faena_id SERIAL PRIMARY KEY, codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, descripcion TEXT, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  try{await q('ALTER TABLE faenas ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)');}catch(e){}
   await q(`CREATE TABLE IF NOT EXISTS equipos (equipo_id SERIAL PRIMARY KEY, codigo VARCHAR(30) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo VARCHAR(50), faena_id INT REFERENCES faenas(faena_id), patente_serie VARCHAR(50), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS marca VARCHAR(80)`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS modelo VARCHAR(80)`);
@@ -6701,6 +6702,59 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
       WHERE 1=1 ${empresaId?'AND af.empresa_id=$1':''}`,
       empresaId?[empresaId]:[]);
 
+    // ── 7. CONTROL DE CONSISTENCIA: movimientos cuya empresa ≠ empresa de la faena ──
+    // Detecta errores de digitación: ej. combustible tagueado a LPZ pero cargado
+    // a una faena de Emprecon (o viceversa). Respeta el filtro de empresa: cuando
+    // hay empresa seleccionada, solo lista los movimientos de ESA empresa que caen
+    // en faenas de otra. Empresa del movimiento: inventario=equipo, combustible=
+    // distribución, compras=OC. Solo se evalúan movimientos con empresa definida.
+    var pMis=[desde,hasta], empComb='', empInv='', empDir='';
+    if(empresaId){pMis.push(empresaId);empComb=' AND m.empresa_id=$3';empInv=' AND eq.empresa_id=$3';empDir=' AND oc.empresa_id=$3';}
+    const inconsistQ=await pool.query(`
+      WITH mismatches AS (
+        SELECT 'Combustible' AS origen, m.fecha::text AS fecha, eq.codigo AS equipo,
+               f.nombre AS faena, m.empresa_id AS emp_mov_id, f.empresa_id AS emp_fae_id,
+               m.costo_total AS costo, ct.nombre AS detalle
+        FROM comb_movimientos m
+        JOIN faenas f ON m.faena_id=f.faena_id
+        LEFT JOIN equipos eq ON m.equipo_id=eq.equipo_id
+        LEFT JOIN comb_tipos ct ON m.tipo_id=ct.tipo_id
+        WHERE m.tipo_mov='DISTRIBUCION' AND m.estado='ACTIVO' AND m.fecha BETWEEN $1 AND $2
+          AND m.empresa_id IS NOT NULL AND f.empresa_id IS NOT NULL
+          AND m.empresa_id<>f.empresa_id ${empComb}
+        UNION ALL
+        SELECT 'Inventario', me.fecha::text, eq.codigo, f.nombre,
+               eq.empresa_id, f.empresa_id, md.costo_total, p.nombre
+        FROM movimiento_encabezado me
+        JOIN movimiento_detalle md ON md.movimiento_id=me.movimiento_id
+        JOIN productos p ON md.producto_id=p.producto_id
+        JOIN faenas f ON me.faena_id=f.faena_id
+        JOIN equipos eq ON me.equipo_id=eq.equipo_id
+        WHERE me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO' AND me.fecha BETWEEN $1 AND $2
+          AND eq.empresa_id IS NOT NULL AND f.empresa_id IS NOT NULL
+          AND eq.empresa_id<>f.empresa_id ${empInv}
+        UNION ALL
+        SELECT 'Compra directa', oc.fecha_emision::text, eq.codigo, f.nombre,
+               oc.empresa_id, f.empresa_id, d.total_linea, COALESCE(p.nombre,d.descripcion)
+        FROM ordenes_compra oc
+        JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
+        JOIN faenas f ON d.faena_id=f.faena_id
+        LEFT JOIN productos p ON d.producto_id=p.producto_id
+        LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
+        WHERE oc.estado='CERRADA' AND COALESCE(d.ingresa_bodega,false)=false
+          AND COALESCE(oc.es_activo_fijo,false)=false AND oc.fecha_emision BETWEEN $1 AND $2
+          AND oc.empresa_id IS NOT NULL AND f.empresa_id IS NOT NULL
+          AND oc.empresa_id<>f.empresa_id ${empDir}
+      )
+      SELECT mm.origen, mm.fecha, mm.equipo, mm.faena, mm.costo, mm.detalle,
+             em.razon_social AS empresa_mov, ef.razon_social AS empresa_faena
+      FROM mismatches mm
+      LEFT JOIN empresas em ON mm.emp_mov_id=em.empresa_id
+      LEFT JOIN empresas ef ON mm.emp_fae_id=ef.empresa_id
+      ORDER BY mm.fecha DESC LIMIT 500`, pMis);
+    var inconRows=inconsistQ.rows.map(function(r){return Object.assign({},r,{costo:Math.round(parseFloat(r.costo)||0)});});
+    var inconTotal=inconRows.reduce(function(s,r){return s+r.costo;},0);
+
     // ── Procesar y combinar en JS ──
     const num=function(x){return parseFloat(x)||0;};
     // Acumuladores
@@ -6776,7 +6830,8 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
       por_faena:ordenar(porFaena),
       por_equipo:ordenar(porEquipo),
       por_proveedor:ordenar(porProveedor),
-      por_mes:Object.values(porMes).map(function(x){return{mes:x.nombre,costo:Math.round(x.costo)};}).sort(function(a,b){return a.mes<b.mes?-1:1;})
+      por_mes:Object.values(porMes).map(function(x){return{mes:x.nombre,costo:Math.round(x.costo)};}).sort(function(a,b){return a.mes<b.mes?-1:1;}),
+      inconsistencias:{count:inconRows.length, total:inconTotal, rows:inconRows}
     });
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -6793,6 +6848,15 @@ app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
     var pInv=[desde,hasta], wInv=["me.tipo_movimiento='SALIDA'","me.estado='ACTIVO'","me.fecha BETWEEN $1 AND $2"];
     var pComb=[desde,hasta], wComb=["m.tipo_mov='DISTRIBUCION'","m.estado='ACTIVO'","m.fecha BETWEEN $1 AND $2"];
     var pDir=[desde,hasta], wDir=["oc.estado='CERRADA'","COALESCE(d.ingresa_bodega,false)=false","COALESCE(oc.es_activo_fijo,false)=false","oc.fecha_emision BETWEEN $1 AND $2"];
+
+    // Filtro por EMPRESA (faltaba: el detalle ignoraba empresa_id y mezclaba LPZ/Emprecon).
+    // Mismo criterio que el informe principal: inventario por empresa del equipo,
+    // combustible por empresa de la distribución, compras por empresa de la OC.
+    if(empresa_id){
+      wInv.push('eq.empresa_id=$'+(pInv.length+1));pInv.push(empresa_id);
+      wComb.push('m.empresa_id=$'+(pComb.length+1));pComb.push(empresa_id);
+      wDir.push('oc.empresa_id=$'+(pDir.length+1));pDir.push(empresa_id);
+    }
 
     // Filtro por la dimensión (faena/equipo/proveedor/combustible)
     if(dimension==='equipo'){
@@ -6883,6 +6947,9 @@ app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
     var equipos=null;
     if(dimension==='faena'){
       // Consulta los equipos distintos que tienen movimientos en esta faena en el período
+      var eqParams=[desde,hasta,idVal];
+      var empOuter='';
+      if(empresa_id){eqParams.push(empresa_id);empOuter=' WHERE eq.empresa_id=$4';}
       var eqRows=await pool.query(`
         SELECT eq.equipo_id, eq.codigo, eq.nombre, SUM(t.costo) AS costo FROM (
           SELECT me.equipo_id, md.costo_total AS costo
@@ -6897,9 +6964,9 @@ app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
           FROM ordenes_compra oc JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
           WHERE oc.estado='CERRADA' AND COALESCE(d.ingresa_bodega,false)=false AND COALESCE(oc.es_activo_fijo,false)=false
             AND oc.fecha_emision BETWEEN $1 AND $2 AND d.faena_id=$3 AND d.equipo_id IS NOT NULL
-        ) t JOIN equipos eq ON t.equipo_id=eq.equipo_id
+        ) t JOIN equipos eq ON t.equipo_id=eq.equipo_id${empOuter}
         GROUP BY eq.equipo_id, eq.codigo, eq.nombre
-        ORDER BY SUM(t.costo) DESC`, [desde,hasta,idVal]);
+        ORDER BY SUM(t.costo) DESC`, eqParams);
       equipos=eqRows.rows.map(function(e){return{equipo_id:e.equipo_id,codigo:e.codigo,nombre:e.nombre,costo:Math.round(parseFloat(e.costo)||0)};});
     }
 
