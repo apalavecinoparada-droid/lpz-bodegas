@@ -6485,7 +6485,7 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
     // ── 1. CONSUMO DE INVENTARIO (salidas de bodega valorizadas) ──
     const invSalidas=await pool.query(`
       SELECT 
-        ca.categoria_id, ca.nombre AS categoria_nombre,
+        sc.subcategoria_id AS categoria_id, sc.nombre AS categoria_nombre,
         eq.empresa_id, emp.razon_social AS empresa_nombre,
         me.faena_id, f.nombre AS faena_nombre,
         me.equipo_id, eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
@@ -6495,14 +6495,13 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
       JOIN movimiento_detalle md ON md.movimiento_id=me.movimiento_id
       JOIN productos p ON md.producto_id=p.producto_id
       LEFT JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id
-      LEFT JOIN categorias ca ON sc.categoria_id=ca.categoria_id
       LEFT JOIN equipos eq ON me.equipo_id=eq.equipo_id
       LEFT JOIN empresas emp ON eq.empresa_id=emp.empresa_id
       LEFT JOIN faenas f ON me.faena_id=f.faena_id
       WHERE me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'
         AND me.fecha BETWEEN $1 AND $2
         ${empresaId?'AND eq.empresa_id=$3':''}
-      GROUP BY ca.categoria_id, ca.nombre, eq.empresa_id, emp.razon_social, me.faena_id, f.nombre, me.equipo_id, eq.codigo, eq.nombre, TO_CHAR(me.fecha,'YYYY-MM')`,
+      GROUP BY sc.subcategoria_id, sc.nombre, eq.empresa_id, emp.razon_social, me.faena_id, f.nombre, me.equipo_id, eq.codigo, eq.nombre, TO_CHAR(me.fecha,'YYYY-MM')`,
       empresaId?[desde,hasta,empresaId]:[desde,hasta]);
 
     // ── 2. CONSUMO DE COMBUSTIBLE (distribuciones valorizadas) ──
@@ -6528,7 +6527,7 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
     // ── 3. COMPRAS DIRECTAS A GASTO (OC cerradas, líneas no inventariables) ──
     const comprasDirectas=await pool.query(`
       SELECT 
-        ca.categoria_id, ca.nombre AS categoria_nombre,
+        sc.subcategoria_id AS categoria_id, sc.nombre AS categoria_nombre,
         oc.empresa_id, emp.razon_social AS empresa_nombre,
         d.faena_id, f.nombre AS faena_nombre,
         d.equipo_id, eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
@@ -6539,7 +6538,6 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
       JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
       LEFT JOIN productos p ON d.producto_id=p.producto_id
       LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,p.subcategoria_id)=sc.subcategoria_id
-      LEFT JOIN categorias ca ON sc.categoria_id=ca.categoria_id
       LEFT JOIN empresas emp ON oc.empresa_id=emp.empresa_id
       LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
       LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
@@ -6548,7 +6546,7 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
         AND COALESCE(oc.es_activo_fijo,false)=false
         AND oc.fecha_emision BETWEEN $1 AND $2
         ${empresaId?'AND oc.empresa_id=$3':''}
-      GROUP BY ca.categoria_id, ca.nombre, oc.empresa_id, emp.razon_social, d.faena_id, f.nombre, d.equipo_id, eq.codigo, eq.nombre, oc.proveedor_id, pr.nombre, TO_CHAR(oc.fecha_emision,'YYYY-MM')`,
+      GROUP BY sc.subcategoria_id, sc.nombre, oc.empresa_id, emp.razon_social, d.faena_id, f.nombre, d.equipo_id, eq.codigo, eq.nombre, oc.proveedor_id, pr.nombre, TO_CHAR(oc.fecha_emision,'YYYY-MM')`,
       empresaId?[desde,hasta,empresaId]:[desde,hasta]);
 
     // ── 4. ACTIVO: valor de inventario actual en bodega (no es costo) ──
@@ -6593,7 +6591,7 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
     // Combustible — categoría fija "Combustible"
     combDist.rows.forEach(function(r){
       var c=num(r.costo); totCombustible+=c;
-      acum(porCategoria,'combustible','Combustible',c);
+      acum(porCategoria,'combustible','Combustible (consumo estanque)',c);
       acum(porEmpresa,'emp_'+(r.empresa_id||'sn'),r.empresa_nombre||'Sin empresa',c);
       if(r.faena_id) acum(porFaena,'fae_'+r.faena_id,r.faena_nombre,c,r.faena_id);
       if(r.equipo_id) acum(porEquipo,'eq_'+r.equipo_id,(r.equipo_codigo||'')+' '+(r.equipo_nombre||''),c,r.equipo_id);
@@ -6684,31 +6682,30 @@ app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
     // La categoría 'Combustible' es especial: solo trae el origen combustible
     var catFiltro = categoria||null;
     if(catFiltro){
-      if(catFiltro==='Combustible'){
-        wInv.push('1=0'); wDir.push('1=0'); // solo combustible
+      if(catFiltro==='Combustible (consumo estanque)'){
+        wInv.push('1=0'); wDir.push('1=0'); // solo combustible de estanque
       }else{
         wComb.push('1=0'); // combustible nunca cae en otra categoría
-        wInv.push('ca.nombre=$'+(pInv.length+1)); pInv.push(catFiltro);
-        wDir.push('ca.nombre=$'+(pDir.length+1)); pDir.push(catFiltro);
+        wInv.push('sc.nombre=$'+(pInv.length+1)); pInv.push(catFiltro);
+        wDir.push('sc.nombre=$'+(pDir.length+1)); pDir.push(catFiltro);
       }
     }
 
     const inv=await pool.query(`
       SELECT me.fecha, 'Inventario' AS origen, p.codigo AS codigo, p.nombre AS detalle,
              eq.codigo AS equipo, f.nombre AS faena, md.cantidad, md.costo_unitario, md.costo_total AS costo,
-             me.numero_documento AS documento, COALESCE(ca.nombre,'Sin categoría') AS categoria
+             me.numero_documento AS documento, COALESCE(sc.nombre,'Sin tipo') AS categoria
       FROM movimiento_encabezado me
       JOIN movimiento_detalle md ON md.movimiento_id=me.movimiento_id
       JOIN productos p ON md.producto_id=p.producto_id
       LEFT JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id
-      LEFT JOIN categorias ca ON sc.categoria_id=ca.categoria_id
       LEFT JOIN equipos eq ON me.equipo_id=eq.equipo_id
       LEFT JOIN faenas f ON me.faena_id=f.faena_id
       WHERE ${wInv.join(' AND ')} ORDER BY me.fecha DESC LIMIT 1000`, pInv);
     const comb=await pool.query(`
       SELECT m.fecha, 'Combustible' AS origen, ct.nombre AS codigo, ct.nombre AS detalle,
              eq.codigo AS equipo, f.nombre AS faena, m.litros AS cantidad, m.precio_unitario AS costo_unitario, m.costo_total AS costo,
-             m.numero_documento AS documento, 'Combustible' AS categoria
+             m.numero_documento AS documento, 'Combustible (consumo estanque)' AS categoria
       FROM comb_movimientos m
       LEFT JOIN comb_tipos ct ON m.tipo_id=ct.tipo_id
       LEFT JOIN equipos eq ON m.equipo_id=eq.equipo_id
@@ -6718,12 +6715,11 @@ app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
       SELECT oc.fecha_emision AS fecha, 'Compra directa' AS origen, oc.numero_oc AS codigo,
              COALESCE(p.nombre,d.descripcion) AS detalle,
              eq.codigo AS equipo, f.nombre AS faena, d.cantidad, d.precio_unitario AS costo_unitario, d.total_linea AS costo,
-             oc.numero_documento AS documento, COALESCE(ca.nombre,'Servicios / Gasto directo') AS categoria
+             oc.numero_documento AS documento, COALESCE(sc.nombre,'Servicios / Gasto directo') AS categoria
       FROM ordenes_compra oc
       JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
       LEFT JOIN productos p ON d.producto_id=p.producto_id
       LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,p.subcategoria_id)=sc.subcategoria_id
-      LEFT JOIN categorias ca ON sc.categoria_id=ca.categoria_id
       LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
       LEFT JOIN faenas f ON d.faena_id=f.faena_id
       WHERE ${wDir.join(' AND ')} ORDER BY oc.fecha_emision DESC LIMIT 1000`, pDir);
