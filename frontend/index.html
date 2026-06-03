@@ -3919,6 +3919,7 @@ function InformeCostosView(p){
   const[loading,setLoading]=useState(false);
   const[err,setErr]=useState('');
   const[drill,setDrill]=useState(null); // {dimension, valor, nombre}
+  const[showIncon,setShowIncon]=useState(false); // modal de inconsistencias empresa↔faena
   const empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
 
   function fmt(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
@@ -4002,6 +4003,15 @@ function InformeCostosView(p){
     h('div',{className:'al al-i',style:{marginBottom:14,fontSize:12}},
       h('strong',null,'Criterio contable: '),'el costo se reconoce al ',h('strong',null,'consumir'),', no al comprar. Las compras que ingresan a bodega permanecen como ',h('strong',null,'activo (existencias)'),' hasta su salida. Período: ',fmtFecha(data.periodo.desde),' al ',fmtFecha(data.periodo.hasta),'.'
     ),
+    // Aviso de inconsistencias empresa ↔ faena
+    data.inconsistencias&&data.inconsistencias.count>0&&h('div',{onClick:function(){setShowIncon(true);},style:{marginBottom:14,padding:'10px 14px',background:'#FFFBEB',border:'1px solid #FCD34D',borderRadius:8,cursor:'pointer',display:'flex',alignItems:'center',gap:10}},
+      h('span',{style:{fontSize:18}},'⚠'),
+      h('div',{style:{flex:1,fontSize:12,color:'#92400E'}},
+        h('strong',null,data.inconsistencias.count+' movimiento(s)'),' tienen la empresa distinta a la de su faena (posible error de digitación). ',
+        'Monto involucrado: ',h('strong',null,fmt(data.inconsistencias.total)),'.'
+      ),
+      h('span',{style:{fontSize:11,fontWeight:700,color:'#B45309',whiteSpace:'nowrap'}},'Ver detalle →')
+    ),
     // ═══ KPIs ═══
     h('div',{style:{display:'flex',gap:12,flexWrap:'wrap',marginBottom:8}},
       h(Kpi,{label:'COSTO TOTAL DEL PERÍODO',value:R.costo_total,color:'#1E3A2D',big:true,bg:'#F0FDF4'})
@@ -4033,7 +4043,56 @@ function InformeCostosView(p){
       h(TablaCosto,{titulo:'Top proveedores (compras directas)',datos:data.por_proveedor,color:'#7C3AED',limite:12,dimension:'proveedor'}),
       h(TablaCosto,{titulo:'Evolución mensual',datos:(data.por_mes||[]).map(function(m){return{nombre:m.mes,costo:m.costo};}),color:'#1E3A2D'})
     ),
-    drill&&h(CostoDetalleModal,{tok:p.tok,desde:desde,hasta:hasta,dimension:drill.dimension,valor:drill.valor,nombre:drill.nombre,onClose:function(){setDrill(null);}})
+    drill&&h(CostoDetalleModal,{tok:p.tok,desde:desde,hasta:hasta,empresaId:empresaId,dimension:drill.dimension,valor:drill.valor,nombre:drill.nombre,onClose:function(){setDrill(null);}}),
+    showIncon&&data.inconsistencias&&h(InconsistenciasModal,{data:data.inconsistencias,onClose:function(){setShowIncon(false);}})
+  );
+}
+
+// Modal: lista movimientos donde la empresa del movimiento ≠ empresa de la faena
+function InconsistenciasModal(p){
+  function fmt(n){return '$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+  function fmtD(f){return f?String(f).slice(0,10):'—';}
+  var rows=p.data.rows||[];
+  function exportar(){
+    exportXLSX(rows,[
+      {header:'Fecha',value:function(r){return fmtD(r.fecha);}},
+      {header:'Origen',value:function(r){return r.origen;}},
+      {header:'Equipo',value:function(r){return r.equipo||'';}},
+      {header:'Detalle',value:function(r){return r.detalle||'';}},
+      {header:'Faena',value:function(r){return r.faena||'';}},
+      {header:'Empresa del movimiento',value:function(r){return r.empresa_mov||'';}},
+      {header:'Empresa de la faena',value:function(r){return r.empresa_faena||'';}},
+      {header:'Costo',value:function(r){return r.costo;}}
+    ],'inconsistencias_empresa_faena');
+  }
+  var th={textAlign:'left',padding:'6px 8px',fontSize:10,color:'#64748B',borderBottom:'1px solid #E2E8F0',whiteSpace:'nowrap'};
+  var td={padding:'6px 8px',fontSize:11,borderBottom:'1px solid #F1F5F9'};
+  return h(Modal,{title:'⚠ Movimientos con empresa distinta a la de su faena',onClose:p.onClose,xl:true},
+    h('div',{style:{fontSize:12,color:'#475569',marginBottom:10}},
+      'Estos movimientos están tagueados con una empresa, pero la faena a la que se cargaron pertenece a otra. ',
+      'Revisa la distribución/salida/OC de origen y corrige la empresa o la faena. ',
+      h('strong',null,(rows.length)+' movimiento(s)'),' · Total ',h('strong',null,fmt(p.data.total)),'.'
+    ),
+    h('div',{style:{marginBottom:10}},h(Btn,{v:'g',onClick:exportar},'Exportar Excel')),
+    rows.length===0
+      ? h('div',{style:{padding:20,textAlign:'center',color:'#94A3B8'}},'Sin inconsistencias en el período.')
+      : h('div',{style:{maxHeight:'55vh',overflow:'auto',border:'1px solid #E2E8F0',borderRadius:6}},
+          h('table',{style:{width:'100%',borderCollapse:'collapse'}},
+            h('thead',null,h('tr',null,
+              h('th',{style:th},'Fecha'),h('th',{style:th},'Origen'),h('th',{style:th},'Equipo'),
+              h('th',{style:th},'Faena'),h('th',{style:th},'Empresa mov. → Empresa faena'),
+              h('th',{style:Object.assign({},th,{textAlign:'right'})},'Costo')
+            )),
+            h('tbody',null,rows.map(function(r,i){return h('tr',{key:i},
+              h('td',{style:td},fmtD(r.fecha)),
+              h('td',{style:td},r.origen),
+              h('td',{style:td},h('div',null,h('strong',null,r.equipo||'—'),r.detalle&&h('div',{style:{fontSize:9,color:'#94A3B8'}},r.detalle))),
+              h('td',{style:td},r.faena||'—'),
+              h('td',{style:td},h('span',{style:{color:'#B45309',fontWeight:600}},r.empresa_mov||'—'),' → ',h('span',{style:{color:'#1E40AF',fontWeight:600}},r.empresa_faena||'—')),
+              h('td',{style:Object.assign({},td,{textAlign:'right',fontFamily:'monospace',fontWeight:600})},fmt(r.costo))
+            );}))
+          )
+        )
   );
 }
 
@@ -4055,6 +4114,7 @@ function CostoDetalleModal(p){
   function cargarCategorias(eqFiltro){
     setLoading(true);setErr('');
     var qs='?desde='+p.desde+'&hasta='+p.hasta+'&dimension='+p.dimension+'&valor='+encodeURIComponent(p.valor);
+    if(p.empresaId)qs+='&empresa_id='+p.empresaId;
     if(eqFiltro)qs+='&equipo_filtro='+encodeURIComponent(eqFiltro);
     api('/finanzas/informe-costos/detalle'+qs,'GET',null,p.tok)
       .then(function(r){setCatData(r.por_categoria||[]);if(r.equipos)setEquipos(r.equipos);})
@@ -4065,6 +4125,7 @@ function CostoDetalleModal(p){
   function cargarMovimientos(cat,eqFiltro){
     setLoading(true);setErr('');setCatSel(cat);
     var qs='?desde='+p.desde+'&hasta='+p.hasta+'&dimension='+p.dimension+'&valor='+encodeURIComponent(p.valor)+'&categoria='+encodeURIComponent(cat);
+    if(p.empresaId)qs+='&empresa_id='+p.empresaId;
     if(eqFiltro===undefined)eqFiltro=eqSel;
     if(eqFiltro)qs+='&equipo_filtro='+encodeURIComponent(eqFiltro);
     api('/finanzas/informe-costos/detalle'+qs,'GET',null,p.tok)
