@@ -10380,6 +10380,7 @@ function MantVencimientos(p){
   const[filtEstado,setFiltEstado]=useState('');
   const[showImportUC,setShowImportUC]=useState(false);
   const[showSemilla,setShowSemilla]=useState(null); // plan al que editar semilla manual
+  const[showGenOT,setShowGenOT]=useState(null); // plan al que generar OT
 
   function load(){
     setLoading(true);
@@ -10522,14 +10523,137 @@ function MantVencimientos(p){
         }},
         {lbl:'',c:true,render:function(r){return h('div',{style:{display:'flex',gap:3}},
           h('button',{onClick:function(){setShowSemilla(r);},title:'Editar último servicio manualmente',style:{padding:'3px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'✏'),
-          (r.estado_vencimiento==='vencida'||r.estado_vencimiento==='proxima')&&parseInt(r.ots_abiertas||0)===0&&h('button',{onClick:function(){alert('Próxima fase: generación automática de OT desde plan');},title:'Crear OT desde este plan',style:{padding:'3px 6px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'+ OT')
+          (r.estado_vencimiento==='vencida'||r.estado_vencimiento==='proxima')&&parseInt(r.ots_abiertas||0)===0&&h('button',{onClick:function(){setShowGenOT(r);},title:'Crear OT desde este plan (puede cerrar varias mantenciones a la vez)',style:{padding:'3px 6px',background:'#10B981',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10}},'+ OT')
         );}}
       ],rows:vencsFilt,empty:'Sin planes programados. Importa la pauta desde el módulo Plan Maestro.'})
     ),
 
     // Modales
     showImportUC&&h(MantUltimoCambioImportModal,{tok:p.tok,onClose:function(){setShowImportUC(false);load();}}),
-    showSemilla&&h(MantSemillaEditModal,{tok:p.tok,plan:showSemilla,onClose:function(){setShowSemilla(null);},onSave:function(){setShowSemilla(null);load();}})
+    showSemilla&&h(MantSemillaEditModal,{tok:p.tok,plan:showSemilla,onClose:function(){setShowSemilla(null);},onSave:function(){setShowSemilla(null);load();}}),
+    showGenOT&&h(MantGenerarOTModal,{tok:p.tok,plan:showGenOT,allVencs:vencs,onClose:function(){setShowGenOT(null);},onSaved:function(){setShowGenOT(null);load();}})
+  );
+}
+
+// Modal: generar OT desde un plan de vencimiento, con opción de cerrar
+// varias mantenciones múltiplo del mismo equipo en una sola OT.
+function MantGenerarOTModal(p){
+  var plan=p.plan;
+  var primInt=parseFloat(plan.intervalo_horas)||null;
+  var fmtN=function(n){return n==null?'—':new Intl.NumberFormat('es-CL',{maximumFractionDigits:1}).format(n);};
+  var fmtISO=function(d){return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);};
+  function esMultiplo(c){
+    var ci=parseFloat(c.intervalo_horas)||0;
+    return primInt&&ci&&ci<primInt&&(primInt%ci===0);
+  }
+  var candidatos=(p.allVencs||[]).filter(function(v){
+    return v.equipo_id===plan.equipo_id&&v.plan_id!==plan.plan_id&&v.intervalo_horas;
+  }).sort(function(a,b){return (parseFloat(a.intervalo_horas)||0)-(parseFloat(b.intervalo_horas)||0);});
+
+  const[sel,setSel]=useState(function(){var o={};candidatos.forEach(function(c){o[c.plan_id]=esMultiplo(c);});return o;});
+  const[estado,setEstado]=useState('abierta');
+  const[fApertura,setFApertura]=useState(fmtISO(new Date()));
+  const[fProg,setFProg]=useState('');
+  const[horo,setHoro]=useState(plan.horometro_actual!=null?String(Math.round(parseFloat(plan.horometro_actual))):'');
+  const[prioridad,setPrioridad]=useState(plan.prioridad||'normal');
+  const[resp,setResp]=useState('');
+  const[obs,setObs]=useState('');
+  const[saving,setSaving]=useState(false);
+  const[err,setErr]=useState('');
+
+  var seleccionados=candidatos.filter(function(c){return sel[c.plan_id];});
+  var totalPlanes=1+seleccionados.length;
+
+  function guardar(){
+    if(estado==='cerrada'&&!horo){setErr('Indica el horómetro del servicio para crear la OT ya cerrada.');return;}
+    setSaving(true);setErr('');
+    api('/mant/ot/desde-plan','POST',{
+      plan_id:plan.plan_id,
+      plan_ids:seleccionados.map(function(c){return c.plan_id;}),
+      estado:estado,
+      fecha_apertura:fApertura||null,
+      fecha_programada:fProg||null,
+      horometro_servicio:horo?parseFloat(horo):null,
+      prioridad:prioridad,
+      responsable:resp||null,
+      observaciones:obs||null
+    },p.tok)
+      .then(function(r){
+        alert('✓ OT '+(r.numero_ot||'')+' creada — cubre '+(r.planes_cubiertos||totalPlanes)+' plan(es), '+(r.tareas_cargadas||0)+' tarea(s) cargadas.');
+        p.onSaved&&p.onSaved();
+      })
+      .catch(function(e){setErr(e.message);setSaving(false);});
+  }
+
+  var inp={padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,width:'100%',boxSizing:'border-box'};
+  var lbl={fontSize:11,fontWeight:600,color:'#475569',marginBottom:3,display:'block'};
+  var confE={vencida:{c:'#DC2626',l:'🔴'},proxima:{c:'#F59E0B',l:'🟡'},vigente:{c:'#10B981',l:'🟢'},sin_referencia:{c:'#94A3B8',l:'⚪'}};
+
+  return h(Modal,{title:'🔧 Generar OT desde plan',onClose:p.onClose,lg:true},
+    h('div',{style:{padding:10,background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:6,marginBottom:12}},
+      h('div',{style:{fontSize:13,fontWeight:700,color:'#166534'}},(plan.equipo_codigo||'')+' — '+(plan.equipo_nombre||'')),
+      h('div',{style:{fontSize:12,color:'#15803D',marginTop:2}},'Plan principal: '+plan.plan_nombre+(primInt?(' ('+primInt+' h)'):'')),
+      h('div',{style:{fontSize:11,color:'#64748B',marginTop:2}},'Horómetro actual: '+fmtN(plan.horometro_actual)+' h'+(plan.proxHrs?(' · Próximo: '+fmtN(plan.proxHrs)+' h'):''))
+    ),
+
+    candidatos.length>0&&h('div',{style:{marginBottom:12}},
+      h('div',{style:{fontSize:12,fontWeight:700,color:'#334155',marginBottom:6}},'Cerrar también estas mantenciones del mismo equipo:'),
+      h('div',{style:{border:'1px solid #E2E8F0',borderRadius:6,overflow:'hidden'}},
+        candidatos.map(function(c){
+          var mult=esMultiplo(c);
+          var ec=confE[c.estado_vencimiento]||confE.sin_referencia;
+          return h('label',{key:c.plan_id,style:{display:'flex',alignItems:'center',gap:8,padding:'7px 10px',borderBottom:'1px solid #F1F5F9',cursor:'pointer',background:sel[c.plan_id]?'#EFF6FF':'#fff'}},
+            h('input',{type:'checkbox',checked:!!sel[c.plan_id],onChange:function(e){var o=Object.assign({},sel);o[c.plan_id]=e.target.checked;setSel(o);}}),
+            h('span',{style:{flex:1,fontSize:12}},
+              h('strong',null,parseFloat(c.intervalo_horas)+' h'),' — ',c.plan_nombre,
+              mult&&h('span',{style:{marginLeft:6,padding:'1px 6px',background:'#DBEAFE',color:'#1E40AF',borderRadius:8,fontSize:9,fontWeight:600}},'múltiplo')
+            ),
+            h('span',{style:{fontSize:11,color:ec.c}},ec.l+' '+(c.estado_vencimiento||''))
+          );
+        })
+      ),
+      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:4}},'Se preseleccionan los intervalos submúltiplo del principal (ej: 250 h dentro de 500 h). Las tareas de los planes elegidos se consolidan sin duplicar.')
+    ),
+
+    h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
+      h('div',null,h('label',{style:lbl},'Estado de la OT'),
+        h('select',{value:estado,onChange:function(e){setEstado(e.target.value);},style:inp},
+          h('option',{value:'abierta'},'Abierta (pendiente de ejecutar)'),
+          h('option',{value:'en_ejecucion'},'En ejecución'),
+          h('option',{value:'cerrada'},'Cerrada (ya realizada)')
+        )
+      ),
+      h('div',null,h('label',{style:lbl},'Horómetro del servicio'+(estado==='cerrada'?' *':'')),
+        h('input',{type:'number',value:horo,onChange:function(e){setHoro(e.target.value);},style:inp,placeholder:'h'})
+      ),
+      h('div',null,h('label',{style:lbl},'Fecha apertura'),
+        h('input',{type:'date',value:fApertura,onChange:function(e){setFApertura(e.target.value);},style:inp})
+      ),
+      h('div',null,h('label',{style:lbl},estado==='cerrada'?'Fecha realización':'Fecha programada'),
+        h('input',{type:'date',value:fProg,onChange:function(e){setFProg(e.target.value);},style:inp})
+      ),
+      h('div',null,h('label',{style:lbl},'Prioridad'),
+        h('select',{value:prioridad,onChange:function(e){setPrioridad(e.target.value);},style:inp},
+          h('option',{value:'baja'},'Baja'),h('option',{value:'normal'},'Normal'),h('option',{value:'alta'},'Alta'),h('option',{value:'critica'},'Crítica')
+        )
+      ),
+      h('div',null,h('label',{style:lbl},'Responsable'),
+        h('input',{value:resp,onChange:function(e){setResp(e.target.value);},style:inp,placeholder:'Opcional'})
+      )
+    ),
+    h('div',{style:{marginBottom:10}},h('label',{style:lbl},'Observaciones'),
+      h('textarea',{value:obs,onChange:function(e){setObs(e.target.value);},style:Object.assign({},inp,{minHeight:50,resize:'vertical'}),placeholder:'Opcional'})
+    ),
+
+    err&&h('div',{style:{padding:8,background:'#FEE2E2',color:'#991B1B',borderRadius:5,fontSize:12,marginBottom:10}},err),
+
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}},
+      h('span',{style:{fontSize:12,color:'#64748B'}},'Se generará 1 OT que cubre '+totalPlanes+' plan(es).'),
+      h('div',{style:{display:'flex',gap:8}},
+        h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),
+        h(Btn,{v:'p',onClick:guardar,disabled:saving},saving?'Guardando...':'Crear OT')
+      )
+    )
   );
 }
 
