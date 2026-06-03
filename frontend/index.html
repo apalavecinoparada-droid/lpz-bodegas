@@ -5685,6 +5685,7 @@ function OCGuiasView(p){
   var[pendientes,setPendientes]=useState([]);
   var[facturas,setFacturas]=useState([]);
   var[selIds,setSelIds]=useState([]);
+  var[filtEmpresa,setFiltEmpresa]=useState(''); // filtro por empresa en guías pendientes
   var[showForm,setShowForm]=useState(false);
   var[form,setForm]=useState({numero_factura:'',fecha_factura:new Date().toISOString().slice(0,10),neto:'',iva:'',ie_total:'0',total:'',observaciones:'',empresa_id:''});
   var[msg,setMsg]=useState('');
@@ -5699,10 +5700,15 @@ function OCGuiasView(p){
     api('/oc-guias/facturas'+qs,'GET',null,p.tok).then(function(r){setFacturas(Array.isArray(r)?r:[]);}).catch(function(){});
   }
   useEffect(function(){loadProvsPend();},[p.tok]);
-  useEffect(function(){loadPendientes(selProv);loadFacturas(selProv);},[selProv]);
+  useEffect(function(){loadPendientes(selProv);loadFacturas(selProv);setFiltEmpresa('');},[selProv]);
 
   function toggleSel(id){setSelIds(function(ids){return ids.includes(id)?ids.filter(function(x){return x!==id;}):ids.concat([id]);});}
-  function selectAll(){setSelIds(pendientes.map(function(r){return r.oc_id;}));}
+
+  // Empresas presentes en las guías pendientes (para el filtro) y lista filtrada
+  var empresasEnPend=(function(){var seen={},out=[];pendientes.forEach(function(r){var id=String(r.empresa_id||'');if(!seen[id]){seen[id]=true;out.push({id:id,nombre:r.empresa_nombre||'(sin empresa)'});}});return out.sort(function(a,b){return a.nombre.localeCompare(b.nombre);});})();
+  var pendientesFilt=filtEmpresa?pendientes.filter(function(r){return String(r.empresa_id||'')===String(filtEmpresa);}):pendientes;
+
+  function selectAll(){setSelIds(pendientesFilt.map(function(r){return r.oc_id;}));}
   function selectNone(){setSelIds([]);}
 
   var selOcs=pendientes.filter(function(r){return selIds.includes(r.oc_id);});
@@ -5759,6 +5765,8 @@ function OCGuiasView(p){
 
   function openFacturar(){
     if(!selIds.length){alert('Seleccione al menos una guía');return;}
+    var empsSel=Array.from(new Set(selOcs.map(function(r){return String(r.empresa_id||'');})));
+    if(empsSel.length>1){alert('Las guías seleccionadas son de empresas distintas. Una factura corresponde a una sola empresa: filtra por empresa y selecciona solo las de una.');return;}
     var emp=selOcs[0]?selOcs[0].empresa_id:'';
     setForm({numero_factura:'',fecha_factura:new Date().toISOString().slice(0,10),neto:'',iva:'',ie_total:'',total:'',observaciones:'',empresa_id:String(emp||'')});
     // Dejar ajustes vacíos — el usuario transcribe los totales de la factura
@@ -5816,15 +5824,19 @@ function OCGuiasView(p){
     ),
     // Guías pendientes del proveedor seleccionado
     selProv&&h('div',{className:'card',style:{padding:16,marginBottom:16}},
-      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12,gap:10,flexWrap:'wrap'}},
         h('div',{style:{fontSize:14,fontWeight:700,color:'#1E3A2D'}},'Guías pendientes — '+(provsPend.find(function(pr){return String(pr.proveedor_id)===String(selProv);})||{}).nombre),
-        h('div',{style:{display:'flex',gap:6}},
+        h('div',{style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}},
+          empresasEnPend.length>1&&h('select',{value:filtEmpresa,onChange:function(e){setFiltEmpresa(e.target.value);setSelIds([]);},style:{padding:'5px 9px',borderRadius:4,border:'1px solid #CBD5E1',background:'#fff',fontSize:11,cursor:'pointer'}},
+            h('option',{value:''},'Todas las empresas ('+pendientes.length+')'),
+            empresasEnPend.map(function(e){return h('option',{key:e.id,value:e.id},e.nombre+' ('+pendientes.filter(function(r){return String(r.empresa_id||'')===e.id;}).length+')');})
+          ),
           h('button',{onClick:selectAll,style:{padding:'4px 10px',borderRadius:4,border:'1px solid #CBD5E1',background:'#fff',fontSize:10,cursor:'pointer'}},'Seleccionar todas'),
           h('button',{onClick:selectNone,style:{padding:'4px 10px',borderRadius:4,border:'1px solid #CBD5E1',background:'#fff',fontSize:10,cursor:'pointer'}},'Deseleccionar'),
           selIds.length>0&&h(Btn,{onClick:openFacturar},'📄 Facturar '+selIds.length+' guía(s)')
         )
       ),
-      pendientes.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,textAlign:'center',padding:20}},'Sin guías pendientes para este proveedor'):
+      pendientesFilt.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,textAlign:'center',padding:20}},filtEmpresa?'Sin guías pendientes para esta empresa':'Sin guías pendientes para este proveedor'):
       h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
         h('thead',null,h('tr',null,
           h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'center',width:30}},''),
@@ -5838,7 +5850,7 @@ function OCGuiasView(p){
           h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'center',width:40}},'')
         )),
         h('tbody',null,
-          pendientes.reduce(function(acc,oc){
+          pendientesFilt.reduce(function(acc,oc){
             var isSel=selIds.includes(oc.oc_id);
             var hasComb=parseFloat(oc.litros_comb)>0;
             var isExp=expandedId===oc.oc_id;
