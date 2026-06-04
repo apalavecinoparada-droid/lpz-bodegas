@@ -1961,9 +1961,9 @@ function KardexView(p){
       var bal=0,cpp=0;
       const calc=(Array.isArray(r)?r:[]).map(function(row){
         const ent=parseFloat(row.entrada||0),sal=parseFloat(row.salida||0);
-        if(ent>0){const nq=bal+ent;cpp=nq>0?(bal*cpp+ent*parseFloat(row.costo_unitario))/nq:parseFloat(row.costo_unitario);bal=nq;}
-        else if(sal>0){bal=Math.max(0,bal-sal);}
-        return Object.assign({},row,{saldo:bal,cpp_calc:cpp});
+        if(ent>0){var base=Math.max(0,bal);const nq=base+ent;cpp=nq>0?(base*cpp+ent*parseFloat(row.costo_unitario||0))/nq:parseFloat(row.costo_unitario||0);bal=bal+ent;}
+        else if(sal>0){bal=bal-sal;} // sin truncar: el saldo refleja el acumulado real (entradas - salidas)
+        return Object.assign({},row,{saldo:Math.round(bal*1000)/1000,cpp_calc:cpp});
       });
       setRows(calc);
     }).catch(function(){}).finally(function(){setLoad(false);});
@@ -2212,7 +2212,8 @@ function InvAuditoriaView(p){
       h('button',{onClick:function(){setTab('desincronizacion');},style:{padding:'7px 12px',background:tab==='desincronizacion'?'#F59E0B':'transparent',color:tab==='desincronizacion'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'⚡ Desincronización ('+(res.desincronizacion||0)+')'),
       h('button',{onClick:function(){setTab('duplicados');},style:{padding:'7px 12px',background:tab==='duplicados'?'#3B82F6':'transparent',color:tab==='duplicados'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'👥 Duplicados ('+((res.cod_duplicados||0)+(res.nom_duplicados||0))+')'),
       h('button',{onClick:function(){setTab('anulados');},style:{padding:'7px 12px',background:tab==='anulados'?'#6B7280':'transparent',color:tab==='anulados'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'📌 Anulados recientes ('+(res.anulados_recientes||0)+')'),
-      h('button',{onClick:function(){setTab('huerfanos');},style:{padding:'7px 12px',background:tab==='huerfanos'?'#94A3B8':'transparent',color:tab==='huerfanos'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'🔘 Stock sin mov. ('+(res.stock_sin_mov||0)+')')
+      h('button',{onClick:function(){setTab('huerfanos');},style:{padding:'7px 12px',background:tab==='huerfanos'?'#94A3B8':'transparent',color:tab==='huerfanos'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'🔘 Stock sin mov. ('+(res.stock_sin_mov||0)+')'),
+      h('button',{onClick:function(){setTab('retroactivos');},style:{padding:'7px 12px',background:tab==='retroactivos'?'#7C3AED':'transparent',color:tab==='retroactivos'?'#fff':'#475569',border:'none',borderRadius:'5px 5px 0 0',cursor:'pointer',fontSize:12,fontWeight:600}},'🕓 Kardex/retroactivos ('+(res.retroactivos||0)+')')
     ),
 
     // Tab content
@@ -2343,6 +2344,26 @@ function InvAuditoriaView(p){
                   h('td',{className:'r mono'},fmtN(r.cantidad_disponible)),
                   h('td',{className:'r mono'},fmtCLP(r.costo_promedio_actual)),
                   h('td',null,h('button',{onClick:function(){recalcularStock(r.producto_id,r.bodega_id);},disabled:busy,style:{padding:'3px 8px',background:'#DC2626',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10,fontWeight:600},title:'Recalcular: pondrá stock en 0 si no hay movimientos'},'⚙ Limpiar'))
+                );
+              }))
+            )
+          )
+      ),
+      tab==='retroactivos'&&((data.retroactivos||[]).length===0
+        ? h('div',{className:'al al-s',style:{padding:20,textAlign:'center'}},'✓ No hay productos con movimientos retroactivos ni saldo negativo en el tiempo.')
+        : h('div',null,
+            h('div',{className:'al al-w',style:{fontSize:11,marginBottom:6}},'Productos con movimientos ',h('strong',null,'retroactivos'),' (registrados con fecha anterior a movimientos ya existentes) o cuyo saldo cronológico cae bajo cero en algún punto. El stock guardado puede ser correcto, pero el kardex se ve distorsionado porque las salidas quedaron antes de su ingreso. Recalcular el stock corrige el saldo guardado; revisar las fechas de los movimientos corrige el kardex.'),
+            h('table',{style:{fontSize:12,borderCollapse:'collapse'}},
+              h('thead',null,h('tr',null,h('th',null,'Código'),h('th',null,'Producto'),h('th',null,'Bodega'),h('th',{className:'r'},'Saldo mín. histórico'),h('th',{className:'r'},'Movs. retroactivos'),h('th',null,'Acción'))),
+              h('tbody',null,(data.retroactivos||[]).map(function(r,i){
+                var neg=parseFloat(r.saldo_min)<0;
+                return h('tr',{key:i,style:neg?{background:'#FEF2F2'}:null},
+                  h('td',null,h('strong',null,r.codigo)),
+                  h('td',null,r.nombre),
+                  h('td',{style:{fontSize:11}},r.bodega_nombre),
+                  h('td',{className:'r mono',style:{color:neg?'#DC2626':'#475569',fontWeight:neg?700:400}},fmtN(r.saldo_min)),
+                  h('td',{className:'r mono',style:{color:parseInt(r.movs_retroactivos)>0?'#7C3AED':'#94A3B8',fontWeight:600}},r.movs_retroactivos),
+                  h('td',null,h('button',{onClick:function(){recalcularStock(r.producto_id,r.bodega_id);},disabled:busy,style:{padding:'3px 8px',background:'#7C3AED',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontSize:10,fontWeight:600},title:'Recalcula el stock guardado desde la suma de movimientos'},'⚙ Recalcular'))
                 );
               }))
             )
