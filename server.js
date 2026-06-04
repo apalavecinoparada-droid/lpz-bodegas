@@ -2293,6 +2293,34 @@ app.get('/api/inv/auditoria', auth, async(req,res)=>{
         )
       ORDER BY sa.cantidad_disponible DESC`);
 
+    // 8) MOVIMIENTOS RETROACTIVOS y/o saldo negativo en el tiempo.
+    //    Un movimiento "retroactivo" tiene fecha anterior a la de movimientos ya registrados
+    //    (id menor). Esto rompe el orden cronológico del kardex y suele ser la causa de
+    //    diferencias percibidas entre el kardex y el stock real, aunque el stock guardado
+    //    (suma neta) sea correcto. También detecta productos cuyo saldo cronológico cae bajo
+    //    cero en algún punto (salida antes de tener stock / falta un ingreso).
+    const retroNeg=await pool.query(`
+      WITH mov AS (
+        SELECT md.producto_id, me.bodega_id, me.fecha, me.movimiento_id,
+               CASE WHEN me.tipo_movimiento IN ('INGRESO','TRASPASO_INGRESO') THEN md.cantidad
+                    WHEN me.tipo_movimiento IN ('SALIDA','TRASPASO_SALIDA') THEN -md.cantidad ELSE 0 END AS delta
+        FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
+        WHERE me.estado='ACTIVO'
+      ),
+      conrun AS (
+        SELECT producto_id, bodega_id, fecha, movimiento_id,
+          SUM(delta) OVER (PARTITION BY producto_id,bodega_id ORDER BY fecha, movimiento_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS saldo_cron,
+          MAX(fecha) OVER (PARTITION BY producto_id,bodega_id ORDER BY movimiento_id ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS max_fecha_prev
+        FROM mov
+      )
+      SELECT c.producto_id, c.bodega_id, p.codigo, p.nombre, b.nombre AS bodega_nombre,
+             ROUND(MIN(c.saldo_cron)::numeric,2) AS saldo_min,
+             COUNT(*) FILTER (WHERE c.fecha < c.max_fecha_prev) AS movs_retroactivos
+      FROM conrun c JOIN productos p ON c.producto_id=p.producto_id JOIN bodegas b ON c.bodega_id=b.bodega_id
+      GROUP BY c.producto_id,c.bodega_id,p.codigo,p.nombre,b.nombre
+      HAVING MIN(c.saldo_cron) < -0.001 OR COUNT(*) FILTER (WHERE c.fecha < c.max_fecha_prev) > 0
+      ORDER BY COUNT(*) FILTER (WHERE c.fecha < c.max_fecha_prev) DESC, MIN(c.saldo_cron)`);
+
     res.json({
       resumen:{
         cpp_raro: cppRaro.rows.length,
@@ -2301,7 +2329,8 @@ app.get('/api/inv/auditoria', auth, async(req,res)=>{
         cod_duplicados: dupCodigos.rows.length,
         nom_duplicados: dupNombres.rows.length,
         anulados_recientes: anuladosRec.rows.length,
-        stock_sin_mov: stockSinMov.rows.length
+        stock_sin_mov: stockSinMov.rows.length,
+        retroactivos: retroNeg.rows.length
       },
       cpp_raro: cppRaro.rows,
       stock_negativo: stockNeg.rows,
@@ -2309,7 +2338,8 @@ app.get('/api/inv/auditoria', auth, async(req,res)=>{
       cod_duplicados: dupCodigos.rows,
       nom_duplicados: dupNombres.rows,
       anulados_recientes: anuladosRec.rows,
-      stock_sin_mov: stockSinMov.rows
+      stock_sin_mov: stockSinMov.rows,
+      retroactivos: retroNeg.rows
     });
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -2600,7 +2630,7 @@ app.get('/api/kardex', auth, async(req,res)=>{
     if(!producto_id) return res.status(400).json({error:'producto_id requerido'});
     let where='md.producto_id=$1',vals=[producto_id];
     if(bodega_id){vals.push(bodega_id);where+=` AND me.bodega_id=$${vals.length}`;}
-    const r=await pool.query(`SELECT me.movimiento_id,me.tipo_movimiento,me.fecha,me.bodega_id,b.nombre AS bodega_nombre,me.bodega_destino_id,bd.nombre AS bodega_destino_nombre,md.producto_id,p.codigo AS producto_codigo,p.nombre AS producto_nombre,p.unidad_medida,CASE WHEN me.tipo_movimiento IN ('INGRESO','TRASPASO_INGRESO') THEN md.cantidad ELSE 0 END AS entrada,CASE WHEN me.tipo_movimiento IN ('SALIDA','TRASPASO_SALIDA') THEN md.cantidad ELSE 0 END AS salida,md.costo_unitario,md.costo_total,me.faena_id,f.nombre AS faena_nombre,me.equipo_id,e.nombre AS equipo_nombre,me.observaciones,me.estado FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id JOIN bodegas b ON me.bodega_id=b.bodega_id LEFT JOIN bodegas bd ON me.bodega_destino_id=bd.bodega_id JOIN productos p ON md.producto_id=p.producto_id LEFT JOIN faenas f ON me.faena_id=f.faena_id LEFT JOIN equipos e ON me.equipo_id=e.equipo_id WHERE ${where} AND me.estado='ACTIVO' ORDER BY me.movimiento_id`,vals);
+    const r=await pool.query(`SELECT me.movimiento_id,me.tipo_movimiento,me.fecha,me.bodega_id,b.nombre AS bodega_nombre,me.bodega_destino_id,bd.nombre AS bodega_destino_nombre,md.producto_id,p.codigo AS producto_codigo,p.nombre AS producto_nombre,p.unidad_medida,CASE WHEN me.tipo_movimiento IN ('INGRESO','TRASPASO_INGRESO') THEN md.cantidad ELSE 0 END AS entrada,CASE WHEN me.tipo_movimiento IN ('SALIDA','TRASPASO_SALIDA') THEN md.cantidad ELSE 0 END AS salida,md.costo_unitario,md.costo_total,me.faena_id,f.nombre AS faena_nombre,me.equipo_id,e.nombre AS equipo_nombre,me.observaciones,me.estado FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id JOIN bodegas b ON me.bodega_id=b.bodega_id LEFT JOIN bodegas bd ON me.bodega_destino_id=bd.bodega_id JOIN productos p ON md.producto_id=p.producto_id LEFT JOIN faenas f ON me.faena_id=f.faena_id LEFT JOIN equipos e ON me.equipo_id=e.equipo_id WHERE ${where} AND me.estado='ACTIVO' ORDER BY me.fecha, me.movimiento_id`,vals);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
