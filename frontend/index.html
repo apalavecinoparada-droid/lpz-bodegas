@@ -2991,6 +2991,173 @@ function TerrenoInforme(p){
 // Detecta equipos sin reporte de terreno y discrepancias en litros
 // Submódulo del módulo Combustibles
 // ═══════════════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════════════
+// AUDITORÍA DE COMBUSTIBLES — balance por equipo, informe PDF y Excel
+// ═══════════════════════════════════════════════════════════════════════
+// Balance por equipo en el período: litros distribuidos (combustibles) vs
+// litros consumidos informados (terreno). La diferencia es el indicador clave
+// de posibles fugas / mermas / sub-reporte.
+function _auditBalanceEquipos(d){
+  var map={};
+  function ensure(r){var k=r.equipo_id;if(!map[k])map[k]={equipo_id:k,codigo:r.codigo,nombre:r.nombre,empresa:r.empresa||'',distribuido:0,terreno:0,dias_sin_terreno:0,dias_discrep:0,dias_ok:0};return map[k];}
+  (d.con_combustible_sin_terreno||[]).forEach(function(r){var x=ensure(r);x.distribuido+=parseFloat(r.litros_distribuidos)||0;x.dias_sin_terreno++;});
+  (d.discrepancias_litros||[]).forEach(function(r){var x=ensure(r);x.distribuido+=parseFloat(r.litros_distribuidos)||0;x.terreno+=parseFloat(r.litros_terreno)||0;x.dias_discrep++;});
+  (d.ok||[]).forEach(function(r){var x=ensure(r);x.distribuido+=parseFloat(r.litros_distribuidos)||0;x.terreno+=parseFloat(r.litros_terreno)||0;x.dias_ok++;});
+  (d.terreno_sin_combustible||[]).forEach(function(r){var x=ensure(r);x.terreno+=parseFloat(r.litros_terreno)||0;});
+  var out=Object.keys(map).map(function(k){var x=map[k];
+    x.distribuido=Math.round(x.distribuido*10)/10;x.terreno=Math.round(x.terreno*10)/10;
+    x.diff=Math.round((x.distribuido-x.terreno)*10)/10;
+    x.pct=x.terreno>0?Math.round((x.diff/x.terreno)*1000)/10:null;
+    // Marca de revisión: diferencia material (en litros o porcentaje)
+    x.alerta=(Math.abs(x.diff)>=20)||(x.pct!=null&&Math.abs(x.pct)>=15);
+    return x;});
+  out.sort(function(a,b){return Math.abs(b.diff)-Math.abs(a.diff);});
+  return out;
+}
+function _auditTotales(bal){
+  return bal.reduce(function(t,x){t.distribuido+=x.distribuido;t.terreno+=x.terreno;t.diff+=x.diff;return t;},{distribuido:0,terreno:0,diff:0});
+}
+
+function imprimirAuditoriaCombustible(data,meta){
+  var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
+  var nf=function(n,d){return new Intl.NumberFormat('es-CL',{minimumFractionDigits:d||0,maximumFractionDigits:d||0}).format(n||0);};
+  var fd=function(f){if(!f)return '';var s=String(f).slice(0,10),p=s.split('-');return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:s;};
+  var bal=_auditBalanceEquipos(data);
+  var tot=_auditTotales(bal);
+  var totalDistr=Math.round(tot.distribuido*10)/10, totalTerr=Math.round(tot.terreno*10)/10, totalDiff=Math.round(tot.diff*10)/10;
+
+  // Balance por equipo (análisis de fugas)
+  var balRows=bal.map(function(x){
+    var obs=x.alerta?(x.diff>0?'⚠ Revisar — entregado &gt; consumo':'⚠ Revisar — consumo &gt; entregado'):'OK';
+    return '<tr'+(x.alerta?' class="al"':'')+'>'+
+      '<td><b>'+esc(x.codigo)+'</b><div class="mut">'+esc(x.nombre)+'</div></td>'+
+      '<td class="r">'+nf(x.distribuido,1)+'</td>'+
+      '<td class="r">'+nf(x.terreno,1)+'</td>'+
+      '<td class="r b '+(x.diff>0?'neg':(x.diff<0?'pos':''))+'">'+(x.diff>0?'+':'')+nf(x.diff,1)+'</td>'+
+      '<td class="r">'+(x.pct==null?'—':((x.pct>0?'+':'')+nf(x.pct,1)+'%'))+'</td>'+
+      '<td class="sm">'+obs+'</td></tr>';
+  }).join('')||'<tr><td colspan="6" class="c mut">Sin datos de balance en el período.</td></tr>';
+
+  // Discrepancias diarias
+  var disc=(data.discrepancias_litros||[]).map(function(r){
+    var diff=(parseFloat(r.litros_terreno)||0)-(parseFloat(r.litros_distribuidos)||0);
+    return '<tr><td>'+fd(r.fecha)+'</td><td><b>'+esc(r.codigo)+'</b></td><td>'+esc(r.faena_terreno||'')+'</td>'+
+      '<td class="r">'+nf(r.litros_distribuidos,1)+'</td><td class="r">'+nf(r.litros_terreno,1)+'</td>'+
+      '<td class="r b">'+(diff>0?'+':'')+nf(diff,1)+'</td></tr>';
+  }).join('');
+
+  // Con combustible sin terreno
+  var sinT=(data.con_combustible_sin_terreno||[]).map(function(r){
+    return '<tr><td>'+fd(r.fecha)+'</td><td><b>'+esc(r.codigo)+'</b></td><td>'+esc(r.empresa||'')+'</td>'+
+      '<td class="r">'+nf(r.litros_distribuidos,1)+'</td><td class="c">'+(r.cargas||'')+'</td><td class="sm">'+esc(r.estanques||'')+'</td></tr>';
+  }).join('');
+
+  var html='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Auditoría de Combustibles</title><style>'+
+    '*{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;color:#111;margin:16px;font-size:11px}'+
+    'h1{font-size:17px;margin:0 0 2px}h2{font-size:13px;margin:16px 0 5px;border-bottom:2px solid #222;padding-bottom:3px}'+
+    '.sub{font-size:10px;color:#555;margin-bottom:8px}'+
+    'table{width:100%;border-collapse:collapse;margin-bottom:6px}'+
+    'th{background:#222;color:#fff;border:1px solid #222;padding:4px 6px;font-size:10px;text-align:left}'+
+    'td{border:1px solid #999;padding:4px 6px;font-size:10px;vertical-align:top}'+
+    'td.r,th.r{text-align:right}td.c,th.c{text-align:center}td.b{font-weight:bold}td.sm{font-size:9px}'+
+    'td.mut,.mut{color:#777;font-size:9px}td.neg{color:#B91C1C}td.pos{color:#15803D}tr.al td{background:#FEF3C7}'+
+    '.hd{width:100%;border:1px solid #999;margin-bottom:10px}.hd td{border:1px solid #ccc}.hd .l{background:#f0f0f0;font-weight:bold;width:90px}'+
+    '.kpis{display:flex;gap:6px;margin-bottom:8px}.kpi{flex:1;border:1px solid #999;padding:6px;text-align:center}.kpi .n{font-size:16px;font-weight:bold}.kpi .t{font-size:8px;color:#555}'+
+    '.note{font-size:9px;color:#444;border:1px solid #ccc;background:#fafafa;padding:6px;margin-top:6px}'+
+    '.firmas{display:flex;gap:40px;margin-top:40px}.firma{flex:1;text-align:center;border-top:1px solid #333;padding-top:4px;font-size:10px}'+
+    '@page{size:letter;margin:12mm}@media print{body{margin:0}th{-webkit-print-color-adjust:exact;print-color-adjust:exact}tr.al td{-webkit-print-color-adjust:exact;print-color-adjust:exact}}'+
+    '</style></head><body>'+
+    '<h1>INFORME DE AUDITORÍA DE COMBUSTIBLES</h1>'+
+    '<div class="sub">Cruce de combustible distribuido vs consumo informado en terreno — análisis de diferencias para detección de fugas/mermas</div>'+
+    '<table class="hd"><tr><td class="l">Período</td><td>'+fd(data.desde)+' al '+fd(data.hasta)+'</td><td class="l">Empresa</td><td>'+esc(meta.empresa||'Todas')+'</td></tr>'+
+    '<tr><td class="l">Equipo</td><td>'+esc(meta.equipo||'Todos')+'</td><td class="l">Generado</td><td>'+fd(new Date().toISOString())+' · '+esc(meta.usuario||'')+'</td></tr></table>'+
+
+    '<div class="kpis">'+
+      '<div class="kpi"><div class="n" style="color:#DC2626">'+(data.con_combustible_sin_terreno||[]).length+'</div><div class="t">Con combustible SIN terreno</div></div>'+
+      '<div class="kpi"><div class="n" style="color:#B45309">'+(data.discrepancias_litros||[]).length+'</div><div class="t">Discrepancia de litros</div></div>'+
+      '<div class="kpi"><div class="n" style="color:#15803D">'+(data.ok||[]).length+'</div><div class="t">OK (cruzan bien)</div></div>'+
+      '<div class="kpi"><div class="n" style="color:#1E40AF">'+(data.terreno_sin_combustible||[]).length+'</div><div class="t">Terreno sin combustible</div></div>'+
+      '<div class="kpi"><div class="n" style="color:#64748B">'+(data.sin_registro_alguno||[]).length+'</div><div class="t">Sin registro</div></div>'+
+    '</div>'+
+
+    '<h2>Balance por equipo — distribuido vs consumo (indicador de fugas)</h2>'+
+    '<table><thead><tr><th>Equipo</th><th class="r">Distribuido (L)</th><th class="r">Terreno (L)</th><th class="r">Diferencia (L)</th><th class="r">Desv. %</th><th>Observación</th></tr></thead>'+
+    '<tbody>'+balRows+
+    '<tr style="background:#eee;font-weight:bold"><td>TOTAL</td><td class="r">'+nf(totalDistr,1)+'</td><td class="r">'+nf(totalTerr,1)+'</td><td class="r">'+(totalDiff>0?'+':'')+nf(totalDiff,1)+'</td><td class="r"></td><td></td></tr>'+
+    '</tbody></table>'+
+    '<div class="note"><b>Cómo leer la diferencia:</b> Diferencia = Distribuido − Terreno. '+
+      'Valor <b>positivo</b> (entregado &gt; consumo informado): posible fuga, robo, merma o sub-reporte de terreno. '+
+      'Valor <b>negativo</b> (consumo &gt; entregado): posible carga externa no registrada o sobre-reporte. '+
+      'Las filas resaltadas superan 20 L o 15% de desviación y requieren revisión.</div>'+
+
+    (disc?('<h2>Discrepancias de litros por día</h2><table><thead><tr><th>Fecha</th><th>Equipo</th><th>Faena</th><th class="r">Combustibles (L)</th><th class="r">Terreno (L)</th><th class="r">Dif. (L)</th></tr></thead><tbody>'+disc+'</tbody></table>'):'')+
+
+    (sinT?('<h2>Combustible distribuido sin reporte de terreno</h2><table><thead><tr><th>Fecha</th><th>Equipo</th><th>Empresa</th><th class="r">Litros</th><th class="c">Cargas</th><th>Estanques</th></tr></thead><tbody>'+sinT+'</tbody></table>'):'')+
+
+    '<div class="firmas"><div class="firma">Elaborado por (Auditoría)</div><div class="firma">Revisado por (Jefe de Operaciones)</div></div>'+
+    '<script>window.onload=function(){setTimeout(function(){window.print();},400);};<\/script>'+
+    '</body></html>';
+  var w=window.open('','_blank','width=1000,height=850');
+  if(!w){alert('Habilita las ventanas emergentes para generar el informe PDF.');return;}
+  w.document.write(html);w.document.close();w.focus();
+}
+
+function exportAuditoriaExcel(data,meta){
+  try{
+    var nf=function(n){return Math.round((parseFloat(n)||0)*10)/10;};
+    var fd=function(f){if(!f)return '';return String(f).slice(0,10);};
+    var bal=_auditBalanceEquipos(data);
+    var tot=_auditTotales(bal);
+    var wb=XLSX.utils.book_new();
+    // Resumen
+    var resumen=[
+      ['INFORME DE AUDITORÍA DE COMBUSTIBLES'],
+      ['Período',fd(data.desde)+' al '+fd(data.hasta)],
+      ['Empresa',meta.empresa||'Todas'],
+      ['Equipo',meta.equipo||'Todos'],
+      ['Generado',new Date().toISOString().slice(0,16).replace('T',' ')+' · '+(meta.usuario||'')],
+      [],
+      ['Indicador','Cantidad'],
+      ['Con combustible SIN terreno',(data.con_combustible_sin_terreno||[]).length],
+      ['Discrepancia de litros',(data.discrepancias_litros||[]).length],
+      ['OK (cruzan bien)',(data.ok||[]).length],
+      ['Terreno sin combustible',(data.terreno_sin_combustible||[]).length],
+      ['Sin registro',(data.sin_registro_alguno||[]).length],
+      [],
+      ['Total litros distribuidos',nf(tot.distribuido)],
+      ['Total litros terreno',nf(tot.terreno)],
+      ['Diferencia neta (distribuido - terreno)',nf(tot.diff)]
+    ];
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(resumen),'Resumen');
+    // Balance por equipo
+    var balAoa=[['Código','Equipo','Empresa','Distribuido (L)','Terreno (L)','Diferencia (L)','Desv. %','Días s/terreno','Días discrep.','Requiere revisión']];
+    bal.forEach(function(x){balAoa.push([x.codigo,x.nombre,x.empresa,x.distribuido,x.terreno,x.diff,x.pct==null?'':x.pct,x.dias_sin_terreno,x.dias_discrep,x.alerta?'SÍ':'']);});
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(balAoa),'Balance por equipo');
+    // Discrepancias
+    var disc=[['Fecha','Código','Equipo','Faena','Combustibles (L)','Terreno (L)','Diferencia (L)']];
+    (data.discrepancias_litros||[]).forEach(function(r){var diff=(parseFloat(r.litros_terreno)||0)-(parseFloat(r.litros_distribuidos)||0);disc.push([fd(r.fecha),r.codigo,r.nombre,r.faena_terreno||'',nf(r.litros_distribuidos),nf(r.litros_terreno),nf(diff)]);});
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(disc),'Discrepancias');
+    // Sin terreno
+    var sinT=[['Fecha','Código','Equipo','Empresa','Litros distribuidos','Cargas','Estanques']];
+    (data.con_combustible_sin_terreno||[]).forEach(function(r){sinT.push([fd(r.fecha),r.codigo,r.nombre,r.empresa||'',nf(r.litros_distribuidos),r.cargas||'',r.estanques||'']);});
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(sinT),'Sin terreno');
+    // Terreno sin combustible
+    var terr=[['Fecha','Código','Equipo','Faena','Litros terreno','Horóm. inicial','Horóm. final']];
+    (data.terreno_sin_combustible||[]).forEach(function(r){terr.push([fd(r.fecha),r.codigo,r.nombre,r.faena_terreno||'',nf(r.litros_terreno),r.horometro_inicial,r.horometro_final]);});
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(terr),'Terreno sin comb');
+    // OK
+    var okA=[['Fecha','Código','Equipo','Faena','Litros','Horóm. inicial','Horóm. final']];
+    (data.ok||[]).forEach(function(r){okA.push([fd(r.fecha),r.codigo,r.nombre,r.faena_terreno||'',nf(r.litros_terreno),r.horometro_inicial,r.horometro_final]);});
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(okA),'OK');
+    // Sin registro
+    var sinR=[['Código','Equipo','Empresa']];
+    (data.sin_registro_alguno||[]).forEach(function(r){sinR.push([r.codigo,r.nombre,r.empresa||'']);});
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(sinR),'Sin registro');
+
+    XLSX.writeFile(wb,'auditoria_combustibles_'+fd(data.desde)+'_'+fd(data.hasta)+'.xlsx');
+  }catch(e){alert('Error al exportar: '+e.message);}
+}
+
 function CombAuditoriaView(p){
   var hoy=new Date().toISOString().slice(0,10);
   var[desde,setDesde]=useState(hoy);
@@ -3052,6 +3219,18 @@ function CombAuditoriaView(p){
       h('div',null,
         h('h2',{style:{fontSize:18,fontWeight:700,marginBottom:2}},'🔍 Auditoría de Combustibles'),
         h('p',{style:{fontSize:12,color:'#64748B'}},'Cruce de distribuciones de combustible vs reportes de terreno')
+      ),
+      data&&!loading&&h('div',{style:{display:'flex',gap:8}},
+        h('button',{onClick:function(){
+            var em=empresaFilt?(empresas.find(function(x){return String(x.empresa_id)===String(empresaFilt);})||{}).razon_social:'Todas';
+            var eqn=equipoFilt?(equiposEnData.find(function(x){return String(x.id)===String(equipoFilt);})||{}):null;
+            imprimirAuditoriaCombustible(data,{empresa:em,equipo:eqn?(eqn.codigo+' — '+eqn.nombre):'Todos',usuario:(p.user&&(p.user.nombre||p.user.email))||''});
+          },style:{padding:'8px 14px',background:'#DC2626',color:'#fff',border:'none',borderRadius:5,fontSize:12,cursor:'pointer',fontWeight:600}},'📄 Informe PDF'),
+        h('button',{onClick:function(){
+            var em=empresaFilt?(empresas.find(function(x){return String(x.empresa_id)===String(empresaFilt);})||{}).razon_social:'Todas';
+            var eqn=equipoFilt?(equiposEnData.find(function(x){return String(x.id)===String(equipoFilt);})||{}):null;
+            exportAuditoriaExcel(data,{empresa:em,equipo:eqn?(eqn.codigo+' — '+eqn.nombre):'Todos',usuario:(p.user&&(p.user.nombre||p.user.email))||''});
+          },style:{padding:'8px 14px',background:'#fff',color:'#15803D',border:'1px solid #86EFAC',borderRadius:5,fontSize:12,cursor:'pointer',fontWeight:600}},'📊 Exportar Excel')
       )
     ),
       // Filtros con rango de fechas
