@@ -12880,7 +12880,7 @@ function MantProgView(p){
     }),
 
     // ── Vista CRONOGRAMA ──
-    tab==='cronograma'&&h(ProgCronograma,{tareas:tareasFiltradas,SEMANAS:SEMANAS,curWeek:curWeek,estConf:estConf}),
+    tab==='cronograma'&&semActual&&h(ProgCronograma,{tareas:tareasFiltradas,semana:semActual,estConf:estConf,telMap:telMap,saveTel:saveTel,normMec:normMec,isDayPast:isDayPast,DIAS_CORTOS:DIAS_CORTOS}),
 
     // ── Vista CUMPLIMIENTO ──
     tab==='cumplimiento'&&h(ProgCumplimiento,{tareas:tareasFiltradas,mecanicos:mecanicos,estConf:estConf,tok:p.tok,anio:viewYear,mes:viewMonth+1}),
@@ -13006,32 +13006,81 @@ function ProgTabla(p){
 // COMPONENTE: vista Cronograma (timeline simple)
 // ═══════════════════════════════════════════════════════════════════════
 function ProgCronograma(p){
-  const sem=p.SEMANAS[p.curWeek];
+  const sem=p.semana;
   if(!sem) return h('div',null,'Sin semana seleccionada');
-  return h('div',{className:'card',style:{padding:14}},
-    h('h3',{style:{margin:'0 0 12px 0',fontSize:14,color:'#1E3A2D'}},'Cronograma S'+sem.idx),
-    h('div',{style:{fontSize:11,color:'#64748B',marginBottom:10}},sem.lun.toLocaleDateString('es-CL')+' al '+sem.dom.toLocaleDateString('es-CL')),
-    p.tareas.length===0
-      ? h('div',{style:{padding:30,textAlign:'center',color:'#64748B'}},'Sin tareas')
-      : h('div',null,p.tareas.map(function(t){
-          const est=p.estConf(t.estado);
-          const dayHits=(t.dias||[]).map(function(d,i){return (d||[]).filter(Boolean).length>0?i:-1;}).filter(function(i){return i>=0;});
-          const ini=dayHits[0];const fin=dayHits[dayHits.length-1];
-          return h('div',{key:t.tarea_id,style:{display:'grid',gridTemplateColumns:'200px 1fr',gap:10,padding:'8px 0',borderBottom:'1px solid #E2E8F0'}},
-            h('div',null,
-              h('div',{style:{fontWeight:600,fontSize:11}},t.equipo_codigo||'—'),
-              h('div',{style:{fontSize:10,color:'#64748B'}},t.detalle.slice(0,60))
-            ),
-            h('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:2}},
-              [0,1,2,3,4,5,6].map(function(i){
-                const inRange=(ini>=0&&i>=ini&&i<=fin);
-                return h('div',{key:i,style:{height:18,background:inRange?est.bg:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:2,position:'relative'}},
-                  inRange&&h('div',{style:{position:'absolute',top:0,left:0,right:0,bottom:0,background:est.c,opacity:0.7}})
-                );
-              })
-            )
-          );
-        }))
+  const FC={'Faena Mec 4':'#d97706','Faena Mec 3':'#0e7490','Taller Lpoo':'#6d28d9','Taller Emprecon':'#7c3aed','Transporte Maquinaria Lpoo':'#b45309','Administración Emprecon':'#be185d','Administración Lpoo':'#9d174d','Faena Movimiento de tierra Caminos':'#1d4ed8','Faena Faja':'#15803d','Faena Obras de Arte':'#dc2626'};
+  function colorFaena(n){return FC[n]||'#475569';}
+  const DIAS=p.DIAS_CORTOS||['LUN','MAR','MIÉ','JUE','VIE','SÁB','DOM'];
+  const MES3=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  function shortN(n){if(!n)return '';const parts=String(n).trim().split(/\s+/);if(parts.length<=2)return n;return parts[0][0].toUpperCase()+'. '+parts.slice(1).join(' ');}
+  const norm=p.normMec||function(s){return String(s||'').toLowerCase().trim();};
+
+  // WhatsApp por mecánico (compacto)
+  function diasDeMec(t,mec){const out=[];(t.dias||[]).forEach(function(day,i){if((day||[]).some(function(m){return norm(m)===norm(mec);})&&sem.days[i]){out.push(DIAS[i].slice(0,3)+' '+sem.days[i].getDate());}});return out.length?out.join(', '):'esta semana';}
+  function waMec(mec,t){
+    var tel=(p.telMap||{})[norm(mec)];
+    function abrir(telf){const nombre=String(mec).split(' ')[0];const equipo=[t.equipo_codigo,t.equipo_nombre].filter(Boolean).join(' ');const msg=encodeURIComponent('Hola '+nombre+'! Tienes una tarea programada 🔧\n\n📌 Faena: '+(t.faena_nombre||'—')+'\n🚜 Máquina/Equipo: '+(equipo||'—')+'\n🛠 Trabajo: '+(t.detalle||'(sin detalle)')+'\n📅 Día(s): '+diasDeMec(t,mec));window.open('https://wa.me/'+telf+'?text='+msg,'_blank');}
+    if(tel){abrir(tel);return;}
+    var inp=prompt('📱 Ingresa el número WhatsApp de '+mec+':\n(Ejemplo: 56912345678  o  912345678)','56');
+    if(inp===null)return;if(!p.saveTel)return;
+    p.saveTel(mec,inp).then(function(telf){if(telf)abrir(telf);}).catch(function(e){alert(e.message);});
+  }
+  function mecsUnicos(t){const set=[],seen={};(t.dias||[]).forEach(function(day){(day||[]).forEach(function(m){const k=norm(m);if(m&&k.length>1&&!seen[k]){seen[k]=1;set.push(m);}});});return set;}
+
+  const GT='200px repeat(7,minmax(110px,1fr))';
+  const headCell=function(d,i){
+    const wknd=i>=5;const isToday=new Date().toDateString()===d.toDateString();
+    return h('div',{key:i,style:{padding:'8px 6px',textAlign:'center',borderLeft:'1px solid #E2E8F0',background:isToday?'#FEF9C3':(wknd?'#F5F3FF':'#F8FAFC')}},
+      h('div',{style:{fontSize:11,fontWeight:700,color:wknd?'#6d28d9':'#1e293b'}},DIAS[i]),
+      h('div',{style:{fontSize:9,color:wknd?'#7c3aed':'#64748B'}},d.getDate()+' '+MES3[d.getMonth()])
+    );
+  };
+
+  return h('div',null,
+    h('div',{style:{marginBottom:8}},
+      h('h3',{style:{margin:'0 0 2px 0',fontSize:14,color:'#1E3A2D'}},'Cronograma S'+sem.idx),
+      h('div',{style:{fontSize:11,color:'#64748B'}},sem.lun.toLocaleDateString('es-CL')+' al '+sem.dom.toLocaleDateString('es-CL'))
+    ),
+    h('div',{className:'card',style:{padding:0,overflow:'auto'}},
+      h('div',{style:{minWidth:880}},
+        // Cabecera
+        h('div',{style:{display:'grid',gridTemplateColumns:GT,borderBottom:'2px solid #CBD5E1',background:'#F1F5F9',position:'sticky',top:0,zIndex:2}},
+          h('div',{style:{padding:'8px 12px',fontSize:11,fontWeight:700,color:'#64748B',textTransform:'uppercase',letterSpacing:1}},'Tarea'),
+          sem.days.map(headCell)
+        ),
+        // Filas
+        p.tareas.length===0
+          ? h('div',{style:{padding:40,textAlign:'center',color:'#94A3B8',fontSize:12}},'Sin tareas programadas para esta semana')
+          : p.tareas.map(function(t){
+              const est=p.estConf(t.estado);
+              const fcol=colorFaena(t.faena_nombre);
+              return h('div',{key:t.tarea_id,style:{display:'grid',gridTemplateColumns:GT,borderBottom:'1px solid #E2E8F0'}},
+                // Info de tarea
+                h('div',{style:{padding:'8px 12px'}},
+                  h('div',{style:{display:'flex',flexWrap:'wrap',gap:4,alignItems:'center',marginBottom:4}},
+                    h('span',{style:{padding:'2px 7px',background:fcol+'22',color:fcol,borderRadius:4,fontSize:9,fontWeight:700}},t.faena_nombre||'—'),
+                    h('span',{style:{padding:'2px 8px',background:est.bg,color:est.c,borderRadius:10,fontSize:9,fontWeight:700,textTransform:'uppercase'}},est.l),
+                    mecsUnicos(t).map(function(m,k){const tiene=!!(p.telMap||{})[norm(m)];return h('button',{key:k,onClick:function(){waMec(m,t);},title:'WhatsApp → '+m,style:{width:18,height:18,border:'none',borderRadius:4,cursor:'pointer',background:tiene?'#25D366':'#94A3B8',color:'#fff',fontSize:10,lineHeight:'18px',padding:0}},'💬');})
+                  ),
+                  h('div',{style:{fontWeight:700,fontSize:12,color:'#1e293b'}},t.equipo_codigo||'—'),
+                  t.equipo_nombre&&h('div',{style:{fontSize:9,color:'#64748B'}},t.equipo_nombre),
+                  t.detalle&&h('div',{style:{fontSize:11,color:'#475569',marginTop:2,lineHeight:1.4}},t.detalle)
+                ),
+                // Celdas por día
+                sem.days.map(function(d,i){
+                  const wknd=i>=5;const isToday=new Date().toDateString()===d.toDateString();
+                  const past=p.isDayPast&&p.isDayPast(d);
+                  const mecs=(t.dias&&t.dias[i]||[]).filter(Boolean);
+                  return h('div',{key:i,style:{borderLeft:'1px solid #E2E8F0',padding:'6px 5px',background:isToday?'#FEFCE8':(wknd?'#FAF8FF':(past?'#F8FAFC':'#fff')),minHeight:40}},
+                    mecs.length===0
+                      ? h('div',{style:{textAlign:'center',color:'#CBD5E1',fontSize:12}},'—')
+                      : mecs.map(function(m,k){return h('div',{key:k,title:m,style:{background:fcol+'18',border:'1px solid '+fcol+'55',color:fcol,borderRadius:5,padding:'3px 6px',fontSize:10,fontWeight:600,marginBottom:3,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},shortN(m));})
+                  );
+                })
+              );
+            })
+      )
+    )
   );
 }
 
@@ -13040,71 +13089,189 @@ function ProgCronograma(p){
 // ═══════════════════════════════════════════════════════════════════════
 function ProgCumplimiento(p){
   const[modo,setModo]=useState('mensual'); // mensual | historico
-  const[rank,setRank]=useState([]);
-  const[loadingRk,setLoadingRk]=useState(false);
-  const[detalle,setDetalle]=useState(null); // nombre del mecánico expandido
+  const[data,setData]=useState(null);
+  const[loading,setLoading]=useState(false);
+  const[cargoSel,setCargoSel]=useState(null);
+  const[detTareas,setDetTareas]=useState([]);
+  const[loadingDet,setLoadingDet]=useState(false);
+
+  const FC={'Faena Mec 4':'#d97706','Faena Mec 3':'#0e7490','Taller Lpoo':'#6d28d9','Taller Emprecon':'#7c3aed','Transporte Maquinaria Lpoo':'#b45309','Administración Emprecon':'#be185d','Administración Lpoo':'#9d174d','Faena Movimiento de tierra Caminos':'#1d4ed8','Faena Faja':'#15803d','Faena Obras de Arte':'#dc2626'};
+  function colorFaena(n){return FC[n]||'#475569';}
+  const norm=p.normMec||function(s){return String(s||'').toLowerCase().trim();};
 
   useEffect(function(){
-    setLoadingRk(true);
-    api('/mant/prog-ranking?modo='+modo+'&anio='+p.anio+'&mes='+p.mes,'GET',null,p.tok)
-      .then(function(r){setRank(Array.isArray(r.rows)?r.rows:[]);})
-      .catch(function(){setRank([]);})
-      .finally(function(){setLoadingRk(false);});
+    setLoading(true);
+    api('/mant/prog-cumplimiento?modo='+modo+'&anio='+p.anio+'&mes='+p.mes,'GET',null,p.tok)
+      .then(function(r){setData(r);}).catch(function(){setData(null);})
+      .finally(function(){setLoading(false);});
   },[modo,p.anio,p.mes,p.tok]);
 
-  // Distribución por estado de la SEMANA visible (de las tareas filtradas)
-  const porEstado={};
-  p.tareas.forEach(function(t){porEstado[t.estado]=(porEstado[t.estado]||0)+1;});
+  function abrirCargo(c,pos){
+    setCargoSel(Object.assign({},c,{pos:pos}));setLoadingDet(true);setDetTareas([]);
+    api('/mant/prog-cargo-detalle?equipo_id='+c.equipo_id+'&modo='+modo+'&anio='+p.anio+'&mes='+p.mes,'GET',null,p.tok)
+      .then(function(r){setDetTareas(Array.isArray(r.tareas)?r.tareas:[]);}).catch(function(){setDetTareas([]);})
+      .finally(function(){setLoadingDet(false);});
+  }
+  function mecsDe(t){const out=[],seen={};(t.dias||[]).forEach(function(day){(day||[]).forEach(function(m){const k=norm(m);if(m&&k.length>1&&!seen[k]){seen[k]=1;out.push(m);}});});return out;}
 
-  const maxReal=rank.reduce(function(m,r){return Math.max(m,r.realizadas);},0)||1;
+  const ESTOR=['programado','en_curso','realizado','pendiente','reprogramado'];
+  const estMap={};(data&&data.estado||[]).forEach(function(e){estMap[e.estado]=e.n;});
+  const totEst=ESTOR.reduce(function(s,k){return s+(estMap[k]||0);},0);
+  const pctReal=totEst?Math.round((estMap['realizado']||0)*100/totEst):0;
+
+  // ── Dona SVG ──
+  const R=54,CIRC=2*Math.PI*R;var acc=0;
+  const donutSegs=ESTOR.map(function(k){
+    const v=estMap[k]||0;if(!v||!totEst)return null;
+    const frac=v/totEst,len=frac*CIRC,off=acc*CIRC;acc+=frac;
+    return h('circle',{key:k,cx:70,cy:70,r:R,fill:'none',stroke:p.estConf(k).c,strokeWidth:22,strokeDasharray:len+' '+(CIRC-len),strokeDashoffset:-off,transform:'rotate(-90 70 70)'});
+  }).filter(Boolean);
+
+  // ── Tendencia SVG ──
+  const tend=(data&&data.tendencia||[]);
+  function trendSvg(){
+    const W=520,H=170,n=Math.max(tend.length,1);
+    const pts=tend.map(function(t,i){return{x:46+(n>1?i*(W-70)/(n-1):0),y:H-26-(t.pct/100)*(H-56),pct:t.pct,lbl:'S'+t.semana};});
+    if(!pts.length)return h('div',{style:{padding:20,textAlign:'center',color:'#94A3B8',fontSize:12}},'Sin datos de tendencia');
+    var grid=[0,25,50,75,100].map(function(v,i){const y=H-26-(v/100)*(H-56);return h('g',{key:i},h('line',{x1:38,y1:y,x2:W-8,y2:y,stroke:'#E2E8F0',strokeWidth:1}),h('text',{x:32,y:y+4,fill:'#94A3B8',fontSize:9,textAnchor:'end'},v+'%'));});
+    const linePts=pts.map(function(p2){return p2.x+','+p2.y;}).join(' ');
+    var dots=pts.map(function(p2,i){return h('g',{key:i},
+      h('circle',{cx:p2.x,cy:p2.y,r:5,fill:'#d97706',stroke:'#fff',strokeWidth:2}),
+      h('text',{x:p2.x,y:p2.y-11,fill:'#d97706',fontSize:11,textAnchor:'middle',fontWeight:600},p2.pct+'%'),
+      h('text',{x:p2.x,y:H-6,fill:'#64748B',fontSize:9,textAnchor:'middle'},p2.lbl)
+    );});
+    return h('svg',{viewBox:'0 0 '+W+' '+H,style:{width:'100%',height:180}},grid,h('polyline',{points:linePts,fill:'none',stroke:'#d97706',strokeWidth:2.5,strokeLinecap:'round',strokeLinejoin:'round'}),dots);
+  }
+
+  const carga=(data&&data.carga_mecanicos||[]);
+  const maxCarga=carga.reduce(function(m,r){return Math.max(m,r.asignaciones);},0)||1;
+  const rankC=(data&&data.ranking_cargos||[]);
+  const maxRank=rankC.reduce(function(m,r){return Math.max(m,r.realizadas);},0)||1;
+  const porFaena=(data&&data.por_faena||[]);
+  const medal=function(i){return i===0?'🥇':i===1?'🥈':i===2?'🥉':(i+1);};
 
   return h('div',null,
-    h('div',{className:'card',style:{padding:14,marginBottom:10}},
-      h('h3',{style:{margin:'0 0 10px 0',fontSize:14,color:'#1E3A2D'}},'Distribución por estado (semana visible)'),
-      h('div',{style:{display:'flex',gap:6,flexWrap:'wrap'}},
-        ['programado','en_curso','realizado','pendiente','reprogramado'].map(function(est){
-          const c=p.estConf(est);const cnt=porEstado[est]||0;
-          return h('div',{key:est,style:{padding:'8px 12px',background:c.bg,color:c.c,borderRadius:6,fontSize:12,fontWeight:600}},c.l+': '+cnt);
+    // Header con toggle
+    h('div',{className:'card',style:{padding:12,marginBottom:10,display:'flex',alignItems:'center',justifyContent:'space-between',flexWrap:'wrap',gap:8}},
+      h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D'}},'Cumplimiento — ',h('span',{style:{fontWeight:400,color:'#64748B',fontSize:12}},modo==='mensual'?('mes '+p.mes+'/'+p.anio):'histórico completo')),
+      h('div',{style:{display:'flex',gap:2}},
+        [['mensual','Mensual'],['historico','Histórico']].map(function(x){
+          const active=modo===x[0];
+          return h('button',{key:x[0],onClick:function(){setModo(x[0]);},style:{padding:'5px 14px',border:'1px solid '+(active?'#1E3A2D':'#CBD5E1'),background:active?'#1E3A2D':'#fff',color:active?'#fff':'#475569',borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:600}},x[1]);
         })
       )
     ),
-    h('div',{className:'card',style:{padding:14}},
-      h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10,flexWrap:'wrap',gap:8}},
-        h('h3',{style:{margin:0,fontSize:14,color:'#1E3A2D'}},'Ranking de cumplimiento por mecánico'),
-        h('div',{style:{display:'flex',gap:2}},
-          [['mensual','Mensual'],['historico','Histórico']].map(function(x){
-            const active=modo===x[0];
-            return h('button',{key:x[0],onClick:function(){setModo(x[0]);setDetalle(null);},style:{padding:'5px 14px',border:'1px solid '+(active?'#1E3A2D':'#CBD5E1'),background:active?'#1E3A2D':'#fff',color:active?'#fff':'#475569',borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:600}},x[1]);
+    loading?h('div',{style:{padding:30,textAlign:'center',color:'#94A3B8'}},'Cargando...'):
+    h('div',null,
+      // Fila 1: dona + cumplimiento por faena
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
+        h('div',{className:'card',style:{padding:14}},
+          h('h3',{style:{margin:'0 0 10px 0',fontSize:13,color:'#1E3A2D'}},'Estado general de tareas'),
+          totEst===0?h('div',{style:{padding:20,textAlign:'center',color:'#94A3B8',fontSize:12}},'Sin tareas'):
+          h('div',{style:{display:'flex',gap:16,alignItems:'center',flexWrap:'wrap'}},
+            h('svg',{viewBox:'0 0 140 140',style:{width:130,height:130,flexShrink:0}},donutSegs,
+              h('text',{x:70,y:68,textAnchor:'middle',fontSize:24,fontWeight:700,fill:'#1e293b'},pctReal+'%'),
+              h('text',{x:70,y:86,textAnchor:'middle',fontSize:10,fill:'#94A3B8'},'cumpl.')
+            ),
+            h('div',{style:{flex:1,minWidth:140}},ESTOR.map(function(k){
+              const c=p.estConf(k);const v=estMap[k]||0;const pc=totEst?Math.round(v*100/totEst):0;
+              return h('div',{key:k,style:{display:'flex',alignItems:'center',gap:8,marginBottom:5,fontSize:12}},
+                h('span',{style:{width:10,height:10,borderRadius:3,background:c.c,flexShrink:0}}),
+                h('span',{style:{flex:1,color:'#475569'}},c.l),
+                h('span',{style:{fontWeight:700,color:c.c}},pc+'%'),
+                h('span',{style:{color:'#94A3B8',fontSize:11,width:28,textAlign:'right'}},v)
+              );
+            }))
+          )
+        ),
+        h('div',{className:'card',style:{padding:14}},
+          h('h3',{style:{margin:'0 0 10px 0',fontSize:13,color:'#1E3A2D'}},'Cumplimiento por faena'),
+          porFaena.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#94A3B8',fontSize:12}},'Sin datos'):
+          h('div',null,porFaena.map(function(f,i){
+            const c=colorFaena(f.faena);
+            return h('div',{key:i,style:{marginBottom:8}},
+              h('div',{style:{display:'flex',justifyContent:'space-between',fontSize:11,marginBottom:2}},
+                h('span',{style:{color:'#475569'}},f.faena),
+                h('span',{style:{fontWeight:700,color:c}},f.pct+'% ',h('span',{style:{color:'#94A3B8',fontWeight:400}},'('+f.realizadas+'/'+f.total+')'))
+              ),
+              h('div',{style:{background:'#E2E8F0',borderRadius:4,height:8,overflow:'hidden'}},h('div',{style:{width:f.pct+'%',height:'100%',background:c}}))
+            );
+          }))
+        )
+      ),
+      // Fila 2: tendencia + carga mecánicos
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
+        h('div',{className:'card',style:{padding:14}},
+          h('h3',{style:{margin:'0 0 6px 0',fontSize:13,color:'#1E3A2D'}},'Tendencia de cumplimiento por semana'),
+          h('div',{style:{fontSize:10,color:'#94A3B8',marginBottom:6}},'Mes '+p.mes+'/'+p.anio),
+          trendSvg()
+        ),
+        h('div',{className:'card',style:{padding:14}},
+          h('h3',{style:{margin:'0 0 10px 0',fontSize:13,color:'#1E3A2D'}},'Carga de mecánicos (asignaciones)'),
+          carga.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#94A3B8',fontSize:12}},'Sin asignaciones'):
+          h('div',null,carga.map(function(m,i){
+            return h('div',{key:i,style:{display:'flex',alignItems:'center',gap:8,marginBottom:5}},
+              h('span',{style:{width:130,fontSize:11,color:'#475569',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},m.nombre),
+              h('div',{style:{flex:1,background:'#E2E8F0',borderRadius:4,height:10,overflow:'hidden'}},h('div',{style:{width:Math.round(m.asignaciones/maxCarga*100)+'%',height:'100%',background:'#1d4ed8'}})),
+              h('span',{style:{width:28,textAlign:'right',fontSize:11,fontWeight:700,color:'#1d4ed8'}},m.asignaciones)
+            );
+          }))
+        )
+      ),
+      // Ranking cargos más intervenidos
+      h('div',{className:'card',style:{padding:14}},
+        h('h3',{style:{margin:'0 0 4px 0',fontSize:13,color:'#1E3A2D'}},'🏆 Ranking — cargos más intervenidos (solo realizadas)'),
+        h('div',{style:{fontSize:10,color:'#94A3B8',marginBottom:10}},'Haz clic en el número para ver el detalle de intervenciones'),
+        rankC.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#94A3B8',fontSize:12}},'Sin tareas realizadas en este período'):
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(330px,1fr))',gap:8}},
+          rankC.map(function(c,i){
+            const fcol=colorFaena(c.faena_top);
+            return h('div',{key:c.equipo_id,style:{display:'flex',alignItems:'center',gap:10,padding:'8px 10px',border:'1px solid #E2E8F0',borderRadius:8,background:i<3?'#FFFBEB':'#fff'}},
+              h('div',{style:{width:30,textAlign:'center',fontSize:i<3?18:13,fontWeight:700,color:i<3?'#B45309':'#94A3B8'}},medal(i)),
+              h('div',{style:{flex:1,minWidth:0}},
+                h('div',{style:{fontWeight:700,fontSize:12,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},c.equipo_codigo,c.equipo_nombre&&h('span',{style:{fontWeight:400,color:'#64748B'}},' · '+c.equipo_nombre)),
+                h('div',{style:{display:'flex',alignItems:'center',gap:6,margin:'3px 0'}},
+                  h('span',{style:{padding:'1px 6px',background:fcol+'22',color:fcol,borderRadius:3,fontSize:9,fontWeight:700}},c.faena_top||'—'),
+                  h('span',{style:{fontSize:10,color:'#64748B'}},c.realizadas+' realizada'+(c.realizadas!==1?'s':''))
+                ),
+                h('div',{style:{background:'#E2E8F0',borderRadius:4,height:6,overflow:'hidden'}},h('div',{style:{width:Math.round(c.realizadas/maxRank*100)+'%',height:'100%',background:'#d97706'}}))
+              ),
+              h('div',{onClick:function(){abrirCargo(c,i+1);},title:'Ver detalle',style:{fontSize:20,fontWeight:700,color:'#0369a1',cursor:'pointer',padding:'0 4px'}},c.realizadas)
+            );
           })
         )
       ),
-      h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},modo==='mensual'?('Mes '+p.mes+'/'+p.anio+' — todas las semanas del mes'):'Histórico completo — todas las tareas registradas'),
-      loadingRk?h('div',{style:{padding:20,textAlign:'center',color:'#94A3B8'}},'Calculando ranking...'):
-      rank.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin datos en este período'):
-      h('table',{style:{fontSize:12,borderCollapse:'collapse',width:'100%'}},
-        h('thead',null,h('tr',null,h('th',null,'#'),h('th',null,'Mecánico'),h('th',null,'Carga (realizadas)'),h('th',{className:'c'},'Total'),h('th',{className:'c'},'Realiz.'),h('th',{className:'r'},'% Cumpl.'))),
-        h('tbody',null,rank.map(function(r,i){
-          const abierto=detalle===r.nombre;
-          return [
-            h('tr',{key:r.nombre,style:{cursor:'pointer',background:abierto?'#F1F5F9':'transparent'},onClick:function(){setDetalle(abierto?null:r.nombre);}},
-              h('td',null,i+1),
-              h('td',null,h('strong',null,r.nombre),h('span',{style:{marginLeft:6,fontSize:10,color:'#94A3B8'}},abierto?'▲':'▼')),
-              h('td',null,h('div',{style:{background:'#E2E8F0',borderRadius:4,height:16,width:140,position:'relative',overflow:'hidden'}},
-                h('div',{style:{position:'absolute',top:0,left:0,bottom:0,width:Math.round(r.realizadas/maxReal*100)+'%',background:'#15803d'}})
-              )),
-              h('td',{className:'c'},r.total),
-              h('td',{className:'c',style:{color:'#15803d',fontWeight:600}},r.realizadas),
-              h('td',{className:'r',style:{fontWeight:700,color:r.pct>=80?'#15803d':r.pct>=50?'#d97706':'#dc2626'}},r.pct+'%')
+      // Modal detalle de cargo
+      cargoSel&&h('div',{onClick:function(e){if(e.target===e.currentTarget)setCargoSel(null);},style:{position:'fixed',inset:0,background:'rgba(0,0,0,.6)',zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16}},
+        h('div',{style:{background:'#fff',borderRadius:12,width:720,maxWidth:'96vw',maxHeight:'88vh',overflow:'auto',padding:20}},
+          h('div',{style:{display:'flex',alignItems:'center',gap:12,marginBottom:14}},
+            h('div',{style:{fontSize:26}},cargoSel.pos<=3?['🥇','🥈','🥉'][cargoSel.pos-1]:('#'+cargoSel.pos)),
+            h('div',{style:{flex:1}},
+              h('div',{style:{fontSize:18,fontWeight:700}},cargoSel.equipo_codigo,cargoSel.equipo_nombre&&h('span',{style:{fontWeight:400,color:'#64748B',fontSize:14}},' · '+cargoSel.equipo_nombre)),
+              h('div',{style:{fontSize:12,color:'#64748B'}},cargoSel.realizadas+' tarea'+(cargoSel.realizadas!==1?'s':'')+' realizada'+(cargoSel.realizadas!==1?'s':''))
             ),
-            abierto&&h('tr',{key:r.nombre+'-d'},h('td',{colSpan:6,style:{background:'#F8FAFC',padding:'8px 12px'}},
-              h('div',{style:{display:'flex',gap:8,flexWrap:'wrap'}},
-                [['programadas','Programadas'],['en_curso','En curso'],['realizadas','Realizadas'],['pendientes','Pendientes'],['reprogramadas','Reprogramadas']].map(function(e){
-                  return h('div',{key:e[0],style:{padding:'5px 10px',background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,fontSize:11}},e[1]+': ',h('strong',null,r[e[0]]||0));
-                })
-              )
-            ))
-          ];
-        }))
+            h('button',{onClick:function(){setCargoSel(null);},style:{width:32,height:32,border:'1px solid #CBD5E1',background:'#fff',borderRadius:6,cursor:'pointer',fontSize:16}},'✕')
+          ),
+          loadingDet?h('div',{style:{padding:20,textAlign:'center',color:'#94A3B8'}},'Cargando...'):
+          detTareas.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#94A3B8'}},'Sin tareas'):
+          detTareas.map(function(t){
+            const fcol=colorFaena(t.faena_nombre);const est=p.estConf(t.estado);const mecs=mecsDe(t);
+            return h('div',{key:t.tarea_id,style:{display:'flex',gap:12,padding:'10px 0',borderBottom:'1px solid #F1F5F9'}},
+              h('div',{style:{textAlign:'center',flexShrink:0}},
+                h('div',{style:{padding:'2px 8px',background:'#FEF3C7',color:'#B45309',borderRadius:6,fontSize:10,fontWeight:700}},'S'+t.semana),
+                h('div',{style:{fontSize:9,color:'#94A3B8',marginTop:2}},t.mes+'/'+t.anio)
+              ),
+              h('div',{style:{flex:1}},
+                h('div',{style:{fontSize:13,marginBottom:3}},t.detalle||'— sin detalle —'),
+                h('div',{style:{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}},
+                  h('span',{style:{padding:'1px 6px',background:fcol+'22',color:fcol,borderRadius:3,fontSize:9,fontWeight:700}},t.faena_nombre),
+                  mecs.map(function(m,k){return h('span',{key:k,style:{fontSize:10,background:'#EFF6FF',color:'#1E40AF',border:'1px solid #BFDBFE',borderRadius:4,padding:'1px 7px'}},m);})
+                )
+              ),
+              h('span',{style:{flexShrink:0,padding:'3px 10px',background:est.bg,color:est.c,borderRadius:10,fontSize:10,fontWeight:700,height:'fit-content'}},est.l)
+            );
+          })
+        )
       )
     )
   );
