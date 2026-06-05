@@ -8314,6 +8314,36 @@ app.get('/api/terreno/auditoria-diaria', auth, async(req,res)=>{
 // ══ SOLICITUDES ══
 // Endpoint ligero para obtener resumen de pendientes dirigidas al usuario actual
 // Usado por la alerta del dashboard
+// ─── Contratos a plazo fijo próximos a vencer (alerta de renovación / finiquito) ───
+app.get('/api/contratos/por-vencer', auth, async(req,res)=>{
+  try{
+    const dias=Math.max(1,Math.min(parseInt(req.query.dias)||30,180));
+    // Fuente: personal activo con fecha de término (contrato a plazo fijo / obra), excluyendo indefinidos.
+    // Incluye los ya vencidos que sigan activos (para no perderlos de vista).
+    const r=await pool.query(`
+      SELECT p.persona_id, p.nombre_completo, p.cargo, p.tipo_contrato, p.fecha_termino,
+             e.razon_social AS empresa_nombre,
+             (p.fecha_termino::date - CURRENT_DATE) AS dias_restantes
+      FROM personal p
+      LEFT JOIN empresas e ON p.empresa_id=e.empresa_id
+      WHERE p.activo=true
+        AND p.fecha_termino IS NOT NULL
+        AND COALESCE(p.tipo_contrato,'') NOT ILIKE '%indefinido%'
+        AND p.fecha_termino::date <= (CURRENT_DATE + ($1||' days')::interval)
+      ORDER BY p.fecha_termino ASC`,[dias]);
+    const items=r.rows.map(function(x){
+      const d=parseInt(x.dias_restantes);
+      return{
+        persona_id:x.persona_id, nombre:x.nombre_completo, cargo:x.cargo||'',
+        tipo_contrato:x.tipo_contrato||'Plazo fijo', empresa_nombre:x.empresa_nombre||'',
+        fecha_termino:x.fecha_termino, dias_restantes:d,
+        urgencia: d<0?'vencido':(d<=7?'urgente':(d<=15?'alta':'normal'))
+      };
+    });
+    res.json({total:items.length, dias:dias, items:items});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 app.get('/api/solicitudes/pendientes-resumen', auth, async(req,res)=>{
   try{
     const r=await pool.query(`
