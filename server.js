@@ -632,6 +632,16 @@ async function setupMantenciones(q){
   try{await q('CREATE INDEX IF NOT EXISTS idx_mant_prog_anio_semana ON mant_prog_tareas(anio,mes,semana)');}catch(e){}
   try{await q('CREATE INDEX IF NOT EXISTS idx_mant_prog_estado ON mant_prog_tareas(estado)');}catch(e){}
 
+  // ── Teléfonos WhatsApp por mecánico (complementa el teléfono del personal y guarda externos) ──
+  await q(`CREATE TABLE IF NOT EXISTS mant_mecanico_telefonos (
+    id SERIAL PRIMARY KEY,
+    nombre_norm VARCHAR(150) NOT NULL UNIQUE,
+    nombre VARCHAR(150),
+    telefono VARCHAR(20),
+    usuario VARCHAR(100),
+    actualizado_en TIMESTAMP DEFAULT NOW()
+  )`);
+
   // ── ALTER comb_movimientos: agregar hora de carga (para soportar múltiples cargas/día) ──
   try{await q('ALTER TABLE comb_movimientos ADD COLUMN IF NOT EXISTS hora_carga TIME');}catch(e){}
 
@@ -4941,7 +4951,30 @@ app.get('/api/mant/mecanicos', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
-// ─── GET: listar tareas programadas (filtrable por año/mes/semana) ───
+// ─── Teléfonos WhatsApp por mecánico (para notificar la programación) ───
+function _normMec(s){return String(s||'').toLowerCase().trim().replace(/\s+/g,' ');}
+app.get('/api/mant/mecanicos-telefonos', auth, async(req,res)=>{
+  try{
+    const r=await pool.query('SELECT nombre_norm, nombre, telefono FROM mant_mecanico_telefonos');
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/mant/mecanicos-telefonos', auth, async(req,res)=>{
+  try{
+    const{nombre,telefono}=req.body;
+    if(!nombre) return res.status(400).json({error:'nombre requerido'});
+    const norm=_normMec(nombre);
+    // Normalizar teléfono chileno básico
+    let tel=String(telefono||'').replace(/[\s\-\+\(\)\.]/g,'');
+    if(/^9\d{8}$/.test(tel)) tel='56'+tel;
+    else if(/^\d{8}$/.test(tel)) tel='569'+tel;
+    const r=await pool.query(`INSERT INTO mant_mecanico_telefonos(nombre_norm,nombre,telefono,usuario,actualizado_en)
+      VALUES($1,$2,$3,$4,NOW())
+      ON CONFLICT(nombre_norm) DO UPDATE SET telefono=$3, nombre=$2, usuario=$4, actualizado_en=NOW()
+      RETURNING *`,[norm,nombre,tel,req.user.email]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
 app.get('/api/mant/prog-tareas', auth, async(req,res)=>{
   try{
     const{anio,mes,semana,faena_id,empresa_id,estado}=req.query;
@@ -5224,6 +5257,45 @@ app.post('/api/mant/prog-tareas/migrar-semanas', auth, async(req,res)=>{
     res.json({ok:true,revisadas:r.rows.length,migradas:migradas});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
+});
+
+// ─── GET: ranking de cumplimiento por mecánico (mensual o histórico) ───
+// Expande el JSONB dias[7][] de las tareas y agrega por nombre de mecánico.
+app.get('/api/mant/prog-ranking', auth, async(req,res)=>{
+  try{
+    const modo=(req.query.modo==='historico')?'historico':'mensual';
+    const anio=parseInt(req.query.anio)||new Date().getFullYear();
+    const mes=parseInt(req.query.mes)||(new Date().getMonth()+1);
+    const r=await pool.query(`
+      WITH base AS (
+        SELECT tarea_id, estado, dias FROM mant_prog_tareas
+        WHERE ($1='historico' OR (anio=$2 AND mes=$3)) AND dias IS NOT NULL
+      ),
+      mecs AS (
+        SELECT b.tarea_id, b.estado, TRIM(elem::text,'"') AS mec
+        FROM base b,
+             LATERAL jsonb_array_elements(b.dias) AS day,
+             LATERAL jsonb_array_elements(day) AS elem
+      )
+      SELECT mec AS nombre,
+        COUNT(DISTINCT tarea_id) AS total,
+        COUNT(DISTINCT tarea_id) FILTER (WHERE estado='realizado') AS realizadas,
+        COUNT(DISTINCT tarea_id) FILTER (WHERE estado='en_curso') AS en_curso,
+        COUNT(DISTINCT tarea_id) FILTER (WHERE estado='pendiente') AS pendientes,
+        COUNT(DISTINCT tarea_id) FILTER (WHERE estado='programado') AS programadas,
+        COUNT(DISTINCT tarea_id) FILTER (WHERE estado='reprogramado') AS reprogramadas
+      FROM mecs
+      WHERE mec <> '' AND LENGTH(mec) > 1
+      GROUP BY mec
+      ORDER BY realizadas DESC, total DESC`,[modo,anio,mes]);
+    const rows=r.rows.map(function(x){
+      const total=parseInt(x.total)||0, real=parseInt(x.realizadas)||0;
+      return{nombre:x.nombre,total:total,realizadas:real,en_curso:parseInt(x.en_curso)||0,
+        pendientes:parseInt(x.pendientes)||0,programadas:parseInt(x.programadas)||0,
+        reprogramadas:parseInt(x.reprogramadas)||0,pct:total?Math.round(real*100/total):0};
+    });
+    res.json({modo:modo,anio:anio,mes:mes,rows:rows});
+  }catch(e){res.status(500).json({error:e.message});}
 });
 
 app.post('/api/mant/planes/cargar-ultimo-servicio', auth, async(req,res)=>{
