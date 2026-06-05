@@ -878,6 +878,78 @@ function AlertaSolicitudes(p){
   );
 }
 
+// ══ ALERTA DE CONTRATOS A PLAZO FIJO PRÓXIMOS A VENCER (renovación / finiquito) ══
+function AlertaContratos(p){
+  var[data,setData]=useState(null);
+  var[cerrada,setCerrada]=useState(false);
+  var[expandida,setExpandida]=useState(false);
+  useEffect(function(){
+    if(!p.tok)return;
+    var load=function(){api('/contratos/por-vencer?dias=30','GET',null,p.tok).then(function(r){setData(r);}).catch(function(){});};
+    load();
+    var iv=setInterval(load,300000); // refrescar cada 5 minutos
+    return function(){clearInterval(iv);};
+  },[p.tok]);
+  if(!data||data.total===0||cerrada)return null;
+  var items=data.items||[];
+  var vencidos=items.filter(function(x){return x.urgencia==='vencido';}).length;
+  var urgentes=items.filter(function(x){return x.urgencia==='urgente';}).length;
+  var fmtFecha=function(s){if(!s)return '';var d=new Date(s);return d.toLocaleDateString('es-CL',{day:'2-digit',month:'short',year:'numeric'});};
+  var diasTxt=function(d){if(d<0)return 'venció hace '+Math.abs(d)+(Math.abs(d)===1?' día':' días');if(d===0)return 'vence hoy';return 'vence en '+d+(d===1?' día':' días');};
+  var urgColor=function(u){return u==='vencido'?'#7F1D1D':u==='urgente'?'#DC2626':u==='alta'?'#EA580C':'#0891B2';};
+  var urgLabel=function(u){return u==='vencido'?'VENCIDO':u==='urgente'?'≤ 7 DÍAS':u==='alta'?'≤ 15 DÍAS':'PRÓXIMO';};
+  var mostrar=expandida?items:items.slice(0,3);
+  return h('div',{style:{
+    background:'linear-gradient(135deg, #FFE4E6 0%, #FECDD3 100%)',
+    border:'2px solid #E11D48',
+    borderRadius:10,padding:14,marginBottom:16,
+    boxShadow:'0 4px 12px rgba(225,29,72,0.18)',position:'relative',animation:'fadeIn 0.4s ease-in'
+  }},
+    h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:items.length?10:0}},
+      h('div',{style:{display:'flex',alignItems:'center',gap:10}},
+        h('div',{style:{fontSize:28}},'⏰'),
+        h('div',null,
+          h('div',{style:{fontSize:15,fontWeight:700,color:'#9F1239'}},
+            data.total+' contrato'+(data.total>1?'s':'')+' a plazo fijo por vencer'
+          ),
+          h('div',{style:{fontSize:11,color:'#881337',marginTop:2}},
+            vencidos>0?h('span',{style:{color:'#7F1D1D',fontWeight:700,marginRight:8}},'⛔ '+vencidos+' vencido'+(vencidos>1?'s':'')):null,
+            urgentes>0?h('span',{style:{color:'#DC2626',fontWeight:700,marginRight:8}},'⚡ '+urgentes+' en ≤7 días'):null,
+            'Revisa su renovación o finiquito (próximos '+data.dias+' días).'
+          )
+        )
+      ),
+      h('div',{style:{display:'flex',gap:6}},
+        h('button',{onClick:function(){if(p.onIr)p.onIr();},title:'Ir a contratos',style:{padding:'6px 12px',background:'#1E3A2D',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontSize:11,fontWeight:600}},'Ver contratos →'),
+        h('button',{onClick:function(){setCerrada(true);},title:'Cerrar alerta (volverá a aparecer al recargar)',style:{padding:'6px 10px',background:'transparent',color:'#9F1239',border:'1px solid #9F1239',borderRadius:5,cursor:'pointer',fontSize:14,fontWeight:700,lineHeight:1}},'✕')
+      )
+    ),
+    items.length>0&&h('div',{style:{background:'rgba(255,255,255,0.6)',borderRadius:6,padding:8,marginTop:6}},
+      mostrar.map(function(s,i){
+        return h('div',{key:s.persona_id,style:{padding:'7px 8px',borderBottom:i<mostrar.length-1?'1px solid rgba(225,29,72,0.18)':'none',display:'flex',alignItems:'center',gap:10}},
+          h('span',{style:{fontSize:9,fontWeight:700,padding:'2px 7px',borderRadius:10,background:urgColor(s.urgencia),color:'#fff',whiteSpace:'nowrap',minWidth:62,textAlign:'center'}},urgLabel(s.urgencia)),
+          h('div',{style:{flex:1,minWidth:0}},
+            h('div',{style:{fontSize:12,color:'#1E293B',fontWeight:600,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},s.nombre),
+            h('div',{style:{fontSize:10,color:'#64748B',marginTop:2}},
+              s.cargo?h('span',null,s.cargo):null,
+              s.empresa_nombre?h('span',null,' · '+s.empresa_nombre):null
+            )
+          ),
+          h('div',{style:{textAlign:'right',whiteSpace:'nowrap'}},
+            h('div',{style:{fontSize:11,color:urgColor(s.urgencia),fontWeight:700}},diasTxt(s.dias_restantes)),
+            h('div',{style:{fontSize:10,color:'#94A3B8'}},fmtFecha(s.fecha_termino))
+          )
+        );
+      }),
+      items.length>3&&h('div',{style:{textAlign:'center',marginTop:6}},
+        h('button',{onClick:function(){setExpandida(!expandida);},style:{background:'transparent',border:'none',color:'#9F1239',fontSize:11,fontWeight:600,cursor:'pointer',padding:'4px 8px'}},
+          expandida?'▲ Mostrar menos':'▼ Ver '+(items.length-3)+' más'
+        )
+      )
+    )
+  );
+}
+
 function Dashboard(p){
   const[stats,setStats]=useState(null);
   const[movs,setMovs]=useState([]);
@@ -914,6 +986,7 @@ function Dashboard(p){
   var movsActivos=movs.filter(function(m){return m.estado==='ACTIVO';});
   return h('div',null,
     h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.setView('solicitudes');}}),
+    h(AlertaContratos,{tok:p.tok,onIr:function(){p.setView('contratos');}}),
     // ── KPIs principales ──
     h('div',{className:'kpis'},
       h('div',{className:'kpi kpi-b'},h('div',{className:'kpi-lbl'},'Valor total stock'),h('div',{className:'kpi-val'},CLP(stats&&stats.total||0)),h('div',{className:'kpi-sub'},'Costo promedio ponderado')),
@@ -6679,6 +6752,7 @@ function OCView(p){
   var sortedOCs=sortOCs(ocs);
   return h('div',null,
     h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.setView&&p.setView('solicitudes');}}),
+    h(AlertaContratos,{tok:p.tok,onIr:function(){p.setView&&p.setView('contratos');}}),
     h('div',{style:{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap',alignItems:'center'}},
       h(Btn,{onClick:function(){setFormOC({});}},'+ Nueva OC'),
       h(Btn,{v:'a',onClick:function(){setShowZipImport(true);}},'📦 Importar ZIP'),
@@ -16877,7 +16951,8 @@ function MobileHome(p){
       h('h2',null,'Empresas Poo'),
       h('p',null,'Hola, '+(p.user?p.user.nombre:''))),
     h('div',{style:{padding:'0 10px'}},
-      h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.onNav('solicitudes');}})
+      h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.onNav('solicitudes');}}),
+      h(AlertaContratos,{tok:p.tok,onIr:function(){p.onNav('contratos');}})
     ),
     h('div',{className:'mob-grid'},
       accesibles.map(function(a){
