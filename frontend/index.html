@@ -9401,6 +9401,7 @@ function CombRendimientosView(p){
   const[data,setData]=useState(null);
   const[loading,setLoading]=useState(false);
   const[err,setErr]=useState('');
+  const[vkOpen,setVkOpen]=useState(false);
 
   function setMesQuick(m){if(!m)return;setMes(m);setDesde(m+'-01');setHasta(lastDay(m));}
   function load(){
@@ -9415,22 +9416,29 @@ function CombRendimientosView(p){
   var faenasMap={},orden=[];
   rows.forEach(function(r){
     var k=r.faena_id||('x'+r.faena_nombre);
-    if(!faenasMap[k]){faenasMap[k]={faena:r.faena_nombre,maquinas:[],vehiculos:[]};orden.push(k);}
-    (r.es_vehiculo?faenasMap[k].vehiculos:faenasMap[k].maquinas).push(r);
+    if(!faenasMap[k]){faenasMap[k]={faena:r.faena_nombre,cats:{},catOrden:[]};orden.push(k);}
+    var g=faenasMap[k];
+    var ck=r.categoria||'Otros';
+    if(!g.cats[ck]){g.cats[ck]={label:ck,orden:r.categoria_orden||99,metric:r.metric||'none',items:[]};g.catOrden.push(ck);}
+    g.cats[ck].items.push(r);
   });
+  function catsOrdenadas(g){return g.catOrden.slice().sort(function(a,b){return g.cats[a].orden-g.cats[b].orden;}).map(function(c){return g.cats[c];});}
+  // Vehículos/camiones sin km calculable (faltan lecturas de odómetro o no son crecientes)
+  var vehSinKm=rows.filter(function(r){return r.metric==='km'&&(r.km==null||r.km<=0);});
 
   function exportar(){
     exportXLSX(rows,[
       {header:'Faena',value:function(r){return r.faena_nombre;}},
-      {header:'Tipo',value:function(r){return r.es_vehiculo?'Vehículo':'Máquina';}},
+      {header:'Categoría',value:function(r){return r.categoria;}},
       {header:'Código',value:function(r){return r.codigo;}},
       {header:'Equipo',value:function(r){return r.nombre;}},
       {header:'Litros',value:function(r){return r.litros;}},
-      {header:'Horas trabajadas',value:function(r){return r.es_vehiculo?'':r.horas;}},
-      {header:'Km recorridos',value:function(r){return r.es_vehiculo?(r.km==null?'':r.km):'';}},
+      {header:'Horas trabajadas',value:function(r){return r.metric==='h'?r.horas:'';}},
+      {header:'Km recorridos',value:function(r){return r.metric==='km'?(r.km==null?'':r.km):'';}},
       {header:'Rendimiento',value:function(r){return r.rendimiento==null?'':r.rendimiento;}},
-      {header:'Unidad',value:function(r){return r.rendimiento_unidad;}},
+      {header:'Unidad',value:function(r){return r.rendimiento_unidad||'';}},
       {header:'L/100km',value:function(r){return r.l_por_100km==null?'':r.l_por_100km;}},
+      {header:'N° distribuciones',value:function(r){return r.n_dist;}},
       {header:'Costo',value:function(r){return r.costo;}}
     ],'rendimientos_combustible_'+desde+'_'+hasta);
   }
@@ -9440,67 +9448,54 @@ function CombRendimientosView(p){
   var td={padding:'5px 8px',fontSize:11,borderBottom:'1px solid #F1F5F9'};
   var tdR=Object.assign({},td,{textAlign:'right',fontFamily:'monospace'});
   var inpF={padding:'6px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
+  function icono(m){return m==='h'?'🚜':m==='km'?'🚐':'📦';}
+  function colorCat(m){return m==='h'?'#1E3A2D':m==='km'?'#1E40AF':'#64748B';}
 
-  function tablaMaq(items){
+  function tablaCat(grp){
+    var items=grp.items, metric=grp.metric, color=colorCat(metric);
     var litros=items.reduce(function(s,r){return s+r.litros;},0);
-    var horas=items.reduce(function(s,r){return s+r.horas;},0);
     var costo=items.reduce(function(s,r){return s+r.costo;},0);
-    var rendProm=horas>0?litros/horas:null;
-    return h('div',{style:{marginBottom:10}},
-      h('div',{style:{fontSize:11,fontWeight:700,color:'#1E3A2D',margin:'6px 0 3px'}},'🚜 Máquinas (L/h)'),
-      h('table',{style:{width:'100%',borderCollapse:'collapse'}},
-        h('thead',null,h('tr',null,
-          h('th',{style:th},'Código'),h('th',{style:th},'Equipo'),
-          h('th',{style:thR},'Litros'),h('th',{style:thR},'Horas trab.'),h('th',{style:thR},'Rend. (L/h)'),h('th',{style:thR},'N° distr.'),h('th',{style:thR},'Costo')
-        )),
-        h('tbody',null,
-          items.map(function(r){return h('tr',{key:r.equipo_id},
-            h('td',{style:Object.assign({},td,{fontWeight:600,fontFamily:'monospace'})},r.codigo),
-            h('td',{style:td},r.nombre,r.horas_origen==='horómetro distrib.'&&h('span',{style:{marginLeft:5,fontSize:8,color:'#B45309',background:'#FEF3C7',padding:'1px 4px',borderRadius:6}},'horas estim.')),
-            h('td',{style:tdR},nf(r.litros,1)),
-            h('td',{style:tdR},r.horas>0?nf(r.horas,1):'—'),
-            h('td',{style:Object.assign({},tdR,{fontWeight:700,color:r.rendimiento==null?'#CBD5E1':'#1E3A2D'})},r.rendimiento==null?'—':nf(r.rendimiento,2)),
-            h('td',{style:tdR},r.n_dist),
-            h('td',{style:tdR},CLP(r.costo))
-          );}),
-          h('tr',{style:{background:'#F8FAFC',fontWeight:700}},
-            h('td',{style:td,colSpan:2},'Subtotal máquinas'),
-            h('td',{style:tdR},nf(litros,1)),h('td',{style:tdR},nf(horas,1)),
-            h('td',{style:tdR},rendProm==null?'—':nf(rendProm,2)),h('td',{style:tdR},''),h('td',{style:tdR},CLP(costo))
-          )
-        )
-      )
-    );
-  }
-  function tablaVeh(items){
-    var litros=items.reduce(function(s,r){return s+r.litros;},0);
+    var horas=items.reduce(function(s,r){return s+(r.horas||0);},0);
     var km=items.reduce(function(s,r){return s+(r.km||0);},0);
-    var costo=items.reduce(function(s,r){return s+r.costo;},0);
-    var rendProm=litros>0&&km>0?km/litros:null;
-    return h('div',{style:{marginBottom:6}},
-      h('div',{style:{fontSize:11,fontWeight:700,color:'#1E40AF',margin:'6px 0 3px'}},'🚐 Vehículos (km/L)'),
-      h('table',{style:{width:'100%',borderCollapse:'collapse'}},
-        h('thead',null,h('tr',null,
-          h('th',{style:th},'Código'),h('th',{style:th},'Equipo'),
-          h('th',{style:thR},'Litros'),h('th',{style:thR},'Km recorridos'),h('th',{style:thR},'Rend. (km/L)'),h('th',{style:thR},'L/100km'),h('th',{style:thR},'Costo')
-        )),
-        h('tbody',null,
-          items.map(function(r){return h('tr',{key:r.equipo_id},
-            h('td',{style:Object.assign({},td,{fontWeight:600,fontFamily:'monospace'})},r.codigo),
-            h('td',{style:td},r.nombre),
-            h('td',{style:tdR},nf(r.litros,1)),
-            h('td',{style:tdR},r.km==null?'—':nf(r.km,0)),
-            h('td',{style:Object.assign({},tdR,{fontWeight:700,color:r.rendimiento==null?'#CBD5E1':'#1E40AF'})},r.rendimiento==null?'—':nf(r.rendimiento,2)),
-            h('td',{style:tdR},r.l_por_100km==null?'—':nf(r.l_por_100km,2)),
-            h('td',{style:tdR},CLP(r.costo))
-          );}),
-          h('tr',{style:{background:'#F8FAFC',fontWeight:700}},
-            h('td',{style:td,colSpan:2},'Subtotal vehículos'),
-            h('td',{style:tdR},nf(litros,1)),h('td',{style:tdR},nf(km,0)),
-            h('td',{style:tdR},rendProm==null?'—':nf(rendProm,2)),h('td',{style:tdR},''),h('td',{style:tdR},CLP(costo))
-          )
-        )
-      )
+    var sufijo=metric==='h'?' (L/h)':metric==='km'?' (L/km)':'';
+    var head, body, subtotal;
+    if(metric==='h'){
+      var rp=horas>0?litros/horas:null;
+      head=h('tr',null,h('th',{style:th},'Código'),h('th',{style:th},'Equipo'),h('th',{style:thR},'Litros'),h('th',{style:thR},'Horas trab.'),h('th',{style:thR},'Rend. (L/h)'),h('th',{style:thR},'N° distr.'),h('th',{style:thR},'Costo'));
+      body=items.map(function(r){return h('tr',{key:r.equipo_id},
+        h('td',{style:Object.assign({},td,{fontWeight:600,fontFamily:'monospace'})},r.codigo),
+        h('td',{style:td},r.nombre,r.horas_origen==='horómetro distrib.'&&h('span',{style:{marginLeft:5,fontSize:8,color:'#B45309',background:'#FEF3C7',padding:'1px 4px',borderRadius:6}},'horas estim.')),
+        h('td',{style:tdR},nf(r.litros,1)),
+        h('td',{style:tdR},r.horas>0?nf(r.horas,1):'—'),
+        h('td',{style:Object.assign({},tdR,{fontWeight:700,color:r.rendimiento==null?'#CBD5E1':color})},r.rendimiento==null?'—':nf(r.rendimiento,2)),
+        h('td',{style:tdR},r.n_dist),
+        h('td',{style:tdR},CLP(r.costo)));});
+      subtotal=h('tr',{key:'st',style:{background:'#F8FAFC',fontWeight:700}},h('td',{style:td,colSpan:2},'Subtotal'),h('td',{style:tdR},nf(litros,1)),h('td',{style:tdR},nf(horas,1)),h('td',{style:tdR},rp==null?'—':nf(rp,2)),h('td',{style:tdR},''),h('td',{style:tdR},CLP(costo)));
+    }else if(metric==='km'){
+      var rp2=km>0?litros/km:null, l100=km>0?litros/km*100:null;
+      head=h('tr',null,h('th',{style:th},'Código'),h('th',{style:th},'Equipo'),h('th',{style:thR},'Litros'),h('th',{style:thR},'Km recorridos'),h('th',{style:thR},'Rend. (L/km)'),h('th',{style:thR},'L/100km'),h('th',{style:thR},'Costo'));
+      body=items.map(function(r){return h('tr',{key:r.equipo_id},
+        h('td',{style:Object.assign({},td,{fontWeight:600,fontFamily:'monospace'})},r.codigo),
+        h('td',{style:td},r.nombre),
+        h('td',{style:tdR},nf(r.litros,1)),
+        h('td',{style:tdR},r.km==null?'—':nf(r.km,0)),
+        h('td',{style:Object.assign({},tdR,{fontWeight:700,color:r.rendimiento==null?'#CBD5E1':color})},r.rendimiento==null?'—':nf(r.rendimiento,3)),
+        h('td',{style:tdR},r.l_por_100km==null?'—':nf(r.l_por_100km,2)),
+        h('td',{style:tdR},CLP(r.costo)));});
+      subtotal=h('tr',{key:'st',style:{background:'#F8FAFC',fontWeight:700}},h('td',{style:td,colSpan:2},'Subtotal'),h('td',{style:tdR},nf(litros,1)),h('td',{style:tdR},nf(km,0)),h('td',{style:tdR},rp2==null?'—':nf(rp2,3)),h('td',{style:tdR},l100==null?'—':nf(l100,2)),h('td',{style:tdR},CLP(costo)));
+    }else{
+      head=h('tr',null,h('th',{style:th},'Código'),h('th',{style:th},'Equipo'),h('th',{style:thR},'Litros'),h('th',{style:thR},'N° distr.'),h('th',{style:thR},'Costo'));
+      body=items.map(function(r){return h('tr',{key:r.equipo_id},
+        h('td',{style:Object.assign({},td,{fontWeight:600,fontFamily:'monospace'})},r.codigo),
+        h('td',{style:td},r.nombre),
+        h('td',{style:tdR},nf(r.litros,1)),
+        h('td',{style:tdR},r.n_dist),
+        h('td',{style:tdR},CLP(r.costo)));});
+      subtotal=h('tr',{key:'st',style:{background:'#F8FAFC',fontWeight:700}},h('td',{style:td,colSpan:2},'Subtotal'),h('td',{style:tdR},nf(litros,1)),h('td',{style:tdR},''),h('td',{style:tdR},CLP(costo)));
+    }
+    return h('div',{style:{marginBottom:10}},
+      h('div',{style:{fontSize:11,fontWeight:700,color:color,margin:'8px 0 3px'}},icono(metric)+' '+grp.label+sufijo),
+      h('table',{style:{width:'100%',borderCollapse:'collapse'}},h('thead',null,head),h('tbody',null,body.concat([subtotal])))
     );
   }
 
@@ -9519,17 +9514,43 @@ function CombRendimientosView(p){
         h(Btn,{onClick:load},'Calcular'),
         rows.length>0&&h(Btn,{v:'g',onClick:exportar},'Exportar Excel')
       ),
-      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Litros desde las distribuciones de combustible. Máquinas: horas trabajadas de Terreno. Vehículos: km recorridos según el recorrido del odómetro registrado al cargar combustible en el período.')
+      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Litros desde las distribuciones de combustible. Los equipos se agrupan por su clasificación (tipo de cargo). Máquinas: rendimiento L/h con horas trabajadas de Terreno. Vehículos/camiones: rendimiento L/km (y L/100km) según el odómetro registrado al cargar combustible. Otros cargos: solo litros y costo.')
     ),
     err&&h('div',{style:{padding:10,background:'#FEE2E2',color:'#991B1B',borderRadius:6,marginBottom:12,fontSize:12}},err),
+    !loading&&vehSinKm.length>0&&h('div',{style:{marginBottom:14,padding:'10px 14px',background:'#FFFBEB',border:'1px solid #FCD34D',borderRadius:8}},
+      h('div',{onClick:function(){setVkOpen(!vkOpen);},style:{display:'flex',alignItems:'center',gap:10,cursor:'pointer'}},
+        h('span',{style:{fontSize:18}},'⚠'),
+        h('div',{style:{flex:1,fontSize:12,color:'#92400E'}},
+          h('strong',null,vehSinKm.length+' vehículo(s)/camión(es)'),' sin rendimiento L/km: falta(n) lecturas de odómetro al cargar combustible (se necesitan al menos 2 cargas con kilometraje creciente en el período).'
+        ),
+        h('span',{style:{fontSize:11,fontWeight:700,color:'#B45309',whiteSpace:'nowrap'}},vkOpen?'Ocultar ▲':'Ver detalle ▼')
+      ),
+      vkOpen&&h('div',{style:{marginTop:8,borderTop:'1px solid #FDE68A',paddingTop:8}},
+        h('table',{style:{width:'100%',borderCollapse:'collapse'}},
+          h('thead',null,h('tr',null,
+            h('th',{style:{textAlign:'left',padding:'4px 6px',fontSize:10,color:'#92400E'}},'Equipo'),
+            h('th',{style:{textAlign:'left',padding:'4px 6px',fontSize:10,color:'#92400E'}},'Categoría'),
+            h('th',{style:{textAlign:'left',padding:'4px 6px',fontSize:10,color:'#92400E'}},'Faena'),
+            h('th',{style:{textAlign:'right',padding:'4px 6px',fontSize:10,color:'#92400E'}},'Litros'),
+            h('th',{style:{textAlign:'right',padding:'4px 6px',fontSize:10,color:'#92400E'}},'N° cargas')
+          )),
+          h('tbody',null,vehSinKm.map(function(r){return h('tr',{key:r.equipo_id},
+            h('td',{style:{padding:'4px 6px',fontSize:11}},h('strong',null,r.codigo),' — ',r.nombre),
+            h('td',{style:{padding:'4px 6px',fontSize:11,color:'#78350F'}},r.categoria),
+            h('td',{style:{padding:'4px 6px',fontSize:11,color:'#78350F'}},r.faena_nombre),
+            h('td',{style:{padding:'4px 6px',fontSize:11,textAlign:'right',fontFamily:'monospace'}},nf(r.litros,1)),
+            h('td',{style:{padding:'4px 6px',fontSize:11,textAlign:'right',fontFamily:'monospace',color:r.n_dist<2?'#DC2626':'#78350F'}},r.n_dist)
+          );}))
+        )
+      )
+    ),
     loading?h('div',{style:{padding:30,textAlign:'center',color:'#94A3B8'}},'Calculando...'):
     rows.length===0?h('div',{className:'card',style:{padding:30,textAlign:'center',color:'#94A3B8'}},'Sin distribuciones de combustible en el período.'):
     orden.map(function(k){
       var g=faenasMap[k];
       return h('div',{key:k,className:'card',style:{padding:16,marginBottom:14}},
         h('div',{style:{fontSize:14,fontWeight:700,color:'#1E3A2D',marginBottom:4}},'📍 '+g.faena),
-        g.maquinas.length>0?tablaMaq(g.maquinas):h('div',{style:{fontSize:11,color:'#94A3B8',margin:'4px 0'}},'Sin máquinas con consumo.'),
-        g.vehiculos.length>0&&tablaVeh(g.vehiculos)
+        catsOrdenadas(g).map(function(grp){return tablaCat(grp);})
       );
     })
   );
