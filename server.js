@@ -5298,6 +5298,74 @@ app.get('/api/mant/prog-ranking', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
+// ─── GET: panel de Cumplimiento (estado, por faena, tendencia, carga mecánicos, ranking cargos) ───
+app.get('/api/mant/prog-cumplimiento', auth, async(req,res)=>{
+  try{
+    const modo=(req.query.modo==='historico')?'historico':'mensual';
+    const anio=parseInt(req.query.anio)||new Date().getFullYear();
+    const mes=parseInt(req.query.mes)||(new Date().getMonth()+1);
+    const scope='($1=\'historico\' OR (anio=$2 AND mes=$3))';
+    const P=[modo,anio,mes];
+
+    const estado=await pool.query(`SELECT estado, COUNT(*)::int AS n FROM mant_prog_tareas WHERE ${scope} GROUP BY estado`,P);
+    const porFaena=await pool.query(`
+      SELECT COALESCE(f.nombre,'Sin faena') AS faena, COUNT(*)::int AS total,
+             COUNT(*) FILTER (WHERE t.estado='realizado')::int AS realizadas
+      FROM mant_prog_tareas t LEFT JOIN faenas f ON t.faena_id=f.faena_id
+      WHERE ${scope} GROUP BY COALESCE(f.nombre,'Sin faena') ORDER BY total DESC`,P);
+    const tendencia=await pool.query(`
+      SELECT semana, COUNT(*)::int AS total, COUNT(*) FILTER (WHERE estado='realizado')::int AS realizadas
+      FROM mant_prog_tareas WHERE anio=$1 AND mes=$2 GROUP BY semana ORDER BY semana`,[anio,mes]);
+    const carga=await pool.query(`
+      WITH mecs AS (
+        SELECT TRIM(elem::text,'"') AS mec
+        FROM mant_prog_tareas t, LATERAL jsonb_array_elements(t.dias) AS day, LATERAL jsonb_array_elements(day) AS elem
+        WHERE ${scope} AND t.dias IS NOT NULL
+      )
+      SELECT mec AS nombre, COUNT(*)::int AS asignaciones FROM mecs
+      WHERE mec <> '' AND LENGTH(mec) > 1 GROUP BY mec ORDER BY asignaciones DESC LIMIT 15`,P);
+    const rankCargos=await pool.query(`
+      SELECT t.equipo_id, e.codigo AS equipo_codigo, e.nombre AS equipo_nombre,
+             COUNT(*)::int AS realizadas,
+             mode() WITHIN GROUP (ORDER BY f.nombre) AS faena_top
+      FROM mant_prog_tareas t
+      JOIN equipos e ON t.equipo_id=e.equipo_id
+      LEFT JOIN faenas f ON t.faena_id=f.faena_id
+      WHERE ${scope} AND t.estado='realizado' AND t.equipo_id IS NOT NULL
+      GROUP BY t.equipo_id, e.codigo, e.nombre
+      ORDER BY realizadas DESC LIMIT 16`,P);
+
+    res.json({
+      modo:modo, anio:anio, mes:mes,
+      estado: estado.rows,
+      por_faena: porFaena.rows.map(function(r){return{faena:r.faena,total:r.total,realizadas:r.realizadas,pct:r.total?Math.round(r.realizadas*100/r.total):0};}),
+      tendencia: tendencia.rows.map(function(r){return{semana:r.semana,total:r.total,realizadas:r.realizadas,pct:r.total?Math.round(r.realizadas*100/r.total):0};}),
+      carga_mecanicos: carga.rows,
+      ranking_cargos: rankCargos.rows
+    });
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ─── GET: detalle de tareas realizadas de un cargo (para el modal del ranking) ───
+app.get('/api/mant/prog-cargo-detalle', auth, async(req,res)=>{
+  try{
+    const equipo_id=parseInt(req.query.equipo_id);
+    if(!equipo_id) return res.status(400).json({error:'equipo_id requerido'});
+    const modo=(req.query.modo==='historico')?'historico':'mensual';
+    const anio=parseInt(req.query.anio)||new Date().getFullYear();
+    const mes=parseInt(req.query.mes)||(new Date().getMonth()+1);
+    const r=await pool.query(`
+      SELECT t.tarea_id, t.anio, t.mes, t.semana, t.detalle, t.estado, t.dias,
+             COALESCE(f.nombre,'Sin faena') AS faena_nombre, e.codigo AS equipo_codigo, e.nombre AS equipo_nombre
+      FROM mant_prog_tareas t
+      JOIN equipos e ON t.equipo_id=e.equipo_id
+      LEFT JOIN faenas f ON t.faena_id=f.faena_id
+      WHERE t.equipo_id=$1 AND t.estado='realizado' AND ($2='historico' OR (t.anio=$3 AND t.mes=$4))
+      ORDER BY t.anio, t.mes, t.semana`,[equipo_id,modo,anio,mes]);
+    res.json({equipo_id:equipo_id, tareas:r.rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 app.post('/api/mant/planes/cargar-ultimo-servicio', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
