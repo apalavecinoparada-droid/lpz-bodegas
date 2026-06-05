@@ -4056,7 +4056,7 @@ app.get('/api/comb/rendimientos', auth, async(req,res)=>{
         SELECT equipo_id, COALESCE(SUM(horas_trabajadas),0) AS horas
         FROM terreno_registros WHERE fecha BETWEEN $1 AND $2 GROUP BY equipo_id
       )
-      SELECT eq.equipo_id, eq.codigo, eq.nombre, eq.tipo, eq.faena_id,
+      SELECT eq.equipo_id, eq.codigo, eq.nombre, eq.tipo_cargo, eq.faena_id,
              f.nombre AS faena_nombre, emp.razon_social AS empresa_nombre,
              COALESCE(l.litros,0) AS litros, COALESCE(l.costo,0) AS costo, COALESCE(l.n_dist,0) AS n_dist,
              l.km_max, l.km_min, l.h_max, l.h_min,
@@ -4069,34 +4069,49 @@ app.get('/api/comb/rendimientos', auth, async(req,res)=>{
       ${wEq}
       ORDER BY f.nombre NULLS LAST, eq.codigo`, vals);
 
-    const VEH=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'];
+    // Clasificación por tipo de cargo → categoría visible, orden y métrica
+    // metric: 'h' = máquina (L/h) · 'km' = rodante (L/km) · 'none' = sin rendimiento
+    const CAT={
+      maquinaria:{label:'Máquinas',orden:1,metric:'h'},
+      camioneta:{label:'Camionetas',orden:2,metric:'km'},
+      furgon:{label:'Furgones',orden:3,metric:'km'},
+      camion:{label:'Camiones',orden:4,metric:'km'},
+      camion_estanque:{label:'Camiones estanque',orden:5,metric:'km'},
+      camion_cama_baja:{label:'Camiones cama baja',orden:6,metric:'km'},
+      camion_mantencion:{label:'Camiones de mantención',orden:7,metric:'km'},
+      estanque:{label:'Estanques',orden:8,metric:'none'},
+      taller:{label:'Taller',orden:9,metric:'none'},
+      equipos_taller:{label:'Equipos de taller',orden:9,metric:'none'},
+      administracion:{label:'Administración',orden:10,metric:'none'},
+      faena:{label:'Faena (general)',orden:11,metric:'none'}
+    };
     const rows=r.rows.map(function(x){
-      const esVeh=VEH.indexOf(x.tipo)>=0;
+      const tc=(x.tipo_cargo||'maquinaria').toLowerCase();
+      const cat=CAT[tc]||{label:'Otros',orden:12,metric:'none'};
       const litros=parseFloat(x.litros)||0;
       const horasTerreno=parseFloat(x.horas_terreno)||0;
-      // span de horómetro/km a partir de las distribuciones (fallback / vehículos)
       const hSpan=(x.h_max!=null&&x.h_min!=null&&x.h_max>x.h_min)?(parseFloat(x.h_max)-parseFloat(x.h_min)):null;
       const kmSpan=(x.km_max!=null&&x.km_min!=null&&x.km_max>x.km_min)?(parseFloat(x.km_max)-parseFloat(x.km_min)):null;
-      var horas=horasTerreno>0?horasTerreno:(hSpan||0);
-      var horas_origen=horasTerreno>0?'terreno':(hSpan?'horómetro distrib.':null);
-      var rendimiento=null, unidad=null, secundario=null;
-      if(esVeh){
-        unidad='km/L';
-        if(kmSpan&&litros>0)rendimiento=kmSpan/litros;
-        if(kmSpan&&kmSpan>0)secundario=litros/kmSpan*100; // L/100km
-      }else{
+      var horas=0, horas_origen=null, km=null, rendimiento=null, unidad=null, l_100=null;
+      if(cat.metric==='h'){
+        horas=horasTerreno>0?horasTerreno:(hSpan||0);
+        horas_origen=horasTerreno>0?'terreno':(hSpan?'horómetro distrib.':null);
         unidad='L/h';
         if(horas>0)rendimiento=litros/horas;
+      }else if(cat.metric==='km'){
+        km=kmSpan;
+        unidad='L/km';
+        if(km&&km>0){rendimiento=litros/km; l_100=litros/km*100;}
       }
       return{
-        equipo_id:x.equipo_id, codigo:x.codigo, nombre:x.nombre, tipo:x.tipo,
+        equipo_id:x.equipo_id, codigo:x.codigo, nombre:x.nombre, tipo_cargo:tc,
+        categoria:cat.label, categoria_orden:cat.orden, metric:cat.metric,
         faena_id:x.faena_id, faena_nombre:x.faena_nombre||'Sin faena', empresa_nombre:x.empresa_nombre||'',
-        es_vehiculo:esVeh, litros:Math.round(litros*10)/10, costo:Math.round(parseFloat(x.costo)||0),
-        n_dist:parseInt(x.n_dist)||0,
+        litros:Math.round(litros*10)/10, costo:Math.round(parseFloat(x.costo)||0), n_dist:parseInt(x.n_dist)||0,
         horas:Math.round(horas*10)/10, horas_origen:horas_origen,
-        km:kmSpan!=null?Math.round(kmSpan):null,
-        rendimiento:rendimiento!=null?Math.round(rendimiento*100)/100:null, rendimiento_unidad:unidad,
-        l_por_100km:secundario!=null?Math.round(secundario*100)/100:null
+        km:km!=null?Math.round(km):null,
+        rendimiento:rendimiento!=null?Math.round(rendimiento*1000)/1000:null, rendimiento_unidad:unidad,
+        l_por_100km:l_100!=null?Math.round(l_100*100)/100:null
       };
     });
     res.json({desde,hasta,rows});
