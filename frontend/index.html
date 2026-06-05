@@ -12578,6 +12578,7 @@ function MantProgView(p){
   const[tab,setTab]=useState('programacion'); // programacion | cronograma | cumplimiento
   const[tareas,setTareas]=useState([]);
   const[mecanicos,setMecanicos]=useState([]);
+  const[telMap,setTelMap]=useState({}); // nombre_norm → telefono (WhatsApp)
   const[loading,setLoading]=useState(false);
   const[err,setErr]=useState('');
   const[search,setSearch]=useState('');
@@ -12658,7 +12659,8 @@ function MantProgView(p){
     setLoading(true);setErr('');
     Promise.all([
       api('/mant/prog-tareas?anio='+viewYear+'&mes='+(viewMonth+1)+'&semana='+sem.idx,'GET',null,p.tok),
-      api('/mant/mecanicos','GET',null,p.tok)
+      api('/mant/mecanicos','GET',null,p.tok),
+      api('/mant/mecanicos-telefonos','GET',null,p.tok).catch(function(){return [];})
     ]).then(function(r){
       setTareas(Array.isArray(r[0])?r[0]:[]);
       // El endpoint ahora retorna {sistema:[...], usados_en_tareas:[...]}
@@ -12678,6 +12680,12 @@ function MantProgView(p){
         if(k&&!seen.has(k)){seen.add(k);lista.push({nombre:u,fuente:'tareas',es_mantencion:false});}
       });
       setMecanicos(lista);
+      // Mapa de teléfonos: primero el del personal, luego override de la tabla dedicada
+      const norm=function(s){return String(s||'').toLowerCase().trim().replace(/\s+/g,' ');};
+      const tm={};
+      sistema.forEach(function(s){if(s.telefono&&String(s.telefono).trim()){tm[norm(s.nombre_completo)]=String(s.telefono).replace(/[\s\-\+\(\)\.]/g,'');}});
+      (Array.isArray(r[2])?r[2]:[]).forEach(function(t){if(t.telefono)tm[t.nombre_norm||norm(t.nombre)]=t.telefono;});
+      setTelMap(tm);
     }).catch(function(e){setErr(e.message);})
     .finally(function(){setLoading(false);});
   }
@@ -12725,8 +12733,10 @@ function MantProgView(p){
     const r=tareasFiltradas.filter(function(t){return t.estado==='realizado';}).length;
     const ec=tareasFiltradas.filter(function(t){return t.estado==='en_curso';}).length;
     const pend=tareasFiltradas.filter(function(t){return t.estado==='pendiente';}).length;
+    const prog=tareasFiltradas.filter(function(t){return t.estado==='programado';}).length;
+    const reprg=tareasFiltradas.filter(function(t){return t.estado==='reprogramado';}).length;
     const pct=tot?Math.round(r*100/tot):0;
-    return{tot:tot,r:r,ec:ec,pend:pend,pct:pct};
+    return{tot:tot,r:r,ec:ec,pend:pend,prog:prog,reprg:reprg,pct:pct};
   })();
 
   // ─── Reprogramar pendientes de semana anterior ───
@@ -12770,6 +12780,12 @@ function MantProgView(p){
       .then(load)
       .catch(function(e){alert(e.message);});
   }
+  // ─── Guardar teléfono WhatsApp de un mecánico ───
+  function normMec(s){return String(s||'').toLowerCase().trim().replace(/\s+/g,' ');}
+  function saveTel(nombre,tel){
+    return api('/mant/mecanicos-telefonos','POST',{nombre:nombre,telefono:tel},p.tok)
+      .then(function(r){var tm=Object.assign({},telMap);tm[r.nombre_norm||normMec(nombre)]=r.telefono;setTelMap(tm);return r.telefono;});
+  }
 
   // ═══ Render ═══
   const semActual=SEMANAS[curWeek];
@@ -12802,22 +12818,30 @@ function MantProgView(p){
     ),
 
     // ── Stats cards ──
-    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:8,marginBottom:10}},
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:8,marginBottom:10}},
       h('div',{className:'card',style:{padding:10,textAlign:'center',borderTop:'3px solid #1e293b'}},
         h('div',{style:{fontSize:10,color:'#64748B',textTransform:'uppercase',letterSpacing:1}},'Total'),
         h('div',{style:{fontSize:24,fontWeight:700,color:'#1e293b'}},stats.tot)
       ),
-      h('div',{className:'card',style:{padding:10,textAlign:'center',borderTop:'3px solid #15803d'}},
-        h('div',{style:{fontSize:10,color:'#64748B',textTransform:'uppercase',letterSpacing:1}},'Realizadas'),
-        h('div',{style:{fontSize:24,fontWeight:700,color:'#15803d'}},stats.r)
+      h('div',{className:'card',style:{padding:10,textAlign:'center',borderTop:'3px solid #1d4ed8'}},
+        h('div',{style:{fontSize:10,color:'#64748B',textTransform:'uppercase',letterSpacing:1}},'Programadas'),
+        h('div',{style:{fontSize:24,fontWeight:700,color:'#1d4ed8'}},stats.prog)
       ),
       h('div',{className:'card',style:{padding:10,textAlign:'center',borderTop:'3px solid #d97706'}},
         h('div',{style:{fontSize:10,color:'#64748B',textTransform:'uppercase',letterSpacing:1}},'En Curso'),
         h('div',{style:{fontSize:24,fontWeight:700,color:'#d97706'}},stats.ec)
       ),
+      h('div',{className:'card',style:{padding:10,textAlign:'center',borderTop:'3px solid #15803d'}},
+        h('div',{style:{fontSize:10,color:'#64748B',textTransform:'uppercase',letterSpacing:1}},'Realizadas'),
+        h('div',{style:{fontSize:24,fontWeight:700,color:'#15803d'}},stats.r)
+      ),
       h('div',{className:'card',style:{padding:10,textAlign:'center',borderTop:'3px solid #dc2626'}},
         h('div',{style:{fontSize:10,color:'#64748B',textTransform:'uppercase',letterSpacing:1}},'Pendientes'),
         h('div',{style:{fontSize:24,fontWeight:700,color:'#dc2626'}},stats.pend)
+      ),
+      h('div',{className:'card',style:{padding:10,textAlign:'center',borderTop:'3px solid #6d28d9'}},
+        h('div',{style:{fontSize:10,color:'#64748B',textTransform:'uppercase',letterSpacing:1}},'Reprogram.'),
+        h('div',{style:{fontSize:24,fontWeight:700,color:'#6d28d9'}},stats.reprg)
       ),
       h('div',{className:'card',style:{padding:10,textAlign:'center',borderTop:'3px solid #0e7490'}},
         h('div',{style:{fontSize:10,color:'#64748B',textTransform:'uppercase',letterSpacing:1}},'Cumplimiento'),
@@ -12851,14 +12875,15 @@ function MantProgView(p){
       semana:semActual,tareas:tareasFiltradas,mecanicos:mecanicos,
       onEdit:function(t){setEditTask(t);setShowModal(true);},
       onEliminar:eliminarTarea,onSetEstado:setEstado,
-      loading:loading,isDayPast:isDayPast,DIAS_CORTOS:DIAS_CORTOS,estConf:estConf
+      loading:loading,isDayPast:isDayPast,DIAS_CORTOS:DIAS_CORTOS,estConf:estConf,
+      telMap:telMap,saveTel:saveTel,normMec:normMec
     }),
 
     // ── Vista CRONOGRAMA ──
     tab==='cronograma'&&h(ProgCronograma,{tareas:tareasFiltradas,SEMANAS:SEMANAS,curWeek:curWeek,estConf:estConf}),
 
     // ── Vista CUMPLIMIENTO ──
-    tab==='cumplimiento'&&h(ProgCumplimiento,{tareas:tareasFiltradas,mecanicos:mecanicos,estConf:estConf}),
+    tab==='cumplimiento'&&h(ProgCumplimiento,{tareas:tareasFiltradas,mecanicos:mecanicos,estConf:estConf,tok:p.tok,anio:viewYear,mes:viewMonth+1}),
 
     // ── Modal nueva/editar tarea ──
     showModal&&h(ProgTaskModal,{
@@ -12885,6 +12910,40 @@ function ProgTabla(p){
 
   if(p.loading) return h('div',{className:'spin'},'Cargando...');
   if(!p.tareas.length) return h('div',{className:'card',style:{padding:30,textAlign:'center',color:'#64748B'}},'Sin tareas para esta semana');
+
+  const DIAS_NOM=['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+  // Días (de la semana) en que un mecánico está asignado a una tarea
+  function diasDeMec(t,mec){
+    const norm=p.normMec||function(s){return String(s||'').toLowerCase().trim();};
+    const out=[];
+    (t.dias||[]).forEach(function(day,i){
+      if((day||[]).some(function(m){return norm(m)===norm(mec);})&&p.semana.days[i]){
+        out.push(DIAS_NOM[i]+' '+p.semana.days[i].getDate());
+      }
+    });
+    return out.length?out.join(', '):'esta semana';
+  }
+  function waMec(mec,t){
+    const norm=p.normMec||function(s){return String(s||'').toLowerCase().trim();};
+    var tel=(p.telMap||{})[norm(mec)];
+    function abrir(telf){
+      const nombre=String(mec).split(' ')[0];
+      const equipo=[t.equipo_codigo,t.equipo_nombre].filter(Boolean).join(' ');
+      const msg=encodeURIComponent(
+        'Hola '+nombre+'! Tienes una tarea programada 🔧\n\n'+
+        '📌 Faena: '+(t.faena_nombre||'—')+'\n'+
+        '🚜 Máquina/Equipo: '+(equipo||'—')+'\n'+
+        '🛠 Trabajo: '+(t.detalle||'(sin detalle)')+'\n'+
+        '📅 Día(s): '+diasDeMec(t,mec)
+      );
+      window.open('https://wa.me/'+telf+'?text='+msg,'_blank');
+    }
+    if(tel){abrir(tel);return;}
+    var inp=prompt('📱 Ingresa el número WhatsApp de '+mec+':\n(Ejemplo: 56912345678  o  912345678)','56');
+    if(inp===null) return;
+    if(!p.saveTel){alert('No se puede guardar el teléfono.');return;}
+    p.saveTel(mec,inp).then(function(telf){if(telf)abrir(telf);else alert('Número inválido. Usa formato 56912345678');}).catch(function(e){alert(e.message);});
+  }
 
   return h('div',{className:'card',style:{padding:0,overflow:'auto'}},
     h('table',{style:{fontSize:11,minWidth:1100,borderCollapse:'collapse'}},
@@ -12920,7 +12979,12 @@ function ProgTabla(p){
             return h('td',{key:i,style:{padding:'4px 6px',verticalAlign:'top',background:p.isDayPast(p.semana.days[i])?'#F8FAFC':'#fff'}},
               h('div',null,
                 (day||[]).filter(Boolean).map(function(mec,j){
-                  return h('div',{key:j,style:{fontSize:10,padding:'2px 4px',background:'#EFF6FF',color:'#1E40AF',borderRadius:3,marginBottom:2,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',maxWidth:110}},mecLabel(mec));
+                  const norm=p.normMec||function(s){return String(s||'').toLowerCase().trim();};
+                  const tiene=!!(p.telMap||{})[norm(mec)];
+                  return h('div',{key:j,style:{display:'flex',alignItems:'center',gap:3,marginBottom:2}},
+                    h('span',{style:{flex:1,minWidth:0,fontSize:10,padding:'2px 4px',background:'#EFF6FF',color:'#1E40AF',borderRadius:3,whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}},mecLabel(mec)),
+                    h('button',{onClick:function(){waMec(mec,t);},title:tiene?('WhatsApp → '+mec):('WhatsApp → '+mec+' (sin teléfono, clic para ingresar)'),style:{flexShrink:0,width:20,height:20,border:'none',borderRadius:4,cursor:'pointer',background:tiene?'#25D366':'#94A3B8',color:'#fff',fontSize:11,lineHeight:'20px',padding:0}},'💬')
+                  );
                 })
               )
             );
@@ -12975,27 +13039,28 @@ function ProgCronograma(p){
 // COMPONENTE: vista Cumplimiento (ranking por mecánico)
 // ═══════════════════════════════════════════════════════════════════════
 function ProgCumplimiento(p){
-  // Construir ranking: para cada mecánico, contar tareas en las que aparece y % realizadas
-  const ranking={};
-  p.tareas.forEach(function(t){
-    const allM=new Set();
-    (t.dias||[]).forEach(function(d){(d||[]).forEach(function(m){if(m&&String(m).trim().length>1) allM.add(String(m).trim());});});
-    allM.forEach(function(m){
-      if(!ranking[m]) ranking[m]={total:0,realizadas:0};
-      ranking[m].total++;
-      if(t.estado==='realizado') ranking[m].realizadas++;
-    });
-  });
-  const arr=Object.keys(ranking).map(function(m){return Object.assign({mec:m,pct:ranking[m].total?Math.round(ranking[m].realizadas*100/ranking[m].total):0},ranking[m]);});
-  arr.sort(function(a,b){return b.realizadas-a.realizadas;});
+  const[modo,setModo]=useState('mensual'); // mensual | historico
+  const[rank,setRank]=useState([]);
+  const[loadingRk,setLoadingRk]=useState(false);
+  const[detalle,setDetalle]=useState(null); // nombre del mecánico expandido
 
-  // Stats globales por estado
+  useEffect(function(){
+    setLoadingRk(true);
+    api('/mant/prog-ranking?modo='+modo+'&anio='+p.anio+'&mes='+p.mes,'GET',null,p.tok)
+      .then(function(r){setRank(Array.isArray(r.rows)?r.rows:[]);})
+      .catch(function(){setRank([]);})
+      .finally(function(){setLoadingRk(false);});
+  },[modo,p.anio,p.mes,p.tok]);
+
+  // Distribución por estado de la SEMANA visible (de las tareas filtradas)
   const porEstado={};
   p.tareas.forEach(function(t){porEstado[t.estado]=(porEstado[t.estado]||0)+1;});
 
+  const maxReal=rank.reduce(function(m,r){return Math.max(m,r.realizadas);},0)||1;
+
   return h('div',null,
     h('div',{className:'card',style:{padding:14,marginBottom:10}},
-      h('h3',{style:{margin:'0 0 10px 0',fontSize:14,color:'#1E3A2D'}},'Distribución por estado'),
+      h('h3',{style:{margin:'0 0 10px 0',fontSize:14,color:'#1E3A2D'}},'Distribución por estado (semana visible)'),
       h('div',{style:{display:'flex',gap:6,flexWrap:'wrap'}},
         ['programado','en_curso','realizado','pendiente','reprogramado'].map(function(est){
           const c=p.estConf(est);const cnt=porEstado[est]||0;
@@ -13004,21 +13069,43 @@ function ProgCumplimiento(p){
       )
     ),
     h('div',{className:'card',style:{padding:14}},
-      h('h3',{style:{margin:'0 0 10px 0',fontSize:14,color:'#1E3A2D'}},'Ranking de cumplimiento por mecánico'),
-      arr.length===0
-        ? h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin datos')
-        : h('table',{style:{fontSize:12,borderCollapse:'collapse'}},
-            h('thead',null,h('tr',null,h('th',null,'#'),h('th',null,'Mecánico'),h('th',{className:'c'},'Total tareas'),h('th',{className:'c'},'Realizadas'),h('th',{className:'r'},'% Cumplimiento'))),
-            h('tbody',null,arr.map(function(r,i){
-              return h('tr',{key:r.mec},
-                h('td',null,i+1),
-                h('td',null,h('strong',null,r.mec)),
-                h('td',{className:'c'},r.total),
-                h('td',{className:'c',style:{color:'#15803d',fontWeight:600}},r.realizadas),
-                h('td',{className:'r',style:{fontWeight:700,color:r.pct>=80?'#15803d':r.pct>=50?'#d97706':'#dc2626'}},r.pct+'%')
-              );
-            }))
-          )
+      h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:10,flexWrap:'wrap',gap:8}},
+        h('h3',{style:{margin:0,fontSize:14,color:'#1E3A2D'}},'Ranking de cumplimiento por mecánico'),
+        h('div',{style:{display:'flex',gap:2}},
+          [['mensual','Mensual'],['historico','Histórico']].map(function(x){
+            const active=modo===x[0];
+            return h('button',{key:x[0],onClick:function(){setModo(x[0]);setDetalle(null);},style:{padding:'5px 14px',border:'1px solid '+(active?'#1E3A2D':'#CBD5E1'),background:active?'#1E3A2D':'#fff',color:active?'#fff':'#475569',borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:600}},x[1]);
+          })
+        )
+      ),
+      h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},modo==='mensual'?('Mes '+p.mes+'/'+p.anio+' — todas las semanas del mes'):'Histórico completo — todas las tareas registradas'),
+      loadingRk?h('div',{style:{padding:20,textAlign:'center',color:'#94A3B8'}},'Calculando ranking...'):
+      rank.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin datos en este período'):
+      h('table',{style:{fontSize:12,borderCollapse:'collapse',width:'100%'}},
+        h('thead',null,h('tr',null,h('th',null,'#'),h('th',null,'Mecánico'),h('th',null,'Carga (realizadas)'),h('th',{className:'c'},'Total'),h('th',{className:'c'},'Realiz.'),h('th',{className:'r'},'% Cumpl.'))),
+        h('tbody',null,rank.map(function(r,i){
+          const abierto=detalle===r.nombre;
+          return [
+            h('tr',{key:r.nombre,style:{cursor:'pointer',background:abierto?'#F1F5F9':'transparent'},onClick:function(){setDetalle(abierto?null:r.nombre);}},
+              h('td',null,i+1),
+              h('td',null,h('strong',null,r.nombre),h('span',{style:{marginLeft:6,fontSize:10,color:'#94A3B8'}},abierto?'▲':'▼')),
+              h('td',null,h('div',{style:{background:'#E2E8F0',borderRadius:4,height:16,width:140,position:'relative',overflow:'hidden'}},
+                h('div',{style:{position:'absolute',top:0,left:0,bottom:0,width:Math.round(r.realizadas/maxReal*100)+'%',background:'#15803d'}})
+              )),
+              h('td',{className:'c'},r.total),
+              h('td',{className:'c',style:{color:'#15803d',fontWeight:600}},r.realizadas),
+              h('td',{className:'r',style:{fontWeight:700,color:r.pct>=80?'#15803d':r.pct>=50?'#d97706':'#dc2626'}},r.pct+'%')
+            ),
+            abierto&&h('tr',{key:r.nombre+'-d'},h('td',{colSpan:6,style:{background:'#F8FAFC',padding:'8px 12px'}},
+              h('div',{style:{display:'flex',gap:8,flexWrap:'wrap'}},
+                [['programadas','Programadas'],['en_curso','En curso'],['realizadas','Realizadas'],['pendientes','Pendientes'],['reprogramadas','Reprogramadas']].map(function(e){
+                  return h('div',{key:e[0],style:{padding:'5px 10px',background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,fontSize:11}},e[1]+': ',h('strong',null,r[e[0]]||0));
+                })
+              )
+            ))
+          ];
+        }))
+      )
     )
   );
 }
