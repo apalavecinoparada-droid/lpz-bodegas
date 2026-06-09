@@ -10325,7 +10325,7 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, async(req,res)=>{
       HAVING COALESCE(SUM(do2.monto_aplicado),0) < d.total - 1
       ORDER BY d.fecha_emision DESC NULLS LAST`,pv)).rows;
 
-    const detalles=[]; let porFolio=0, porMonto=0;
+    const detalles=[]; let porFolio=0, porMonto=0, porFacturaGuias=0;
     for(const d of dtes){
       const total=parseFloat(d.total)||0;
       const restante=total-(parseFloat(d.asignado)||0);
@@ -10337,19 +10337,65 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, async(req,res)=>{
       const provVal = d.proveedor_id || d.proveedor_rut;
       if(!provVal) continue;
 
-      // Tier 1: folio exacto contra OC CERRADA no vinculada
-      let oc=(await client.query(`
-        SELECT oc.oc_id, oc.numero_oc, oc.total, oc.numero_documento, oc.fecha_emision
-        FROM ordenes_compra oc
-        WHERE ${provCond} AND oc.estado='CERRADA'
-          AND oc.numero_documento IS NOT NULL AND oc.numero_documento<>''
-          AND regexp_replace(oc.numero_documento,'^0+','')=regexp_replace($2,'^0+','')
-          AND NOT EXISTS (SELECT 1 FROM dte_oc x WHERE x.oc_id=oc.oc_id)
-        ORDER BY ABS(oc.total - $3) ASC LIMIT 1`,[provVal,normFolio(d.folio),total])).rows[0];
-      let criterio=oc?'folio':null;
+      const provCondF = d.proveedor_id
+        ? 'f.proveedor_id=$1'
+        : 'f.proveedor_id IN (SELECT proveedor_id FROM proveedores WHERE rut=$1)';
 
-      // Tier 2: monto cercano, candidata única
-      if(!oc){
+      // matches[]: lista de {oc_id, oc_numero, oc_total, numero_documento, criterio, monto}
+      let matches=[];
+
+      // ── Tier A: FACTURA POR CIERRE DE GUÍAS ──
+      // El folio del DTE corresponde al numero_factura de oc_factura_guias (que agrupa varias OC).
+      // Se vincula el DTE a TODAS las OC de esa factura.
+      let faci=(await client.query(`
+        SELECT f.factura_id, f.numero_factura, f.total
+        FROM oc_factura_guias f
+        WHERE ${provCondF}
+          AND f.numero_factura IS NOT NULL AND f.numero_factura<>''
+          AND regexp_replace(f.numero_factura,'^0+','')=regexp_replace($2,'^0+','')
+        ORDER BY ABS(f.total - $3) ASC LIMIT 1`,[provVal,normFolio(d.folio),total])).rows[0];
+      let critFac='factura_guias';
+      if(!faci){
+        // por monto: factura de guías única cuyo total calza con el DTE
+        const fcands=(await client.query(`
+          SELECT f.factura_id, f.numero_factura, f.total
+          FROM oc_factura_guias f
+          WHERE ${provCondF} AND ABS(f.total - $2)/GREATEST(f.total,1) <= $3
+          ORDER BY ABS(f.total - $2) ASC`,[provVal,total,tol])).rows;
+        if(fcands.length===1){faci=fcands[0];critFac='factura_guias_monto';}
+      }
+      if(faci){
+        const ocsFac=(await client.query(`
+          SELECT oc.oc_id, oc.numero_oc, oc.total, oc.numero_documento
+          FROM ordenes_compra oc
+          WHERE oc.factura_guia_id=$1
+            AND NOT EXISTS (SELECT 1 FROM dte_oc x WHERE x.oc_id=oc.oc_id)
+          ORDER BY oc.total DESC`,[faci.factura_id])).rows;
+        let rem=restante;
+        for(const o of ocsFac){
+          if(rem<=1) break;
+          const m=Math.min(parseFloat(o.total)||0,rem);
+          if(m<=0) continue;
+          matches.push({oc_id:o.oc_id,oc_numero:o.numero_oc,oc_total:parseFloat(o.total)||0,numero_documento:o.numero_documento,criterio:critFac,monto:m,factura:faci.numero_factura});
+          rem-=m;
+        }
+      }
+
+      // ── Tier B: folio exacto contra OC CERRADA (cierre directo de OC con N° factura) ──
+      if(matches.length===0){
+        let oc=(await client.query(`
+          SELECT oc.oc_id, oc.numero_oc, oc.total, oc.numero_documento, oc.fecha_emision
+          FROM ordenes_compra oc
+          WHERE ${provCond} AND oc.estado='CERRADA'
+            AND oc.numero_documento IS NOT NULL AND oc.numero_documento<>''
+            AND regexp_replace(oc.numero_documento,'^0+','')=regexp_replace($2,'^0+','')
+            AND NOT EXISTS (SELECT 1 FROM dte_oc x WHERE x.oc_id=oc.oc_id)
+          ORDER BY ABS(oc.total - $3) ASC LIMIT 1`,[provVal,normFolio(d.folio),total])).rows[0];
+        if(oc){matches.push({oc_id:oc.oc_id,oc_numero:oc.numero_oc,oc_total:parseFloat(oc.total)||0,numero_documento:oc.numero_documento,criterio:'folio',monto:Math.min(parseFloat(oc.total)||0,restante)});}
+      }
+
+      // ── Tier C: monto cercano, OC CERRADA candidata única ──
+      if(matches.length===0){
         const cands=(await client.query(`
           SELECT oc.oc_id, oc.numero_oc, oc.total, oc.numero_documento, oc.fecha_emision
           FROM ordenes_compra oc
@@ -10358,29 +10404,32 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, async(req,res)=>{
             AND ($4::date IS NULL OR (oc.fecha_emision <= $4::date AND $4::date <= oc.fecha_emision + INTERVAL '180 days'))
             AND NOT EXISTS (SELECT 1 FROM dte_oc x WHERE x.oc_id=oc.oc_id)
           ORDER BY ABS(oc.total - $2) ASC`,[provVal,total,tol,d.fecha_emision])).rows;
-        if(cands.length===1){oc=cands[0];criterio='monto';}
+        if(cands.length===1){const oc=cands[0];matches.push({oc_id:oc.oc_id,oc_numero:oc.numero_oc,oc_total:parseFloat(oc.total)||0,numero_documento:oc.numero_documento,criterio:'monto',monto:Math.min(parseFloat(oc.total)||0,restante)});}
       }
-      if(!oc) continue;
 
-      const monto=Math.min(parseFloat(oc.total)||0,restante);
-      if(monto<=0) continue;
-      detalles.push({
-        dte_id:d.dte_id, folio:d.folio, proveedor:d.proveedor_nombre, dte_total:total,
-        oc_id:oc.oc_id, oc_numero:oc.numero_oc, oc_total:parseFloat(oc.total)||0,
-        oc_documento:oc.numero_documento, criterio:criterio, monto:Math.round(monto)
-      });
-      if(criterio==='folio')porFolio++;else porMonto++;
+      if(matches.length===0) continue;
 
-      if(modo==='aplicar'){
-        await client.query(
-          `INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por)
-           VALUES($1,$2,$3,$4,$5) ON CONFLICT(dte_id,oc_id) DO NOTHING`,
-          [d.dte_id,oc.oc_id,monto,'Cruce automático ('+criterio+')',req.user.email]);
+      for(const mt of matches){
+        if(mt.monto<=0) continue;
+        detalles.push({
+          dte_id:d.dte_id, folio:d.folio, proveedor:d.proveedor_nombre, dte_total:total,
+          oc_id:mt.oc_id, oc_numero:mt.oc_numero, oc_total:mt.oc_total,
+          oc_documento:mt.numero_documento, factura:mt.factura||null, criterio:mt.criterio, monto:Math.round(mt.monto)
+        });
+        if(mt.criterio.indexOf('factura_guias')===0)porFacturaGuias++;
+        else if(mt.criterio==='folio')porFolio++;
+        else porMonto++;
+        if(modo==='aplicar'){
+          await client.query(
+            `INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por)
+             VALUES($1,$2,$3,$4,$5) ON CONFLICT(dte_id,oc_id) DO NOTHING`,
+            [d.dte_id,mt.oc_id,mt.monto,'Cruce automático ('+mt.criterio+')',req.user.email]);
+        }
       }
     }
 
     if(modo==='aplicar') await client.query('COMMIT'); else await client.query('ROLLBACK');
-    res.json({modo:modo, procesados:dtes.length, vinculados:detalles.length, por_folio:porFolio, por_monto:porMonto, detalles:detalles});
+    res.json({modo:modo, procesados:dtes.length, vinculados:detalles.length, por_folio:porFolio, por_monto:porMonto, por_factura_guias:porFacturaGuias, detalles:detalles});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
