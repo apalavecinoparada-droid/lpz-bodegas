@@ -18640,6 +18640,9 @@ function DTERecibidosView(p){
   var[fEstado,setFEstado]=useState('');var[fVinc,setFVinc]=useState('');var[fDesde,setFDesde]=useState('');var[fHasta,setFHasta]=useState('');var[fQ,setFQ]=useState('');
   var[selected,setSelected]=useState({}); // map de dte_id -> true
   var[bulkDeleting,setBulkDeleting]=useState(false);
+  var[cruce,setCruce]=useState(null); // {detalles,por_folio,por_monto,procesados}
+  var[cruceLoading,setCruceLoading]=useState(false);
+  var[cruceAplicando,setCruceAplicando]=useState(false);
   var provs=p.m&&Array.isArray(p.m.provs)?p.m.provs:[];
   var empresas=p.m&&Array.isArray(p.m.empresas)?p.m.empresas:[];
   function load2(){
@@ -18695,6 +18698,20 @@ function DTERecibidosView(p){
       .catch(function(ex){alert('Error: '+ex.message);})
       .finally(function(){setBulkDeleting(false);});
   }
+  function previewCruce(){
+    setCruceLoading(true);
+    api('/dte-recibidos/cruce-automatico','POST',{modo:'preview',empresa_id:fEmpresa||null},p.tok)
+      .then(function(r){setCruce(r);})
+      .catch(function(ex){alert('Error: '+ex.message);})
+      .finally(function(){setCruceLoading(false);});
+  }
+  function aplicarCruce(){
+    setCruceAplicando(true);
+    api('/dte-recibidos/cruce-automatico','POST',{modo:'aplicar',empresa_id:fEmpresa||null},p.tok)
+      .then(function(r){setCruce(null);alert('✓ Cruce aplicado\n\nVinculaciones creadas: '+r.vinculados+'\n• Por folio exacto: '+r.por_folio+'\n• Por monto: '+r.por_monto);load2();})
+      .catch(function(ex){alert('Error: '+ex.message);})
+      .finally(function(){setCruceAplicando(false);});
+  }
   return h('div',null,
     // KPIs en cards
     h('div',{style:{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:8,marginBottom:10}},
@@ -18715,6 +18732,7 @@ function DTERecibidosView(p){
             .then(function(r){alert('✓ Re-detección completada\n\nActualizados: '+r.actualizados+'\nSin match (revisar manualmente): '+r.sin_match);load2();})
             .catch(function(ex){alert('Error: '+ex.message);});
         }},'🔄 Re-detectar empresa'),
+        h('button',{onClick:previewCruce,disabled:cruceLoading,title:'Vincular automáticamente los DTE sin asignar con las OC cerradas (por folio o monto)',style:{padding:'7px 12px',background:cruceLoading?'#94A3B8':'#0369A1',color:'#fff',border:'none',borderRadius:5,cursor:cruceLoading?'default':'pointer',fontSize:12,fontWeight:600}},cruceLoading?'Buscando…':'🔗 Cruce automático con OC'),
         h('input',{type:'text',value:fQ,onChange:function(e){setFQ(e.target.value);},placeholder:'Buscar folio o proveedor...',style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:220}}),
         h('div',{style:{marginLeft:'auto',fontSize:12,color:'#64748B'}},dtes.length+' DTE en la bandeja')
       ),
@@ -18797,7 +18815,52 @@ function DTERecibidosView(p){
     // Modal: importar ZIP
     showImport&&h(ImportZipDTEBandeja,{tok:p.tok,m:p.m,onClose:function(){setShowImport(false);},onRefresh:load2}),
     // Modal: gestionar vinculaciones DTE↔OC (1 DTE puede repartirse en varias OCs)
-    showVincular&&h(GestionarVinculosOC,{dte:showVincular,tok:p.tok,m:p.m,onClose:function(){setShowVincular(null);load2();},onChanged:load2})
+    showVincular&&h(GestionarVinculosOC,{dte:showVincular,tok:p.tok,m:p.m,onClose:function(){setShowVincular(null);load2();},onChanged:load2}),
+    // Modal: previsualización del cruce automático DTE↔OC cerradas
+    cruce&&h('div',{onClick:function(e){if(e.target===e.currentTarget)setCruce(null);},style:{position:'fixed',inset:0,background:'rgba(0,0,0,.6)',zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16}},
+      h('div',{style:{background:'#fff',borderRadius:12,width:900,maxWidth:'97vw',maxHeight:'90vh',display:'flex',flexDirection:'column',overflow:'hidden'}},
+        h('div',{style:{padding:'16px 20px',borderBottom:'1px solid #E2E8F0'}},
+          h('div',{style:{fontSize:17,fontWeight:700,color:'#0369A1'}},'🔗 Cruce automático con OC cerradas'),
+          h('div',{style:{fontSize:12,color:'#64748B',marginTop:3}},
+            cruce.detalles.length>0
+              ? ('Se encontraron '+cruce.detalles.length+' vinculación(es) propuesta(s) — '+cruce.por_folio+' por folio exacto, '+cruce.por_monto+' por monto. Revisa antes de aplicar.')
+              : ('No se encontraron coincidencias entre los '+cruce.procesados+' DTE sin asignar y las OC cerradas.')
+          )
+        ),
+        h('div',{style:{flex:1,overflow:'auto',padding:'0 20px'}},
+          cruce.detalles.length===0
+            ? h('div',{style:{padding:30,textAlign:'center',color:'#94A3B8',fontSize:13}},'Sin coincidencias. Verifica que las OC estén CERRADAS y tengan el folio de factura registrado, o ajusta manualmente.')
+            : h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12}},
+                h('thead',null,h('tr',null,
+                  h('th',{style:{position:'sticky',top:0,background:'#F1F5F9',padding:'8px 6px',textAlign:'left',fontSize:10,color:'#475569'}},'DTE (folio)'),
+                  h('th',{style:{position:'sticky',top:0,background:'#F1F5F9',padding:'8px 6px',textAlign:'left',fontSize:10,color:'#475569'}},'Proveedor'),
+                  h('th',{style:{position:'sticky',top:0,background:'#F1F5F9',padding:'8px 6px',textAlign:'right',fontSize:10,color:'#475569'}},'Total DTE'),
+                  h('th',{style:{position:'sticky',top:0,background:'#F1F5F9',padding:'8px 6px',textAlign:'center',fontSize:10,color:'#475569'}},'→'),
+                  h('th',{style:{position:'sticky',top:0,background:'#F1F5F9',padding:'8px 6px',textAlign:'left',fontSize:10,color:'#475569'}},'OC'),
+                  h('th',{style:{position:'sticky',top:0,background:'#F1F5F9',padding:'8px 6px',textAlign:'right',fontSize:10,color:'#475569'}},'Total OC'),
+                  h('th',{style:{position:'sticky',top:0,background:'#F1F5F9',padding:'8px 6px',textAlign:'right',fontSize:10,color:'#475569'}},'Monto a aplicar'),
+                  h('th',{style:{position:'sticky',top:0,background:'#F1F5F9',padding:'8px 6px',textAlign:'center',fontSize:10,color:'#475569'}},'Criterio')
+                )),
+                h('tbody',null,cruce.detalles.map(function(d,i){
+                  return h('tr',{key:i,style:{borderBottom:'1px solid #F1F5F9'}},
+                    h('td',{style:{padding:'6px',fontWeight:600,fontFamily:'monospace'}},'#'+d.folio),
+                    h('td',{style:{padding:'6px',color:'#475569',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},d.proveedor||'—'),
+                    h('td',{style:{padding:'6px',textAlign:'right',fontFamily:'monospace'}},'$'+N(d.dte_total,0)),
+                    h('td',{style:{padding:'6px',textAlign:'center',color:'#0369A1'}},'→'),
+                    h('td',{style:{padding:'6px',fontWeight:600}},d.oc_numero,d.oc_documento?h('div',{style:{fontSize:9,color:'#94A3B8'}},'doc: '+d.oc_documento):null),
+                    h('td',{style:{padding:'6px',textAlign:'right',fontFamily:'monospace'}},'$'+N(d.oc_total,0)),
+                    h('td',{style:{padding:'6px',textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'#16A34A'}},'$'+N(d.monto,0)),
+                    h('td',{style:{padding:'6px',textAlign:'center'}},h('span',{style:{fontSize:9,fontWeight:700,padding:'2px 8px',borderRadius:10,background:d.criterio==='folio'?'#DBEAFE':'#FEF3C7',color:d.criterio==='folio'?'#1E40AF':'#92400E'}},d.criterio==='folio'?'FOLIO EXACTO':'POR MONTO'))
+                  );
+                }))
+              )
+        ),
+        h('div',{style:{padding:'14px 20px',borderTop:'1px solid #E2E8F0',display:'flex',justifyContent:'flex-end',gap:8}},
+          h('button',{onClick:function(){setCruce(null);},style:{padding:'8px 16px',background:'#fff',color:'#475569',border:'1px solid #CBD5E1',borderRadius:6,cursor:'pointer',fontSize:13}},'Cancelar'),
+          cruce.detalles.length>0&&h('button',{onClick:aplicarCruce,disabled:cruceAplicando,style:{padding:'8px 18px',background:cruceAplicando?'#94A3B8':'#16A34A',color:'#fff',border:'none',borderRadius:6,cursor:cruceAplicando?'default':'pointer',fontSize:13,fontWeight:700}},cruceAplicando?'Aplicando…':('✓ Aplicar '+cruce.detalles.length+' vinculación(es)'))
+        )
+      )
+    )
   );
 }
 
