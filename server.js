@@ -678,6 +678,7 @@ async function setupMantenciones(q){
   try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS contacto_terreno VARCHAR(100)');}catch(e){}
   try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS chasis VARCHAR(80)');}catch(e){}
   try{await q("ALTER TABLE equipos ADD COLUMN IF NOT EXISTS horas_productivas_dia NUMERIC(4,1) DEFAULT 12");}catch(e){}
+  try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS numero_equipo VARCHAR(40)');}catch(e){} // N° interno Forestal Mininco (maquinaria)
 
     // Indices
   const idxs=[
@@ -723,6 +724,7 @@ async function autoSetup() {
   await q(`CREATE TABLE IF NOT EXISTS productos (producto_id SERIAL PRIMARY KEY, codigo VARCHAR(30) NOT NULL UNIQUE, codigo_alternativo VARCHAR(50), nombre VARCHAR(150) NOT NULL, descripcion TEXT, subcategoria_id INT NOT NULL REFERENCES subcategorias(subcategoria_id), unidad_medida VARCHAR(20) NOT NULL DEFAULT 'UN', stock_minimo NUMERIC(12,3) DEFAULT 0, stock_maximo NUMERIC(12,3), costo_referencia NUMERIC(14,2) DEFAULT 0, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW(), modificado_en TIMESTAMP DEFAULT NOW())`);
   await q(`CREATE TABLE IF NOT EXISTS faenas (faena_id SERIAL PRIMARY KEY, codigo VARCHAR(20) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, descripcion TEXT, activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
   try{await q('ALTER TABLE faenas ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)');}catch(e){}
+  try{await q('ALTER TABLE faenas ADD COLUMN IF NOT EXISTS nombre_linea VARCHAR(80)');}catch(e){} // Código interno de línea Forestal Mininco
   await q(`CREATE TABLE IF NOT EXISTS equipos (equipo_id SERIAL PRIMARY KEY, codigo VARCHAR(30) NOT NULL UNIQUE, nombre VARCHAR(100) NOT NULL, tipo VARCHAR(50), faena_id INT REFERENCES faenas(faena_id), patente_serie VARCHAR(50), activo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS marca VARCHAR(80)`);
   await q(`ALTER TABLE equipos ADD COLUMN IF NOT EXISTS modelo VARCHAR(80)`);
@@ -1363,7 +1365,7 @@ faenaRouter.get('/', auth, async(req,res)=>{
 });
 faenaRouter.post('/', auth, async(req,res)=>{
   try{
-    let{codigo,nombre,descripcion,empresa_id}=req.body;
+    let{codigo,nombre,descripcion,empresa_id,nombre_linea}=req.body;
     // Auto-resolver: si empresa_id contiene letras o guiones, es un RUT
     if(empresa_id&&!/^\d+$/.test(String(empresa_id).trim())){
       const rut=String(empresa_id).replace(/\./g,'').replace(/-/g,'').trim();
@@ -1372,20 +1374,20 @@ faenaRouter.post('/', auth, async(req,res)=>{
       empresa_id=er.rows[0].empresa_id;
     }
     empresa_id=empresa_id?parseInt(empresa_id):null;
-    const r=await pool.query('INSERT INTO faenas(codigo,nombre,descripcion,empresa_id) VALUES($1,$2,$3,$4) RETURNING *',[codigo,nombre||null,descripcion||null,empresa_id]);
+    const r=await pool.query('INSERT INTO faenas(codigo,nombre,descripcion,empresa_id,nombre_linea) VALUES($1,$2,$3,$4,$5) RETURNING *',[codigo,nombre||null,descripcion||null,empresa_id,nombre_linea||null]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 faenaRouter.put('/:id', auth, async(req,res)=>{
   try{
-    let{codigo,nombre,descripcion,empresa_id}=req.body;
+    let{codigo,nombre,descripcion,empresa_id,nombre_linea}=req.body;
     if(empresa_id&&!/^\d+$/.test(String(empresa_id).trim())){
       const er=await pool.query("SELECT empresa_id FROM empresas WHERE REPLACE(REPLACE(rut,'.',''),'-','')=REPLACE(REPLACE($1,'.',''),'-','') LIMIT 1",[String(empresa_id)]);
       if(!er.rows.length)throw new Error('Empresa no encontrada con RUT: '+empresa_id);
       empresa_id=er.rows[0].empresa_id;
     }
     empresa_id=empresa_id?parseInt(empresa_id):null;
-    const r=await pool.query('UPDATE faenas SET codigo=$1,nombre=$2,descripcion=$3,empresa_id=$4 WHERE faena_id=$5 RETURNING *',[codigo,nombre||null,descripcion||null,empresa_id,req.params.id]);
+    const r=await pool.query('UPDATE faenas SET codigo=$1,nombre=$2,descripcion=$3,empresa_id=$4,nombre_linea=$5 WHERE faena_id=$6 RETURNING *',[codigo,nombre||null,descripcion||null,empresa_id,nombre_linea||null,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -1542,10 +1544,10 @@ async function syncEquipoEmpresas(client,equipoId,empresaIds,empresaPrincipalId)
 eqR.post('/', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
-    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia,empresas_ids,empresa_principal_id,proceso_productivo}=req.body;
+    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia,empresas_ids,empresa_principal_id,proceso_productivo,numero_equipo}=req.body;
     let empresa_id=await resolveEmpresaId(req.body.empresa_id);
     await client.query('BEGIN');
-    const r=await client.query('INSERT INTO equipos(codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,empresa_id,tipo_cargo,modelo_id,contacto_terreno,horas_productivas_dia,proceso_productivo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12,proceso_productivo||null]);
+    const r=await client.query('INSERT INTO equipos(codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,empresa_id,tipo_cargo,modelo_id,contacto_terreno,horas_productivas_dia,proceso_productivo,numero_equipo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12,proceso_productivo||null,numero_equipo||null]);
     const equipoId=r.rows[0].equipo_id;
     const listaEmp=Array.isArray(empresas_ids)&&empresas_ids.length>0?empresas_ids:(empresa_id?[empresa_id]:[]);
     await syncEquipoEmpresas(client,equipoId,listaEmp,empresa_principal_id||empresa_id);
@@ -1557,10 +1559,10 @@ eqR.post('/', auth, async(req,res)=>{
 eqR.put('/:id', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
-    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia,empresas_ids,empresa_principal_id,proceso_productivo}=req.body;
+    const{codigo,nombre,tipo,faena_id,patente_serie,marca,modelo,anio,placa_patente,num_chasis,tipo_cargo,modelo_id,contacto_terreno,chasis,horas_productivas_dia,empresas_ids,empresa_principal_id,proceso_productivo,numero_equipo}=req.body;
     let empresa_id=await resolveEmpresaId(req.body.empresa_id);
     await client.query('BEGIN');
-    const r=await client.query('UPDATE equipos SET codigo=$1,nombre=$2,tipo=$3,faena_id=$4,patente_serie=$5,marca=$6,modelo=$7,anio=$8,placa_patente=$9,num_chasis=$10,empresa_id=$11,tipo_cargo=$12,modelo_id=$13,contacto_terreno=$14,horas_productivas_dia=$15,proceso_productivo=$16 WHERE equipo_id=$17 RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12,proceso_productivo||null,req.params.id]);
+    const r=await client.query('UPDATE equipos SET codigo=$1,nombre=$2,tipo=$3,faena_id=$4,patente_serie=$5,marca=$6,modelo=$7,anio=$8,placa_patente=$9,num_chasis=$10,empresa_id=$11,tipo_cargo=$12,modelo_id=$13,contacto_terreno=$14,horas_productivas_dia=$15,proceso_productivo=$16,numero_equipo=$17 WHERE equipo_id=$18 RETURNING *',[codigo,nombre,tipo||null,faena_id||null,patente_serie||null,marca||null,modelo||null,anio||null,placa_patente||null,chasis||num_chasis||null,empresa_id,tipo_cargo||'maquinaria',modelo_id||null,contacto_terreno||null,parseFloat(horas_productivas_dia)||12,proceso_productivo||null,numero_equipo||null,req.params.id]);
     const listaEmp=Array.isArray(empresas_ids)&&empresas_ids.length>0?empresas_ids:(empresa_id?[empresa_id]:[]);
     await syncEquipoEmpresas(client,parseInt(req.params.id),listaEmp,empresa_principal_id||empresa_id);
     await client.query('COMMIT');
