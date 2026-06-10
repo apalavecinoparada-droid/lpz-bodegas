@@ -8345,6 +8345,35 @@ app.get('/api/terreno/tiempos-proceso', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
+// Desglose de TIEMPOS PERDIDOS por categoría para un equipo (clic en "Hrs perdidas")
+app.get('/api/terreno/tiempos-perdidos-detalle', auth, async(req,res)=>{
+  try{
+    const{equipo_id,faena_id,desde,hasta}=req.query;
+    if(!equipo_id||!desde||!hasta) return res.status(400).json({error:'equipo_id, desde y hasta requeridos'});
+    const vals=[equipo_id,desde,hasta];
+    let wFaena='';
+    if(faena_id){vals.push(faena_id);wFaena=' AND tr.faena_id=$4';}
+    const r=await pool.query(`
+      SELECT c.tob_cat_id, c.causa, c.codigo,
+             COALESCE(NULLIF(d.clasificacion,''),c.clasificacion) AS clasificacion,
+             COALESCE(SUM(d.horas),0) AS horas,
+             COUNT(DISTINCT tr.registro_id) AS dias
+      FROM terreno_tob_detalle d
+      JOIN terreno_registros tr ON d.registro_id=tr.registro_id
+      JOIN terreno_tob_categorias c ON d.tob_cat_id=c.tob_cat_id
+      WHERE tr.equipo_id=$1 AND tr.fecha BETWEEN $2 AND $3${wFaena}
+      GROUP BY c.tob_cat_id, c.causa, c.codigo, COALESCE(NULLIF(d.clasificacion,''),c.clasificacion)
+      HAVING COALESCE(SUM(d.horas),0) > 0
+      ORDER BY horas DESC`, vals);
+    const rows=r.rows.map(function(x){return{
+      causa:x.causa, codigo:x.codigo||'', clasificacion:x.clasificacion||'E',
+      horas:Math.round((parseFloat(x.horas)||0)*10)/10, dias:parseInt(x.dias)||0
+    };});
+    const total=Math.round(rows.reduce(function(s,x){return s+x.horas;},0)*10)/10;
+    res.json({rows:rows, total:total});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 // ═══════════════════════════════════════════════════════════════════
 // AUDITORÍA DIARIA: cruce terreno ↔ combustibles
 // Identifica equipos sin reporte de terreno, y discrepancias entre
