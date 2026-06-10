@@ -3532,9 +3532,13 @@ function OEEView(p){
       if(d.__oeeExcelRAW&&Array.isArray(d.__oeeExcelRAW)&&d.__oeeExcelRAW.length){
         setMsg('Guardando en la base los datos del Excel ('+d.__oeeExcelRAW.length+' registros)...');
         api('/prod/oee/import','POST',{rows:d.__oeeExcelRAW,modo:'upsert'},p.tok).then(function(r){
-          setMsg('✓ Excel guardado en la base: '+r.importados+' registro(s) actualizados — visibles para todos los usuarios');
+          if(!r.importados){
+            setMsg('Error: el Excel se cargó en pantalla pero NO se guardó en la base ('+((r.errores&&r.errores.length)||0)+' filas rechazadas: '+((r.errores&&r.errores[0])||'sin detalle')+'). Al recargar la página se perderán los datos. Avísame este mensaje para corregirlo.');
+          }else{
+            setMsg('✓ Excel guardado en la base: '+r.importados+' registro(s) actualizados — visibles para todos los usuarios');
+          }
           api('/prod/oee','GET',null,p.tok).then(function(rr){var rows=(rr&&rr.rows)||[];dataRef.current=rows;setData(rows);}).catch(function(){});
-        }).catch(function(ex){setMsg('Error guardando en la base: '+ex.message);});
+        }).catch(function(ex){setMsg('Error guardando en la base: '+ex.message+'. Al recargar la página se perderán los datos cargados.');});
       }
     }
     window.addEventListener('message',onMsg);
@@ -3566,11 +3570,26 @@ function OEEView(p){
     rd.onload=function(ev){
       try{
         var wb=XLSX.read(new Uint8Array(ev.target.result),{type:'array'});
-        var sheetName=wb.SheetNames.indexOf('OEE')>=0?'OEE':wb.SheetNames[0];
+        var tieneOEE=wb.SheetNames.indexOf('OEE')>=0;
+        var esLibroBest=wb.SheetNames.some(function(n){return /Base datos Procesador/i.test(n);});
+        if(!tieneOEE&&esLibroBest){
+          setMsg('Error: este es el libro Best completo. Para cargarlo usa el botón "Cargar Excel" DENTRO de la app (panel verde), que lo procesa y lo guarda en la base. Este botón de la barra es solo para la Plantilla Excel (hoja "OEE").');
+          setImportando(false); if(fileRef.current) fileRef.current.value=''; return;
+        }
+        var sheetName=tieneOEE?'OEE':wb.SheetNames[0];
         var rows=XLSX.utils.sheet_to_json(wb.Sheets[sheetName],{defval:''});
         if(!rows.length) throw new Error('La hoja "'+sheetName+'" no tiene filas');
+        var validas=rows.filter(function(r){return (r.FAENA||r.faena)&&parseInt(r.ANIO||r.anio)&&parseInt(r.MES||r.mes);}).length;
+        if(validas===0){
+          setMsg('Error: la hoja "'+sheetName+'" no tiene columnas FAENA / ANIO / MES. Usa la Plantilla Excel descargable (hoja "OEE") o el botón "Cargar Excel" interno para el libro Best.');
+          setImportando(false); if(fileRef.current) fileRef.current.value=''; return;
+        }
         api('/prod/oee/import','POST',{rows:rows,modo:'upsert'},p.tok).then(function(r){
-          setMsg('✓ Importados '+r.importados+' registro(s)'+(r.errores&&r.errores.length?(' · '+r.errores.length+' con aviso'):''));
+          if(!r.importados){
+            setMsg('Error: no se importó ningún registro ('+((r.errores&&r.errores.length)||0)+' filas con problema). Revisa que la hoja tenga FAENA, ANIO y MES.');
+          }else{
+            setMsg('✓ Importados '+r.importados+' registro(s)'+(r.errores&&r.errores.length?(' · '+r.errores.length+' con aviso'):'')+' — guardados en la base');
+          }
           setImportando(false);
           if(fileRef.current) fileRef.current.value='';
           cargar();
