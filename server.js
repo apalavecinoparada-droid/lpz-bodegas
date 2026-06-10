@@ -8264,7 +8264,12 @@ const OEE_SEED = [{"FAENA":"Mec 2","ANIO":2025,"MES":1,"TOC":21.56,"TOB":135.22,
 const OEE_CORE = {toc:'TOC',tob:'TOB',n_arboles:'N_ARBOLES',hrs_op:'HRS_OP',m3:'M3',fd:'FD',fe:'FE',fp:'FP',oee:'OEE',vma:'VMA',rend:'REND'};
 function oeeRowToRAW(x){
   const o={FAENA:x.faena, ANIO:parseInt(x.anio), MES:parseInt(x.mes)};
-  Object.keys(OEE_CORE).forEach(function(k){ o[OEE_CORE[k]]=parseFloat(x[k])||0; });
+  Object.keys(OEE_CORE).forEach(function(k){
+    const v=parseFloat(x[k])||0;
+    // FD/FE/FP/OEE son derivadas: si no vienen (0), se omiten y la app las calcula
+    if((k==='fd'||k==='fe'||k==='fp'||k==='oee')&&v===0) return;
+    o[OEE_CORE[k]]=v;
+  });
   const f=x.factores||{};
   Object.keys(f).forEach(function(k){ o[k]=parseFloat(f[k])||0; });
   return o;
