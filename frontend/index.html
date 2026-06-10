@@ -3506,6 +3506,7 @@ function OEEView(p){
   const[importando,setImportando]=useState(false);
   const[msg,setMsg]=useState('');
   const[fs,setFs]=useState(true);
+  const[verBase,setVerBase]=useState(false);
   const iframeRef=React.useRef(null);
   const dataRef=React.useRef([]);
   const fileRef=React.useRef(null);
@@ -3608,12 +3609,50 @@ function OEEView(p){
       ),
       h('input',{ref:fileRef,type:'file',accept:'.xlsx,.xls',onChange:onArchivo,style:{display:'none'}}),
       h(Btn,{v:'a',onClick:descargarPlantilla},'⬇ Plantilla Excel'),
+      h(Btn,{v:'a',onClick:function(){setVerBase(true);}},'🗄 Datos en base'),
       h(Btn,{v:'p',onClick:function(){if(fileRef.current)fileRef.current.click();},disabled:importando},importando?'Importando…':'📥 Importar Excel'),
       h(Btn,{onClick:cargar},'↻ Recargar'),
       h(Btn,{v:fs?'d':'g',onClick:function(){setFs(!fs);}},fs?'⤡ Salir de pantalla completa':'⛶ Pantalla completa')
     ),
     msg&&h('div',{style:{padding:'8px 12px',marginBottom:10,borderRadius:6,fontSize:12,background:msg.indexOf('Error')===0?'#FEE2E2':'#DCFCE7',color:msg.indexOf('Error')===0?'#991B1B':'#166534'}},msg),
     err&&h('div',{style:{padding:10,background:'#FEE2E2',color:'#991B1B',borderRadius:6,marginBottom:10,fontSize:12}},'No se pudieron cargar los datos: '+err),
+    verBase&&(function(){
+      var rows=dataRef.current||[];
+      var faenas=[],fSet={},cols=[],cSet={};
+      rows.forEach(function(r){
+        if(!fSet[r.FAENA]){fSet[r.FAENA]=1;faenas.push(r.FAENA);}
+        var c=r.ANIO+'-'+('0'+r.MES).slice(-2);
+        if(!cSet[c]){cSet[c]=1;cols.push(c);}
+      });
+      faenas.sort();cols.sort();
+      var idx={};rows.forEach(function(r){idx[r.FAENA+'|'+r.ANIO+'-'+('0'+r.MES).slice(-2)]=r;});
+      return h('div',{onClick:function(e){if(e.target===e.currentTarget)setVerBase(false);},style:{position:'fixed',inset:0,background:'rgba(0,0,0,.6)',zIndex:10000,display:'flex',alignItems:'center',justifyContent:'center',padding:16}},
+        h('div',{style:{background:'#fff',borderRadius:12,maxWidth:'96vw',maxHeight:'88vh',overflow:'auto',padding:20}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:8,gap:12}},
+            h('div',null,
+              h('div',{style:{fontSize:15,fontWeight:700,color:'#1E3A2D'}},'🗄 Registros OEE guardados en la base'),
+              h('div',{style:{fontSize:11,color:'#64748B'}},rows.length+' registros · '+faenas.length+' faenas/líneas · ✓ = mes con M3 > 0')
+            ),
+            h('button',{onClick:function(){setVerBase(false);},style:{width:30,height:30,border:'1px solid #CBD5E1',background:'#fff',borderRadius:6,cursor:'pointer'}},'✕')
+          ),
+          h('table',{style:{borderCollapse:'collapse',fontSize:11}},
+            h('thead',null,h('tr',null,
+              h('th',{style:{padding:'5px 8px',background:'#F1F5F9',textAlign:'left',position:'sticky',left:0}},'Faena / Línea'),
+              cols.map(function(c){return h('th',{key:c,style:{padding:'5px 8px',background:'#F1F5F9',whiteSpace:'nowrap'}},c);})
+            )),
+            h('tbody',null,faenas.map(function(f){
+              return h('tr',{key:f,style:{borderBottom:'1px solid #F1F5F9'}},
+                h('td',{style:{padding:'4px 8px',fontWeight:600,whiteSpace:'nowrap',position:'sticky',left:0,background:'#fff'}},f),
+                cols.map(function(c){
+                  var r=idx[f+'|'+c];
+                  return h('td',{key:c,style:{padding:'4px 8px',textAlign:'center',color:r?(parseFloat(r.M3)>0?'#16A34A':'#d97706'):'#E2E8F0'}},r?(parseFloat(r.M3)>0?'✓':'○'):'—');
+                })
+              );
+            }))
+          )
+        )
+      );
+    })(),
     loading&&!data?h('div',{style:{padding:40,textAlign:'center',color:'#94A3B8'}},'Cargando OEE...'):
     h('iframe',{ref:iframeRef,src:'/oee-app.html',onLoad:function(){setTimeout(postRAW,250);},title:'OEE Cosecha',style: fs?{flex:'1 1 auto',width:'100%',minHeight:0,border:'1px solid #E2E8F0',borderRadius:8,background:'#fff'}:{width:'100%',height:alto+'px',border:'1px solid #E2E8F0',borderRadius:8,background:'#fff'}})
   );

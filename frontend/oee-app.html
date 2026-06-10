@@ -4733,7 +4733,7 @@ function buildProdDiaria() {
 
 // Inicializar al cargar la página
 window.addEventListener('DOMContentLoaded', function() {
-  applyFilters(); /* Empresas Poo: usa RAW inyectado */
+  if(RAW.length){ applyFilters(); } /* Empresas Poo: espera la inyección desde la base si está vacío */
 });
 
 if('serviceWorker' in navigator){
@@ -4767,6 +4767,33 @@ document.getElementById('oee-install-close')?.addEventListener('click',()=>{
     if(d.__oeeRAW){
       try{
         RAW = d.__oeeRAW;
+        /* Replicar el post-proceso de loadExcel: ajustar filtros al rango disponible */
+        if(RAW.length){
+          var aniosDisp = [...new Set(RAW.map(function(r){return r.ANIO;}))].sort();
+          var mesesDisp = RAW.map(function(r){return r.MES;});
+          var minMes = Math.min.apply(null, mesesDisp);
+          var maxMes = Math.max.apply(null, mesesDisp);
+          var selAnio = document.getElementById('sel-anio');
+          var selMesIni = document.getElementById('sel-mes-ini');
+          var selMesFin = document.getElementById('sel-mes-fin');
+          if(selAnio){
+            var anioActual = selAnio.value;
+            var tieneDataAnio = RAW.some(function(r){ return anioActual === 'all' || r.ANIO === parseInt(anioActual); });
+            if (!tieneDataAnio && aniosDisp.length > 0) selAnio.value = String(aniosDisp[aniosDisp.length - 1]);
+          }
+          if(selMesIni && selMesFin){
+            var anioSel = selAnio ? selAnio.value : 'all';
+            var mesesAnio = RAW.filter(function(r){ return anioSel==='all' || r.ANIO===parseInt(anioSel); }).map(function(r){return r.MES;});
+            if(mesesAnio.length){
+              selMesIni.value = String(Math.min.apply(null, mesesAnio));
+              selMesFin.value = String(Math.max.apply(null, mesesAnio));
+            }
+          }
+          var indicator = document.getElementById('excel-indicator');
+          if(indicator) indicator.style.background = '#27ae60';
+          var stTxt = document.getElementById('excel-status-txt');
+          if(stTxt) stTxt.textContent = 'Datos de la base: ' + RAW.length + ' reg (' + aniosDisp.join('+') + ', meses ' + minMes + '-' + maxMes + ')';
+        }
         if(typeof applyFilters==='function') applyFilters();
         if(typeof bestAutoSelectAndUpdate==='function'){ try{bestAutoSelectAndUpdate();}catch(e){} }
         setTimeout(postH,300);
