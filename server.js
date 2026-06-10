@@ -8295,7 +8295,7 @@ app.post('/api/prod/oee/import', auth, async(req,res)=>{
       const r=rows[i]||{};
       const faena=String(r.FAENA||r.faena||'').trim();
       const anio=parseInt(r.ANIO||r.anio); const mes=parseInt(r.MES||r.mes);
-      if(!faena||!anio||!mes){ errores.push('Fila '+(i+1)+': faltan FAENA/ANIO/MES'); continue; }
+      if(!faena||!anio||!mes){ errores.push('Fila '+(i+1)+': faltan FAENA/ANIO/MES (columnas detectadas: '+Object.keys(r).slice(0,8).join(', ')+')'); continue; }
       const num=function(k){ var v=r[k]; if(v===''||v===null||v===undefined) return 0; v=parseFloat(String(v).replace(',','.')); return isNaN(v)?0:v; };
       const fact={}; Object.keys(r).forEach(function(k){ if(/^[FE]\d/.test(k)) fact[k]=num(k); });
       await client.query(`INSERT INTO prod_oee_registros(faena,anio,mes,toc,tob,n_arboles,hrs_op,m3,fd,fe,fp,oee,vma,rend,factores,actualizado_en)
