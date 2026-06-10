@@ -3609,6 +3609,14 @@ function TerrenoTiemposView(p){
   const[loading,setLoading]=useState(false);
   const[err,setErr]=useState('');
 
+  const[detPerd,setDetPerd]=useState(null);
+  function abrirPerdidas(it){
+    setDetPerd({it:it,loading:true,rows:[],total:0});
+    var qs='?equipo_id='+it.equipo_id+(it.faena_id?'&faena_id='+it.faena_id:'')+'&desde='+desde+'&hasta='+hasta;
+    api('/terreno/tiempos-perdidos-detalle'+qs,'GET',null,p.tok)
+      .then(function(r){setDetPerd({it:it,loading:false,rows:r.rows||[],total:r.total||0});})
+      .catch(function(e){setDetPerd({it:it,loading:false,rows:[],total:0,err:e.message});});
+  }
   var PROC_MAP={};(typeof PROCESOS_PRODUCTIVOS!=='undefined'?PROCESOS_PRODUCTIVOS:[]).forEach(function(x){PROC_MAP[x.v]=x.l;});
   function procLabel(v){return PROC_MAP[v]||(v==='(sin proceso)'?'(sin proceso asignado)':v);}
   function nf(n,d){return new Intl.NumberFormat('es-CL',{minimumFractionDigits:d||0,maximumFractionDigits:d||0}).format(n||0);}
@@ -3703,7 +3711,9 @@ function TerrenoTiemposView(p){
             h('td',{style:td},it.equipo_nombre),
             h('td',{style:Object.assign({},td,{fontFamily:'monospace',color:it.numero_equipo?'#0e7490':'#CBD5E1'})},it.numero_equipo||'—'),
             h('td',{style:Object.assign({},tdR,{fontWeight:700,color:'#1E3A2D'})},nf(it.horas,1)),
-            h('td',{style:tdR},nf(it.horas_perdidas,1)),
+            h('td',{style:tdR}, it.horas_perdidas>0
+              ? h('span',{onClick:function(){abrirPerdidas(it);},title:'Ver desglose por categoría',style:{color:'#dc2626',fontWeight:700,cursor:'pointer',textDecoration:'underline dotted'}},nf(it.horas_perdidas,1))
+              : nf(it.horas_perdidas,1)),
             h('td',{style:tdR},it.dias),
             h('td',{style:tdR},nf(it.prom_dia,1))
           );}),
@@ -3746,6 +3756,38 @@ function TerrenoTiemposView(p){
     rows.length>0&&h('div',{className:'card',style:{padding:'12px 16px',marginBottom:14,display:'flex',justifyContent:'space-between',alignItems:'center'}},
       h('span',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D'}},'Total general de horas'),
       h('span',{style:{fontSize:18,fontWeight:700,color:'#0e7490'}},nf(totalGeneral,1)+' h')
+    ),
+    detPerd&&h('div',{onClick:function(e){if(e.target===e.currentTarget)setDetPerd(null);},style:{position:'fixed',inset:0,background:'rgba(0,0,0,.6)',zIndex:300,display:'flex',alignItems:'center',justifyContent:'center',padding:16}},
+      h('div',{style:{background:'#fff',borderRadius:12,width:640,maxWidth:'96vw',maxHeight:'88vh',overflow:'auto',padding:20}},
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:6,gap:10}},
+          h('div',null,
+            h('div',{style:{fontSize:16,fontWeight:700,color:'#1E3A2D'}},'⏱ Tiempos perdidos · '+detPerd.it.equipo_codigo),
+            h('div',{style:{fontSize:11,color:'#64748B',marginTop:2}},(detPerd.it.equipo_nombre||'')+' · '+detPerd.it.faena_nombre+' · '+desde+' al '+hasta)
+          ),
+          h('button',{onClick:function(){setDetPerd(null);},style:{width:30,height:30,border:'1px solid #CBD5E1',background:'#fff',borderRadius:6,cursor:'pointer',fontSize:14,flexShrink:0}},'✕')
+        ),
+        detPerd.loading?h('div',{style:{padding:24,textAlign:'center',color:'#94A3B8'}},'Cargando...'):
+        detPerd.err?h('div',{style:{padding:12,background:'#FEE2E2',color:'#991B1B',borderRadius:6,fontSize:12}},detPerd.err):
+        detPerd.rows.length===0?h('div',{style:{padding:24,textAlign:'center',color:'#94A3B8',fontSize:12}},'No hay tiempos perdidos clasificados por categoría para este equipo en el período. Las horas perdidas pueden estar registradas sin desglose de causa.'):
+        h('div',null,
+          h('table',{style:{width:'100%',borderCollapse:'collapse',marginTop:8}},
+            h('thead',null,h('tr',null,h('th',{style:th},'Cl.'),h('th',{style:th},'Categoría / causa'),h('th',{style:thR},'Horas'),h('th',{style:thR},'%'),h('th',{style:thR},'Días'))),
+            h('tbody',null,detPerd.rows.map(function(c,i){
+              var pct=detPerd.total>0?Math.round(c.horas/detPerd.total*100):0;
+              var esF=String(c.clasificacion).indexOf('F')>=0;
+              return h('tr',{key:i,style:{borderBottom:'1px solid #F1F5F9'}},
+                h('td',{style:td},h('span',{style:{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:esF?'#FEF3C7':'#E0F2FE',color:esF?'#92400E':'#075985'}},c.clasificacion)),
+                h('td',{style:td},c.causa),
+                h('td',{style:Object.assign({},tdR,{fontWeight:700,color:'#dc2626'})},nf(c.horas,1)),
+                h('td',{style:tdR},pct+'%'),
+                h('td',{style:tdR},c.dias)
+              );
+            })),
+            h('tfoot',null,h('tr',{style:{background:'#F8FAFC',fontWeight:700}},h('td',{style:td,colSpan:2},'Total clasificado'),h('td',{style:Object.assign({},tdR,{color:'#dc2626'})},nf(detPerd.total,1)),h('td',{style:tdR,colSpan:2},'')))
+          ),
+          Math.abs(detPerd.total-(detPerd.it.horas_perdidas||0))>0.5&&h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Nota: el registro indica '+nf(detPerd.it.horas_perdidas,1)+' h perdidas en total; '+nf(detPerd.total,1)+' h están clasificadas por categoría.')
+        )
+      )
     )
   );
 }
