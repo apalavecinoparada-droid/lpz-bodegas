@@ -3509,6 +3509,7 @@ function OEEView(p){
   const[verBase,setVerBase]=useState(false);
   const iframeRef=React.useRef(null);
   const dataRef=React.useRef([]);
+  const dsRef=React.useRef(null);
   const fileRef=React.useRef(null);
 
   function postRAW(){
@@ -3517,11 +3518,21 @@ function OEEView(p){
       if(fr&&fr.contentWindow&&dataRef.current) fr.contentWindow.postMessage({__oeeRAW:dataRef.current},'*');
     }catch(e){}
   }
+  function postDatasets(){
+    try{
+      var fr=iframeRef.current;
+      if(fr&&fr.contentWindow&&dsRef.current) fr.contentWindow.postMessage({__oeeDatasets:dsRef.current},'*');
+    }catch(e){}
+  }
+  function cargarDatasets(){
+    api('/prod/oee/datasets','GET',null,p.tok).then(function(d){ dsRef.current=d||{}; setTimeout(postDatasets,250); }).catch(function(){});
+  }
   function cargar(){
     setLoading(true);setErr('');
     api('/prod/oee','GET',null,p.tok).then(function(r){
       var rows=(r&&r.rows)||[];dataRef.current=rows;setData(rows);setLoading(false);
       setTimeout(postRAW,200);
+      cargarDatasets();
     }).catch(function(e){setErr(e.message);setLoading(false);});
   }
   useEffect(function(){
@@ -3529,7 +3540,7 @@ function OEEView(p){
     function onMsg(ev){
       var d=ev.data||{};
       if(d.__oeeHeight){ var hh=Math.max(parseInt(d.__oeeHeight)||0,800); setAlto(hh+30); }
-      if(d.__oeeReady){ postRAW(); }
+      if(d.__oeeReady){ postRAW(); postDatasets(); }
       if(d.__oeeExcelRAW&&Array.isArray(d.__oeeExcelRAW)&&d.__oeeExcelRAW.length){
         setMsg('Guardando en la base los datos del Excel ('+d.__oeeExcelRAW.length+' registros)...');
         api('/prod/oee/import','POST',{rows:d.__oeeExcelRAW,modo:'upsert'},p.tok).then(function(r){
@@ -3540,6 +3551,12 @@ function OEEView(p){
           }
           api('/prod/oee','GET',null,p.tok).then(function(rr){var rows=(rr&&rr.rows)||[];dataRef.current=rows;setData(rows);}).catch(function(){});
         }).catch(function(ex){setMsg('Error guardando en la base: '+ex.message+'. Al recargar la página se perderán los datos cargados.');});
+      }
+      if(d.__oeeExcelDatasets){
+        // Persistir datasets de Best Diario / Producción Diaria
+        api('/prod/oee/datasets','POST',d.__oeeExcelDatasets,p.tok).then(function(){
+          dsRef.current=d.__oeeExcelDatasets;
+        }).catch(function(){});
       }
     }
     window.addEventListener('message',onMsg);
@@ -3654,7 +3671,7 @@ function OEEView(p){
       );
     })(),
     loading&&!data?h('div',{style:{padding:40,textAlign:'center',color:'#94A3B8'}},'Cargando OEE...'):
-    h('iframe',{ref:iframeRef,src:'/oee-app.html',onLoad:function(){setTimeout(postRAW,250);},title:'OEE Cosecha',style: fs?{flex:'1 1 auto',width:'100%',minHeight:0,border:'1px solid #E2E8F0',borderRadius:8,background:'#fff'}:{width:'100%',height:alto+'px',border:'1px solid #E2E8F0',borderRadius:8,background:'#fff'}})
+    h('iframe',{ref:iframeRef,src:'/oee-app.html',onLoad:function(){setTimeout(function(){postRAW();postDatasets();},250);},title:'OEE Cosecha',style: fs?{flex:'1 1 auto',width:'100%',minHeight:0,border:'1px solid #E2E8F0',borderRadius:8,background:'#fff'}:{width:'100%',height:alto+'px',border:'1px solid #E2E8F0',borderRadius:8,background:'#fff'}})
   );
 }
 
