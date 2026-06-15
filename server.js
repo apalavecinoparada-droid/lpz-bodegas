@@ -252,7 +252,7 @@ const pool = new Pool(
 );
 
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, 'frontend')));
 
 async function auth(req, res, next) {
@@ -8331,15 +8331,17 @@ app.post('/api/prod/oee/datasets', auth, async(req,res)=>{
     const b=req.body||{};
     const map={best_daily:b.best_daily, prod_rodal:b.prod_rodal, oferta_rodal:b.oferta_rodal, faja_daily:b.faja_daily};
     await client.query('BEGIN');
-    let n=0;
+    let n=0, resumen={};
     for(const clave of Object.keys(map)){
       if(map[clave]===undefined||map[clave]===null) continue;
+      const val=map[clave];
+      resumen[clave]=Array.isArray(val)?val.length:Object.keys(val||{}).length;
       await client.query(`INSERT INTO prod_oee_datasets(clave,valor,actualizado_en) VALUES($1,$2,NOW())
-        ON CONFLICT(clave) DO UPDATE SET valor=EXCLUDED.valor, actualizado_en=NOW()`,[clave,JSON.stringify(map[clave])]);
+        ON CONFLICT(clave) DO UPDATE SET valor=EXCLUDED.valor, actualizado_en=NOW()`,[clave,JSON.stringify(val)]);
       n++;
     }
     await client.query('COMMIT');
-    res.json({ok:true, guardados:n});
+    res.json({ok:true, guardados:n, resumen:resumen});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
