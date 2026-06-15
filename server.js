@@ -8313,6 +8313,37 @@ app.post('/api/prod/oee/import', auth, async(req,res)=>{
   finally{client.release();}
 });
 
+// ── Datasets auxiliares del OEE (Best Diario / Producción Diaria) ──
+// Se guardan como JSONB por clave: best_daily, prod_rodal, oferta_rodal, faja_daily
+app.get('/api/prod/oee/datasets', auth, async(req,res)=>{
+  try{
+    await pool.query(`CREATE TABLE IF NOT EXISTS prod_oee_datasets (clave VARCHAR(40) PRIMARY KEY, valor JSONB DEFAULT '{}'::jsonb, actualizado_en TIMESTAMP DEFAULT NOW())`);
+    const r=await pool.query('SELECT clave, valor FROM prod_oee_datasets');
+    const out={best_daily:{},prod_rodal:{},oferta_rodal:[],faja_daily:{}};
+    r.rows.forEach(function(x){ out[x.clave]=x.valor; });
+    res.json(out);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/prod/oee/datasets', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query(`CREATE TABLE IF NOT EXISTS prod_oee_datasets (clave VARCHAR(40) PRIMARY KEY, valor JSONB DEFAULT '{}'::jsonb, actualizado_en TIMESTAMP DEFAULT NOW())`);
+    const b=req.body||{};
+    const map={best_daily:b.best_daily, prod_rodal:b.prod_rodal, oferta_rodal:b.oferta_rodal, faja_daily:b.faja_daily};
+    await client.query('BEGIN');
+    let n=0;
+    for(const clave of Object.keys(map)){
+      if(map[clave]===undefined||map[clave]===null) continue;
+      await client.query(`INSERT INTO prod_oee_datasets(clave,valor,actualizado_en) VALUES($1,$2,NOW())
+        ON CONFLICT(clave) DO UPDATE SET valor=EXCLUDED.valor, actualizado_en=NOW()`,[clave,JSON.stringify(map[clave])]);
+      n++;
+    }
+    await client.query('COMMIT');
+    res.json({ok:true, guardados:n});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
 app.get('/api/terreno/tiempos-proceso', auth, async(req,res)=>{
   try{
     const{desde,hasta,empresa_id}=req.query;
