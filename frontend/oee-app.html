@@ -159,10 +159,11 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
       <div class="divider"></div>
       <label class="btn-excel" title="Cargar archivo Excel actualizado">
         &#128196; Cargar Excel
-        <input type="file" id="excel-input" accept=".xlsx" style="display:none;" onchange="loadExcel(this)">
+        <input type="file" id="excel-input" accept=".xlsx" style="display:none;" onchange="loadExcel(this); this.value=''">
       </label>
       <div class="excel-status"><span id="excel-indicator"></span><span id="excel-status-txt">Sin Excel cargado — usando datos demo</span></div>
       <div class="filter-info" id="filter-info">Cargando...</div>
+      <div id="last-update-info" style="font-size:10px;color:#888;align-self:flex-end;padding-bottom:6px;display:none;">🕐 <span id="last-update-txt"></span></div>
     </div>
 
     <div class="nav-tabs">
@@ -362,7 +363,15 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
         <div class="ch-fg"><label>Mes</label><select id="sel-aserv-mes" onchange="renderAsertividad()" style="min-width:110px;"></select></div>
         <div class="ch-fg"><label>Faena</label><select id="sel-aserv-faena" onchange="onAsertivFaenaChange()" style="min-width:100px;"></select></div>
         <div class="ch-fg"><label>Fundo / Origen</label><select id="sel-aserv-fundo" onchange="renderAsertividad()" style="min-width:160px;"></select></div>
-        <div style="font-size:9px;color:#666;margin-left:auto;padding-bottom:4px;">
+        <div class="ch-fg"><label>Especie</label><select id="sel-aserv-especie" onchange="renderAsertividad()" style="min-width:120px;"><option value="all">Todas</option></select></div>
+        <div class="ch-fg"><label>Quincena</label><select id="sel-aserv-quincena" onchange="renderAsertividad()" style="min-width:100px;">
+          <option value="all">Mes completo</option>
+          <option value="1">Q1 (d&iacute;as 1&ndash;15)</option>
+          <option value="2">Q2 (d&iacute;as 16&ndash;31)</option>
+        </select></div>
+        <button onclick="exportAserv()" style="background:#1a6b3a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:10px;font-weight:600;padding:6px 12px;" title="Exportar tabla y cambios de oferta a Excel">&#11015; Exportar Excel</button>
+        <div style="font-size:9px;color:#666;margin-left:auto;padding-bottom:4px;text-align:right;">
+          <span id="aserv-frescura" style="display:inline-block;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:10px;padding:1px 8px;color:#2e7d32;font-weight:600;margin-bottom:2px;" title="Fecha de la &uacute;ltima captura de oferta en BaseOfertaFaenas"></span><br>
           &#9432; Programa vs Avance al N-1 (ayer) &nbsp;|&nbsp;
           % Cumpl. = Avance / Programa &times; 100 &nbsp;|&nbsp;
           <span style="cursor:help;color:#1565c0;" title="Clic para ver gr&aacute;fico diario del rodal">&#128202;</span> Gr&aacute;fico diario
@@ -378,12 +387,47 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
           </table>
         </div>
       </div>
+      <!-- Vista FORMIN: Programa / Avance / Tasa Necesaria -->
+      <div id="aserv-formin-card" class="card" style="padding:10px;margin-top:10px;display:none;background:#f2f8fa;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+          <div class="ct" style="margin:0;color:#1f6e6e;">&#128203; Vista FORMIN &mdash; Programa v/s Avance v/s Tasa Necesaria</div>
+          <div style="display:flex;gap:6px;align-items:center;font-size:9px;color:#555;">
+            <label>D&iacute;as restantes:</label>
+            <select id="sel-aserv-diasrest" onchange="renderAsertividad()" style="font-size:10px;">
+              <option value="ls" selected>Lun&ndash;S&aacute;b</option>
+              <option value="cal">Calendario</option>
+              <option value="lv">Lun&ndash;Vie</option>
+            </select>
+            <span style="cursor:help;" title="Tasa Neces. Vol. = (Programa - Avance) / d&iacute;as restantes del periodo seg&uacute;n el modo elegido">&#9432;</span>
+          </div>
+        </div>
+        <div style="overflow:auto;max-height:480px;">
+          <table class="pd-tbl" id="aserv-formin-tbl" style="border-collapse:collapse;">
+            <thead id="aserv-formin-thead"></thead>
+            <tbody id="aserv-formin-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <!-- Cambios de Oferta entre capturas (trazabilidad CMPC) -->
+      <div id="aserv-cambios-card" class="card" style="padding:10px;margin-top:10px;display:none;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div class="ct" style="margin:0;">&#128260; Cambios de Oferta entre Capturas <span style="font-weight:400;font-size:9px;color:#888;">(qu&eacute; modific&oacute; CMPC en el programa)</span></div>
+          <span id="aserv-cambios-resumen" style="font-size:10px;color:#666;"></span>
+        </div>
+        <div style="overflow:auto;max-height:300px;margin-top:8px;">
+          <table class="pd-tbl" id="aserv-cambios-tbl">
+            <thead id="aserv-cambios-thead"></thead>
+            <tbody id="aserv-cambios-tbody"></tbody>
+          </table>
+        </div>
+      </div>
       <!-- Gr&aacute;fico diario (oculto hasta clic) -->
       <div id="aserv-chart-wrap" class="card" style="padding:10px;margin-top:10px;display:none;">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
           <div class="ct" id="aserv-chart-title" style="margin:0;">Programa v/s Avance &mdash; Diario</div>
           <button onclick="document.getElementById('aserv-chart-wrap').style.display='none';killChart('aservDaily');" style="background:#eee;border:1px solid #ccc;border-radius:4px;cursor:pointer;font-size:14px;padding:2px 10px;line-height:1;">&times;</button>
         </div>
+        <div id="aserv-chart-subtitle" style="text-align:center;font-size:10px;color:#456;margin-bottom:8px;"></div>
         <div style="display:flex;gap:16px;margin-bottom:8px;">
           <div style="background:#f5f5f5;border-radius:5px;padding:6px 14px;text-align:center;">
             <div style="font-size:9px;color:#888;">Programa al N-1</div>
@@ -398,7 +442,12 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
             <div id="aserv-chart-pct" style="font-size:18px;font-weight:700;">0%</div>
           </div>
         </div>
-        <div class="ch" style="height:260px;"><canvas id="aservDailyChart"></canvas></div>
+        <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;">
+          <div style="flex:0 0 auto;max-height:300px;overflow:auto;">
+            <table id="aserv-daily-tbl" style="border-collapse:collapse;font-size:10px;min-width:240px;"></table>
+          </div>
+          <div class="ch" style="flex:1 1 420px;height:300px;min-width:320px;"><canvas id="aservDailyChart"></canvas></div>
+        </div>
       </div>
     </div>
 
@@ -473,7 +522,7 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
         </div>
         <div style="width:1px;background:#ddd;align-self:stretch;"></div>
         <div class="ch-fg"><label>Combustible $/lt</label>
-          <input id="c-comb" type="number" value="655" style="width:80px;" oninput="cUpdate()">
+          <input id="c-comb" type="number" value="655" style="width:80px;" oninput="cCombSave()">
         </div>
         <div style="width:1px;background:#ddd;align-self:stretch;"></div>
         <div class="ch-fg"><label style="font-size:8px;color:#e67e22;">Factor Reajuste</label>
@@ -2484,7 +2533,7 @@ function applyFilters() {
     ['kpi-tob-base','kpi-tob-meta','kpi-tob-diff','kpi-tob-pct-lbl','kpi-fd-proy'].forEach(function(id){ var el=document.getElementById(id); if(el) el.textContent='—'; });
     var btr=document.getElementById('bm-tob-red'); if(btr) btr.style.width='0%';
     document.getElementById('filter-info').textContent = '0 registros — sin datos para el filtro';
-    if(RAW.length){ alert('Sin datos para el filtro seleccionado. Cambia año o rango de meses.'); } /* Empresas Poo: sin alert durante el arranque vacío */
+    if(RAW.length){ alert('Sin datos para el filtro seleccionado. Cambia año o rango de meses.'); }
     return;
   }
 
@@ -3055,6 +3104,31 @@ function _populateAsertivSelectors() {
   });
   selFaena.value = prevFaena && (prevFaena === 'all' || faenas[prevFaena]) ? prevFaena : 'all';
 
+  // Especies desde oferta (solo presente en formato BaseOfertaFaenas)
+  var selEsp = document.getElementById('sel-aserv-especie');
+  if (selEsp) {
+    var especies = {};
+    OFERTA_RODAL.forEach(function(o){ if (o.especie) especies[o.especie] = true; });
+    var espArr = Object.keys(especies).sort();
+    var prevEsp = selEsp.value;
+    selEsp.innerHTML = '<option value="all">Todas</option>';
+    espArr.forEach(function(es){ selEsp.innerHTML += '<option value="'+es+'">'+es+'</option>'; });
+    selEsp.value = prevEsp && (prevEsp === 'all' || especies[prevEsp]) ? prevEsp : 'all';
+    // Ocultar selector si los datos no traen especie (formato legacy)
+    selEsp.parentElement.style.display = espArr.length ? '' : 'none';
+  }
+
+  // Badge de frescura del dato
+  var frescEl = document.getElementById('aserv-frescura');
+  if (frescEl) {
+    if (OFERTA_FECHA_ACT) {
+      frescEl.textContent = '\u{1F552} Oferta actualizada: ' + OFERTA_FECHA_ACT;
+      frescEl.style.display = '';
+    } else {
+      frescEl.style.display = 'none';
+    }
+  }
+
   _populateFundoSelector();
 }
 
@@ -3118,7 +3192,7 @@ function renderAsertividad() {
 
   if (!_aserv_ctx) {
     thead.innerHTML = '';
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#999;padding:20px;">Cargue un Excel con hoja &quot;Oferta cosecha x rodal&quot; y/o &quot;produc&quot;.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#999;padding:20px;">Cargue un Excel con hoja &quot;BaseOfertaFaenas&quot; (o &quot;Oferta cosecha x rodal&quot; legacy) y/o &quot;produc&quot;.</td></tr>';
     return;
   }
 
@@ -3126,6 +3200,12 @@ function renderAsertividad() {
   var selMes   = document.getElementById('sel-aserv-mes').value;
   var selFaena = document.getElementById('sel-aserv-faena').value;
   var selFundo = document.getElementById('sel-aserv-fundo').value;
+  var selEspEl = document.getElementById('sel-aserv-especie');
+  var selEsp   = selEspEl ? selEspEl.value : 'all';
+  var selQEl   = document.getElementById('sel-aserv-quincena');
+  var selQ     = selQEl ? selQEl.value : 'all';
+  var qIni = selQ === '2' ? 16 : 1;
+  var qFin = selQ === '1' ? 15 : 31;
 
   // N-1
   var hoy = new Date();
@@ -3155,12 +3235,15 @@ function renderAsertividad() {
     if (anioNum && parseInt(o.mes.split('-')[0]) !== anioNum) return;
     if (selFaena !== 'all' && o.faena !== selFaena) return;
     if (selFundo !== 'all' && o.fundo !== selFundo) return;
+    if (selEsp !== 'all' && o.especie !== selEsp) return;
     // NO filtrar por selMes — incluir oferta de TODOS los meses para ver el programa completo
     var e = getEntry(o.faena, o.fundo, o.rodal);
     if (!e.prog[o.mes]) e.prog[o.mes] = {total:0, days:{}, n1:0, progN1:0};
     var pm = e.prog[o.mes];
-    pm.total += o.total;
-    for (var d=1; d<=31; d++) { if (o.days[d]) pm.days[d] = (pm.days[d]||0) + o.days[d]; }
+    var sumRango = 0;
+    for (var d=qIni; d<=qFin; d++) { if (o.days[d]) { pm.days[d] = (pm.days[d]||0) + o.days[d]; sumRango += o.days[d]; } }
+    // Mes completo → usar total declarado; quincena → solo la suma de días del rango
+    pm.total += (selQ === 'all') ? o.total : sumRango;
   });
 
   // 2) Producción → avance
@@ -3171,6 +3254,7 @@ function renderAsertividad() {
   OFERTA_RODAL.forEach(function(o) {
     if (selFaena !== 'all' && o.faena !== selFaena) return;
     if (anioNum && parseInt(o.mes.split('-')[0]) !== anioNum) return;
+    if (selEsp !== 'all' && o.especie !== selEsp) return;
     ofertaFundoNorm[normFundo(o.fundo)] = o.fundo;
     ofertaFundoFSW[firstSigWord(o.fundo)] = o.fundo;
   });
@@ -3215,7 +3299,7 @@ function renderAsertividad() {
       var dia = parseInt(ds.substring(8,10));
       var n1 = getN1(mesKey);
       e.prod[mesKey].days[dia] = (e.prod[mesKey].days[dia]||0) + prData[ds];
-      if (dia <= n1) e.prod[mesKey].avN1 += prData[ds];
+      if (dia <= n1 && dia >= qIni && dia <= qFin) e.prod[mesKey].avN1 += prData[ds];
     });
   });
   console.log('[ASERV v13] rodalMap entries: ' + Object.keys(rodalMap).length);
@@ -3228,8 +3312,9 @@ function renderAsertividad() {
       var n1 = getN1(mes);
       pm.n1 = n1;
       var sum = 0;
-      for (var d=1; d<=n1; d++) sum += (pm.days[d]||0);
-      if (sum === 0 && pm.total > 0 && n1 > 0) {
+      var dFinEf = Math.min(n1, qFin);
+      for (var d=qIni; d<=dFinEf; d++) sum += (pm.days[d]||0);
+      if (sum === 0 && pm.total > 0 && n1 > 0 && selQ === 'all') {
         sum = Math.round(pm.total * n1 / diasEnMes(mes));
       }
       pm.progN1 = sum;
@@ -3251,7 +3336,22 @@ function renderAsertividad() {
         progMes+=e.prog[m].total;
       }
     });
-    Object.keys(e.prod).forEach(function(m) { allMeses[m]=true; avN1+=e.prod[m].avN1; });
+    var avDeN = 0, uDiaFull = '';
+    Object.keys(e.prod).forEach(function(m) {
+      allMeses[m]=true; avN1+=e.prod[m].avN1;
+      // Producción del día N-1 exacto + última fecha con producción (u.día)
+      if (selMes === 'all' || m === selMes) {
+        var n1m = getN1(m);
+        var dysP = e.prod[m].days;
+        Object.keys(dysP).forEach(function(dStr) {
+          var dN = parseInt(dStr);
+          if (!(dysP[dN] > 0) || dN < qIni || dN > qFin) return;
+          var dsF = m + '-' + ('0'+dN).slice(-2);
+          if (dsF > uDiaFull) uDiaFull = dsF;
+          if (dN === n1m) avDeN += dysP[dN];
+        });
+      }
+    });
 
     // Si se seleccionó un mes específico, solo mostrar rodales que tengan
     // oferta O producción en ESE mes (no los que solo tienen oferta en otros meses)
@@ -3266,18 +3366,42 @@ function renderAsertividad() {
     var pctCumpl = progN1 > 0 ? (avN1 / progN1 * 100) : (avN1 > 0 ? 999 : 0);
     var hasProg = progTotal > 0 || progN1 > 0;
 
+    // PROYECCIÓN AL CIERRE: al ritmo diario actual, ¿cumple el programa del periodo?
+    // Solo calculable con un mes determinable (mes seleccionado o rodal mono-mes)
+    var proyPct = null;
+    var mesProy = selMes !== 'all' ? selMes : (mesArr.length === 1 ? mesArr[0] : null);
+    if (mesProy && progMes > 0) {
+      var n1p = getN1(mesProy);
+      var dmP = diasEnMes(mesProy);
+      var finRango = Math.min(qFin, dmP);
+      var iniRango = qIni;
+      var diasPeriodo = finRango - iniRango + 1;
+      var transcurridos = Math.max(0, Math.min(n1p, finRango) - (iniRango - 1));
+      if (transcurridos >= diasPeriodo) {
+        proyPct = avN1 / progMes * 100;                 // periodo cerrado → real
+      } else if (transcurridos > 0) {
+        var ritmo = avN1 / transcurridos;
+        var proyM3 = avN1 + ritmo * (diasPeriodo - transcurridos);
+        proyPct = proyM3 / progMes * 100;               // proyección al ritmo actual
+      }
+    }
+
+    // u.día → formato dd-mm
+    var uDia = uDiaFull ? uDiaFull.substring(8,10) + '-' + uDiaFull.substring(5,7) : '';
+
     rows.push({
       faena:e.faena, fundo:e.fundo, rodal:e.rodal,
       progTotal:Math.round(progTotal), progN1:Math.round(progN1),
       progMes:Math.round(progMes), avN1:Math.round(avN1),
-      pctCumpl:pctCumpl, hasProg:hasProg,
+      pctCumpl:pctCumpl, hasProg:hasProg, proyPct:proyPct,
+      avDeN:Math.round(avDeN), uDia:uDia, mesProy:mesProy,
       mesLabel:mesLabel, mesArr:mesArr
     });
   });
 
   if (!rows.length) {
     thead.innerHTML = '';
-    tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#999;padding:20px;">Sin datos para los filtros seleccionados.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;color:#999;padding:20px;">Sin datos para los filtros seleccionados.</td></tr>';
     return;
   }
 
@@ -3296,6 +3420,15 @@ function renderAsertividad() {
   });
   var totPct = totProgN1 > 0 ? (totAvN1/totProgN1*100) : 0;
 
+  // Etiqueta del día N-1: día concreto (ej. 'al 9') según mes seleccionado u hoy
+  var n1Lbl = 'N-1';
+  if (selMes !== 'all') {
+    var n1Sel = getN1(selMes);
+    if (n1Sel > 0) n1Lbl = String(n1Sel);
+  } else if (hoyD - 1 > 0) {
+    n1Lbl = String(hoyD - 1);
+  }
+
   // Header — adaptar título según mes seleccionado
   var progColTitle = useMesProg ? 'Programa<br>Mes' : 'Programa<br>Total';
   var th = 'text-align:center;background:#00695c;color:#fff;padding:6px 8px;font-size:10px;white-space:nowrap;';
@@ -3303,10 +3436,11 @@ function renderAsertividad() {
     '<th style="'+th+'">Origen / Fundo</th>' +
     '<th style="'+th+'">Rodal</th>' +
     '<th style="'+th+'">' + progColTitle + '</th>' +
-    '<th style="'+th+'">Programa<br>al N-1</th>' +
-    '<th style="'+th+'">Avance<br>al N-1</th>' +
+    '<th style="'+th+'">Programa<br>al ' + n1Lbl + '</th>' +
+    '<th style="'+th+'">Avance<br>al ' + n1Lbl + '</th>' +
     '<th style="'+th+'">Dif. m&sup3;</th>' +
     '<th style="'+th+'">% Cumpl.</th>' +
+    '<th style="'+th+'" title="Proyecci\u00f3n al cierre del periodo manteniendo el ritmo diario actual">Proyec.<br>Cierre</th>' +
     '<th style="'+th+'">Estado</th>' +
     '<th style="'+th+'width:30px;">&#128202;</th></tr>';
 
@@ -3344,6 +3478,12 @@ function renderAsertividad() {
       '<td style="'+td+'font-weight:700;color:'+(r.avN1>0?'#1565c0':'#bbb')+';">' + (r.avN1 > 0 ? fmt(r.avN1) : '0') + '</td>' +
       '<td style="'+td+'font-weight:600;color:'+(r.hasProg?pctColor:'#bbb')+';">' + difTxt + '</td>' +
       '<td style="'+td+'font-weight:700;color:'+pctColor+';">' + pctTxt + '</td>' +
+      (function(){
+        if (r.proyPct === null || !r.hasProg) return '<td style="'+td+'color:#bbb;">\u2014</td>';
+        var pc = r.proyPct >= 95 ? '#27ae60' : (r.proyPct >= 80 ? '#f57c00' : '#c62828');
+        var sem = r.proyPct >= 95 ? '\u{1F7E2}' : (r.proyPct >= 80 ? '\u{1F7E1}' : '\u{1F534}');
+        return '<td style="'+td+'font-weight:700;color:'+pc+';" title="Proyecci\u00f3n al cierre al ritmo actual">'+sem+' '+r.proyPct.toFixed(0)+'%</td>';
+      })() +
       '<td style="'+td+'">' + badge + '</td>' +
       '<td style="'+td+'"><span onclick="showRodalChart('+chartArgs+')" style="cursor:pointer;font-size:14px;" title="Ver gráfico diario">&#128202;</span></td></tr>';
   });
@@ -3360,9 +3500,244 @@ function renderAsertividad() {
     '<td style="text-align:center;padding:6px;font-size:10px;">' + (totDif>=0?'+':'') + fmt(totDif) + '</td>' +
     '<td style="text-align:center;padding:6px;font-size:10px;">' + totPctTxt + '</td>' +
     '<td style="text-align:center;padding:6px;font-size:10px;"></td>' +
+    '<td style="text-align:center;padding:6px;font-size:10px;"></td>' +
     '<td style="text-align:center;padding:6px;font-size:10px;"></td></tr>';
 
   tbody.innerHTML = tb;
+
+  // Vista FORMIN: tabla Programa/Avance/Tasa Necesaria
+  renderForminTable(rows, useMesProg, qIni, qFin, getN1, diasEnMes, n1Lbl);
+
+  // Trazabilidad: cambios de oferta entre capturas
+  renderCambiosOferta(selFaena, selFundo, selMes, anioNum);
+}
+
+// ---- VISTA FORMIN: Programa / Avance / Tasa Necesaria / u.día ----
+function renderForminTable(rows, useMesProg, qIni, qFin, getN1, diasEnMes, n1Lbl) {
+  n1Lbl = n1Lbl || 'N-1';
+  var card = document.getElementById('aserv-formin-card');
+  if (!card) return;
+  if (!rows || !rows.length) { card.style.display = 'none'; return; }
+  card.style.display = '';
+
+  var modoDias = (document.getElementById('sel-aserv-diasrest')||{value:'ls'}).value;
+  // Días restantes del periodo según modo (cal=calendario, ls=lun-sáb, lv=lun-vie)
+  function diasRestantes(mes, n1) {
+    var p = mes.split('-'); var a = parseInt(p[0]), m = parseInt(p[1]);
+    var dm = new Date(a, m, 0).getDate();
+    var fin = Math.min(dm, qFin);
+    var ini = Math.max(n1 + 1, qIni);
+    var c = 0;
+    for (var d = ini; d <= fin; d++) {
+      var dow = new Date(a, m - 1, d).getDay();
+      if (modoDias === 'cal') c++;
+      else if (modoDias === 'ls' && dow !== 0) c++;
+      else if (modoDias === 'lv' && dow !== 0 && dow !== 6) c++;
+    }
+    return c;
+  }
+
+  var thf = 'text-align:center;background:#1f6e6e;color:#fff;padding:5px 8px;font-size:10px;white-space:nowrap;';
+  var thf2 = thf + 'border-bottom:1px solid rgba(255,255,255,0.3);';
+  document.getElementById('aserv-formin-thead').innerHTML =
+    '<tr>' +
+      '<th style="'+thf2+'" rowspan="2">Origen</th>' +
+      '<th style="'+thf2+'" rowspan="2">Rodal</th>' +
+      '<th style="'+thf2+'" colspan="2">Programa</th>' +
+      '<th style="'+thf2+'" colspan="2">Avance</th>' +
+      '<th style="'+thf2+'" colspan="2">Tasa Neces.</th>' +
+      '<th style="'+thf2+'" rowspan="2">% cum.</th>' +
+      '<th style="'+thf2+'" rowspan="2">u.d&iacute;a</th>' +
+      '<th style="'+thf2+'" rowspan="2">&nbsp;</th>' +
+    '</tr><tr>' +
+      '<th style="'+thf+'">Total</th><th style="'+thf+'">al ' + n1Lbl + '</th>' +
+      '<th style="'+thf+'">al ' + n1Lbl + '</th><th style="'+thf+'">de ' + n1Lbl + '</th>' +
+      '<th style="'+thf+'">Vol.</th><th style="'+thf+'">d&iacute;a</th>' +
+    '</tr>';
+
+  var tb = '';
+  var tProg=0, tProgN1=0, tAvN1=0, tAvDeN=0, tTasa=0, maxDias=0;
+  rows.forEach(function(r, i) {
+    var bg = i % 2 === 0 ? '#e3f2f7' : '#cfe8f0';
+    var tdf = 'text-align:right;padding:4px 8px;font-size:10px;';
+    var progCol = useMesProg ? r.progMes : r.progTotal;
+    // Tasa: volumen diario necesario para cerrar el programa del periodo
+    var tasaVol = null, dRest = null;
+    if (r.mesProy) {
+      var n1f = getN1(r.mesProy);
+      dRest = diasRestantes(r.mesProy, n1f);
+      if (dRest > 0 && progCol > 0) tasaVol = Math.max(0, progCol - r.avN1) / dRest;
+      if (dRest > maxDias) maxDias = dRest;
+    }
+    var pctF = r.hasProg && r.progN1 > 0 ? Math.round(r.avN1 / r.progN1 * 100) : (r.avN1 > 0 ? null : 0);
+    tProg += progCol; tProgN1 += r.progN1; tAvN1 += r.avN1; tAvDeN += r.avDeN;
+    if (tasaVol !== null) tTasa += tasaVol;
+
+    tb += '<tr style="background:'+bg+';">' +
+      '<td style="'+tdf+'text-align:left;font-weight:600;color:#234;">' + r.fundo + '</td>' +
+      '<td style="'+tdf+'text-align:center;">' + (r.rodal||'0') + '</td>' +
+      '<td style="'+tdf+'">' + (progCol > 0 ? fmt(progCol) : '0') + '</td>' +
+      '<td style="'+tdf+'">' + (r.progN1 > 0 ? fmt(r.progN1) : '0') + '</td>' +
+      '<td style="'+tdf+'font-weight:600;">' + (r.avN1 > 0 ? fmt(r.avN1) : '0') + '</td>' +
+      '<td style="'+tdf+'">' + (r.avDeN > 0 ? fmt(r.avDeN) : '0') + '</td>' +
+      '<td style="'+tdf+'font-weight:600;">' + (tasaVol !== null ? fmt(Math.round(tasaVol)) : '0') + '</td>' +
+      '<td style="'+tdf+'text-align:center;">' + (dRest !== null ? dRest : '\u2014') + '</td>' +
+      '<td style="'+tdf+'text-align:center;font-weight:700;color:'+(pctF===null?'#999':(pctF>=93&&pctF<=107?'#1b5e20':(pctF>107?'#0d47a1':'#b71c1c')))+';">' + (pctF !== null ? pctF : '\u2014') + '</td>' +
+      '<td style="'+tdf+'text-align:center;">' + (r.uDia || '') + '</td>' +
+      '<td style="text-align:center;padding:4px;"><span onclick="showRodalChart(\''+r.faena.replace(/'/g,"\\'")+'\',\''+r.fundo.replace(/'/g,"\\'")+'\',\''+r.rodal+'\',\''+r.mesArr.join(',')+'\')" style="cursor:pointer;font-size:13px;" title="Indicadores diarios">&#128202;</span></td></tr>';
+  });
+
+  // TOTALES
+  var tPct = tProgN1 > 0 ? Math.round(tAvN1 / tProgN1 * 100) : 0;
+  tb += '<tr style="background:#bfd9e2;font-weight:700;border-top:2px solid #1f6e6e;">' +
+    '<td style="text-align:left;padding:5px 8px;font-size:10px;">Totales</td>' +
+    '<td></td>' +
+    '<td style="text-align:right;padding:5px 8px;font-size:10px;">'+fmt(Math.round(tProg))+'</td>' +
+    '<td style="text-align:right;padding:5px 8px;font-size:10px;">'+fmt(Math.round(tProgN1))+'</td>' +
+    '<td style="text-align:right;padding:5px 8px;font-size:10px;">'+fmt(Math.round(tAvN1))+'</td>' +
+    '<td style="text-align:right;padding:5px 8px;font-size:10px;">'+fmt(Math.round(tAvDeN))+'</td>' +
+    '<td style="text-align:right;padding:5px 8px;font-size:10px;">'+fmt(Math.round(tTasa))+'</td>' +
+    '<td style="text-align:center;padding:5px 8px;font-size:10px;">'+(maxDias||'\u2014')+'</td>' +
+    '<td style="text-align:center;padding:5px 8px;font-size:10px;">'+tPct+'</td>' +
+    '<td></td><td></td></tr>';
+
+  document.getElementById('aserv-formin-tbody').innerHTML = tb;
+}
+
+// ---- TRAZABILIDAD: CAMBIOS DE OFERTA ENTRE CAPTURAS (BaseOfertaFaenas) ----
+function renderCambiosOferta(selFaena, selFundo, selMes, anioNum) {
+  var card = document.getElementById('aserv-cambios-card');
+  if (!card) return;
+  if (!OFERTA_SNAPSHOTS || OFERTA_SNAPSHOTS.length === 0) { card.style.display = 'none'; return; }
+
+  // Agrupar por unidad mínima: faena|mes|fundo|rodal|idUpf|quincena → capturas ordenadas por fecha
+  var grupos = {};
+  var fechasGlobal = {};
+  OFERTA_SNAPSHOTS.forEach(function(sn) {
+    if (anioNum && parseInt(sn.mes.split('-')[0]) !== anioNum) return;
+    if (selFaena !== 'all' && sn.faena !== selFaena) return;
+    if (selFundo !== 'all' && sn.fundo !== selFundo) return;
+    if (selMes !== 'all' && sn.mes !== selMes) return;
+    var k = sn.faena+'|'+sn.mes+'|'+sn.fundo+'|'+sn.rodal+'|'+sn.idUpf+'|'+sn.quincena;
+    if (!grupos[k]) grupos[k] = [];
+    grupos[k].push(sn);
+    if (sn.fechaAct) fechasGlobal[sn.fechaAct] = true;
+  });
+
+  var nFechas = Object.keys(fechasGlobal).length;
+  if (nFechas < 2) { card.style.display = 'none'; return; }
+
+  // Detectar cambios: claves con ≥2 capturas distintas (Actualizado) o que aparecen
+  // por primera vez en una captura posterior a la primera (Nuevo)
+  var fechasOrd = Object.keys(fechasGlobal).sort();
+  var primeraCaptura = fechasOrd[0];
+  var cambios = [];
+  Object.keys(grupos).forEach(function(k) {
+    var caps = grupos[k];
+    // Ordenar por fecha y consolidar por fecha (puede haber varias filas misma fecha+clave → sumar)
+    var porFecha = {};
+    caps.forEach(function(c) {
+      var f = c.fechaAct || '?';
+      if (!porFecha[f]) porFecha[f] = {total:0, ref:c};
+      porFecha[f].total += c.total;
+    });
+    var fechas = Object.keys(porFecha).sort();
+    var ref = porFecha[fechas[fechas.length-1]].ref;
+    if (fechas.length >= 2) {
+      var fAnt = fechas[fechas.length-2], fNue = fechas[fechas.length-1];
+      var tAnt = porFecha[fAnt].total, tNue = porFecha[fNue].total;
+      if (Math.abs(tNue - tAnt) > 0.5) {
+        cambios.push({tipo:'Modificado', sn:ref, fAnt:fAnt, tAnt:tAnt, fNue:fNue, tNue:tNue});
+      }
+    } else if (fechas[0] > primeraCaptura) {
+      cambios.push({tipo:'Nuevo', sn:ref, fAnt:'', tAnt:0, fNue:fechas[0], tNue:porFecha[fechas[0]].total});
+    }
+  });
+
+  if (!cambios.length) {
+    card.style.display = '';
+    document.getElementById('aserv-cambios-resumen').textContent = nFechas + ' capturas — sin cambios de programa detectados';
+    document.getElementById('aserv-cambios-thead').innerHTML = '';
+    document.getElementById('aserv-cambios-tbody').innerHTML =
+      '<tr><td style="text-align:center;color:#999;padding:14px;font-size:10px;">Las capturas no presentan diferencias de oferta para los filtros actuales.</td></tr>';
+    return;
+  }
+
+  cambios.sort(function(a,b){
+    var da = Math.abs(a.tNue - a.tAnt), db = Math.abs(b.tNue - b.tAnt);
+    return db - da;
+  });
+
+  var thc = 'text-align:center;background:#5d4037;color:#fff;padding:5px 8px;font-size:10px;white-space:nowrap;';
+  document.getElementById('aserv-cambios-thead').innerHTML = '<tr>' +
+    '<th style="'+thc+'">Tipo</th><th style="'+thc+'">Faena</th><th style="'+thc+'">Mes</th>' +
+    '<th style="'+thc+'">Fundo</th><th style="'+thc+'">Rodal</th><th style="'+thc+'">UPF</th><th style="'+thc+'">Q</th>' +
+    '<th style="'+thc+'">Oferta Anterior<br>(captura)</th><th style="'+thc+'">Oferta Actual<br>(captura)</th>' +
+    '<th style="'+thc+'">&Delta; m&sup3;</th><th style="'+thc+'">&Delta; %</th></tr>';
+
+  var tb = '';
+  var totDelta = 0;
+  cambios.forEach(function(c, i) {
+    var bg = i % 2 === 0 ? '#fff' : '#faf7f5';
+    var tdc = 'text-align:center;padding:4px 6px;font-size:10px;';
+    var delta = c.tNue - c.tAnt;
+    totDelta += delta;
+    var dPct = c.tAnt > 0 ? (delta / c.tAnt * 100) : null;
+    var dColor = delta > 0 ? '#1565c0' : (delta < 0 ? '#c62828' : '#333');
+    var tipoBadge = c.tipo === 'Nuevo'
+      ? '<span style="background:#e3f2fd;color:#1565c0;border-radius:8px;padding:1px 7px;font-weight:600;">Nuevo</span>'
+      : '<span style="background:#fff3e0;color:#e65100;border-radius:8px;padding:1px 7px;font-weight:600;">Modif.</span>';
+    tb += '<tr style="background:'+bg+';">' +
+      '<td style="'+tdc+'">'+tipoBadge+'</td>' +
+      '<td style="'+tdc+'">'+c.sn.faena+'</td>' +
+      '<td style="'+tdc+'">'+c.sn.mes+'</td>' +
+      '<td style="'+tdc+'text-align:left;">'+c.sn.fundo+'</td>' +
+      '<td style="'+tdc+'font-weight:600;">'+c.sn.rodal+'</td>' +
+      '<td style="'+tdc+'">'+(c.sn.idUpf||'\u2014')+'</td>' +
+      '<td style="'+tdc+'">'+(c.sn.quincena||'\u2014')+'</td>' +
+      '<td style="'+tdc+'">'+(c.tipo==='Nuevo' ? '<span style="color:#bbb;">\u2014</span>' : fmt(Math.round(c.tAnt))+'<br><span style="color:#999;font-size:8px;">'+c.fAnt+'</span>')+'</td>' +
+      '<td style="'+tdc+'font-weight:600;">'+fmt(Math.round(c.tNue))+'<br><span style="color:#999;font-size:8px;">'+c.fNue+'</span></td>' +
+      '<td style="'+tdc+'font-weight:700;color:'+dColor+';">'+(delta>=0?'+':'')+fmt(Math.round(delta))+'</td>' +
+      '<td style="'+tdc+'font-weight:600;color:'+dColor+';">'+(dPct!==null ? (dPct>=0?'+':'')+dPct.toFixed(0)+'%' : '\u2014')+'</td></tr>';
+  });
+  document.getElementById('aserv-cambios-tbody').innerHTML = tb;
+  document.getElementById('aserv-cambios-resumen').innerHTML =
+    cambios.length + ' cambio(s) entre ' + nFechas + ' capturas &nbsp;|&nbsp; Impacto neto: <b style="color:'+(totDelta>=0?'#1565c0':'#c62828')+';">'+(totDelta>=0?'+':'')+fmt(Math.round(totDelta))+' m&sup3;</b>';
+  card.style.display = '';
+}
+
+// ---- EXPORTAR TAB ASERTIVIDAD A EXCEL ----
+function exportAserv() {
+  if (typeof XLSX === 'undefined') { alert('Librer\u00eda XLSX no disponible.'); return; }
+  var tblMain = document.getElementById('aserv-tbl');
+  if (!tblMain || !tblMain.rows.length) { alert('No hay datos para exportar. Cargue un Excel primero.'); return; }
+  try {
+    var wbx = XLSX.utils.book_new();
+    var wsMain = XLSX.utils.table_to_sheet(tblMain);
+    XLSX.utils.book_append_sheet(wbx, wsMain, 'Asertividad');
+    var tblCamb = document.getElementById('aserv-cambios-tbl');
+    var cardCamb = document.getElementById('aserv-cambios-card');
+    if (tblCamb && cardCamb && cardCamb.style.display !== 'none' && tblCamb.rows.length > 1) {
+      XLSX.utils.book_append_sheet(wbx, XLSX.utils.table_to_sheet(tblCamb), 'CambiosOferta');
+    }
+    // Hoja de contexto: filtros aplicados y frescura
+    var ctxRows = [
+      ['Reporte', 'Asertividad Oferta \u2014 FaenasLpoo'],
+      ['Generado', new Date().toLocaleString('es-CL')],
+      ['Oferta actualizada al', OFERTA_FECHA_ACT || '\u2014'],
+      ['Faena', document.getElementById('sel-aserv-faena').value],
+      ['Mes', document.getElementById('sel-aserv-mes').value],
+      ['Fundo', document.getElementById('sel-aserv-fundo').value],
+      ['Especie', (document.getElementById('sel-aserv-especie')||{value:'all'}).value],
+      ['Quincena', (document.getElementById('sel-aserv-quincena')||{value:'all'}).value]
+    ];
+    XLSX.utils.book_append_sheet(wbx, XLSX.utils.aoa_to_sheet(ctxRows), 'Filtros');
+    var hoyE = new Date();
+    var fName = 'Asertividad_Oferta_' + hoyE.getFullYear() + '-' + ('0'+(hoyE.getMonth()+1)).slice(-2) + '-' + ('0'+hoyE.getDate()).slice(-2) + '.xlsx';
+    XLSX.writeFile(wbx, fName);
+  } catch(e) {
+    alert('Error al exportar: ' + e.message);
+  }
 }
 
 // ---- GRÁFICO DIARIO POR RODAL (estilo FORMIN) ----
@@ -3370,10 +3745,17 @@ function showRodalChart(faena, fundo, rodal, mesesStr) {
   killChart('aservDaily');
   var wrap = document.getElementById('aserv-chart-wrap');
   wrap.style.display = 'block';
-  document.getElementById('aserv-chart-title').textContent = 'Programa v/s Avance — ' + fundo + ' — Rodal ' + rodal;
+  document.getElementById('aserv-chart-title').textContent = 'INDICADORES PROGRAMA V/S AVANCES \u2014 Diarios';
 
   var meses = mesesStr.split(',').filter(function(m){return m.length>=7;});
   if (!meses.length) return;
+
+  // Subtítulo estilo FORMIN
+  var subEl = document.getElementById('aserv-chart-subtitle');
+  if (subEl) {
+    subEl.innerHTML = '<b>PERIODO</b>: ' + meses[0] + (meses.length>1 ? ' al ' + meses[meses.length-1] : '') +
+      ' &nbsp;<b>ORIGEN</b>: ' + fundo + ' &nbsp;<b>FAENA</b>: ' + faena + ' &nbsp;<b>RODAL</b>: ' + rodal;
+  }
 
   var hoy = new Date();
   var hoyA = hoy.getFullYear(), hoyM = hoy.getMonth()+1, hoyD = hoy.getDate();
@@ -3436,6 +3818,32 @@ function showRodalChart(faena, fundo, rodal, mesesStr) {
   document.getElementById('aserv-chart-avanc').textContent = fmt(Math.round(totalAv));
   var pctVal = totalProg > 0 ? (totalAv/totalProg*100).toFixed(0) : (totalAv > 0 ? '∞' : '0');
   document.getElementById('aserv-chart-pct').textContent = pctVal + '%';
+
+  // ---- Tabla diaria estilo FORMIN (Fecha | Programa | Avance | Cump.%) ----
+  var dtbl = document.getElementById('aserv-daily-tbl');
+  if (dtbl) {
+    var thD = 'background:#1f6e6e;color:#fff;padding:4px 10px;font-size:10px;text-align:center;white-space:nowrap;';
+    var ht = '<tr><th style="'+thD+'">Fecha (dd-mm)</th><th style="'+thD+'">Programa</th><th style="'+thD+'">Avance</th><th style="'+thD+'">Cump.(%)</th></tr>';
+    for (var ti = 0; ti < labels.length; ti++) {
+      var pvD = progData[ti], avD = avData[ti];
+      var sinProg = pvD <= 0;
+      var bgD = sinProg ? (ti % 2 === 0 ? '#cfe8f0' : '#bfe0ea') : (ti % 2 === 0 ? '#fff' : '#f4f4f4');
+      var cumD = pvD > 0 ? Math.round(avD / pvD * 100) : null;
+      var tdD = 'padding:3px 10px;font-size:10px;text-align:right;border-bottom:1px solid #e0e0e0;';
+      ht += '<tr style="background:'+bgD+';">' +
+        '<td style="'+tdD+'text-align:left;">' + labels[ti] + '</td>' +
+        '<td style="'+tdD+'">' + (pvD > 0 ? fmt(pvD) : '') + '</td>' +
+        '<td style="'+tdD+'">' + (avD > 0 ? fmt(avD) : '') + '</td>' +
+        '<td style="'+tdD+'">' + (cumD !== null && avD > 0 ? fmt(cumD) : '') + '</td></tr>';
+    }
+    var pctT = totalProg > 0 ? Math.round(totalAv/totalProg*100) : 0;
+    ht += '<tr style="background:#8fb8c4;color:#fff;font-weight:700;">' +
+      '<td style="padding:4px 10px;font-size:10px;">TOTAL</td>' +
+      '<td style="padding:4px 10px;font-size:10px;text-align:right;">' + fmt(Math.round(totalProg)) + '</td>' +
+      '<td style="padding:4px 10px;font-size:10px;text-align:right;">' + fmt(Math.round(totalAv)) + '</td>' +
+      '<td style="padding:4px 10px;font-size:10px;text-align:right;">' + (totalProg>0 ? fmt(pctT) : '') + '</td></tr>';
+    dtbl.innerHTML = ht;
+  }
 
   // Crear gráfico
   CH['aservDaily'] = new Chart(document.getElementById('aservDailyChart'), {
@@ -3514,6 +3922,8 @@ function loadExcel(input) {
       var COL_VMA    = C(['VOLUMEN_ARBOL','VMA','VOL_ARBOL','VOLUMEN_MEDIO','V_ARBOL'], 25);
       var COL_NARB   = C(['NARBOLES','N_ARBOLES','NUM_ARBOLES','NUMERO_ARBOLES','ARBOLES'], 92);
       var COL_M3BD   = C(['VOL_REAL','VOLREAL','VOLUMEN_REAL','M3_REAL','M3','PRODUCCION'], 89);
+      var COL_OPER   = C(['NOMBREOPERADOR','NOMBRE_OPERADOR','OPERADOR','OPERATOR'], 95);
+      var COL_HRT    = C(['HRT','HR_T','HRS_TURNO_OP','HRTURNO','HR/T'], 93);
       // Causas F y E: buscar por prefijo en encabezados
       var COL_F = {}, COL_E = {};
       if (hdrs) {
@@ -3702,6 +4112,35 @@ function loadExcel(input) {
         bd.E26+=parseFloat(row[cE(26,81)])||0; bd.E27+=parseFloat(row[cE(27,82)])||0;
         bd.E99+=parseFloat(row[cE(99,83)])||0;
       }
+      // === Agregación por Operador (para vista Rend Operadores) ===
+      var operGrouped = {};
+      for (var i = dataStart; i < rows1.length; i++) {
+        var row = rows1[i];
+        if (!row || !row[COL_FECHA]) continue;
+        var faena = String(row[COL_FAENA]||'').trim();
+        if (!faena || faena === '0') continue;
+        var anioMes = String(row[COL_ANOMES]||'');
+        if (!anioMes || anioMes.length < 6) continue;
+        var anio = parseInt(anioMes.substring(0,4));
+        var mes  = parseInt(anioMes.substring(4,6));
+        if (!anio || !mes) continue;
+        var oper = String(row[COL_OPER]||'').trim();
+        if (!oper || oper === '0') oper = '(Sin nombre)';
+        var hrs = parseFloat(row[COL_HRT])||0;
+        var m3v = parseFloat(row[COL_M3BD])||0;
+        var narb = parseFloat(row[COL_NARB])||0;
+        var vmaRow = parseFloat(row[COL_VMA])||0;
+        var okey = faena + '|' + anio + '|' + String(mes).padStart(2,'0') + '|' + oper;
+        if (!operGrouped[okey]) operGrouped[okey] = {FAENA:faena,ANIO:anio,MES:mes,OPER:oper,M3:0,HRS:0,NARB:0,DIAS:0,VMA_sum:0,VMA_cnt:0};
+        var og = operGrouped[okey];
+        og.M3  += m3v; og.HRS += hrs; og.NARB += narb; og.DIAS++;
+        if (vmaRow > 0) { og.VMA_sum += vmaRow; og.VMA_cnt++; }
+      }
+      window.OPER_DATA = Object.values(operGrouped).filter(function(r){ return r.HRS > 0 || r.M3 > 0; }).map(function(r){
+        r.VMA = r.VMA_cnt > 0 ? r.VMA_sum / r.VMA_cnt : 0;
+        return r;
+      });
+
       // FD/FE/OEE se calculan después de cargar produc y ofertaprod
       // Reemplazar BEST_DAILY con los datos del Excel
       BEST_DAILY = newBD;
@@ -3784,6 +4223,71 @@ function loadExcel(input) {
         });
       });
       
+      // === HOJA: InformeHrsProc → horas trabajadas por proceso/máquina (Rend Estándar vs Real) ===
+      var ihpName = null;
+      wb.SheetNames.forEach(function(sn){ if (sn.toLowerCase().replace(/\s+/g,'') === 'informehrsproc') ihpName = sn; });
+      if (ihpName) {
+        var wsIHP = wb.Sheets[ihpName];
+        var rowsIHP = XLSX.utils.sheet_to_json(wsIHP, {header:1, defval:'', raw:true});
+        var MESES_ES = {enero:1,febrero:2,marzo:3,abril:4,mayo:5,junio:6,julio:7,agosto:8,septiembre:9,setiembre:9,octubre:10,noviembre:11,diciembre:12,
+                        ene:1,feb:2,mar:3,abr:4,may:5,jun:6,jul:7,ago:8,sep:9,oct:10,nov:11,dic:12};
+        var ihpHdr = -1, IH = {};
+        for (var ihh = 0; ihh < Math.min(4, rowsIHP.length); ihh++) {
+          var rhh = rowsIHP[ihh]; if (!rhh) continue;
+          var nmsI = {};
+          for (var ci = 0; ci < rhh.length; ci++) {
+            var nmi = cleanExcel(rhh[ci]).toLowerCase();
+            if (nmi && nmsI[nmi] === undefined) nmsI[nmi] = ci;
+          }
+          if (nmsI['proceso'] !== undefined && nmsI['horas trabajadas'] !== undefined) { ihpHdr = ihh; IH = nmsI; break; }
+        }
+        var newIHRS = [];
+        if (ihpHdr >= 0) {
+          var ciAM = IH['año-mes'] !== undefined ? IH['año-mes'] : (IH['ano-mes'] !== undefined ? IH['ano-mes'] : IH['año mes']);
+          var ciFa = IH['faena'], ciPr = IH['proceso'];
+          var ciCod = IH['código'] !== undefined ? IH['código'] : IH['codigo'];
+          var ciMaq = IH['máquina'] !== undefined ? IH['máquina'] : IH['maquina'];
+          var ciHrs = IH['horas trabajadas'];
+          var ciHP  = IH['horas perdidas'];
+          var ciDias = IH['días'] !== undefined ? IH['días'] : IH['dias'];
+          var ihpMes = function(v) {
+            if (v === null || v === undefined || v === '') return '';
+            if (typeof v === 'number') { var dsi = excelDateToStr(v); return dsi ? dsi.substring(0,7) : ''; }
+            var si = cleanExcel(String(v)).toLowerCase();
+            var mi = si.match(/^(\d{4})[-\/\s]+([a-záéíóúñ]+)$/i);
+            if (mi && MESES_ES[mi[2]]) return mi[1] + '-' + ('0'+MESES_ES[mi[2]]).slice(-2);
+            var mi2 = si.match(/^([a-záéíóúñ]+)[-\/\s]+(\d{2,4})$/i);
+            if (mi2 && MESES_ES[mi2[1]]) { var aa = mi2[2].length===2 ? '20'+mi2[2] : mi2[2]; return aa + '-' + ('0'+MESES_ES[mi2[1]]).slice(-2); }
+            var mi3 = si.match(/^(\d{4})-(\d{1,2})$/);
+            if (mi3) return mi3[1] + '-' + ('0'+mi3[2]).slice(-2);
+            return '';
+          };
+          for (var iri = ihpHdr + 1; iri < rowsIHP.length; iri++) {
+            var rih = rowsIHP[iri]; if (!rih) continue;
+            var faIH = cleanExcel(rih[ciFa]);
+            var mMec = faIH.match(/Mec\D*(\d)/i);
+            if (!mMec) continue;
+            var mesIH = ihpMes(ciAM !== undefined ? rih[ciAM] : '');
+            if (!mesIH) continue;
+            newIHRS.push({
+              mes: mesIH,
+              faena: 'Mec ' + mMec[1],
+              proceso: cleanExcel(rih[ciPr]) || '(sin proceso)',
+              codigo: cleanExcel(ciCod !== undefined ? rih[ciCod] : ''),
+              maquina: cleanExcel(ciMaq !== undefined ? rih[ciMaq] : ''),
+              hrs: parseFloat(rih[ciHrs])||0,
+              hrsPerd: parseFloat(ciHP !== undefined ? rih[ciHP] : 0)||0,
+              dias: parseFloat(ciDias !== undefined ? rih[ciDias] : 0)||0
+            });
+          }
+        }
+        INFORME_HRS = newIHRS;
+        console.log('[IHP] InformeHrsProc: ' + newIHRS.length + ' registros máquina-mes cargados');
+      } else {
+        INFORME_HRS = [];
+        console.log('[IHP] Hoja InformeHrsProc no encontrada (vista Rend Estándar vs Real sin datos)');
+      }
+
       // === HOJA: ofertaprod → leer oferta diaria por faena ===
       var wsOF = wb.Sheets['ofertaprod'];
       if (wsOF) {
@@ -3859,9 +4363,148 @@ function loadExcel(input) {
         FAJA_DAILY = {};
       }
 
-      // === HOJA: Oferta cosecha x rodal → oferta mensual por rodal ===
+      // === HOJA: BaseOfertaFaenas (formato NUEVO) / Oferta cosecha x rodal (legacy) → oferta mensual por rodal ===
+      var wsBOF = wb.Sheets['BaseOfertaFaenas'];
       var wsOR = wb.Sheets['Oferta cosecha x rodal'];
-      if (wsOR) {
+      if (wsBOF) {
+        // --- PARSER NUEVO v8: detección de columnas por NOMBRE de encabezado (robusto ante reordenamientos) ---
+        var rowsBOF = XLSX.utils.sheet_to_json(wsBOF, {header:1, defval:'', raw:true});
+        var FAENA_MAP_BOF = {'POO P3':'Mec 3','POO T2':'Mec 4','POO P4':'Mec 5'};
+        var newOfertaRodal = [];
+        // 1) Localizar fila de encabezados: debe contener 'linea' y 'periodo'
+        var bofHdrRow = -1, BH = {};
+        for (var ihb = 0; ihb < Math.min(6, rowsBOF.length); ihb++) {
+          var rhb = rowsBOF[ihb];
+          if (!rhb) continue;
+          var names = {};
+          for (var chb = 0; chb < rhb.length; chb++) {
+            var nmb = cleanExcel(rhb[chb]).toLowerCase();
+            if (nmb && names[nmb] === undefined) names[nmb] = chb;
+          }
+          if (names['linea'] !== undefined && names['periodo'] !== undefined) {
+            bofHdrRow = ihb; BH = names; break;
+          }
+        }
+        if (bofHdrRow < 0) {
+          console.warn('[BOF-PARSE] BaseOfertaFaenas: no se encontraron encabezados linea/periodo. Revisar formato.');
+        } else {
+          // 2) Índices de columnas clave (Faena→linea, Mes→periodo, días 1..31→d01..d31)
+          var cLinea = BH['linea'], cPer = BH['periodo'], cFundo = BH['fundo'];
+          var cRodal = BH['rodal'], cIdUpf = BH['id_upf'], cVma = BH['vma'];
+          var cQuin = BH['quincena'], cFAct = BH['fecha_actualizacion'], cTotal = BH['total'];
+          var cEsp = BH['especie'];
+          var dayCols = {};
+          Object.keys(BH).forEach(function(nmd){
+            var md = nmd.match(/^d(\d{1,2})$/);
+            if (md) { var dnb = parseInt(md[1],10); if (dnb >= 1 && dnb <= 31) dayCols[dnb] = BH[nmd]; }
+          });
+          console.log('[BOF-PARSE] Header en fila '+bofHdrRow+' | linea:'+cLinea+' periodo:'+cPer+' fundo:'+cFundo+' rodal:'+cRodal+' vma:'+cVma+' | columnas día detectadas: '+Object.keys(dayCols).length);
+
+          // 3) periodo → 'YYYY-MM' (acepta 'MM/YYYY', 'YYYY-MM', serial Excel o Date)
+          var bofPeriodoToMes = function(v) {
+            if (v === null || v === undefined || v === '') return '';
+            if (typeof v === 'number' || v instanceof Date) {
+              var dsb = excelDateToStr(v);
+              return dsb ? dsb.substring(0,7) : '';
+            }
+            var sb = cleanExcel(v);
+            var m1 = sb.match(/^(\d{1,2})\/(\d{4})$/);
+            if (m1) return m1[2]+'-'+('0'+m1[1]).slice(-2);
+            var m2 = sb.match(/^(\d{4})[-\/](\d{1,2})/);
+            if (m2) return m2[1]+'-'+('0'+m2[2]).slice(-2);
+            var ds2 = excelDateToStr(sb);
+            return ds2 ? ds2.substring(0,7) : '';
+          };
+
+          // 4) Dedupe por (faena|mes|fundo|rodal|id_upf|quincena): gana la captura más reciente
+          //    NOTA: id_upf en la clave porque un rodal puede tener VARIAS UPF (filas legítimas distintas)
+          var bofRows = {};
+          var bofSnapshots = [];   // historial completo para trazabilidad de cambios de oferta
+          var maxFechaAct = '';
+          for (var ib = bofHdrRow + 1; ib < rowsBOF.length; ib++) {
+            var rb = rowsBOF[ib];
+            if (!rb) continue;
+            var lineaRaw = cleanExcel(rb[cLinea]).toUpperCase();
+            if (!lineaRaw) continue;
+            var bFaena = '';
+            Object.keys(FAENA_MAP_BOF).forEach(function(kb){
+              if (lineaRaw.indexOf(kb) >= 0) bFaena = FAENA_MAP_BOF[kb];
+            });
+            if (!bFaena) continue;
+            var bMes = bofPeriodoToMes(rb[cPer]);
+            if (!bMes) continue;
+            var bFundo = cleanExcel(cFundo !== undefined ? rb[cFundo] : '');
+            var bRodal = String((cRodal !== undefined ? rb[cRodal] : '')||'').trim();
+            var bIdUpf = String((cIdUpf !== undefined ? rb[cIdUpf] : '')||'').trim();
+            if (!bRodal || bRodal === '0') bRodal = bIdUpf;
+            if (!bFundo || !bRodal) continue;
+            var bEsp = cEsp !== undefined ? cleanExcel(rb[cEsp]) : '';
+            var bQuin = cQuin !== undefined ? String(rb[cQuin]||'').trim() : '';
+            var bFechaAct = cFAct !== undefined ? excelDateToStr(rb[cFAct]) : '';
+            if (bFechaAct && bFechaAct > maxFechaAct) maxFechaAct = bFechaAct;
+            // Snapshot crudo para trazabilidad (días + total de ESTA captura)
+            var snapDays = {}, snapTot = 0;
+            Object.keys(dayCols).forEach(function(dns){
+              var dvs = parseFloat(rb[dayCols[dns]])||0;
+              if (dvs > 0) { snapDays[dns] = dvs; snapTot += dvs; }
+            });
+            if (cTotal !== undefined && (parseFloat(rb[cTotal])||0) > 0) snapTot = parseFloat(rb[cTotal]);
+            bofSnapshots.push({faena:bFaena, mes:bMes, fundo:bFundo, rodal:bRodal, idUpf:bIdUpf,
+                               especie:bEsp, quincena:bQuin, fechaAct:bFechaAct, total:snapTot, days:snapDays});
+            var dKey = bFaena+'|'+bMes+'|'+bFundo+'|'+bRodal+'|'+bIdUpf+'|'+bQuin;
+            var prevR = bofRows[dKey];
+            if (prevR && prevR.fechaAct && bFechaAct && bFechaAct < prevR.fechaAct) continue;
+            bofRows[dKey] = {faena:bFaena, mes:bMes, fundo:bFundo, rodal:bRodal, idUpf:bIdUpf,
+                             especie:bEsp,
+                             vma: parseFloat(cVma !== undefined ? rb[cVma] : 0)||0,
+                             row: rb, fechaAct: bFechaAct};
+          }
+          OFERTA_SNAPSHOTS = bofSnapshots;
+          OFERTA_FECHA_ACT = maxFechaAct;
+
+          // 5) Agregar quincenas: sumar días por (faena|mes|fundo|rodal|id_upf)
+          var bofAgg = {};
+          Object.keys(bofRows).forEach(function(kk){
+            var eb = bofRows[kk];
+            var aKey = eb.faena+'|'+eb.mes+'|'+eb.fundo+'|'+eb.rodal+'|'+eb.idUpf;
+            if (!bofAgg[aKey]) bofAgg[aKey] = {faena:eb.faena, mes:eb.mes, fundo:eb.fundo, rodal:eb.rodal,
+                                               idUpf:eb.idUpf, especie:eb.especie, vma:eb.vma, days:{}, total:0};
+            var agg = bofAgg[aKey];
+            if (eb.vma > 0) agg.vma = eb.vma;
+            if (eb.especie) agg.especie = eb.especie;
+            Object.keys(dayCols).forEach(function(dnk){
+              var dvb = parseFloat(eb.row[dayCols[dnk]])||0;
+              if (dvb > 0) agg.days[dnk] = (agg.days[dnk]||0) + dvb;
+            });
+            if (cTotal !== undefined) {
+              var tvb = parseFloat(eb.row[cTotal])||0;
+              if (tvb > 0) agg.total += tvb;
+            }
+          });
+          Object.keys(bofAgg).forEach(function(ka){
+            var ab = bofAgg[ka];
+            var sumD = 0;
+            Object.keys(ab.days).forEach(function(dd){ sumD += ab.days[dd]; });
+            if (ab.total <= 0) ab.total = sumD;
+            if (ab.total <= 0 && sumD <= 0) return;
+            newOfertaRodal.push(ab);
+          });
+        }
+        console.log('[BOF-PARSE] BaseOfertaFaenas: '+rowsBOF.length+' filas hoja → '+newOfertaRodal.length+' registros rodal-mes');
+        OFERTA_RODAL = newOfertaRodal;
+        // Diagnóstico: meses de oferta por faena
+        var ofMesesPorFaenaB = {};
+        newOfertaRodal.forEach(function(ob){
+          if (!ofMesesPorFaenaB[ob.faena]) ofMesesPorFaenaB[ob.faena] = {};
+          ofMesesPorFaenaB[ob.faena][ob.mes] = (ofMesesPorFaenaB[ob.faena][ob.mes]||0) + 1;
+        });
+        Object.keys(ofMesesPorFaenaB).forEach(function(fb){
+          console.log('[DIAG BOF] Oferta meses para '+fb+':', JSON.stringify(ofMesesPorFaenaB[fb]));
+        });
+        var ofFundosB = {};
+        newOfertaRodal.forEach(function(ob){ ofFundosB[ob.fundo]=true; });
+        console.log('[DIAG BOF] Fundos OFERTA:', JSON.stringify(Object.keys(ofFundosB)));
+      } else if (wsOR) {
         var rowsOR = XLSX.utils.sheet_to_json(wsOR, {header:1, defval:'', raw:true});
         var FAENA_MAP_OR = {'POO P3':'Mec 3','POO T2':'Mec 4','POO P4':'Mec 5'};
         var newOfertaRodal = [];
@@ -4001,10 +4644,15 @@ function loadExcel(input) {
       var aniosTxt = aniosDisp.join('+');
       document.getElementById('excel-status-txt').textContent =
         'Excel cargado: ' + newRAW.length + ' reg (' + aniosTxt + ', meses ' + minMes + '-' + maxMes + ') • ' + file.name;
+      // Registrar fecha y hora de última actualización
+      var now = new Date();
+      var pad = function(n){ return String(n).padStart(2,'0'); };
+      var fechaHora = pad(now.getDate())+'-'+pad(now.getMonth()+1)+'-'+now.getFullYear()
+        +' '+pad(now.getHours())+':'+pad(now.getMinutes())+':'+pad(now.getSeconds());
+      document.getElementById('last-update-txt').textContent = 'Última actualización: ' + fechaHora;
+      document.getElementById('last-update-info').style.display = 'block';
       guardarEnCache(file.name, aniosTxt, minMes, maxMes);
-      /* Empresas Poo: persistir en la base para todos los usuarios */
       try{ parent.postMessage({__oeeExcelRAW: RAW, __oeeFilename: file.name}, '*'); }catch(e){}
-      /* Empresas Poo: persistir también los datasets de Best Diario / Producción Diaria */
       try{ parent.postMessage({__oeeExcelDatasets: {
         best_daily: (typeof BEST_DAILY!=='undefined'?BEST_DAILY:{}),
         prod_rodal: (typeof PROD_RODAL!=='undefined'?PROD_RODAL:{}),
@@ -4196,6 +4844,19 @@ var C_EQ = C_EQ_ALL['Mec 3']; // default
 var C_DIAS = 29.93, cTarifaVis = false;
 var fmtC = function(n){return Math.round(n).toLocaleString('es-CL');};
 var fmtMC= function(n){return (n/1e6).toFixed(1)+'M';};
+
+function cCombSave(){
+  try { localStorage.setItem('poo_comb_precio', document.getElementById('c-comb').value); } catch(e){}
+  cUpdate();
+}
+// Restaurar precio de combustible guardado
+(function(){
+  try {
+    var vC = localStorage.getItem('poo_comb_precio');
+    var elC = document.getElementById('c-comb');
+    if (vC && elC && parseFloat(vC) > 0) elC.value = vC;
+  } catch(e){}
+})();
 
 function cGetKey(){
   var f=document.getElementById('c-faena').value;
@@ -4459,6 +5120,9 @@ var BEST_DAILY = {"Mec 2": {"2025-01-01": {"m3": 0.0, "hrs": 0.0, "tob": 0.0, "t
 
 var FAJA_DAILY = {}; // {dateStr: m3} producción diaria de fajas
 var OFERTA_RODAL = []; // [{faena,mes,fundo,rodal,vma,days:{day:m3},total}] oferta x rodal
+var INFORME_HRS = [];  // [{mes:'YYYY-MM',faena:'Mec 3',proceso,codigo,maquina,hrs,hrsPerd,dias}] hoja InformeHrsProc
+var OFERTA_SNAPSHOTS = []; // historial crudo de capturas BaseOfertaFaenas para trazabilidad de cambios
+var OFERTA_FECHA_ACT = ''; // fecha_actualizacion más reciente (frescura del dato)
 var PROD_RODAL = {};   // {"faena|cancha|rodal": {"YYYY-MM-DD": m3}} produc x rodal
 var DIAS_SEM = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
 var BEST_METAS = {
@@ -4853,7 +5517,7 @@ var BEST_METAS = {
 
 // Inicializar fecha al lunes de la semana actual
 // ---- Iniciar con filtros por defecto
-if(RAW.length){ applyFilters(); } /* Empresas Poo: si está vacío, espera la inyección desde la base */
+if(RAW.length){ applyFilters(); }
 cBuildVMA();
 // Inicializar historial polinomio
 try { if(typeof POLI_HIST!=='undefined' && typeof poliInitHist==='function') poliInitHist(); } catch(e) { console.log('poliInitHist skip:', e.message); }
@@ -5360,6 +6024,8 @@ function guardarEnCache(filename, aniosTxt, minMes, maxMes) {
       st.put({id: 'faja', data: FAJA_DAILY});
       st.put({id: 'ofrod', data: OFERTA_RODAL});
       st.put({id: 'prodrod', data: PROD_RODAL});
+      st.put({id: 'ofsnap', data: {snaps: OFERTA_SNAPSHOTS, fechaAct: OFERTA_FECHA_ACT}});
+      st.put({id: 'ihrs', data: INFORME_HRS});
       st.put({id: 'meta', data: {
         filename: filename, savedAt: new Date().toISOString(),
         anios: aniosTxt, minMes: minMes, maxMes: maxMes, nReg: RAW.length
@@ -5376,11 +6042,14 @@ function guardarEnCache(filename, aniosTxt, minMes, maxMes) {
   });
 }
 
-function aplicarDatosRestaurados(rawData, bdData, meta, fajaData, ofrodData, prodrodData) {
+function aplicarDatosRestaurados(rawData, bdData, meta, fajaData, ofrodData, prodrodData, ofsnapData, ihrsData) {
   RAW = rawData;
   BEST_DAILY = bdData || {};
   FAJA_DAILY = fajaData || {};
   OFERTA_RODAL = ofrodData || [];
+  OFERTA_SNAPSHOTS = (ofsnapData && ofsnapData.snaps) || [];
+  OFERTA_FECHA_ACT = (ofsnapData && ofsnapData.fechaAct) || '';
+  INFORME_HRS = ihrsData || [];
   PROD_RODAL = prodrodData || {};
   var dt    = meta && meta.savedAt ? new Date(meta.savedAt).toLocaleString('es-CL') : '';
   var fname = meta && meta.filename ? meta.filename : 'Excel guardado';
@@ -5413,14 +6082,14 @@ function restaurarDesdeCache() {
     try {
       var tx  = db.transaction(OEE_STORE, 'readonly');
       var st  = tx.objectStore(OEE_STORE);
-      var raw = null, bd = null, meta = null, faja = null, ofrod = null, prodrod = null;
-      var pending = 6;
+      var raw = null, bd = null, meta = null, faja = null, ofrod = null, prodrod = null, ofsnap = null, ihrs = null;
+      var pending = 8;
       function check() {
         pending--;
         if (pending > 0) return;
         if (raw && raw.length) {
           console.log('Cache IndexedDB restaurada: ' + raw.length + ' registros');
-          aplicarDatosRestaurados(raw, bd, meta, faja, ofrod, prodrod);
+          aplicarDatosRestaurados(raw, bd, meta, faja, ofrod, prodrod, ofsnap, ihrs);
         } else {
           applyFilters();
         }
@@ -5431,6 +6100,8 @@ function restaurarDesdeCache() {
       st.get('meta').onsuccess    = function(e){ meta    = e.target.result ? e.target.result.data : null; check(); };
       st.get('ofrod').onsuccess   = function(e){ ofrod   = e.target.result ? e.target.result.data : null; check(); };
       st.get('prodrod').onsuccess = function(e){ prodrod = e.target.result ? e.target.result.data : null; check(); };
+      st.get('ofsnap').onsuccess  = function(e){ ofsnap  = e.target.result ? e.target.result.data : null; check(); };
+      st.get('ihrs').onsuccess    = function(e){ ihrs    = e.target.result ? e.target.result.data : null; check(); };
       tx.onerror = function(){ applyFilters(); };
     } catch(e) {
       console.warn('Error restaurando cache:', e.message);
@@ -5907,7 +6578,7 @@ function buildProdDiaria() {
 
 // Inicializar al cargar la página
 window.addEventListener('DOMContentLoaded', function() {
-  if(RAW.length){ applyFilters(); } /* Empresas Poo: espera la inyección desde la base si está vacío */
+  applyFilters(); /* Empresas Poo: usa RAW de la base */
 });
 
 if('serviceWorker' in navigator){
@@ -5932,7 +6603,6 @@ document.getElementById('oee-install-close')?.addEventListener('click',()=>{
   document.getElementById('oee-install-bar').style.display='none';
 });
 </script>
-
 <script>
 (function(){
   function postH(){ try{ var h=Math.max(document.body.scrollHeight,document.documentElement.scrollHeight,600); parent.postMessage({__oeeHeight:h},'*'); }catch(e){} }
@@ -5941,7 +6611,6 @@ document.getElementById('oee-install-close')?.addEventListener('click',()=>{
     if(d.__oeeRAW){
       try{
         RAW = d.__oeeRAW;
-        /* Replicar el post-proceso de loadExcel: ajustar filtros al rango disponible */
         if(RAW.length){
           var aniosDisp = [...new Set(RAW.map(function(r){return r.ANIO;}))].sort();
           var mesesDisp = RAW.map(function(r){return r.MES;});
@@ -5958,15 +6627,10 @@ document.getElementById('oee-install-close')?.addEventListener('click',()=>{
           if(selMesIni && selMesFin){
             var anioSel = selAnio ? selAnio.value : 'all';
             var mesesAnio = RAW.filter(function(r){ return anioSel==='all' || r.ANIO===parseInt(anioSel); }).map(function(r){return r.MES;});
-            if(mesesAnio.length){
-              selMesIni.value = String(Math.min.apply(null, mesesAnio));
-              selMesFin.value = String(Math.max.apply(null, mesesAnio));
-            }
+            if(mesesAnio.length){ selMesIni.value = String(Math.min.apply(null, mesesAnio)); selMesFin.value = String(Math.max.apply(null, mesesAnio)); }
           }
-          var indicator = document.getElementById('excel-indicator');
-          if(indicator) indicator.style.background = '#27ae60';
-          var stTxt = document.getElementById('excel-status-txt');
-          if(stTxt) stTxt.textContent = 'Datos de la base: ' + RAW.length + ' reg (' + aniosDisp.join('+') + ', meses ' + minMes + '-' + maxMes + ')';
+          var indicator = document.getElementById('excel-indicator'); if(indicator) indicator.style.background = '#27ae60';
+          var stTxt = document.getElementById('excel-status-txt'); if(stTxt) stTxt.textContent = 'Datos de la base: ' + RAW.length + ' reg (' + aniosDisp.join('+') + ', meses ' + minMes + '-' + maxMes + ')';
         }
         if(typeof applyFilters==='function') applyFilters();
         if(typeof bestAutoSelectAndUpdate==='function'){ try{bestAutoSelectAndUpdate();}catch(e){} }
@@ -5983,12 +6647,9 @@ document.getElementById('oee-install-close')?.addEventListener('click',()=>{
         if(ds.informe_hrs){ window.INFORME_HRS = ds.informe_hrs; try{ INFORME_HRS = ds.informe_hrs; }catch(e){} }
         if(ds.oper_data){ window.OPER_DATA = ds.oper_data; try{ OPER_DATA = ds.oper_data; }catch(e){} }
         try{ if(typeof bestAutoSelectAndUpdate==='function') bestAutoSelectAndUpdate(); }catch(e){}
-        var pBest=document.getElementById('panel-best');
-        if(pBest && pBest.style.display!=='none'){ try{ if(typeof bestUpdate==='function') bestUpdate(); }catch(e){} }
-        var pPD=document.getElementById('panel-proddia');
-        if(pPD && pPD.style.display!=='none'){ try{ if(typeof buildProdDiaria==='function') buildProdDiaria(); }catch(e){} }
-        var pKpi=document.getElementById('panel-kpi');
-        if(pKpi && pKpi.style.display!=='none'){ try{ if(typeof setView==='function' && typeof viewMode!=='undefined') setView(viewMode); }catch(e){} }
+        var pBest=document.getElementById('panel-best'); if(pBest && pBest.style.display!=='none'){ try{ if(typeof bestUpdate==='function') bestUpdate(); }catch(e){} }
+        var pPD=document.getElementById('panel-proddia'); if(pPD && pPD.style.display!=='none'){ try{ if(typeof buildProdDiaria==='function') buildProdDiaria(); }catch(e){} }
+        var pKpi=document.getElementById('panel-kpi'); if(pKpi && pKpi.style.display!=='none'){ try{ if(typeof setView==='function' && typeof viewMode!=='undefined') setView(viewMode); }catch(e){} }
         setTimeout(postH,300);
       }catch(e){ console.warn('OEE datasets apply error',e); }
     }
