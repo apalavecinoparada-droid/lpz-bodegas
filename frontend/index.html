@@ -670,7 +670,7 @@ function api(path,method,body,token){
   if(token)opts.headers['Authorization']='Bearer '+token;
   if(body)opts.body=JSON.stringify(body);
   return fetch('/api'+path,opts).then(function(r){
-    if(r.status===401){localStorage.removeItem('lpz_token');localStorage.removeItem('lpz_user');window.location.reload();throw new Error('Sesión expirada');}
+    if(r.status===401&&path!=='/auth/login'){localStorage.removeItem('lpz_token');localStorage.removeItem('lpz_user');window.location.reload();throw new Error('Sesión expirada');}
     return r.text().then(function(txt){
       var d;
       try{d=JSON.parse(txt);}catch(_){throw new Error('Servidor respondio: '+r.status+' '+txt.substring(0,120));}
@@ -14328,7 +14328,10 @@ function UsuariosView(p){
     if(!form.email||!form.nombre){setMsg('Email y nombre requeridos');return;}
     if(!editUser&&(!form.password||form.password.length<4)){setMsg('Contraseña mínimo 4 caracteres');return;}
     var method=editUser?'PUT':'POST';var url='/usuarios'+(editUser?'/'+editUser.usuario_id:'');
-    api(url,method,form,p.tok).then(function(){loadUsers();setShowForm(false);setEditUser(null);setForm({email:'',username:'',nombre:'',password:'',rol_id:'',empresa_id:'',faena_id:''});setMsg(editUser?'Usuario actualizado':'Usuario creado');}).catch(function(e){setMsg('Error: '+e.message);});
+    var body=Object.assign({},form);
+    // En edición, solo enviar contraseña si el admin escribió una nueva válida (evita re-hash accidental por autocompletado)
+    if(editUser&&(!body.password||body.password.length<4)){delete body.password;}
+    api(url,method,body,p.tok).then(function(){loadUsers();setShowForm(false);setEditUser(null);setForm({email:'',username:'',nombre:'',password:'',rol_id:'',empresa_id:'',faena_id:''});setMsg(editUser?'Usuario actualizado':'Usuario creado');}).catch(function(e){setMsg('Error: '+e.message);});
   }
   function toggleActivo(id){api('/usuarios/'+id+'/activo','PATCH',null,p.tok).then(function(){loadUsers();}).catch(function(e){alert(e.message);});}
   function eliminarUser(id){if(!confirm('Eliminar este usuario permanentemente?'))return;api('/usuarios/'+id,'DELETE',null,p.tok).then(function(){loadUsers();setMsg('Usuario eliminado');}).catch(function(e){alert(e.message);});}
@@ -14377,10 +14380,10 @@ function UsuariosView(p){
       showForm&&h('div',{className:'card',style:{marginBottom:12}},
         h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},editUser?'Editar usuario':'Nuevo usuario'),
         h('div',{style:{display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:8}},
-          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Email *'),h('input',{type:'email',value:form.email,onChange:function(e){setForm(Object.assign({},form,{email:e.target.value}));},style:inpS,placeholder:'correo@empresa.cl'})),
-          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Nombre de usuario'),h('input',{value:form.username,onChange:function(e){setForm(Object.assign({},form,{username:e.target.value}));},style:inpS,placeholder:'ej: apalavecino'})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Email *'),h('input',{type:'email',autoComplete:'off',value:form.email,onChange:function(e){setForm(Object.assign({},form,{email:e.target.value}));},style:inpS,placeholder:'correo@empresa.cl'})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Nombre de usuario'),h('input',{autoComplete:'off',value:form.username,onChange:function(e){setForm(Object.assign({},form,{username:e.target.value}));},style:inpS,placeholder:'ej: apalavecino'})),
           h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Nombre completo *'),h('input',{value:form.nombre,onChange:function(e){setForm(Object.assign({},form,{nombre:e.target.value}));},style:inpS,placeholder:'Nombre y apellido'})),
-          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},editUser?'Nueva contraseña (dejar vacío para mantener)':'Contraseña *'),h('input',{type:'password',value:form.password,onChange:function(e){setForm(Object.assign({},form,{password:e.target.value}));},style:inpS,placeholder:editUser?'Solo si desea cambiarla':'Mínimo 4 caracteres'})),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},editUser?'Nueva contraseña (dejar vacío para mantener)':'Contraseña *'),h('input',{type:'password',autoComplete:'new-password',name:'lpz-pass-'+(editUser?editUser.usuario_id:'new'),value:form.password,onChange:function(e){setForm(Object.assign({},form,{password:e.target.value}));},style:inpS,placeholder:editUser?'Solo si desea cambiarla':'Mínimo 4 caracteres'})),
           h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Rol'),h('select',{value:form.rol_id,onChange:function(e){setForm(Object.assign({},form,{rol_id:e.target.value}));},style:inpS},h('option',{value:''},'Seleccione rol...'),rolesLocal.filter(function(r){return r.activo!==false;}).map(function(r){return h('option',{key:r.rol_id,value:r.rol_id},r.nombre+(r.es_admin?' (Admin)':''));}))),
           h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa asignada'),h('select',{value:form.empresa_id,onChange:function(e){setForm(Object.assign({},form,{empresa_id:e.target.value,faena_id:''}));},style:inpS},h('option',{value:''},'Todas las empresas'),(p.m.empresas||[]).filter(function(e){return e.activo;}).map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
           h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena asignada'),h('select',{value:form.faena_id,onChange:function(e){setForm(Object.assign({},form,{faena_id:e.target.value}));},style:inpS},h('option',{value:''},'Todas las faenas'),(p.m.faenas||[]).filter(function(f){return f.activo&&(!form.empresa_id||String(f.empresa_id)===String(form.empresa_id));}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})))
