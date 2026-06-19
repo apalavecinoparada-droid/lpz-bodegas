@@ -5267,8 +5267,18 @@ function IAChatView(p){
   var[usarSonnet,setUsarSonnet]=useState(false);
   var[err,setErr]=useState('');
   var[showSql,setShowSql]=useState(null);
+  var[convId,setConvId]=useState(null);
+  var[convs,setConvs]=useState([]);
+  var[esAdminIA,setEsAdminIA]=useState(false);
+  var[verTodos,setVerTodos]=useState(false);
   var endRef=React.useRef(null);
   useEffect(function(){ if(endRef.current) endRef.current.scrollIntoView({behavior:'smooth'}); },[messages,loading]);
+  function cargarConvs(){
+    api('/ia/conversaciones'+(verTodos?'?todos=1':''),'GET',null,p.tok).then(function(r){
+      setConvs(r.conversaciones||[]); setEsAdminIA(!!r.es_admin);
+    }).catch(function(){});
+  }
+  useEffect(function(){ cargarConvs(); },[verTodos]);
   function enviar(texto){
     var q=(texto!==undefined?texto:input).trim();
     if(!q||loading)return;
@@ -5276,25 +5286,63 @@ function IAChatView(p){
     var nuevos=messages.concat([{role:'user',content:q}]);
     setMessages(nuevos);setInput('');setLoading(true);
     var payload=nuevos.map(function(m){return {role:m.role,content:m.content};});
-    api('/ia/chat','POST',{messages:payload,usar_sonnet:usarSonnet},p.tok).then(function(r){
+    api('/ia/chat','POST',{messages:payload,usar_sonnet:usarSonnet,conv_id:convId},p.tok).then(function(r){
       setMessages(nuevos.concat([{role:'assistant',content:r.respuesta,sql:r.sql||[],modelo:r.modelo}]));
+      if(r.conv_id){ setConvId(r.conv_id); }
       setLoading(false);
+      cargarConvs();
     }).catch(function(e){ setErr(e.message); setLoading(false); });
   }
+  function nueva(){ setMessages([]); setConvId(null); setErr(''); setInput(''); }
+  function abrir(c){
+    setErr('');
+    api('/ia/conversaciones/'+c.conv_id,'GET',null,p.tok).then(function(r){
+      setMessages((r.mensajes||[]).map(function(m){return {role:m.role,content:m.content,sql:m.sql||[],modelo:m.modelo};}));
+      setConvId(r.conv_id);
+    }).catch(function(e){ setErr(e.message); });
+  }
+  function borrar(c,ev){
+    ev.stopPropagation();
+    if(!confirm('¿Eliminar esta conversación?'))return;
+    api('/ia/conversaciones/'+c.conv_id,'DELETE',null,p.tok).then(function(){
+      if(convId===c.conv_id) nueva();
+      cargarConvs();
+    }).catch(function(e){ setErr(e.message); });
+  }
+  function fechaCorta(f){ if(!f)return''; var d=new Date(f); if(isNaN(d.getTime()))return''; return d.toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'}); }
   var sugerencias=[
     '¿Cuántas solicitudes pendientes hay por responsable?',
     'Consumo de combustible por equipo este mes',
     'Órdenes de compra abiertas y su monto total',
     'OEE promedio por faena en 2026'
   ];
-  return h('div',{style:{maxWidth:900,margin:'0 auto'}},
+  var panelConvs=h('div',{style:{width:240,flexShrink:0,display:'flex',flexDirection:'column'}},
+    h('button',{onClick:nueva,style:{padding:'9px 12px',border:'none',borderRadius:8,background:'#1E3A2D',color:'#fff',fontSize:13,fontWeight:600,cursor:'pointer',marginBottom:8}},'+ Nueva conversación'),
+    esAdminIA&&h('label',{style:{fontSize:10,color:'#475569',display:'flex',alignItems:'center',gap:5,cursor:'pointer',marginBottom:8}},
+      h('input',{type:'checkbox',checked:verTodos,onChange:function(e){setVerTodos(e.target.checked);}}),
+      'Ver conversaciones de todos'
+    ),
+    h('div',{className:'card',style:{padding:6,flex:1,overflowY:'auto',maxHeight:'62vh'}},
+      convs.length===0&&h('div',{style:{fontSize:11,color:'#94A3B8',padding:10,textAlign:'center'}},'Sin conversaciones aún'),
+      convs.map(function(c){
+        var activo=c.conv_id===convId;
+        return h('div',{key:c.conv_id,onClick:function(){abrir(c);},style:{padding:'8px 9px',borderRadius:7,cursor:'pointer',marginBottom:3,background:activo?'#ECFDF5':'transparent',border:activo?'1px solid #10B981':'1px solid transparent'}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',gap:6}},
+            h('div',{style:{fontSize:12,fontWeight:600,color:'#1E293B',lineHeight:1.3,overflow:'hidden',textOverflow:'ellipsis',display:'-webkit-box',WebkitLineClamp:2,WebkitBoxOrient:'vertical'}},c.titulo||'(sin título)'),
+            h('span',{onClick:function(e){borrar(c,e);},title:'Eliminar',style:{color:'#CBD5E1',cursor:'pointer',fontSize:13,flexShrink:0}},'🗑')
+          ),
+          h('div',{style:{fontSize:9,color:'#94A3B8',marginTop:2}},(verTodos&&c.usuario_nombre?(c.usuario_nombre+' · '):'')+fechaCorta(c.actualizado_en))
+        );
+      })
+    )
+  );
+  var panelChat=h('div',{style:{flex:1,minWidth:0,display:'flex',flexDirection:'column'}},
     h('div',{className:'card',style:{padding:14,marginBottom:12}},
       h('div',{style:{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}},
-        h('div',{style:{flex:1,minWidth:200}},
+        h('div',{style:{flex:1,minWidth:160}},
           h('div',{style:{fontSize:15,fontWeight:700,color:'#1E3A2D'}},'🤖 Asistente IA'),
           h('div',{style:{fontSize:11,color:'#64748B'}},'Pregunta en lenguaje natural sobre los datos del sistema (solo lectura).')
         ),
-        messages.length>0&&h('button',{onClick:function(){setMessages([]);setErr('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:11,background:'#F8FAFC',cursor:'pointer',color:'#475569'}},'Nueva conversación'),
         h('label',{style:{fontSize:11,color:'#475569',display:'flex',alignItems:'center',gap:6,cursor:'pointer'}},
           h('input',{type:'checkbox',checked:usarSonnet,onChange:function(e){setUsarSonnet(e.target.checked);}}),
           'Usar Sonnet (preguntas complejas)'
@@ -5329,6 +5377,7 @@ function IAChatView(p){
     ),
     h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:6,textAlign:'center'}},'El asistente solo consulta datos (no los modifica). Verifica cifras críticas en su módulo correspondiente.')
   );
+  return h('div',{style:{display:'flex',gap:14,alignItems:'flex-start',flexWrap:'wrap'}}, panelConvs, panelChat);
 }
 
 function SolicitudesView(p){
