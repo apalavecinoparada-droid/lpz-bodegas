@@ -8380,13 +8380,36 @@ const IA_GLOSARIO = `CONTEXTO DE NEGOCIO (Empresas Poo — empresas forestales L
 - personal = trabajadores (incluye sueldos/remuneraciones y finiquitos). DATO SENSIBLE: úsalo solo si la pregunta lo requiere.
 - equipos.tipo_cargo clasifica el equipo (maquinaria, camioneta, camion, etc.); faenas = obras/faenas.
 - empresa_id distingue LPZ vs Emprecon. faena_id ubica la faena.
-Responde SIEMPRE en español, con cifras claras (separador de miles chileno) y conciso. Si la consulta SQL no devuelve filas, dilo. Nunca inventes datos: si no están en la base, indícalo.`;
+Responde SIEMPRE en español, con cifras claras (separador de miles chileno) y conciso. Si la consulta SQL no devuelve filas, dilo. Nunca inventes datos: si no están en la base, indícalo.
+
+CÁLCULO DEL COSTO TOTAL DE UNA MÁQUINA/EQUIPO EN UN PERÍODO (regla de negocio importante):
+El costo total de un equipo en un mes = (A) compras directas por OC + (B) consumo de combustible + (C) consumo de insumos de inventario. NO uses el módulo de mantención (mant_ot.costo_total) para esto.
+Identifica el equipo por equipos.codigo o equipos.nombre con ILIKE. Usa rango de fechas del mes (ej. mayo 2026: fecha >= '2026-05-01' AND fecha < '2026-06-01'). Calcula los tres componentes y súmalos (A+B+C), idealmente en UNA sola consulta con subconsultas:
+
+(A) Compras directas por OC = líneas de OC asignadas al equipo que NO ingresan a bodega:
+  SELECT COALESCE(SUM(d.total_linea),0) FROM ordenes_compra_detalle d
+  JOIN ordenes_compra o ON d.oc_id=o.oc_id JOIN equipos e ON d.equipo_id=e.equipo_id
+  WHERE (e.codigo ILIKE '%MAQ%' OR e.nombre ILIKE '%MAQ%') AND o.anulado_en IS NULL
+    AND o.fecha_emision >= INI AND o.fecha_emision < FIN AND d.ingresa_bodega = false;
+(B) Consumo de combustible = comb_movimientos del equipo, tipo_mov='DISTRIBUCION', estado='ACTIVO':
+  SELECT COALESCE(SUM(cm.costo_total),0) FROM comb_movimientos cm JOIN equipos e ON cm.equipo_id=e.equipo_id
+  WHERE (e.codigo ILIKE '%MAQ%' OR e.nombre ILIKE '%MAQ%') AND cm.tipo_mov='DISTRIBUCION' AND cm.estado='ACTIVO'
+    AND cm.fecha >= INI AND cm.fecha < FIN;
+(C) Consumo de insumos de inventario = movimiento_detalle de movimientos asignados al equipo con tipo_movimiento en ('DISTRIBUCION','SALIDA'), estado='ACTIVO':
+  SELECT COALESCE(SUM(md.costo_total),0) FROM movimiento_detalle md
+  JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id JOIN equipos e ON me.equipo_id=e.equipo_id
+  WHERE (e.codigo ILIKE '%MAQ%' OR e.nombre ILIKE '%MAQ%') AND me.tipo_movimiento IN ('DISTRIBUCION','SALIDA') AND me.estado='ACTIVO'
+    AND me.fecha >= INI AND me.fecha < FIN;
+Importante: en (A) excluye ingresa_bodega=true (esas entran a inventario y se cuentan en (C) al consumirse) para no duplicar. Presenta el desglose A/B/C y el total.`;
 
 const IA_SYSTEM = `Eres el asistente de datos del ERP "Empresas Poo". Respondes preguntas consultando una base PostgreSQL mediante la herramienta consultar_sql (solo lectura).
 Reglas:
 - Genera consultas SELECT de PostgreSQL válidas y eficientes. Usa JOINs y nombres de columnas exactos del esquema.
 - Para nombres/textos usa ILIKE con comodines. Para fechas usa el formato de la columna.
 - Si necesitas varios datos, puedes llamar la herramienta varias veces.
+- Para CONTAR, TOTALIZAR o PROMEDIAR usa COUNT(), SUM(), AVG() con GROUP BY directamente en el SQL. NUNCA cuentes manualmente las filas devueltas: los resultados vienen limitados (máx. 120 filas) y "total_filas" indica el verdadero total.
+- Antes de consultar, fíjate en el ESQUEMA: usa exactamente los nombres de tablas y columnas que existen. Si una consulta falla o devuelve algo inesperado, corrige el SQL y reintenta (tienes varios intentos).
+- MEMORIA: esta es una conversación continua. Si el usuario hace una pregunta de seguimiento ("¿y el mes pasado?", "desglósalo por faena", "¿y en Emprecon?"), reutiliza el contexto de los mensajes anteriores (faena, mes, empresa, métrica) para construir la nueva consulta.
 - Tras obtener resultados, responde en lenguaje natural, claro y breve. No muestres el SQL salvo que te lo pidan.
 - Nunca intentes modificar datos (solo SELECT).`;
 
@@ -8461,17 +8484,25 @@ app.post('/api/ia/chat', auth, async(req,res)=>{
 
     const sqlEjecutado=[];
     let respuesta='';
-    for(let paso=0; paso<6; paso++){
-      const data=await iaCallAnthropic({ model, max_tokens:1500, system, messages:msgs, tools });
+    for(let paso=0; paso<8; paso++){
+      const data=await iaCallAnthropic({ model, max_tokens:4096, system, messages:msgs, tools });
       if(data.stop_reason==='tool_use'){
         msgs.push({role:'assistant', content:data.content});
         const toolResults=[];
         for(const block of data.content){
           if(block.type==='tool_use' && block.name==='consultar_sql'){
             let out;
-            try{ const q=block.input&&block.input.query; sqlEjecutado.push(q); const r=await iaRunSQL(q); out=r; }
-            catch(e){ out={error:e.message}; }
-            toolResults.push({ type:'tool_result', tool_use_id:block.id, content:JSON.stringify(out).slice(0,12000) });
+            try{
+              const q=block.input&&block.input.query; sqlEjecutado.push(q);
+              const r=await iaRunSQL(q);
+              const MAXROWS=120;
+              out={ columnas:r.columns, total_filas:r.total, mostrando:Math.min(r.total,MAXROWS), filas:r.rows.slice(0,MAXROWS) };
+              if(r.total>MAXROWS) out.nota='Se muestran las primeras '+MAXROWS+' filas de '+r.total+'. Para totales usa COUNT()/SUM()/AVG() en el SQL, no cuentes las filas devueltas.';
+            }
+            catch(e){ out={error:e.message, sugerencia:'Revisa nombres de columnas/tablas del esquema y reintenta.'}; }
+            let payload=JSON.stringify(out);
+            if(payload.length>40000) payload=payload.slice(0,40000)+'…(resultado largo truncado; agrega filtros o agrega/totaliza en el SQL)';
+            toolResults.push({ type:'tool_result', tool_use_id:block.id, content:payload });
           }
         }
         msgs.push({role:'user', content:toolResults});
