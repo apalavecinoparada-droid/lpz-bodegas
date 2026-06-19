@@ -5347,6 +5347,107 @@ function SolicitudesView(p){
   });
   var hayFiltros=fEstado||fPrioridad||fFaena||fEquipo||fSubcat||fSolicita||fDirigida||fDesde||fHasta||fSearch;
   function limpiarFiltros(){setFEstado('');setFPrioridad('');setFFaena('');setFEquipo('');setFSubcat('');setFSolicita('');setFDirigida('');setFDesde('');setFHasta('');setFSearch('');}
+  // ── Exportación / Informe ──
+  function _fmtFecha(f){ if(!f) return ''; var s=String(f).slice(0,10); var p2=s.split('-'); return p2.length===3?(p2[2]+'/'+p2[1]+'/'+p2[0]):s; }
+  function _dias(f){ if(!f) return ''; var d=new Date(String(f).slice(0,10)); if(isNaN(d.getTime())) return ''; return Math.max(0,Math.floor((Date.now()-d.getTime())/86400000)); }
+  function _estadoLbl(e){ return {pendiente:'Pendiente',en_curso:'En curso',completada:'Completada',rechazada:'Rechazada'}[e]||e||''; }
+  function _prioLbl(p2){ return {baja:'Baja',normal:'Normal',alta:'Alta',urgente:'Urgente'}[p2||'normal']||p2; }
+  function _esc(t){ return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function exportarExcel(){
+    if(!filtered.length){alert('No hay solicitudes para exportar con el filtro actual.');return;}
+    var cols=[
+      {header:'N°',value:function(s){return s.solicitud_id;}},
+      {header:'Fecha',value:function(s){return _fmtFecha(s.fecha_creacion);}},
+      {header:'Estado',value:function(s){return _estadoLbl(s.estado);}},
+      {header:'Prioridad',value:function(s){return _prioLbl(s.prioridad);}},
+      {header:'Solicita',value:function(s){return s.solicitante_nombre||'';}},
+      {header:'Dirigida a',value:function(s){return s.dirigida_a_nombre||'';}},
+      {header:'Empresa',value:function(s){return s.empresa_nombre||'';}},
+      {header:'Faena',value:function(s){return s.faena_nombre||'';}},
+      {header:'Equipo',value:function(s){return (s.equipo_codigo||'')+(s.equipo_nombre?(' '+s.equipo_nombre):'');}},
+      {header:'Subcategoría',value:function(s){return s.subcategoria_nombre||'';}},
+      {header:'Cantidad',value:function(s){return s.cantidad||'';}},
+      {header:'Detalle',value:function(s){return s.detalle||'';}},
+      {header:'Días transcurridos',value:function(s){return _dias(s.fecha_creacion);}},
+      {header:'Días sin respuesta',value:function(s){return (s.estado==='pendiente'||s.estado==='en_curso')?_dias(s.fecha_creacion):'';}},
+      {header:'Respuesta',value:function(s){return s.respuesta||'';}}
+    ];
+    exportXLSX(filtered,cols,'solicitudes_'+new Date().toISOString().slice(0,10));
+  }
+  function informePDF(){
+    // Solo solicitudes abiertas (sin respuesta) dentro del filtro actual
+    var abiertas=filtered.filter(function(s){return s.estado==='pendiente'||s.estado==='en_curso';});
+    if(!abiertas.length){alert('No hay solicitudes pendientes o en curso con el filtro actual.');return;}
+    // Agrupar por destinatario (quien debe responder)
+    var grupos={};
+    abiertas.forEach(function(s){var k=s.dirigida_a_nombre||'(sin destinatario)';(grupos[k]=grupos[k]||[]).push(s);});
+    var nombres=Object.keys(grupos).sort(function(a,b){return grupos[b].length-grupos[a].length;});
+    var hoy=new Date(); var fechaTxt=hoy.toLocaleDateString('es-CL',{day:'2-digit',month:'long',year:'numeric'});
+    var filtrosTxt=[];
+    if(fEstado)filtrosTxt.push('Estado: '+_estadoLbl(fEstado));
+    if(fPrioridad)filtrosTxt.push('Prioridad: '+_prioLbl(fPrioridad));
+    if(fFaena){var ff=faenas.filter(function(x){return String(x.faena_id)===String(fFaena);})[0];filtrosTxt.push('Faena: '+(ff?ff.nombre:fFaena));}
+    if(fDesde||fHasta)filtrosTxt.push('Fecha: '+(fDesde||'…')+' a '+(fHasta||'…'));
+    if(fSearch)filtrosTxt.push('Búsqueda: "'+fSearch+'"');
+    var totalAbiertas=abiertas.length;
+    var pendientesN=abiertas.filter(function(s){return s.estado==='pendiente';}).length;
+    var rows='';
+    nombres.forEach(function(nom){
+      var arr=grupos[nom].slice().sort(function(a,b){return (_dias(b.fecha_creacion)||0)-(_dias(a.fecha_creacion)||0);});
+      var subtot=arr.length;
+      rows+='<tr class="grp"><td colspan="7">👤 '+_esc(nom)+' — '+subtot+' solicitud(es) sin resolver</td></tr>';
+      arr.forEach(function(s){
+        var d=_dias(s.fecha_creacion);
+        var alerta=(d!==''&&d>=7)?' class="alerta"':'';
+        rows+='<tr'+alerta+'>'+
+          '<td>'+s.solicitud_id+'</td>'+
+          '<td>'+_fmtFecha(s.fecha_creacion)+'</td>'+
+          '<td>'+_estadoLbl(s.estado)+'</td>'+
+          '<td>'+_prioLbl(s.prioridad)+'</td>'+
+          '<td>'+_esc(s.solicitante_nombre||'')+'</td>'+
+          '<td>'+_esc((s.detalle||'')+(s.faena_nombre?(' · '+s.faena_nombre):'')+(s.equipo_codigo?(' · '+s.equipo_codigo):''))+'</td>'+
+          '<td style="text-align:center;font-weight:700">'+(d===''?'—':d)+'</td>'+
+        '</tr>';
+      });
+    });
+    var html='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Informe de Solicitudes Pendientes</title><style>'+
+      '@page{size:letter;margin:1.6cm}*{font-family:Arial,Helvetica,sans-serif;box-sizing:border-box}'+
+      'body{color:#1f2937;font-size:11px;margin:0}'+
+      '.hd{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #1E3A2D;padding-bottom:10px;margin-bottom:14px}'+
+      '.hd h1{font-size:18px;color:#1E3A2D;margin:0 0 3px}.hd .sub{font-size:11px;color:#64748B}'+
+      '.meta{font-size:10px;color:#475569;text-align:right;line-height:1.5}'+
+      '.resumen{display:flex;gap:10px;margin-bottom:14px}'+
+      '.kpi{flex:1;border:1px solid #E2E8F0;border-radius:6px;padding:8px 10px}'+
+      '.kpi b{display:block;font-size:20px;color:#1E3A2D}.kpi span{font-size:10px;color:#64748B}'+
+      '.filtros{font-size:10px;color:#475569;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:5px;padding:6px 9px;margin-bottom:12px}'+
+      'table{width:100%;border-collapse:collapse}'+
+      'th{background:#1E3A2D;color:#fff;font-size:10px;padding:6px 7px;text-align:left}'+
+      'td{padding:5px 7px;border-bottom:1px solid #EEF2F6;font-size:10px;vertical-align:top}'+
+      'tr.grp td{background:#ECFDF5;color:#065F46;font-weight:700;font-size:11px;border-top:2px solid #10B981}'+
+      'tr.alerta td{background:#FEF2F2}'+
+      '.firma{margin-top:34px;display:flex;justify-content:space-between}'+
+      '.firma div{width:45%;border-top:1px solid #94A3B8;padding-top:5px;font-size:10px;text-align:center;color:#475569}'+
+      '.pie{margin-top:20px;font-size:9px;color:#94A3B8;text-align:center;border-top:1px solid #E2E8F0;padding-top:8px}'+
+      '</style></head><body>'+
+      '<div class="hd"><div><h1>Informe de Solicitudes Pendientes</h1>'+
+      '<div class="sub">Empresas Poo · Sistema de Gestión</div></div>'+
+      '<div class="meta">Emitido: '+fechaTxt+'<br>Emitido por: '+_esc(p.user?p.user.nombre:'')+'</div></div>'+
+      '<div class="resumen">'+
+      '<div class="kpi"><b>'+totalAbiertas+'</b><span>Solicitudes sin resolver</span></div>'+
+      '<div class="kpi"><b>'+pendientesN+'</b><span>Pendientes (sin iniciar)</span></div>'+
+      '<div class="kpi"><b>'+nombres.length+'</b><span>Responsables involucrados</span></div>'+
+      '</div>'+
+      (filtrosTxt.length?('<div class="filtros"><b>Filtros aplicados:</b> '+_esc(filtrosTxt.join('  ·  '))+'</div>'):'')+
+      '<table><thead><tr><th>N°</th><th>Fecha</th><th>Estado</th><th>Prioridad</th><th>Solicita</th><th>Detalle</th><th style="text-align:center">Días</th></tr></thead>'+
+      '<tbody>'+rows+'</tbody></table>'+
+      '<div class="firma"><div>Responsable de área</div><div>Gerencia</div></div>'+
+      '<div class="pie">Las filas resaltadas indican solicitudes con 7 o más días sin respuesta. Documento generado automáticamente por el sistema.</div>'+
+      '<script>window.onload=function(){window.print();}<\/script>'+
+      '</body></html>';
+    var w=window.open('','_blank');
+    if(!w){alert('Permite las ventanas emergentes para generar el informe.');return;}
+    w.document.write(html);w.document.close();
+  }
   var esAdmin=p.user&&p.user.es_admin;
   var pendientes=solicitudes.filter(function(s){return s.estado==='pendiente'&&(esAdmin||String(s.dirigida_a_id)===String(userId));}).length;
   var enCursoCount=solicitudes.filter(function(s){return s.estado==='en_curso'&&(esAdmin||String(s.dirigida_a_id)===String(userId));}).length;
@@ -5407,7 +5508,11 @@ function SolicitudesView(p){
         h('span',{style:{fontSize:11,color:'#64748B'}},'a'),
         h('input',{type:'date',value:fHasta,onChange:function(e){setFHasta(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}}),
         hayFiltros&&h('button',{onClick:limpiarFiltros,style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
-        h('span',{style:{fontSize:11,color:'#475569',marginLeft:'auto',fontWeight:600}},'Mostrando '+filtered.length+' de '+solicitudes.length)
+        h('span',{style:{marginLeft:'auto',display:'flex',gap:6}},
+          h(Btn,{v:'a',sm:true,onClick:exportarExcel},'⬇ Excel'),
+          h(Btn,{v:'d',sm:true,onClick:informePDF},'📄 Informe PDF')
+        ),
+        h('span',{style:{fontSize:11,color:'#475569',fontWeight:600}},'Mostrando '+filtered.length+' de '+solicitudes.length)
       )
     ),
     msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
