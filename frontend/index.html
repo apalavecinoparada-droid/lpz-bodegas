@@ -5260,6 +5260,77 @@ function FinChequesView(p){
 
 // ══ SOLICITUDES ══
 var PRIORIDADES_SOL=[{v:'baja',l:'Baja'},{v:'normal',l:'Normal'},{v:'alta',l:'Alta'},{v:'urgente',l:'Urgente'}];
+function IAChatView(p){
+  var[messages,setMessages]=useState([]);
+  var[input,setInput]=useState('');
+  var[loading,setLoading]=useState(false);
+  var[usarSonnet,setUsarSonnet]=useState(false);
+  var[err,setErr]=useState('');
+  var[showSql,setShowSql]=useState(null);
+  var endRef=React.useRef(null);
+  useEffect(function(){ if(endRef.current) endRef.current.scrollIntoView({behavior:'smooth'}); },[messages,loading]);
+  function enviar(texto){
+    var q=(texto!==undefined?texto:input).trim();
+    if(!q||loading)return;
+    setErr('');
+    var nuevos=messages.concat([{role:'user',content:q}]);
+    setMessages(nuevos);setInput('');setLoading(true);
+    var payload=nuevos.map(function(m){return {role:m.role,content:m.content};});
+    api('/ia/chat','POST',{messages:payload,usar_sonnet:usarSonnet},p.tok).then(function(r){
+      setMessages(nuevos.concat([{role:'assistant',content:r.respuesta,sql:r.sql||[],modelo:r.modelo}]));
+      setLoading(false);
+    }).catch(function(e){ setErr(e.message); setLoading(false); });
+  }
+  var sugerencias=[
+    '¿Cuántas solicitudes pendientes hay por responsable?',
+    'Consumo de combustible por equipo este mes',
+    'Órdenes de compra abiertas y su monto total',
+    'OEE promedio por faena en 2026'
+  ];
+  return h('div',{style:{maxWidth:900,margin:'0 auto'}},
+    h('div',{className:'card',style:{padding:14,marginBottom:12}},
+      h('div',{style:{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap'}},
+        h('div',{style:{flex:1,minWidth:200}},
+          h('div',{style:{fontSize:15,fontWeight:700,color:'#1E3A2D'}},'🤖 Asistente IA'),
+          h('div',{style:{fontSize:11,color:'#64748B'}},'Pregunta en lenguaje natural sobre los datos del sistema (solo lectura).')
+        ),
+        messages.length>0&&h('button',{onClick:function(){setMessages([]);setErr('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:11,background:'#F8FAFC',cursor:'pointer',color:'#475569'}},'Nueva conversación'),
+        h('label',{style:{fontSize:11,color:'#475569',display:'flex',alignItems:'center',gap:6,cursor:'pointer'}},
+          h('input',{type:'checkbox',checked:usarSonnet,onChange:function(e){setUsarSonnet(e.target.checked);}}),
+          'Usar Sonnet (preguntas complejas)'
+        )
+      )
+    ),
+    err&&h('div',{className:'al al-e',style:{marginBottom:8}},err),
+    h('div',{className:'card',style:{padding:14,minHeight:300,maxHeight:'56vh',overflowY:'auto'}},
+      messages.length===0&&h('div',{style:{textAlign:'center',color:'#94A3B8',padding:'20px 0'}},
+        h('div',{style:{fontSize:13,marginBottom:12}},'Hazme una pregunta sobre tus datos. Por ejemplo:'),
+        h('div',{style:{display:'flex',flexDirection:'column',gap:6,maxWidth:480,margin:'0 auto'}},
+          sugerencias.map(function(s,i){return h('button',{key:i,onClick:function(){enviar(s);},style:{padding:'8px 12px',border:'1px solid #CBD5E1',borderRadius:8,background:'#F8FAFC',fontSize:12,cursor:'pointer',textAlign:'left',color:'#334155'}},s);}))
+      ),
+      messages.map(function(m,i){
+        var isUser=m.role==='user';
+        return h('div',{key:i,style:{display:'flex',justifyContent:isUser?'flex-end':'flex-start',marginBottom:10}},
+          h('div',{style:{maxWidth:'82%',padding:'9px 13px',borderRadius:12,fontSize:13,lineHeight:1.5,whiteSpace:'pre-wrap',background:isUser?'#1E3A2D':'#F1F5F9',color:isUser?'#fff':'#1E293B'}},
+            m.content,
+            (!isUser&&m.sql&&m.sql.length)?h('div',null,
+              h('div',{onClick:function(){setShowSql(showSql===i?null:i);},style:{fontSize:10,color:'#64748B',cursor:'pointer',marginTop:6,textDecoration:'underline'}},showSql===i?'Ocultar SQL':'Ver SQL ('+m.sql.length+')'),
+              showSql===i&&h('pre',{style:{fontSize:10,background:'#0F172A',color:'#A5F3FC',padding:8,borderRadius:6,marginTop:4,overflowX:'auto',whiteSpace:'pre-wrap'}},m.sql.join(';\n'))
+            ):null
+          )
+        );
+      }),
+      loading&&h('div',{style:{display:'flex',justifyContent:'flex-start',marginBottom:10}},h('div',{style:{padding:'9px 13px',borderRadius:12,fontSize:13,background:'#F1F5F9',color:'#64748B'}},'Consultando…')),
+      h('div',{ref:endRef})
+    ),
+    h('div',{style:{display:'flex',gap:8,marginTop:10}},
+      h('input',{value:input,onChange:function(e){setInput(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')enviar();},placeholder:'Escribe tu pregunta…',disabled:loading,style:{flex:1,padding:'10px 12px',border:'1px solid #CBD5E1',borderRadius:8,fontSize:13}}),
+      h(Btn,{onClick:function(){enviar();},disabled:loading},'Enviar')
+    ),
+    h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:6,textAlign:'center'}},'El asistente solo consulta datos (no los modifica). Verifica cifras críticas en su módulo correspondiente.')
+  );
+}
+
 function SolicitudesView(p){
   var subcats=(p.m.subcats||[]);
   var faenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
@@ -14416,6 +14487,8 @@ var MODULOS_SISTEMA=[
   {k:'contratos',l:'Contratos'},
   {k:'mantenedores',l:'Mantenedores'},
   {k:'reportes',l:'Reportes'},
+  {k:'productividad',l:'Productividad / OEE'},
+  {k:'ia',l:'Asistente IA',hint:'Permite consultar la base en lenguaje natural'},
   {k:'usuarios',l:'Usuarios'}
 ];
 function UsuariosView(p){
@@ -20132,7 +20205,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -20785,6 +20858,7 @@ function App(){
     'rendiciones':'rendiciones',
     'terreno':'terreno','terreno-tiempos':'terreno','terreno-equipos':'terreno','terreno-faena':'terreno','terreno-reportes':'terreno',
     'prod-oee':'productividad',
+    'ia-chat':'ia',
     'solicitudes':'solicitudes',
     'transporte':'transporte',
     'personal':'contratos','contratos':'contratos','vacaciones':'contratos','finiquitos':'contratos','cartas':'contratos',
@@ -20972,6 +21046,8 @@ function App(){
         canSee('productividad')&&grpHdr('prod','PRODUCTIVIDAD'),
         canSee('productividad')&&grp.prod&&h('div',null,navI('prod-oee','📈','OEE Cosecha',true)),
         canSee('productividad')&&h('div',{className:'sb-sep'}),
+        canSee('ia')&&h('div',null,navI('ia-chat','🤖','Asistente IA',true)),
+        canSee('ia')&&h('div',{className:'sb-sep'}),
         canSee('transporte')&&grpHdr('trans','TRANSPORTE'),
         canSee('transporte')&&grp.trans&&h('div',null,
           navI('trans-traslados','🚛','Traslados Maquinaria',true),
@@ -21088,6 +21164,7 @@ function App(){
           view==='terreno'&&h(TerrenoView,{tok,m,user}),
           view==='terreno-tiempos'&&h(TerrenoTiemposView,{tok,m,user}),
           view==='prod-oee'&&h(OEEView,{tok,m,user}),
+          view==='ia-chat'&&h(IAChatView,{tok,m,user}),
           view==='fin-cheques'&&h(FinChequesView,{tok,m}),
           view==='fin-costos'&&h(InformeCostosView,{tok,m}),
           view==='fin-activos'&&h(ActivosFijosView,{tok,m}),
