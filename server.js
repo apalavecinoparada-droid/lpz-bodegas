@@ -8457,6 +8457,32 @@ async function iaCallAnthropic(body){
 }
 
 // Endpoint del chat
+// Crea (si no existen) las tablas de historial del asistente
+let _iaTablasOk=false;
+async function iaEnsureTablas(){
+  if(_iaTablasOk) return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS ia_conversaciones (
+    conv_id SERIAL PRIMARY KEY,
+    usuario_id INT NOT NULL,
+    titulo VARCHAR(180),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    actualizado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS ia_mensajes (
+    msg_id SERIAL PRIMARY KEY,
+    conv_id INT NOT NULL REFERENCES ia_conversaciones(conv_id) ON DELETE CASCADE,
+    usuario_id INT NOT NULL,
+    rol VARCHAR(12) NOT NULL,
+    contenido TEXT,
+    sql_text TEXT,
+    modelo VARCHAR(40),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  try{await pool.query('CREATE INDEX IF NOT EXISTS idx_ia_conv_user ON ia_conversaciones(usuario_id, actualizado_en DESC)');}catch(e){}
+  try{await pool.query('CREATE INDEX IF NOT EXISTS idx_ia_msg_conv ON ia_mensajes(conv_id, msg_id)');}catch(e){}
+  _iaTablasOk=true;
+}
+
 app.post('/api/ia/chat', auth, async(req,res)=>{
   try{
     // Permiso: admin o módulo 'ia'
@@ -8512,11 +8538,96 @@ app.post('/api/ia/chat', auth, async(req,res)=>{
       break;
     }
     if(!respuesta) respuesta='No pude completar la consulta (demasiados pasos). Intenta reformular la pregunta.';
-    res.json({ respuesta, sql:sqlEjecutado, modelo:model });
+
+    // ── Persistir en el historial (identificado por usuario) ──
+    let convId = parseInt(req.body.conv_id)||null;
+    let titulo = null;
+    try{
+      await iaEnsureTablas();
+      // Última pregunta del usuario en este turno
+      const ultimaUser = msgs.slice().reverse().find(function(m){return m.role==='user' && typeof m.content==='string';});
+      const preguntaTxt = ultimaUser ? ultimaUser.content : (incoming.length?String(incoming[incoming.length-1].content):'');
+      // Validar propiedad de la conversación si vino conv_id
+      if(convId){
+        const chk=await pool.query('SELECT usuario_id, titulo FROM ia_conversaciones WHERE conv_id=$1',[convId]);
+        if(!chk.rows.length || chk.rows[0].usuario_id!==req.user.id){ convId=null; }
+        else { titulo=chk.rows[0].titulo; }
+      }
+      // Crear conversación si no existe
+      if(!convId){
+        titulo = (preguntaTxt||'Consulta').replace(/\s+/g,' ').trim().slice(0,160);
+        const ins=await pool.query('INSERT INTO ia_conversaciones(usuario_id,titulo) VALUES($1,$2) RETURNING conv_id',[req.user.id,titulo]);
+        convId=ins.rows[0].conv_id;
+      }
+      // Guardar el turno (pregunta + respuesta)
+      await pool.query('INSERT INTO ia_mensajes(conv_id,usuario_id,rol,contenido) VALUES($1,$2,$3,$4)',[convId,req.user.id,'user',preguntaTxt]);
+      await pool.query('INSERT INTO ia_mensajes(conv_id,usuario_id,rol,contenido,sql_text,modelo) VALUES($1,$2,$3,$4,$5,$6)',[convId,req.user.id,'assistant',respuesta,JSON.stringify(sqlEjecutado||[]),model]);
+      await pool.query('UPDATE ia_conversaciones SET actualizado_en=NOW() WHERE conv_id=$1',[convId]);
+    }catch(ePersist){ console.warn('IA persist:', ePersist.message); }
+
+    res.json({ respuesta, sql:sqlEjecutado, modelo:model, conv_id:convId, titulo:titulo });
   }catch(e){
     if(e.message==='NO_API_KEY') return res.status(400).json({error:'Falta ANTHROPIC_API_KEY en el servidor.'});
     res.status(500).json({error:e.message});
   }
+});
+
+// Helper de permiso IA
+function iaPermitido(req){ return req.user && (req.user.es_admin || (Array.isArray(req.user.modulos)&&req.user.modulos.indexOf('ia')>=0)); }
+
+// Listar conversaciones del usuario (admin puede ver todas con ?todos=1)
+app.get('/api/ia/conversaciones', auth, async(req,res)=>{
+  try{
+    if(!iaPermitido(req)) return res.status(403).json({error:'Sin permiso'});
+    await iaEnsureTablas();
+    const verTodos = req.user.es_admin && (req.query.todos==='1'||req.query.todos==='true');
+    let r;
+    if(verTodos){
+      r=await pool.query(`SELECT c.conv_id, c.titulo, c.usuario_id, u.nombre AS usuario_nombre, c.actualizado_en,
+        (SELECT COUNT(*) FROM ia_mensajes m WHERE m.conv_id=c.conv_id) AS mensajes
+        FROM ia_conversaciones c LEFT JOIN usuarios u ON c.usuario_id=u.usuario_id
+        ORDER BY c.actualizado_en DESC LIMIT 200`);
+    }else{
+      r=await pool.query(`SELECT c.conv_id, c.titulo, c.usuario_id, c.actualizado_en,
+        (SELECT COUNT(*) FROM ia_mensajes m WHERE m.conv_id=c.conv_id) AS mensajes
+        FROM ia_conversaciones c WHERE c.usuario_id=$1
+        ORDER BY c.actualizado_en DESC LIMIT 200`,[req.user.id]);
+    }
+    res.json({conversaciones:r.rows, es_admin:!!req.user.es_admin});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// Abrir una conversación (mensajes)
+app.get('/api/ia/conversaciones/:id', auth, async(req,res)=>{
+  try{
+    if(!iaPermitido(req)) return res.status(403).json({error:'Sin permiso'});
+    await iaEnsureTablas();
+    const id=parseInt(req.params.id);
+    const c=await pool.query('SELECT conv_id, usuario_id, titulo FROM ia_conversaciones WHERE conv_id=$1',[id]);
+    if(!c.rows.length) return res.status(404).json({error:'No encontrada'});
+    if(c.rows[0].usuario_id!==req.user.id && !req.user.es_admin) return res.status(403).json({error:'No autorizado'});
+    const m=await pool.query('SELECT rol, contenido, sql_text, modelo, creado_en FROM ia_mensajes WHERE conv_id=$1 ORDER BY msg_id',[id]);
+    const mensajes=m.rows.map(function(x){
+      var o={role:x.rol, content:x.contenido, modelo:x.modelo, creado_en:x.creado_en};
+      if(x.sql_text){ try{o.sql=JSON.parse(x.sql_text);}catch(_){o.sql=[];} }
+      return o;
+    });
+    res.json({conv_id:id, titulo:c.rows[0].titulo, mensajes:mensajes});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// Borrar una conversación (dueño o admin)
+app.delete('/api/ia/conversaciones/:id', auth, async(req,res)=>{
+  try{
+    if(!iaPermitido(req)) return res.status(403).json({error:'Sin permiso'});
+    await iaEnsureTablas();
+    const id=parseInt(req.params.id);
+    const c=await pool.query('SELECT usuario_id FROM ia_conversaciones WHERE conv_id=$1',[id]);
+    if(!c.rows.length) return res.status(404).json({error:'No encontrada'});
+    if(c.rows[0].usuario_id!==req.user.id && !req.user.es_admin) return res.status(403).json({error:'No autorizado'});
+    await pool.query('DELETE FROM ia_conversaciones WHERE conv_id=$1',[id]);
+    res.json({ok:true});
+  }catch(e){res.status(500).json({error:e.message});}
 });
 
 app.get('/api/terreno/tiempos-proceso', auth, async(req,res)=>{
