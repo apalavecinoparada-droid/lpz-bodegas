@@ -8346,6 +8346,148 @@ app.post('/api/prod/oee/datasets', auth, async(req,res)=>{
   finally{client.release();}
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// ASISTENTE IA — consulta en lenguaje natural sobre la base (Anthropic API + tool use)
+// ═══════════════════════════════════════════════════════════════════
+const IA_MODEL_HAIKU = process.env.IA_MODEL_HAIKU || 'claude-haiku-4-5-20251001';
+const IA_MODEL_SONNET = process.env.IA_MODEL_SONNET || 'claude-sonnet-4-6';
+let _iaSchemaCache = null, _iaSchemaTs = 0;
+
+// Construye (y cachea 10 min) un resumen del esquema desde information_schema
+async function iaGetSchema(){
+  if(_iaSchemaCache && (Date.now()-_iaSchemaTs)<600000) return _iaSchemaCache;
+  const r=await pool.query(`SELECT table_name, column_name, data_type
+    FROM information_schema.columns
+    WHERE table_schema='public'
+    ORDER BY table_name, ordinal_position`);
+  const tablas={};
+  r.rows.forEach(function(x){ (tablas[x.table_name]=tablas[x.table_name]||[]).push(x.column_name+' '+x.data_type); });
+  let txt='';
+  Object.keys(tablas).sort().forEach(function(t){ txt+=t+'('+tablas[t].join(', ')+')\n'; });
+  _iaSchemaCache=txt; _iaSchemaTs=Date.now();
+  return txt;
+}
+
+// Glosario de negocio para mejorar la calidad de las consultas
+const IA_GLOSARIO = `CONTEXTO DE NEGOCIO (Empresas Poo — empresas forestales Leonidas Poo Zenteno "LPZ" y Emprecon):
+- Numéricos pueden venir como texto: usa CAST cuando sea necesario.
+- ordenes_compra = órdenes de compra (OC); su estado y numero_documento (folio factura al cerrar).
+- comb_movimientos = movimientos de combustible; tipo DISTRIBUCION = consumo/entrega a equipos.
+- terreno_registros = lecturas diarias de terreno por equipo (horas trabajadas/perdidas, horómetro).
+- terreno_tob_detalle = desglose de tiempos perdidos por categoría (clasificación E/F).
+- prod_oee_registros = indicadores OEE mensuales por faena (toc,tob,fd,fe,oee,vma,rend,m3).
+- solicitudes = solicitudes internas; estado pendiente/en_curso/completada/rechazada; dirigida_a_id = responsable; creado_en = fecha.
+- personal = trabajadores (incluye sueldos/remuneraciones y finiquitos). DATO SENSIBLE: úsalo solo si la pregunta lo requiere.
+- equipos.tipo_cargo clasifica el equipo (maquinaria, camioneta, camion, etc.); faenas = obras/faenas.
+- empresa_id distingue LPZ vs Emprecon. faena_id ubica la faena.
+Responde SIEMPRE en español, con cifras claras (separador de miles chileno) y conciso. Si la consulta SQL no devuelve filas, dilo. Nunca inventes datos: si no están en la base, indícalo.`;
+
+const IA_SYSTEM = `Eres el asistente de datos del ERP "Empresas Poo". Respondes preguntas consultando una base PostgreSQL mediante la herramienta consultar_sql (solo lectura).
+Reglas:
+- Genera consultas SELECT de PostgreSQL válidas y eficientes. Usa JOINs y nombres de columnas exactos del esquema.
+- Para nombres/textos usa ILIKE con comodines. Para fechas usa el formato de la columna.
+- Si necesitas varios datos, puedes llamar la herramienta varias veces.
+- Tras obtener resultados, responde en lenguaje natural, claro y breve. No muestres el SQL salvo que te lo pidan.
+- Nunca intentes modificar datos (solo SELECT).`;
+
+// Valida y normaliza una consulta para que sea SOLO LECTURA
+function iaSanitizeSQL(sql){
+  if(!sql || typeof sql!=='string') throw new Error('Consulta vacía');
+  let q=sql.trim().replace(/;\s*$/,''); // quita ; final
+  if(q.indexOf(';')>=0) throw new Error('Solo se permite una sentencia');
+  const low=q.toLowerCase();
+  if(!/^(select|with)\b/.test(low)) throw new Error('Solo se permiten consultas SELECT');
+  if(/\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|merge|call|do|vacuum|reindex|comment|lock|set\s|begin|commit|rollback)\b/.test(low))
+    throw new Error('Operación no permitida (solo lectura)');
+  if(!/\blimit\b/.test(low)) q+=' LIMIT 1000';
+  return q;
+}
+
+// Ejecuta SQL dentro de una transacción READ ONLY con timeout (doble seguridad)
+async function iaRunSQL(sql){
+  const q=iaSanitizeSQL(sql);
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    await client.query('SET TRANSACTION READ ONLY');
+    await client.query("SET LOCAL statement_timeout='8000'");
+    const r=await client.query(q);
+    await client.query('ROLLBACK');
+    return { columns:r.fields?r.fields.map(function(f){return f.name;}):[], rows:r.rows, total:r.rows.length };
+  }catch(e){
+    try{await client.query('ROLLBACK');}catch(_){}
+    throw e;
+  }finally{ client.release(); }
+}
+
+// Llamada a la API de Anthropic (Messages)
+async function iaCallAnthropic(body){
+  const key=process.env.ANTHROPIC_API_KEY;
+  if(!key) throw new Error('NO_API_KEY');
+  const resp=await fetch('https://api.anthropic.com/v1/messages',{
+    method:'POST',
+    headers:{ 'content-type':'application/json', 'x-api-key':key, 'anthropic-version':'2023-06-01' },
+    body:JSON.stringify(body)
+  });
+  if(!resp.ok){ const t=await resp.text(); throw new Error('API '+resp.status+': '+t.slice(0,300)); }
+  return resp.json();
+}
+
+// Endpoint del chat
+app.post('/api/ia/chat', auth, async(req,res)=>{
+  try{
+    // Permiso: admin o módulo 'ia'
+    const permitido = req.user && (req.user.es_admin || (Array.isArray(req.user.modulos)&&req.user.modulos.indexOf('ia')>=0));
+    if(!permitido) return res.status(403).json({error:'No tienes permiso para usar el Asistente IA'});
+    if(!process.env.ANTHROPIC_API_KEY) return res.status(400).json({error:'El Asistente IA no está configurado: falta ANTHROPIC_API_KEY en el servidor.'});
+
+    const incoming = Array.isArray(req.body.messages) ? req.body.messages : [];
+    // Sanitizar historial: solo roles user/assistant con content texto
+    let msgs = incoming.filter(function(m){return m&&(m.role==='user'||m.role==='assistant')&&m.content;})
+      .map(function(m){return {role:m.role, content: typeof m.content==='string'?m.content:JSON.stringify(m.content)};});
+    if(!msgs.length) return res.status(400).json({error:'Sin mensajes'});
+
+    const model = req.body.usar_sonnet ? IA_MODEL_SONNET : IA_MODEL_HAIKU;
+    const schema = await iaGetSchema();
+    const tools=[{
+      name:'consultar_sql',
+      description:'Ejecuta una consulta SQL de SOLO LECTURA (SELECT) sobre la base PostgreSQL del ERP y devuelve las filas. Úsala para responder cualquier pregunta sobre los datos.',
+      input_schema:{ type:'object', properties:{ query:{ type:'string', description:'Consulta SELECT válida de PostgreSQL' } }, required:['query'] }
+    }];
+    const system=[
+      { type:'text', text:IA_SYSTEM },
+      { type:'text', text:IA_GLOSARIO+'\n\nESQUEMA DE LA BASE (tabla(columna tipo, ...)):\n'+schema, cache_control:{type:'ephemeral'} }
+    ];
+
+    const sqlEjecutado=[];
+    let respuesta='';
+    for(let paso=0; paso<6; paso++){
+      const data=await iaCallAnthropic({ model, max_tokens:1500, system, messages:msgs, tools });
+      if(data.stop_reason==='tool_use'){
+        msgs.push({role:'assistant', content:data.content});
+        const toolResults=[];
+        for(const block of data.content){
+          if(block.type==='tool_use' && block.name==='consultar_sql'){
+            let out;
+            try{ const q=block.input&&block.input.query; sqlEjecutado.push(q); const r=await iaRunSQL(q); out=r; }
+            catch(e){ out={error:e.message}; }
+            toolResults.push({ type:'tool_result', tool_use_id:block.id, content:JSON.stringify(out).slice(0,12000) });
+          }
+        }
+        msgs.push({role:'user', content:toolResults});
+        continue;
+      }
+      respuesta=(data.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('\n').trim();
+      break;
+    }
+    if(!respuesta) respuesta='No pude completar la consulta (demasiados pasos). Intenta reformular la pregunta.';
+    res.json({ respuesta, sql:sqlEjecutado, modelo:model });
+  }catch(e){
+    if(e.message==='NO_API_KEY') return res.status(400).json({error:'Falta ANTHROPIC_API_KEY en el servidor.'});
+    res.status(500).json({error:e.message});
+  }
+});
+
 app.get('/api/terreno/tiempos-proceso', auth, async(req,res)=>{
   try{
     const{desde,hasta,empresa_id}=req.query;
