@@ -7094,6 +7094,102 @@ function CompraAuditoriaView(p){
   }
   useEffect(function(){analizar();},[]);
 
+  function informePDF(){
+    if(!data){alert('Primero ejecuta el análisis.');return;}
+    var R=data.resumen||{}, P=data.parametros||{};
+    function esc(t){return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+    function tabla(headers, rows){
+      if(!rows.length) return '<div class="vacio">Sin coincidencias.</div>';
+      var th=headers.map(function(hh){return '<th class="'+(hh.a||'')+'">'+esc(hh.t)+'</th>';}).join('');
+      var body=rows.map(function(cols){return '<tr>'+cols.map(function(c){return '<td class="'+(c.a||'')+'">'+esc(c.t)+'</td>';}).join('')+'</tr>';}).join('');
+      return '<table><thead><tr>'+th+'</tr></thead><tbody>'+body+'</tbody></table>';
+    }
+    function seccion(titulo,color,desc,html){
+      return '<div class="sec"><div class="sectit" style="border-color:'+color+'"><span style="color:'+color+'">■</span> '+esc(titulo)+'</div><div class="desc">'+esc(desc)+'</div>'+html+'</div>';
+    }
+    var s1=tabla(
+      [{t:'Producto'},{t:'Equipo'},{t:'Veces',a:'c'},{t:'Cant. total',a:'r'},{t:'Monto',a:'r'},{t:'Rango',a:'c'},{t:'OCs'}],
+      (data.producto_repetido||[]).map(function(r){return [
+        {t:(r.producto_codigo||'')+' '+(r.producto_nombre||'')},{t:(r.equipo_codigo||'')+' — '+(r.equipo_nombre||'')},
+        {t:r.veces,a:'c'},{t:parseFloat(r.cantidad_total||0).toFixed(0),a:'r'},{t:fmtMonto(r.monto_total),a:'r'},{t:(r.rango_dias||0)+'d',a:'c'},{t:r.ocs||''}
+      ];}));
+    var s2=tabla(
+      [{t:'Producto A'},{t:'Producto B'},{t:'Equipo'},{t:'Similitud',a:'c'},{t:'Días',a:'c'},{t:'OCs'}],
+      (data.productos_similares||[]).map(function(r){return [
+        {t:(r.cod_a||'')+' '+(r.nom_a||'')},{t:(r.cod_b||'')+' '+(r.nom_b||'')},{t:r.equipo_codigo||''},
+        {t:Math.round((r.similitud||0)*100)+'%',a:'c'},{t:r.dias_diferencia,a:'c'},{t:(r.oc_a||'')+' / '+(r.oc_b||'')}
+      ];}));
+    var s3=tabla(
+      [{t:'Proveedor'},{t:'Empresa'},{t:'OC A'},{t:'OC B'},{t:'Total A',a:'r'},{t:'Total B',a:'r'},{t:'Días dif.',a:'c'}],
+      (data.oc_duplicadas||[]).map(function(r){return [
+        {t:r.proveedor_nombre||''},{t:r.empresa_nombre||''},{t:(r.num_a||'')+' ('+fmtFecha(r.fecha_a)+')'},{t:(r.num_b||'')+' ('+fmtFecha(r.fecha_b)+')'},
+        {t:fmtMonto(r.total_a),a:'r'},{t:fmtMonto(r.total_b),a:'r'},{t:r.dias_diferencia,a:'c'}
+      ];}));
+    var s4=tabla(
+      [{t:'N° Documento'},{t:'Tipo'},{t:'Proveedor'},{t:'Veces',a:'c'},{t:'OCs'}],
+      (data.doc_duplicado||[]).map(function(r){return [
+        {t:r.numero_documento||''},{t:r.tipo_doc||'—'},{t:r.proveedor_nombre||''},{t:r.veces,a:'c'},{t:r.ocs||''}
+      ];}));
+    var s5=tabla(
+      [{t:'Producto'},{t:'Precio mín.',a:'r'},{t:'Precio máx.',a:'r'},{t:'Variación',a:'c'},{t:'Compras',a:'c'}],
+      (data.precio_variable||[]).map(function(r){return [
+        {t:(r.producto_codigo||'')+' '+(r.producto_nombre||'')},{t:fmtMonto(r.precio_min),a:'r'},{t:fmtMonto(r.precio_max),a:'r'},{t:'+'+r.variacion_pct+'%',a:'c'},{t:r.compras,a:'c'}
+      ];}));
+    var s6=tabla(
+      [{t:'Proveedor'},{t:'Empresa'},{t:'Fecha'},{t:'N° OCs',a:'c'},{t:'Monto total',a:'r'},{t:'OCs'}],
+      (data.compra_fraccionada||[]).map(function(r){return [
+        {t:r.proveedor_nombre||''},{t:r.empresa_nombre||''},{t:fmtFecha(r.fecha_emision)},{t:r.num_ocs,a:'c'},{t:fmtMonto(r.monto_total),a:'r'},{t:r.ocs||''}
+      ];}));
+
+    var hoy=new Date().toLocaleDateString('es-CL',{day:'2-digit',month:'long',year:'numeric'});
+    var rango=(desde||hasta)?((desde||'inicio')+' a '+(hasta||'hoy')):'Todo el historial';
+    var totalHallazgos=(R.producto_repetido||0)+(R.productos_similares||0)+(R.oc_duplicadas||0)+(R.doc_duplicado||0)+(R.precio_variable||0)+(R.compra_fraccionada||0);
+    var html='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Auditoría de Compras</title><style>'+
+      '@page{size:letter;margin:1.5cm}*{font-family:Arial,Helvetica,sans-serif;box-sizing:border-box}'+
+      'body{color:#1f2937;font-size:11px;margin:0}'+
+      '.hd{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #1E3A2D;padding-bottom:10px;margin-bottom:12px}'+
+      '.hd h1{font-size:18px;color:#1E3A2D;margin:0 0 3px}.hd .sub{font-size:11px;color:#64748B}'+
+      '.meta{font-size:10px;color:#475569;text-align:right;line-height:1.5}'+
+      '.params{font-size:10px;color:#475569;background:#F8FAFC;border:1px solid #E2E8F0;border-radius:5px;padding:7px 10px;margin-bottom:10px}'+
+      '.resumen{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px}'+
+      '.kpi{flex:1;min-width:120px;border:1px solid #E2E8F0;border-left:5px solid #1E3A2D;border-radius:6px;padding:7px 10px}'+
+      '.kpi b{display:block;font-size:18px;color:#1E3A2D}.kpi span{font-size:9px;color:#64748B}'+
+      '.sec{margin-bottom:16px;page-break-inside:avoid}'+
+      '.sectit{font-size:13px;font-weight:700;color:#1E3A2D;border-left:5px solid;padding-left:8px;margin-bottom:3px}'+
+      '.desc{font-size:9px;color:#64748B;margin-bottom:5px}'+
+      '.vacio{font-size:10px;color:#94A3B8;font-style:italic;padding:6px 0}'+
+      'table{width:100%;border-collapse:collapse}'+
+      'th{background:#1E3A2D;color:#fff;font-size:9px;padding:5px 6px;text-align:left}'+
+      'td{padding:4px 6px;border-bottom:1px solid #EEF2F6;font-size:9px;vertical-align:top}'+
+      '.r{text-align:right}.c{text-align:center}'+
+      '.pie{margin-top:18px;font-size:9px;color:#94A3B8;text-align:center;border-top:1px solid #E2E8F0;padding-top:8px}'+
+      '.firma{margin-top:30px;display:flex;justify-content:space-between}.firma div{width:45%;border-top:1px solid #94A3B8;padding-top:5px;font-size:10px;text-align:center;color:#475569}'+
+      '</style></head><body>'+
+      '<div class="hd"><div><h1>Informe de Auditoría de Compras</h1><div class="sub">Empresas Poo · Cruce de información — Órdenes de Compra</div></div>'+
+      '<div class="meta">Emitido: '+hoy+'<br>Emitido por: '+esc(p.user?(p.user.nombre||p.user.email):'')+'<br>Período: '+esc(rango)+'</div></div>'+
+      '<div class="params"><b>Parámetros:</b> OC duplicada ≤ '+(P.dias_duplicado)+' días · Producto/equipo ≤ '+(P.dias_producto)+' días · Variación precio > '+(P.umbral_precio)+'% · Similitud ≥ '+Math.round((P.umbral_similitud||simUmbral)*100)+'%</div>'+
+      '<div class="resumen">'+
+      '<div class="kpi" style="border-left-color:#DC2626"><b>'+(R.producto_repetido||0)+'</b><span>Producto repetido</span></div>'+
+      '<div class="kpi" style="border-left-color:#EA580C"><b>'+(R.productos_similares||0)+'</b><span>Productos similares</span></div>'+
+      '<div class="kpi" style="border-left-color:#D97706"><b>'+(R.oc_duplicadas||0)+'</b><span>OC duplicadas</span></div>'+
+      '<div class="kpi" style="border-left-color:#CA8A04"><b>'+(R.doc_duplicado||0)+'</b><span>Doc. duplicado</span></div>'+
+      '<div class="kpi" style="border-left-color:#7C3AED"><b>'+(R.precio_variable||0)+'</b><span>Variación de precio</span></div>'+
+      '<div class="kpi" style="border-left-color:#2563EB"><b>'+(R.compra_fraccionada||0)+'</b><span>Compra fraccionada</span></div>'+
+      '</div>'+
+      seccion('Producto repetido para el mismo equipo','#DC2626','Mismo producto comprado para el mismo equipo más de una vez dentro de '+(P.dias_producto)+' días.',s1)+
+      seccion('Productos similares','#EA580C','Nombres parecidos (no idénticos) comprados para el mismo equipo en '+(P.dias_producto)+' días.',s2)+
+      seccion('OC duplicadas','#D97706','Pares de OC del mismo proveedor y empresa con monto casi idéntico (±1%) dentro de '+(P.dias_duplicado)+' días.',s3)+
+      seccion('N° de documento duplicado','#CA8A04','Mismo número de documento tributario usado en más de una OC del mismo proveedor.',s4)+
+      seccion('Variación de precio','#7C3AED','Productos cuyo precio unitario varió más de '+(P.umbral_precio)+'% entre compras.',s5)+
+      seccion('Compra fraccionada','#2563EB','3 o más OC al mismo proveedor el mismo día.',s6)+
+      '<div class="firma"><div>Responsable de adquisiciones</div><div>Gerencia</div></div>'+
+      '<div class="pie">Total de hallazgos: '+totalHallazgos+'. Los hallazgos son indicios para revisión, no necesariamente irregularidades. Documento generado automáticamente por el sistema.</div>'+
+      '<script>window.onload=function(){window.print();}<\/script></body></html>';
+    var w=window.open('','_blank');
+    if(!w){alert('Permite las ventanas emergentes para generar el informe.');return;}
+    w.document.write(html);w.document.close();
+  }
+
   var inpS={padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:4,fontSize:12,width:60};
   var R=data?data.resumen:{};
 
@@ -7118,7 +7214,8 @@ function CompraAuditoriaView(p){
         h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Similitud (0-1)'),h('input',{type:'number',step:'0.05',min:'0',max:'1',value:simUmbral,onChange:function(e){setSimUmbral(e.target.value);},style:inpS})),
         h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Desde'),h('input',{type:'date',value:desde,onChange:function(e){setDesde(e.target.value);},style:Object.assign({},inpS,{width:'auto'})})),
         h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Hasta'),h('input',{type:'date',value:hasta,onChange:function(e){setHasta(e.target.value);},style:Object.assign({},inpS,{width:'auto'})})),
-        h(Btn,{onClick:analizar,disabled:loading},loading?'⏳ Analizando...':'🔍 Analizar')
+        h(Btn,{onClick:analizar,disabled:loading},loading?'⏳ Analizando...':'🔍 Analizar'),
+        data&&h(Btn,{v:'d',onClick:informePDF},'📄 Informe PDF')
       )
     ),
     err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
