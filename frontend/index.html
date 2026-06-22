@@ -3164,7 +3164,8 @@ function imprimirAuditoriaCombustible(data,meta){
     '<h1>INFORME DE AUDITORÍA DE COMBUSTIBLES</h1>'+
     '<div class="sub">Cruce de combustible distribuido vs consumo informado en terreno — análisis de diferencias para detección de fugas/mermas</div>'+
     '<table class="hd"><tr><td class="l">Período</td><td>'+fd(data.desde)+' al '+fd(data.hasta)+'</td><td class="l">Empresa</td><td>'+esc(meta.empresa||'Todas')+'</td></tr>'+
-    '<tr><td class="l">Equipo</td><td>'+esc(meta.equipo||'Todos')+'</td><td class="l">Generado</td><td>'+fd(new Date().toISOString())+' · '+esc(meta.usuario||'')+'</td></tr></table>'+
+    '<tr><td class="l">Faena</td><td>'+esc(meta.faena||'Todas')+'</td><td class="l">Equipo</td><td>'+esc(meta.equipo||'Todos')+'</td></tr>'+
+    '<tr><td class="l">Generado</td><td colspan="3">'+fd(new Date().toISOString())+' · '+esc(meta.usuario||'')+'</td></tr></table>'+
 
     '<div class="kpis">'+
       '<div class="kpi"><div class="n" style="color:#DC2626">'+(data.con_combustible_sin_terreno||[]).length+'</div><div class="t">Con combustible SIN terreno</div></div>'+
@@ -3208,6 +3209,7 @@ function exportAuditoriaExcel(data,meta){
       ['INFORME DE AUDITORÍA DE COMBUSTIBLES'],
       ['Período',fd(data.desde)+' al '+fd(data.hasta)],
       ['Empresa',meta.empresa||'Todas'],
+      ['Faena',meta.faena||'Todas'],
       ['Equipo',meta.equipo||'Todos'],
       ['Generado',new Date().toISOString().slice(0,16).replace('T',' ')+' · '+(meta.usuario||'')],
       [],
@@ -3257,22 +3259,24 @@ function CombAuditoriaView(p){
   var[desde,setDesde]=useState(hoy);
   var[hasta,setHasta]=useState(hoy);
   var[empresaFilt,setEmpresaFilt]=useState('');
+  var[faenaFilt,setFaenaFilt]=useState('');
   var[equipoFilt,setEquipoFilt]=useState('');
   var[rawData,setRawData]=useState(null);
   var[loading,setLoading]=useState(false);
   var[err,setErr]=useState('');
   var[tab,setTab]=useState('sin_terreno');
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var faenas=(p.m.faenas||[]).slice().sort(function(a,b){return String(a.nombre||'').localeCompare(String(b.nombre||''));});
 
   function cargar(){
     setLoading(true);setErr('');
-    var qs='?desde='+desde+'&hasta='+hasta+(empresaFilt?'&empresa_id='+empresaFilt:'');
+    var qs='?desde='+desde+'&hasta='+hasta+(empresaFilt?'&empresa_id='+empresaFilt:'')+(faenaFilt?'&faena_id='+faenaFilt:'');
     api('/terreno/auditoria-diaria'+qs,'GET',null,p.tok)
       .then(function(r){setRawData(r);setEquipoFilt('');})
       .catch(function(e){setErr(e.message);})
       .finally(function(){setLoading(false);});
   }
-  useEffect(cargar,[desde,hasta,empresaFilt]);
+  useEffect(cargar,[desde,hasta,empresaFilt,faenaFilt]);
 
   // Presets rápidos de rango
   function aplicarPreset(p){
@@ -3317,13 +3321,15 @@ function CombAuditoriaView(p){
       data&&!loading&&h('div',{style:{display:'flex',gap:8}},
         h('button',{onClick:function(){
             var em=empresaFilt?(empresas.find(function(x){return String(x.empresa_id)===String(empresaFilt);})||{}).razon_social:'Todas';
+            var fae=faenaFilt?(faenas.find(function(x){return String(x.faena_id)===String(faenaFilt);})||{}).nombre:'Todas';
             var eqn=equipoFilt?(equiposEnData.find(function(x){return String(x.id)===String(equipoFilt);})||{}):null;
-            imprimirAuditoriaCombustible(data,{empresa:em,equipo:eqn?(eqn.codigo+' — '+eqn.nombre):'Todos',usuario:(p.user&&(p.user.nombre||p.user.email))||''});
+            imprimirAuditoriaCombustible(data,{empresa:em,faena:fae,equipo:eqn?(eqn.codigo+' — '+eqn.nombre):'Todos',usuario:(p.user&&(p.user.nombre||p.user.email))||''});
           },style:{padding:'8px 14px',background:'#DC2626',color:'#fff',border:'none',borderRadius:5,fontSize:12,cursor:'pointer',fontWeight:600}},'📄 Informe PDF'),
         h('button',{onClick:function(){
             var em=empresaFilt?(empresas.find(function(x){return String(x.empresa_id)===String(empresaFilt);})||{}).razon_social:'Todas';
+            var fae=faenaFilt?(faenas.find(function(x){return String(x.faena_id)===String(faenaFilt);})||{}).nombre:'Todas';
             var eqn=equipoFilt?(equiposEnData.find(function(x){return String(x.id)===String(equipoFilt);})||{}):null;
-            exportAuditoriaExcel(data,{empresa:em,equipo:eqn?(eqn.codigo+' — '+eqn.nombre):'Todos',usuario:(p.user&&(p.user.nombre||p.user.email))||''});
+            exportAuditoriaExcel(data,{empresa:em,faena:fae,equipo:eqn?(eqn.codigo+' — '+eqn.nombre):'Todos',usuario:(p.user&&(p.user.nombre||p.user.email))||''});
           },style:{padding:'8px 14px',background:'#fff',color:'#15803D',border:'1px solid #86EFAC',borderRadius:5,fontSize:12,cursor:'pointer',fontWeight:600}},'📊 Exportar Excel')
       )
     ),
@@ -3343,6 +3349,13 @@ function CombAuditoriaView(p){
             h('select',{value:empresaFilt,onChange:function(e){setEmpresaFilt(e.target.value);},style:{width:'100%',padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
               h('option',{value:''},'Todas las empresas'),
               empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})
+            )
+          ),
+          h('div',{style:{flex:1,minWidth:180}},
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena (opcional)'),
+            h('select',{value:faenaFilt,onChange:function(e){setFaenaFilt(e.target.value);},style:{width:'100%',padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
+              h('option',{value:''},'Todas las faenas'),
+              faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})
             )
           ),
           h('div',{style:{flex:1,minWidth:180}},
