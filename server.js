@@ -8707,6 +8707,7 @@ app.get('/api/terreno/auditoria-diaria', auth, async(req,res)=>{
     var desde=req.query.desde||req.query.fecha||new Date().toISOString().slice(0,10);
     var hasta=req.query.hasta||req.query.fecha||desde;
     var empresaFiltro=req.query.empresa_id?'AND e.empresa_id='+parseInt(req.query.empresa_id):'';
+    var faenaFiltro=req.query.faena_id?'AND e.faena_id='+parseInt(req.query.faena_id):'';
     // ─── 1) Cruce por (equipo, fecha) en el rango ───
     var sqlCruce=`
       WITH dist_dia AS (
@@ -8756,7 +8757,7 @@ app.get('/api/terreno/auditoria-diaria', auth, async(req,res)=>{
       LEFT JOIN terr_dia t ON t.equipo_id=p.equipo_id AND t.fecha=p.fecha
       LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
       LEFT JOIN faenas f ON t.faena_id=f.faena_id
-      WHERE 1=1 ${empresaFiltro}
+      WHERE 1=1 ${empresaFiltro} ${faenaFiltro}
       ORDER BY p.fecha DESC, e.codigo`;
     var cruce=await pool.query(sqlCruce,[desde,hasta]);
     // ─── 2) Equipos activos sin NINGÚN registro en TODO el rango ───
@@ -8769,7 +8770,7 @@ app.get('/api/terreno/auditoria-diaria', auth, async(req,res)=>{
       WHERE e.activo=true 
         AND NOT EXISTS (SELECT 1 FROM terreno_registros tr WHERE tr.equipo_id=e.equipo_id AND tr.fecha BETWEEN $1 AND $2)
         AND NOT EXISTS (SELECT 1 FROM comb_movimientos cm WHERE cm.equipo_id=e.equipo_id AND cm.fecha BETWEEN $1 AND $2 AND cm.estado='ACTIVO')
-        ${empresaFiltro}
+        ${empresaFiltro} ${faenaFiltro}
       ORDER BY e.codigo`;
     var sinRegistro=await pool.query(sqlSinRegistro,[desde,hasta]);
     var sinTerreno=cruce.rows.filter(function(r){return r.estado==='sin_terreno';});
