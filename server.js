@@ -9842,15 +9842,18 @@ app.get('/manifest.json', (req,res)=>{
 });
 app.get('/sw.js', (req,res)=>{
   res.setHeader('Content-Type','application/javascript');
+  res.setHeader('Cache-Control','no-cache, no-store, must-revalidate');
+  // Service worker AUTO-DESTRUCTIVO: se desinstala, borra cachés y recarga las pestañas.
   res.send(`
-    const CACHE='ep-v1';
-    self.addEventListener('install',e=>{self.skipWaiting();});
-    self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k)))));});
-    self.addEventListener('fetch',e=>{
-      if(e.request.method!=='GET')return;
-      if(e.request.url.includes('/api/'))return;
-      e.respondWith(fetch(e.request).then(r=>{if(r.ok){const c=r.clone();caches.open(CACHE).then(ca=>ca.put(e.request,c));}return r;}).catch(()=>caches.match(e.request)));
+    self.addEventListener('install',function(e){ self.skipWaiting(); });
+    self.addEventListener('activate',function(e){
+      e.waitUntil((async function(){
+        try{ var ks=await caches.keys(); await Promise.all(ks.map(function(k){return caches.delete(k);})); }catch(err){}
+        try{ await self.registration.unregister(); }catch(err){}
+        try{ var cs=await self.clients.matchAll({type:'window'}); cs.forEach(function(c){ try{ c.navigate(c.url); }catch(e){} }); }catch(err){}
+      })());
     });
+    // Sin manejador 'fetch': el navegador usa la red normalmente.
   `);
 });
 // Generar íconos PWA dinámicamente como SVG→PNG (fallback SVG)
