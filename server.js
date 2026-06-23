@@ -6761,8 +6761,11 @@ async function setupRendiciones(q){
     usuario VARCHAR(100),
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
+  // Ampliar columnas que quedaron cortas para nuevos valores (ej. 'prestamo_interempresa' = 21 chars)
+  try{ await q(`ALTER TABLE fin_cheques ALTER COLUMN tipo_beneficiario TYPE VARCHAR(40)`); }catch(e){}
+  try{ await q(`ALTER TABLE fin_cheques ALTER COLUMN estado TYPE VARCHAR(30)`); }catch(e){}
+  try{ await q(`ALTER TABLE fin_cheques ALTER COLUMN numero_cheque TYPE VARCHAR(40)`); }catch(e){}
 
-  // ── Terreno: Registros diarios y tiempos obvios ──
   await q(`CREATE TABLE IF NOT EXISTS terreno_tob_categorias (
     tob_cat_id SERIAL PRIMARY KEY,
     codigo VARCHAR(10),
