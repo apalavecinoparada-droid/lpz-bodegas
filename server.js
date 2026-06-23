@@ -9837,7 +9837,7 @@ app.get('/manifest.json', (req,res)=>{
     name:'Empresas Poo',short_name:'EP Gestión',description:'Sistema de Gestión Forestal',
     start_url:'/',display:'standalone',orientation:'portrait',
     background_color:'#1E3A2D',theme_color:'#1E3A2D',
-    icons:[{src:'/icon-192.png',sizes:'192x192',type:'image/png'},{src:'/icon-512.png',sizes:'512x512',type:'image/png'}]
+    icons:[]
   });
 });
 app.get('/sw.js', (req,res)=>{
