@@ -709,7 +709,7 @@ function TBL(p){
   if(!rows.length)return h('div',{className:'empty'},p.empty||'Sin datos');
   return h('div',{style:{overflowX:'auto',WebkitOverflowScrolling:'touch'}},h('div',{className:'card-t'},h('table',null,
     h('thead',null,h('tr',null,...p.cols.map((c,i)=>h('th',{key:i,style:{textAlign:c.r?'right':c.c?'center':'left',width:c.w}},c.lbl)))),
-    h('tbody',null,...rows.map((r,i)=>h('tr',{key:r[p.rowKey]||i},
+    h('tbody',null,...rows.map((r,i)=>h('tr',{key:r[p.rowKey]||i,onClick:p.onRowClick?function(){p.onRowClick(r);}:undefined,style:p.onRowClick?{cursor:'pointer'}:undefined},
       ...p.cols.map((c,j)=>h('td',{key:j,style:{textAlign:c.r?'right':c.c?'center':'left',fontFamily:c.mono?'Courier New':undefined,fontSize:c.mono?12:undefined}},
         c.render?c.render(r,i):str(r[c.k]||'—')
       ))
@@ -4951,6 +4951,19 @@ function FinChequesView(p){
   var[sortF,setSortF]=useState('numero_cheque');var[sortD,setSortD]=useState('asc');
   var emptyForm={cuenta_id:'',numero_cheque:'',fecha_emision:new Date().toISOString().slice(0,10),fecha_cobro:'',monto:'',tipo_beneficiario:'proveedor',proveedor_id:'',beneficiario_nombre:'',concepto:'pago_factura',concepto_detalle:'',observaciones:''};
   var[form,setForm]=useState(emptyForm);
+  var[detMes,setDetMes]=useState(null); // {mes,empresa_id,razon_social,loading,cheques,error}
+  function abrirDetalleMes(r){
+    var mp=String(r.mes).split('-'); var y=parseInt(mp[0]), mo=parseInt(mp[1]);
+    var desde=r.mes+'-01';
+    var ult=new Date(y,mo,0).getDate();
+    var hasta=r.mes+'-'+String(ult).padStart(2,'0');
+    var meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+    setDetMes({mes:r.mes,titulo:meses[mo]+' '+y,empresa_id:r.empresa_id,razon_social:r.razon_social,loading:true,cheques:[],error:''});
+    api('/fin/cheques?empresa_id='+r.empresa_id+'&estado=emitido&desde='+desde+'&hasta='+hasta,'GET',null,p.tok)
+      .then(function(res){setDetMes({mes:r.mes,titulo:meses[mo]+' '+y,empresa_id:r.empresa_id,razon_social:r.razon_social,loading:false,cheques:Array.isArray(res)?res:[],error:''});})
+      .catch(function(e){setDetMes(function(d){return Object.assign({},d,{loading:false,error:e.message});});});
+  }
+  function fmtDC(d){if(!d)return '—';var s=String(d).slice(0,10).split('-');return s.length===3?s[2]+'/'+s[1]+'/'+s[0]:d;}
   function loadCuentas(){api('/fin/cuentas','GET',null,p.tok).then(function(r){setCuentas(Array.isArray(r)?r:[]);}).catch(function(){});}
   function loadCheques(){var q='?';if(filtEmpresa)q+='empresa_id='+filtEmpresa+'&';if(filtEstado)q+='estado='+filtEstado+'&';api('/fin/cheques'+q,'GET',null,p.tok).then(function(r){setCheques(Array.isArray(r)?r:[]);}).catch(function(){});}
   function loadDash(){api('/fin/dashboard'+(filtEmpresa?'?empresa_id='+filtEmpresa:''),'GET',null,p.tok).then(function(r){setDash(r);}).catch(function(){});}
@@ -5150,9 +5163,9 @@ function FinChequesView(p){
         h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #1E3A2D'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#1E3A2D'}},tot.total||0),h('div',{style:{fontSize:11,color:'#64748B'}},'Total cheques'))
       ),
       dash&&dash.porMes&&dash.porMes.length>0&&h('div',{className:'card',style:{marginBottom:14}},
-        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Cheques pendientes por mes'),
-        h(TBL,{cols:[
-          {lbl:'Mes',render:function(r){var p=r.mes.split('-');var meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];return meses[parseInt(p[1])||0]+' '+p[0];}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Cheques pendientes por mes ',h('span',{style:{fontWeight:400,fontSize:11,color:'#94A3B8'}},'— clic en una fila para ver el detalle')),
+        h(TBL,{onRowClick:abrirDetalleMes,cols:[
+          {lbl:'Mes',render:function(r){var p=r.mes.split('-');var meses=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];return h('span',{style:{color:'#1E40AF',fontWeight:600}},meses[parseInt(p[1])||0]+' '+p[0]);}},
           {lbl:'Empresa',render:function(r){return h('span',{style:{fontSize:11}},r.razon_social);}},
           {lbl:'Cantidad',r:true,render:function(r){return r.cantidad;}},
           {lbl:'Monto Total',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.total))));}}
@@ -5167,7 +5180,35 @@ function FinChequesView(p){
           {lbl:'Monto Total',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.total))));}}
         ],rows:dash.porBanco})
       ),
-      (!dash||(!dash.porMes||!dash.porMes.length)&&(!dash.porBanco||!dash.porBanco.length))&&h('div',{className:'al al-i'},'Sin cheques pendientes registrados')
+      (!dash||(!dash.porMes||!dash.porMes.length)&&(!dash.porBanco||!dash.porBanco.length))&&h('div',{className:'al al-i'},'Sin cheques pendientes registrados'),
+      detMes&&h('div',{onClick:function(){setDetMes(null);},style:{position:'fixed',inset:0,background:'rgba(15,23,42,.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:16}},
+        h('div',{onClick:function(e){e.stopPropagation();},style:{background:'#fff',borderRadius:10,maxWidth:760,width:'100%',maxHeight:'85vh',display:'flex',flexDirection:'column',overflow:'hidden'}},
+          h('div',{style:{padding:'14px 18px',borderBottom:'1px solid #E2E8F0',display:'flex',justifyContent:'space-between',alignItems:'flex-start'}},
+            h('div',null,
+              h('div',{style:{fontSize:16,fontWeight:700,color:'#1E3A2D'}},'Cheques por cobrar — '+detMes.titulo),
+              h('div',{style:{fontSize:12,color:'#64748B',marginTop:2}},detMes.razon_social)
+            ),
+            h('button',{onClick:function(){setDetMes(null);},style:{border:'none',background:'transparent',fontSize:20,cursor:'pointer',color:'#94A3B8'}},'✕')
+          ),
+          h('div',{style:{padding:'14px 18px',overflowY:'auto'}},
+            detMes.loading&&h('div',{className:'spin'},'Cargando cheques...'),
+            detMes.error&&h('div',{className:'al al-e'},detMes.error),
+            !detMes.loading&&!detMes.error&&detMes.cheques.length===0&&h('div',{className:'al al-i'},'No hay cheques pendientes en este mes.'),
+            !detMes.loading&&detMes.cheques.length>0&&h('div',null,
+              h(TBL,{cols:[
+                {lbl:'N° Cheque',render:function(c){return h('strong',null,c.numero_cheque);}},
+                {lbl:'Banco',render:function(c){return h('span',{style:{fontSize:11}},(c.banco||'—'));}},
+                {lbl:'Beneficiario',render:function(c){return h('span',{style:{fontSize:11}},c.proveedor_nombre||c.beneficiario_nombre||'—');}},
+                {lbl:'Cobro',render:function(c){return fmtDC(c.fecha_cobro);}},
+                {lbl:'Monto',r:true,render:function(c){return h('strong',null,CLP(Math.round(parseFloat(c.monto)||0)));}}
+              ],rows:detMes.cheques}),
+              h('div',{style:{textAlign:'right',marginTop:10,paddingTop:10,borderTop:'2px solid #1E3A2D',fontSize:14,fontWeight:700,color:'#1E3A2D'}},
+                'Total: '+CLP(detMes.cheques.reduce(function(s,c){return s+(parseFloat(c.monto)||0);},0))+'  ·  '+detMes.cheques.length+' cheque'+(detMes.cheques.length>1?'s':'')
+              )
+            )
+          )
+        )
+      )
     ),
     // ── REGISTRO ──
     tab==='registro'&&h('div',null,
