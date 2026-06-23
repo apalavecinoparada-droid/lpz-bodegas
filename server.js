@@ -243,13 +243,19 @@ const app        = express();
 const PORT       = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'lpz_bodegas_secret_2025';
 
-const pool = new Pool(
-  process.env.DATABASE_URL
-    ? { connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } }
-    : { host: process.env.DB_HOST||'localhost', port: parseInt(process.env.DB_PORT||'5432'),
-        database: process.env.DB_NAME||'lpz_bodegas', user: process.env.DB_USER||'postgres',
-        password: process.env.DB_PASSWORD||'postgres' }
-);
+const _poolBase = process.env.DATABASE_URL
+  ? { connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } }
+  : { host: process.env.DB_HOST||'localhost', port: parseInt(process.env.DB_PORT||'5432'),
+      database: process.env.DB_NAME||'lpz_bodegas', user: process.env.DB_USER||'postgres',
+      password: process.env.DB_PASSWORD||'postgres' };
+const pool = new Pool(Object.assign({}, _poolBase, {
+  max: parseInt(process.env.DB_POOL_MAX||'10'),     // tope de conexiones por instancia
+  idleTimeoutMillis: 30000,                          // cierra conexiones ociosas a los 30s
+  connectionTimeoutMillis: 12000,                    // si no consigue conexión en 12s, falla rápido
+  keepAlive: true
+}));
+// Evita que un error de conexión en una conexión ociosa tumbe el proceso
+pool.on('error', function(err){ try{ console.error('[pool] error en cliente ocioso:', err.message); }catch(e){} });
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
