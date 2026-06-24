@@ -10462,6 +10462,62 @@ app.get('/api/indicadores-cl', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
+// ── Lector del PDF oficial de indicadores previsionales de Previred ──
+const PREVIRED_MESES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+function previredURLs(anio,mes){
+  const mm=String(mes).padStart(2,'0');
+  const nom=(PREVIRED_MESES[mes-1]||'').replace(/^./,function(c){return c.toUpperCase();});
+  const base='https://www.previred.com/wp-content/uploads/'+anio+'/'+mm+'/Indicadores-Previsionales-Previred-'+nom+'-'+anio;
+  return [base+'.pdf', base+'-1.pdf', base+'-2.pdf', base+'-2-1.pdf', base+'-1-1.pdf'];
+}
+async function previredFetchTexto(anio,mes){
+  if(!pdfParse) throw new Error('pdf-parse no disponible en el servidor');
+  const urls=previredURLs(anio,mes);
+  let lastErr=null;
+  for(const url of urls){
+    try{
+      const r=await fetch(url,{redirect:'follow'});
+      if(!r.ok){ lastErr='HTTP '+r.status; continue; }
+      const ab=await r.arrayBuffer();
+      const parsed=await pdfParse(Buffer.from(ab));
+      if(parsed && parsed.text && /Previsionales/i.test(parsed.text)) return {texto:parsed.text, url:url};
+      lastErr='PDF sin el contenido esperado';
+    }catch(e){ lastErr=e.message; }
+  }
+  throw new Error('No se pudo descargar/leer el PDF ('+(lastErr||'desconocido')+')');
+}
+function previredParse(texto){
+  const out={faltantes:[]};
+  const num=function(s){ return parseFloat(String(s).replace(/\./g,'').replace(',','.')); };
+  let m;
+  m=texto.match(/Al\s+\d{1,2}\s+de\s+\w+\s+del\s+\d{4}:\s*\$\s*([\d.]+)\s*\$\s*([\d.]+)/i);
+  if(m){ out.utm=num(m[1]); out.uta=num(m[2]); } else out.faltantes.push('UTM/UTA');
+  m=texto.match(/\$\s*(\d{2}\.\d{3},\d{2})/);
+  if(m){ out.uf=num(m[1]); } else out.faltantes.push('UF');
+  m=texto.match(/afiliados a una AFP\s*\((\d+(?:,\d+)?)\s*UF\)/i);
+  if(m){ out.tope_afp_uf=num(m[1]); } else out.faltantes.push('Tope imponible AFP (UF)');
+  m=texto.match(/Seguro de Cesant[ií]a\s*\((\d+(?:,\d+)?)\s*UF\)/i);
+  if(m){ out.tope_cesantia_uf=num(m[1]); } else out.faltantes.push('Tope Cesantía (UF)');
+  const afps=['Capital','Cuprum','Habitat','PlanVital','Provida','Modelo','Uno'];
+  out.afp=[];
+  afps.forEach(function(n){
+    const mm2=texto.match(new RegExp(n+'\\s+(\\d+,\\d+)%\\s+(\\d+,\\d+)%\\s+(\\d+,\\d+)%\\s+(\\d+,\\d+)%','i'));
+    if(mm2) out.afp.push({nombre:n, trabajador:num(mm2[1]), empleador:num(mm2[2]), total:num(mm2[3]), total_con_sis:num(mm2[4])});
+  });
+  if(!out.afp.length) out.faltantes.push('Tasas AFP');
+  return out;
+}
+app.get('/api/previred/indicadores-pdf', auth, async(req,res)=>{
+  try{
+    const anio=parseInt(req.query.anio), mes=parseInt(req.query.mes);
+    if(!anio||!mes||mes<1||mes>12) return res.status(400).json({error:'Indica año y mes válidos'});
+    const r=await previredFetchTexto(anio,mes);
+    const valores=previredParse(r.texto);
+    res.json({ ok:true, periodo:{anio,mes}, fuente:r.url, valores:valores, faltantes:valores.faltantes,
+      nota:'Datos extraídos del PDF oficial de Previred. Revisa los valores antes de aplicarlos.' });
+  }catch(e){ res.status(502).json({error:e.message, sugerencia:'No se pudo leer el PDF de Previred. Ingresa los valores manualmente.'}); }
+});
+
 // Feriados de Chile — fuente oficial: apis.digital.gob.cl
 // (Helper aplicaABiobio() y feriadosCache definidos arriba en sección VACACIONES)
 app.get('/api/feriados-cl', auth, async(req,res)=>{
