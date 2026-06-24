@@ -6282,6 +6282,24 @@ app.patch('/api/personal/:id/activo', auth, async(req,res)=>{
   try{const r=await pool.query('UPDATE personal SET activo=NOT activo WHERE persona_id=$1 RETURNING *',[req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
 
+// Actualizar SOLO los haberes de un trabajador (editor por trabajador)
+app.patch('/api/personal/:id/haberes', auth, async(req,res)=>{
+  try{
+    const b=req.body;
+    const r=await pool.query(`UPDATE personal SET
+      sueldo_base=$1, bono_responsabilidad=$2, bono_produccion_fijo=$3,
+      bono_produccion_variable=$4, bono_produccion_tarifa=$5, bono_produccion_detalle=$6,
+      semana_corrida=$7, asig_colacion=$8, asig_movilizacion=$9, asig_viatico=$10
+      WHERE persona_id=$11 RETURNING *`,
+      [parseFloat(b.sueldo_base)||0, parseFloat(b.bono_responsabilidad)||0, parseFloat(b.bono_produccion_fijo)||0,
+       b.bono_produccion_variable===true, parseFloat(b.bono_produccion_tarifa)||0, b.bono_produccion_detalle||null,
+       b.semana_corrida===true, parseFloat(b.asig_colacion)||0, parseFloat(b.asig_movilizacion)||0, parseFloat(b.asig_viatico)||0,
+       req.params.id]);
+    if(!r.rows.length) return res.status(404).json({error:'Trabajador no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 // Actualización MASIVA de haberes (ajuste de sueldos por ingreso mínimo, etc.)
 app.post('/api/personal/haberes-masivo', auth, async(req,res)=>{
   const client=await pool.connect();
