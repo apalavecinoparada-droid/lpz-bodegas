@@ -6282,6 +6282,40 @@ app.patch('/api/personal/:id/activo', auth, async(req,res)=>{
   try{const r=await pool.query('UPDATE personal SET activo=NOT activo WHERE persona_id=$1 RETURNING *',[req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
 
+// Actualización MASIVA de haberes (ajuste de sueldos por ingreso mínimo, etc.)
+app.post('/api/personal/haberes-masivo', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const COLUMNAS_PERMITIDAS={
+      sueldo_base:'Sueldo base', bono_responsabilidad:'Bono responsabilidad',
+      bono_produccion_fijo:'Bono producción fijo', bono_produccion_tarifa:'Bono producción (tarifa)',
+      asig_colacion:'Asignación colación', asig_movilizacion:'Asignación movilización', asig_viatico:'Asignación viático'
+    };
+    const{ids,campo,operacion,valor}=req.body;
+    if(!Array.isArray(ids)||!ids.length) return res.status(400).json({error:'Selecciona al menos un trabajador'});
+    if(!COLUMNAS_PERMITIDAS[campo]) return res.status(400).json({error:'Haber no válido'});
+    if(['set','add','pct','min'].indexOf(operacion)<0) return res.status(400).json({error:'Operación no válida'});
+    const v=parseFloat(valor);
+    if(isNaN(v)) return res.status(400).json({error:'Valor no válido'});
+    const idsInt=ids.map(function(x){return parseInt(x);}).filter(function(x){return !isNaN(x);});
+    if(!idsInt.length) return res.status(400).json({error:'IDs no válidos'});
+    // Expresión de cálculo según operación (columna ya validada contra whitelist)
+    let expr;
+    if(operacion==='set') expr='$1';
+    else if(operacion==='add') expr='ROUND(COALESCE('+campo+',0) + $1)';
+    else if(operacion==='pct') expr='ROUND(COALESCE('+campo+',0) * (1 + $1/100.0))';
+    else expr='GREATEST(COALESCE('+campo+',0), $1)'; // min: lleva al mínimo (sube los que estén por debajo)
+    await client.query('BEGIN');
+    const r=await client.query(
+      'UPDATE personal SET '+campo+' = '+expr+' WHERE persona_id = ANY($2::int[]) RETURNING persona_id',
+      [v, idsInt]
+    );
+    await client.query('COMMIT');
+    res.json({ok:true, actualizados:r.rowCount, campo:campo, etiqueta:COLUMNAS_PERMITIDAS[campo]});
+  }catch(e){ try{await client.query('ROLLBACK');}catch(_){}; res.status(400).json({error:e.message}); }
+  finally{ client.release(); }
+});
+
 // Reactivar trabajador con nuevas fechas de contrato
 app.patch('/api/personal/:id/reactivar', auth, async(req,res)=>{
   try{
