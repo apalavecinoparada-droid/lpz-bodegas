@@ -15889,6 +15889,7 @@ function CalcLiquidacionView(p){
   var[topeUFAfc,setTopeUFAfc]=useState(132.0);
   var[indFecha,setIndFecha]=useState({uf:'',utm:'',sm:''});
   var[indLoading,setIndLoading]=useState(false);
+  var[prevLoading,setPrevLoading]=useState(false);
   var[msg,setMsg]=useState('');
 
   function cargarIndicadores(){
@@ -15898,6 +15899,23 @@ function CalcLiquidacionView(p){
       if(r.utm){setValorUTM(r.utm);setIndFecha(function(f){return Object.assign({},f,{utm:r.utm_fecha||''});});}
       if(r.sueldo_minimo){setSueldoMin(r.sueldo_minimo);setIndFecha(function(f){return Object.assign({},f,{sm:r.sueldo_minimo_fecha||''});});}
     }).catch(function(){}).finally(function(){setIndLoading(false);});
+  }
+  function cargarPrevired(){
+    setPrevLoading(true);setMsg('');
+    api('/previred/indicadores-pdf?anio='+anio+'&mes='+mes,'GET',null,p.tok).then(function(r){
+      var v=r.valores||{};
+      var aplicados=[];
+      if(v.uf){setValorUF(v.uf);aplicados.push('UF');}
+      if(v.utm){setValorUTM(v.utm);aplicados.push('UTM');}
+      if(v.tope_afp_uf){setTopeUFAfp(v.tope_afp_uf);aplicados.push('Tope AFP '+v.tope_afp_uf+' UF');}
+      if(v.tope_cesantia_uf){setTopeUFAfc(v.tope_cesantia_uf);aplicados.push('Tope Cesantía '+v.tope_cesantia_uf+' UF');}
+      var faltan=(r.faltantes||[]).filter(function(x){return x!=='UTM/UTA';});
+      var txt='✓ Previred ('+mes+'/'+anio+'): '+(aplicados.length?aplicados.join(', '):'sin datos aplicables');
+      if(faltan.length) txt+=' · No se pudo extraer: '+faltan.join(', ')+' (ingrésalos a mano)';
+      if(v.afp&&v.afp.length){ txt+=' · Tasas AFP detectadas: '+v.afp.map(function(a){return a.nombre+' '+a.total_con_sis+'%';}).join(', '); }
+      setMsg(txt);
+    }).catch(function(e){ setMsg('No se pudo leer el PDF de Previred para '+mes+'/'+anio+': '+e.message+'. Ingresa los valores a mano.'); })
+    .finally(function(){setPrevLoading(false);});
   }
   useEffect(function(){ cargarIndicadores(); },[p.tok]);
 
@@ -16048,6 +16066,7 @@ function CalcLiquidacionView(p){
       'UTM $'+(parseFloat(valorUTM)||0).toLocaleString('es-CL')+(indFecha.utm?' ('+indFecha.utm+')':''),' · ',
       'IMM $'+(parseFloat(sueldoMin)||0).toLocaleString('es-CL'),
       h('button',{onClick:cargarIndicadores,disabled:indLoading,style:{marginLeft:10,fontSize:10,padding:'2px 8px',borderRadius:4,border:'1px solid #CA8A04',background:'#FEF9C3',color:'#854D0E',cursor:indLoading?'wait':'pointer',fontWeight:600}},indLoading?'…':'↻ Obtener del día'),
+      h('button',{onClick:cargarPrevired,disabled:prevLoading,style:{marginLeft:6,fontSize:10,padding:'2px 8px',borderRadius:4,border:'1px solid #0EA5E9',background:'#E0F2FE',color:'#075985',cursor:prevLoading?'wait':'pointer',fontWeight:600},title:'Lee el PDF oficial de Previred del período '+mes+'/'+anio},prevLoading?'…':'📄 Cargar de Previred (PDF)'),
       h('span',{style:{marginLeft:8,fontSize:10,color:'#92400E'}},'(editables abajo si necesitas ajustar)')
     ),
 
