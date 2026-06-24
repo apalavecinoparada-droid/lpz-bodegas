@@ -10421,6 +10421,7 @@ app.put('/api/finiquitos/:id', auth, async(req,res)=>{
 // Indicadores económicos chilenos (UF y sueldo mínimo)
 // UF: mindicador.cl (Banco Central) — Sueldo Mínimo: tabla legal histórica (Ley 21.751 y anteriores)
 const SUELDO_MINIMO_HIST=[
+  {desde:'2026-05-01',valor:553553,ley:'Ley 21.751'},
   {desde:'2026-01-01',valor:539000,ley:'Ley 21.751'},
   {desde:'2025-05-01',valor:529000,ley:'Ley 21.751'},
   {desde:'2025-01-01',valor:510000,ley:'Ley 21.578'},
