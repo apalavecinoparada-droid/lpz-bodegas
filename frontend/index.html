@@ -14977,11 +14977,9 @@ function Personal(p){
   const[filtEstado,setFiltEstado]=useState('activos'); // 'activos' | 'inactivos' | 'todos'
   const[filtCargo,setFiltCargo]=useState('');
   const[filtContrato,setFiltContrato]=useState('');
-  const[masivoModal,setMasivoModal]=useState(false);
-  const[masivoCampo,setMasivoCampo]=useState('sueldo_base');
-  const[masivoOper,setMasivoOper]=useState('set');
-  const[masivoValor,setMasivoValor]=useState('');
-  const[masivoLoading,setMasivoLoading]=useState(false);
+  const[haberesPersona,setHaberesPersona]=useState(null); // trabajador en edición de haberes
+  const[haberesForm,setHaberesForm]=useState(null);
+  const[haberesLoading,setHaberesLoading]=useState(false);
   const[reactivarModal,setReactivarModal]=useState(null);
   const[reactFechaIngreso,setReactFechaIngreso]=useState('');
   const[reactFechaTermino,setReactFechaTermino]=useState('');
@@ -15114,81 +15112,82 @@ function Personal(p){
   var catLabel=function(c){var found=CATEGORIAS.find(function(x){return x.v===c;});return found?found.l:(c||'—');};
   var cargosUnicos=Array.from(new Set(personas.map(function(x){return (x.cargo||'').trim();}).filter(function(c){return c;}))).sort(function(a,b){return a.localeCompare(b);});
   var fmtD=function(d){if(!d)return '—';return (d+'').slice(8,10)+'/'+(d+'').slice(5,7)+'/'+(d+'').slice(0,4);};
-  // ── Ajuste masivo de haberes ──
-  var HABERES=[{v:'sueldo_base',l:'Sueldo base'},{v:'bono_responsabilidad',l:'Bono responsabilidad'},{v:'bono_produccion_fijo',l:'Bono producción fijo'},{v:'bono_produccion_tarifa',l:'Bono producción (tarifa)'},{v:'asig_colacion',l:'Asignación colación'},{v:'asig_movilizacion',l:'Asignación movilización'},{v:'asig_viatico',l:'Asignación viático'}];
-  function calcNuevo(actual){
-    var a=parseFloat(actual)||0; var v=parseFloat(masivoValor)||0;
-    if(masivoOper==='set') return Math.round(v);
-    if(masivoOper==='add') return Math.round(a+v);
-    if(masivoOper==='pct') return Math.round(a*(1+v/100));
-    return Math.max(a,Math.round(v)); // min
+  // ── Editor de haberes por trabajador ──
+  function abrirHaberes(x){
+    setHaberesPersona(x);
+    setHaberesForm({
+      sueldo_base:parseFloat(x.sueldo_base)||0,
+      bono_responsabilidad:parseFloat(x.bono_responsabilidad)||0,
+      bono_produccion_fijo:parseFloat(x.bono_produccion_fijo)||0,
+      bono_produccion_variable:x.bono_produccion_variable===true,
+      bono_produccion_tarifa:parseFloat(x.bono_produccion_tarifa)||0,
+      bono_produccion_detalle:x.bono_produccion_detalle||'',
+      semana_corrida:x.semana_corrida===true,
+      asig_colacion:parseFloat(x.asig_colacion)||0,
+      asig_movilizacion:parseFloat(x.asig_movilizacion)||0,
+      asig_viatico:parseFloat(x.asig_viatico)||0
+    });
   }
-  var masivoPreview=rows.map(function(x){var act=parseFloat(x[masivoCampo])||0;return {persona_id:x.persona_id,nombre:x.nombre_completo||x.nombre,actual:act,nuevo:calcNuevo(act)};});
-  var masivoCambian=masivoPreview.filter(function(r){return r.nuevo!==r.actual;});
-  function aplicarMasivo(){
-    if(!rows.length){setMsg('No hay trabajadores en el filtro actual');return;}
-    if(masivoValor===''||isNaN(parseFloat(masivoValor))){setMsg('Ingresa un valor');return;}
-    var lbl=(HABERES.find(function(h2){return h2.v===masivoCampo;})||{}).l||masivoCampo;
-    var opTxt={set:'establecer en',add:'aumentar en',pct:'aumentar %',min:'llevar al mínimo de'}[masivoOper];
-    if(!confirm('Vas a '+opTxt+' '+(masivoOper==='pct'?(masivoValor+'%'):CLP(parseFloat(masivoValor)))+' el haber "'+lbl+'" de '+rows.length+' trabajador(es). Se modificarán '+masivoCambian.length+'. ¿Continuar?'))return;
-    setMasivoLoading(true);
-    api('/personal/haberes-masivo','POST',{ids:rows.map(function(x){return x.persona_id;}),campo:masivoCampo,operacion:masivoOper,valor:parseFloat(masivoValor)},p.tok)
-      .then(function(r){setMasivoLoading(false);setMasivoModal(false);setMsg('✓ Haber "'+(r.etiqueta||lbl)+'" actualizado en '+r.actualizados+' trabajador(es)');load();})
-      .catch(function(e){setMasivoLoading(false);setMsg('Error: '+e.message);});
+  function setHF(campo,val){ setHaberesForm(function(f){return Object.assign({},f,(function(o){o[campo]=val;return o;})({}));}); }
+  function guardarHaberes(){
+    if(!haberesPersona||!haberesForm)return;
+    setHaberesLoading(true);
+    api('/personal/'+haberesPersona.persona_id+'/haberes','PATCH',haberesForm,p.tok)
+      .then(function(act){
+        setHaberesLoading(false);
+        setPersonas(function(list){return list.map(function(z){return z.persona_id===haberesPersona.persona_id?Object.assign({},z,act):z;});});
+        setHaberesPersona(null);setHaberesForm(null);
+        setMsg('✓ Haberes actualizados para '+(act.nombre_completo||act.nombre||''));
+      })
+      .catch(function(e){setHaberesLoading(false);setMsg('Error: '+e.message);});
   }
-  var masivoModalEl=masivoModal&&h('div',{onClick:function(){if(!masivoLoading)setMasivoModal(false);},style:{position:'fixed',inset:0,background:'rgba(15,23,42,.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:16}},
-    h('div',{onClick:function(e){e.stopPropagation();},style:{background:'#fff',borderRadius:10,maxWidth:720,width:'100%',maxHeight:'88vh',display:'flex',flexDirection:'column',overflow:'hidden'}},
+  var haberesTotal=haberesForm?(
+    (parseFloat(haberesForm.sueldo_base)||0)+(parseFloat(haberesForm.bono_responsabilidad)||0)+(parseFloat(haberesForm.bono_produccion_fijo)||0)+
+    (parseFloat(haberesForm.asig_colacion)||0)+(parseFloat(haberesForm.asig_movilizacion)||0)+(parseFloat(haberesForm.asig_viatico)||0)
+  ):0;
+  var haberInp={padding:'8px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13,width:'100%',textAlign:'right'};
+  var haberLbl={fontSize:11,fontWeight:600,color:'#475569',display:'block',marginBottom:3};
+  function campoMonto(lbl,campo){
+    return h('div',null,h('label',{style:haberLbl},lbl),
+      h('input',{type:'number',value:haberesForm[campo],onChange:function(e){setHF(campo,e.target.value);},style:haberInp}));
+  }
+  var haberesModalEl=haberesPersona&&haberesForm&&h('div',{onClick:function(){if(!haberesLoading){setHaberesPersona(null);setHaberesForm(null);}},style:{position:'fixed',inset:0,background:'rgba(15,23,42,.5)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:9999,padding:16}},
+    h('div',{onClick:function(e){e.stopPropagation();},style:{background:'#fff',borderRadius:10,maxWidth:620,width:'100%',maxHeight:'90vh',display:'flex',flexDirection:'column',overflow:'hidden'}},
       h('div',{style:{padding:'14px 18px',borderBottom:'1px solid #E2E8F0'}},
-        h('div',{style:{fontSize:16,fontWeight:700,color:'#1E3A2D'}},'💲 Ajuste masivo de haberes'),
-        h('div',{style:{fontSize:12,color:'#64748B',marginTop:2}},'Se aplicará a los '+rows.length+' trabajador(es) del filtro actual. Ajusta los filtros (empresa, faena, cargo, contrato) antes de abrir esto si quieres acotar el grupo.')
+        h('div',{style:{fontSize:16,fontWeight:700,color:'#1E3A2D'}},'💲 Haberes del trabajador'),
+        h('div',{style:{fontSize:12,color:'#64748B',marginTop:2}},(haberesPersona.nombre_completo||haberesPersona.nombre)+(haberesPersona.rut?' · '+haberesPersona.rut:'')+(haberesPersona.cargo?' · '+haberesPersona.cargo:''))
       ),
-      h('div',{style:{padding:'14px 18px',overflowY:'auto'}},
-        h('div',{style:{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-end',marginBottom:12}},
-          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Haber a modificar'),
-            h('select',{value:masivoCampo,onChange:function(e){setMasivoCampo(e.target.value);},style:{padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13}},
-              HABERES.map(function(hb){return h('option',{key:hb.v,value:hb.v},hb.l);}))),
-          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Operación'),
-            h('select',{value:masivoOper,onChange:function(e){setMasivoOper(e.target.value);},style:{padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13}},
-              h('option',{value:'set'},'Establecer en (valor fijo)'),
-              h('option',{value:'add'},'Aumentar en $ (monto)'),
-              h('option',{value:'pct'},'Aumentar en % (porcentaje)'),
-              h('option',{value:'min'},'Llevar al mínimo (subir los que estén bajo)')
-            )),
-          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},masivoOper==='pct'?'Porcentaje (%)':'Valor ($)'),
-            h('input',{type:'number',value:masivoValor,onChange:function(e){setMasivoValor(e.target.value);},placeholder:masivoOper==='pct'?'Ej: 4.2':'Ej: 510000',style:{padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13,width:140}}))
+      h('div',{style:{padding:'16px 18px',overflowY:'auto'}},
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:14}},
+          campoMonto('Sueldo base','sueldo_base'),
+          campoMonto('Bono responsabilidad','bono_responsabilidad'),
+          campoMonto('Bono producción fijo','bono_produccion_fijo'),
+          campoMonto('Bono producción (tarifa)','bono_produccion_tarifa'),
+          campoMonto('Asignación colación','asig_colacion'),
+          campoMonto('Asignación movilización','asig_movilizacion'),
+          campoMonto('Asignación viático','asig_viatico')
         ),
-        h('div',{style:{fontSize:11,color:'#64748B',background:'#F0F9FF',border:'1px solid #BAE6FD',borderRadius:6,padding:'7px 10px',marginBottom:10}},
-          masivoOper==='min'?'"Llevar al mínimo": sube a este valor solo a quienes estén por debajo; los que ya ganan más no se tocan. Ideal para ajuste por ingreso mínimo.':
-          masivoOper==='set'?'"Establecer": deja a todos los seleccionados con este mismo valor.':
-          masivoOper==='add'?'"Aumentar en $": suma este monto al haber actual de cada uno.':
-          '"Aumentar en %": incrementa el haber actual de cada uno en este porcentaje.'),
-        h('div',{style:{fontSize:12,fontWeight:600,marginBottom:6}},'Vista previa — cambian '+masivoCambian.length+' de '+rows.length),
-        h('div',{style:{maxHeight:'34vh',overflowY:'auto',border:'1px solid #E2E8F0',borderRadius:6}},
-          h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
-            h('thead',null,h('tr',null,
-              h('th',{style:{textAlign:'left',padding:'6px 8px',background:'#F8FAFC',position:'sticky',top:0}},'Trabajador'),
-              h('th',{style:{textAlign:'right',padding:'6px 8px',background:'#F8FAFC',position:'sticky',top:0}},'Actual'),
-              h('th',{style:{textAlign:'right',padding:'6px 8px',background:'#F8FAFC',position:'sticky',top:0}},'Nuevo')
-            )),
-            h('tbody',null,masivoPreview.map(function(r){
-              var cambia=r.nuevo!==r.actual;
-              return h('tr',{key:r.persona_id,style:{background:cambia?'#fff':'#FAFAFA'}},
-                h('td',{style:{padding:'5px 8px',borderTop:'1px solid #F1F5F9'}},r.nombre),
-                h('td',{style:{padding:'5px 8px',borderTop:'1px solid #F1F5F9',textAlign:'right',color:'#64748B'}},CLP(r.actual)),
-                h('td',{style:{padding:'5px 8px',borderTop:'1px solid #F1F5F9',textAlign:'right',fontWeight:cambia?700:400,color:cambia?'#15803D':'#94A3B8'}},CLP(r.nuevo))
-              );
-            }))
-          )
+        h('div',{style:{display:'flex',gap:18,flexWrap:'wrap',marginBottom:12}},
+          h('label',{style:{fontSize:12,color:'#475569',display:'flex',alignItems:'center',gap:6,cursor:'pointer'}},
+            h('input',{type:'checkbox',checked:haberesForm.bono_produccion_variable,onChange:function(e){setHF('bono_produccion_variable',e.target.checked);}}),'Bono producción variable'),
+          h('label',{style:{fontSize:12,color:'#475569',display:'flex',alignItems:'center',gap:6,cursor:'pointer'}},
+            h('input',{type:'checkbox',checked:haberesForm.semana_corrida,onChange:function(e){setHF('semana_corrida',e.target.checked);}}),'Semana corrida')
+        ),
+        h('div',null,h('label',{style:haberLbl},'Detalle bono producción'),
+          h('input',{type:'text',value:haberesForm.bono_produccion_detalle,onChange:function(e){setHF('bono_produccion_detalle',e.target.value);},placeholder:'Ej: $X por m³, según producción',style:Object.assign({},haberInp,{textAlign:'left'})})),
+        h('div',{style:{marginTop:14,padding:'10px 12px',background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:6,display:'flex',justifyContent:'space-between',alignItems:'center'}},
+          h('span',{style:{fontSize:12,color:'#166534',fontWeight:600}},'Total haberes fijos (sin bono variable)'),
+          h('span',{style:{fontSize:16,fontWeight:700,color:'#15803D'}},CLP(haberesTotal))
         )
       ),
       h('div',{style:{padding:'12px 18px',borderTop:'1px solid #E2E8F0',display:'flex',justifyContent:'flex-end',gap:8}},
-        h('button',{onClick:function(){if(!masivoLoading)setMasivoModal(false);},style:{padding:'8px 14px',border:'1px solid #CBD5E1',borderRadius:6,background:'#fff',fontSize:13,cursor:'pointer'}},'Cancelar'),
-        h('button',{onClick:aplicarMasivo,disabled:masivoLoading||!masivoCambian.length,style:{padding:'8px 16px',border:'none',borderRadius:6,background:masivoCambian.length?'#0EA5E9':'#94A3B8',color:'#fff',fontSize:13,fontWeight:600,cursor:masivoLoading?'wait':'pointer'}},masivoLoading?'Aplicando...':('Aplicar a '+masivoCambian.length))
+        h('button',{onClick:function(){if(!haberesLoading){setHaberesPersona(null);setHaberesForm(null);}},style:{padding:'8px 14px',border:'1px solid #CBD5E1',borderRadius:6,background:'#fff',fontSize:13,cursor:'pointer'}},'Cancelar'),
+        h('button',{onClick:guardarHaberes,disabled:haberesLoading,style:{padding:'8px 18px',border:'none',borderRadius:6,background:'#16A34A',color:'#fff',fontSize:13,fontWeight:600,cursor:haberesLoading?'wait':'pointer'}},haberesLoading?'Guardando...':'Guardar haberes')
       )
     )
   );
   return h('div',null,
-    masivoModalEl,
+    haberesModalEl,
     // Tabs de estado
     h('div',{style:{display:'flex',gap:0,marginBottom:10,borderBottom:'2px solid #E2E8F0'}},
       [{v:'activos',l:'✓ Activos',count:countActivos,c:'#16A34A'},
@@ -15222,7 +15221,6 @@ function Personal(p){
       ),
       h('div',{style:{display:'flex',gap:6}},
         h('button',{onClick:revisarContratosVencidos,style:{padding:'5px 10px',borderRadius:4,fontSize:11,cursor:'pointer',border:'1px solid #DC2626',background:'#FEF2F2',color:'#991B1B',fontWeight:600},title:'Inactiva trabajadores cuya fecha de término ya pasó'},'⏰ Revisar contratos vencidos'),
-        h('button',{onClick:function(){setMasivoModal(true);setMasivoValor('');},style:{padding:'5px 10px',borderRadius:4,fontSize:11,cursor:'pointer',border:'1px solid #0EA5E9',background:'#F0F9FF',color:'#075985',fontWeight:600},title:'Actualizar haberes de los trabajadores filtrados'},'💲 Ajuste masivo de haberes'),
         h(Btn,{onClick:openNew},'+ Nuevo')
       )
     ),
@@ -15366,6 +15364,7 @@ function Personal(p){
         {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:4}},
           !r.activo&&h('button',{onClick:function(){abrirReactivar(r);},style:{fontSize:10,padding:'2px 8px',background:'#16A34A',color:'#fff',border:'none',borderRadius:3,cursor:'pointer',fontWeight:600},title:'Reactivar con nuevo contrato'},'🔄 Reactivar'),
           h(Btn,{v:'a',sm:true,onClick:function(){openEdit(r);}},null,'✏'),
+          h('button',{onClick:function(){abrirHaberes(r);},style:{fontSize:13,padding:'2px 8px',background:'#F0F9FF',color:'#075985',border:'1px solid #7DD3FC',borderRadius:3,cursor:'pointer'},title:'Editar haberes'},'💲'),
           h(Btn,{v:'r',sm:true,onClick:function(){eliminarPersona(r);}},null,'🗑')
         );}}
       ],rows:rows,empty:'Sin personal'})
