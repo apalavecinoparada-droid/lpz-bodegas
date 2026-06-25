@@ -4633,15 +4633,18 @@ function RemuCostoView(p){
     return filas;
   }
   function onFile(e){
-    var file=e.target.files&&e.target.files[0]; if(!file)return;
+    var file=e.target.files&&e.target.files[0]; if(!file){return;}
+    if(!empresaId){ setMsg('Error: selecciona la empresa antes de cargar el libro.'); e.target.value=''; return; }
+    var existe=!!(resumen&&resumen.periodo);
+    if(existe && !confirm('Ya hay datos cargados para '+MESES[mes]+' '+anio+' de esta empresa. Al continuar se REEMPLAZARÁN todos los datos de ese período. ¿Continuar?')){ e.target.value=''; return; }
     setMsg('Leyendo libro...');setLoading(true);
     var reader=new FileReader();
     reader.onload=function(ev){
       try{
         var filas=parseLibro(ev.target.result);
         if(!filas.length){ setLoading(false); setMsg('No se detectaron filas válidas en el archivo. ¿Es el Libro de Remuneraciones (.xls) de tu sistema?'); return; }
-        api('/fin/remuneraciones/importar','POST',{empresa_id:empresaId||null,anio:anio,mes:mes,filas:filas},p.tok)
-          .then(function(r){ setResumen(r.resumen); setLoading(false); setMsg('✓ Libro procesado: '+filas.length+' trabajadores'); cargarPeriodos(); })
+        api('/fin/remuneraciones/importar','POST',{empresa_id:empresaId,anio:anio,mes:mes,filas:filas},p.tok)
+          .then(function(r){ setResumen(r.resumen); setLoading(false); setMsg('✓ Libro procesado: '+filas.length+' trabajadores'+(existe?' (datos reemplazados)':'')); cargarPeriodos(); })
           .catch(function(err){ setLoading(false); setMsg('Error al guardar: '+err.message); });
       }catch(err){ setLoading(false); setMsg('Error al leer el archivo: '+err.message); }
     };
@@ -4655,20 +4658,20 @@ function RemuCostoView(p){
   return h('div',null,
     h('div',{className:'card',style:{padding:16,marginBottom:14}},
       h('div',{style:{fontSize:16,fontWeight:700,color:'#1E3A2D',marginBottom:4}},'🧾 Costo de Remuneraciones'),
-      h('div',{style:{fontSize:12,color:'#64748B',marginBottom:12}},'Importa el Libro de Remuneraciones (.xls) de tu sistema. Se cruza por RUT con el maestro de personal y se clasifica el costo por faena y centro de costo. Costo = Total haberes − Asignación familiar + Aporte.'),
+      h('div',{style:{fontSize:12,color:'#64748B',marginBottom:12}},'Selecciona la empresa y el período, e importa el Libro de Remuneraciones (.xls) de tu sistema. Se cruza por RUT con el maestro de personal y se clasifica el costo por faena y por cargo. Costo = Total haberes − Asignación familiar + Aporte. Si vuelves a cargar el mismo período, se reemplazan todos los datos.'),
       h('div',{style:{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-end'}},
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa'),
-          h('select',{value:empresaId,onChange:function(e){setEmpresaId(e.target.value);},style:inpS},
-            h('option',{value:''},'(Todas / sin distinguir)'),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa *'),
+          h('select',{value:empresaId,onChange:function(e){setEmpresaId(e.target.value);},style:Object.assign({},inpS,{borderColor:empresaId?'#CBD5E1':'#F59E0B'})},
+            h('option',{value:''},'— Selecciona empresa —'),
             empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Año'),
           h('input',{type:'number',value:anio,onChange:function(e){setAnio(parseInt(e.target.value)||hoy.getFullYear());},style:Object.assign({},inpS,{width:90})})),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Mes'),
           h('select',{value:mes,onChange:function(e){setMes(parseInt(e.target.value));},style:inpS},
             MESES.slice(1).map(function(nm,i){return h('option',{key:i+1,value:i+1},nm);}))),
-        h('label',{style:{padding:'8px 14px',borderRadius:6,fontSize:13,cursor:'pointer',border:'1px solid #16A34A',background:'#16A34A',color:'#fff',fontWeight:600,display:'inline-flex',alignItems:'center',gap:6}},
+        h('label',{style:{padding:'8px 14px',borderRadius:6,fontSize:13,cursor:empresaId?'pointer':'not-allowed',border:'1px solid '+(empresaId?'#16A34A':'#CBD5E1'),background:empresaId?'#16A34A':'#E2E8F0',color:empresaId?'#fff':'#94A3B8',fontWeight:600,display:'inline-flex',alignItems:'center',gap:6},title:empresaId?'':'Selecciona la empresa primero'},
           (loading?'Procesando...':'⬆ Importar Libro (.xls)'),
-          h('input',{type:'file',accept:'.xls,.html,.htm',onChange:onFile,disabled:loading,style:{display:'none'}}))
+          h('input',{type:'file',accept:'.xls,.html,.htm',onChange:onFile,disabled:loading||!empresaId,style:{display:'none'}}))
       ),
       msg&&h('div',{className:'al '+(msg.indexOf('Error')>=0?'al-e':'al-s'),style:{marginTop:10,marginBottom:0}},msg)
     ),
@@ -4694,18 +4697,12 @@ function RemuCostoView(p){
       h('div',{style:{display:'flex',gap:14,flexWrap:'wrap'}},
         h('div',{className:'card',style:{flex:1,minWidth:300,padding:14}},
           h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Costo por faena'),
+          h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},'Según la faena asignada a cada trabajador en el maestro de personal.'),
           h(TBL,{cols:[
             {lbl:'Faena',render:function(r){return r.faena;}},
             {lbl:'Trab.',c:true,render:function(r){return r.n;}},
             {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo))));}}
-          ],rows:resumen.por_faena})),
-        h('div',{className:'card',style:{flex:1,minWidth:300,padding:14}},
-          h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Costo por centro de costo'),
-          h(TBL,{cols:[
-            {lbl:'Centro de costo',render:function(r){return r.centro;}},
-            {lbl:'Trab.',c:true,render:function(r){return r.n;}},
-            {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo))));}}
-          ],rows:resumen.por_centro}))
+          ],rows:resumen.por_faena}))
       ),
       h('div',{className:'card',style:{padding:14,marginTop:14}},
         h('div',{style:{fontWeight:600,fontSize:13,marginBottom:4}},'Costo por cargo'),
@@ -4730,7 +4727,6 @@ function RemuCostoView(p){
             {lbl:'Trabajador',render:function(r){return h('span',null,r.nombre,!r.persona_id&&h('span',{style:{color:'#B91C1C',fontSize:10}},' ⚠ sin cruce'));}},
             {lbl:'Faena',render:function(r){return r.faena_nombre||'—';}},
             {lbl:'Cargo',render:function(r){return r.cargo||'—';}},
-            {lbl:'Centro costo',render:function(r){return r.centro_costo||'—';}},
             {lbl:'T.Haberes',r:true,render:function(r){return CLP(Math.round(parseFloat(r.t_haberes)));}},
             {lbl:'Asig.Fam',r:true,render:function(r){return CLP(Math.round(parseFloat(r.c_familiar)));}},
             {lbl:'Aporte',r:true,render:function(r){return CLP(Math.round(parseFloat(r.aporte)));}},
