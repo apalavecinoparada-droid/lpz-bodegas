@@ -4597,6 +4597,159 @@ function ActivoBajaModal(p){
 // ═══════════════════════════════════════════════════════════════════════
 // INFORME DE COSTOS DE OPERACIÓN (vista CEO)
 // ═══════════════════════════════════════════════════════════════════════
+function RemuCostoView(p){
+  var hoy=new Date();
+  var[empresaId,setEmpresaId]=useState('');
+  var[anio,setAnio]=useState(hoy.getFullYear());
+  var[mes,setMes]=useState(hoy.getMonth()+1);
+  var[resumen,setResumen]=useState(null);
+  var[loading,setLoading]=useState(false);
+  var[msg,setMsg]=useState('');
+  var[periodos,setPeriodos]=useState([]);
+  var[verDet,setVerDet]=useState(false);
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var MESES=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+  function cargarPeriodos(){ api('/fin/remuneraciones/periodos','GET',null,p.tok).then(setPeriodos).catch(function(){}); }
+  function cargarExistente(){
+    setMsg('');setResumen(null);
+    api('/fin/remuneraciones?anio='+anio+'&mes='+mes+(empresaId?'&empresa_id='+empresaId:''),'GET',null,p.tok)
+      .then(function(r){ if(r.existe) setResumen(r.resumen); }).catch(function(){});
+  }
+  useEffect(function(){ cargarPeriodos(); },[]);
+  useEffect(function(){ cargarExistente(); },[anio,mes,empresaId]);
+
+  function parseLibro(text){
+    var doc=new DOMParser().parseFromString(text,'text/html');
+    var trs=doc.querySelectorAll('tr'); var filas=[];
+    trs.forEach(function(tr){
+      var tds=tr.querySelectorAll('td,th'); if(tds.length<18) return;
+      var c=function(i){return (tds[i].textContent||'').trim();};
+      var rut=c(0);
+      if(!/\d/.test(rut)||/totales/i.test(rut)) return;
+      var num=function(s){var n=parseFloat(String(s).replace(/[^\d-]/g,''));return isNaN(n)?0:n;};
+      filas.push({rut:rut,nombre:c(1),c_familiar:num(c(7)),t_haberes:num(c(9)),aporte:num(c(17))});
+    });
+    return filas;
+  }
+  function onFile(e){
+    var file=e.target.files&&e.target.files[0]; if(!file)return;
+    setMsg('Leyendo libro...');setLoading(true);
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      try{
+        var filas=parseLibro(ev.target.result);
+        if(!filas.length){ setLoading(false); setMsg('No se detectaron filas válidas en el archivo. ¿Es el Libro de Remuneraciones (.xls) de tu sistema?'); return; }
+        api('/fin/remuneraciones/importar','POST',{empresa_id:empresaId||null,anio:anio,mes:mes,filas:filas},p.tok)
+          .then(function(r){ setResumen(r.resumen); setLoading(false); setMsg('✓ Libro procesado: '+filas.length+' trabajadores'); cargarPeriodos(); })
+          .catch(function(err){ setLoading(false); setMsg('Error al guardar: '+err.message); });
+      }catch(err){ setLoading(false); setMsg('Error al leer el archivo: '+err.message); }
+    };
+    reader.onerror=function(){ setLoading(false); setMsg('No se pudo leer el archivo'); };
+    reader.readAsText(file,'ISO-8859-1');
+    e.target.value='';
+  }
+
+  var per=resumen&&resumen.periodo;
+  var inpS={padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13};
+  return h('div',null,
+    h('div',{className:'card',style:{padding:16,marginBottom:14}},
+      h('div',{style:{fontSize:16,fontWeight:700,color:'#1E3A2D',marginBottom:4}},'🧾 Costo de Remuneraciones'),
+      h('div',{style:{fontSize:12,color:'#64748B',marginBottom:12}},'Importa el Libro de Remuneraciones (.xls) de tu sistema. Se cruza por RUT con el maestro de personal y se clasifica el costo por faena y centro de costo. Costo = Total haberes − Asignación familiar + Aporte.'),
+      h('div',{style:{display:'flex',gap:10,flexWrap:'wrap',alignItems:'flex-end'}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa'),
+          h('select',{value:empresaId,onChange:function(e){setEmpresaId(e.target.value);},style:inpS},
+            h('option',{value:''},'(Todas / sin distinguir)'),
+            empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Año'),
+          h('input',{type:'number',value:anio,onChange:function(e){setAnio(parseInt(e.target.value)||hoy.getFullYear());},style:Object.assign({},inpS,{width:90})})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Mes'),
+          h('select',{value:mes,onChange:function(e){setMes(parseInt(e.target.value));},style:inpS},
+            MESES.slice(1).map(function(nm,i){return h('option',{key:i+1,value:i+1},nm);}))),
+        h('label',{style:{padding:'8px 14px',borderRadius:6,fontSize:13,cursor:'pointer',border:'1px solid #16A34A',background:'#16A34A',color:'#fff',fontWeight:600,display:'inline-flex',alignItems:'center',gap:6}},
+          (loading?'Procesando...':'⬆ Importar Libro (.xls)'),
+          h('input',{type:'file',accept:'.xls,.html,.htm',onChange:onFile,disabled:loading,style:{display:'none'}}))
+      ),
+      msg&&h('div',{className:'al '+(msg.indexOf('Error')>=0?'al-e':'al-s'),style:{marginTop:10,marginBottom:0}},msg)
+    ),
+
+    per&&h('div',null,
+      h('div',{style:{display:'flex',gap:10,flexWrap:'wrap',marginBottom:14}},
+        h('div',{className:'card',style:{flex:1,minWidth:150,padding:'12px 14px',borderLeft:'5px solid #1E3A2D'}},
+          h('div',{style:{fontSize:11,color:'#64748B'}},'Costo remuneraciones'),
+          h('div',{style:{fontSize:22,fontWeight:700,color:'#1E3A2D'}},CLP(Math.round(parseFloat(per.costo_total))))),
+        h('div',{className:'card',style:{flex:1,minWidth:130,padding:'12px 14px'}},
+          h('div',{style:{fontSize:11,color:'#64748B'}},'Total haberes'),
+          h('div',{style:{fontSize:16,fontWeight:600}},CLP(Math.round(parseFloat(per.total_haberes))))),
+        h('div',{className:'card',style:{flex:1,minWidth:130,padding:'12px 14px'}},
+          h('div',{style:{fontSize:11,color:'#64748B'}},'− Asig. familiar'),
+          h('div',{style:{fontSize:16,fontWeight:600,color:'#B91C1C'}},CLP(Math.round(parseFloat(per.total_asig_familiar))))),
+        h('div',{className:'card',style:{flex:1,minWidth:130,padding:'12px 14px'}},
+          h('div',{style:{fontSize:11,color:'#64748B'}},'+ Aporte'),
+          h('div',{style:{fontSize:16,fontWeight:600,color:'#15803D'}},CLP(Math.round(parseFloat(per.total_aporte))))),
+        h('div',{className:'card',style:{flex:1,minWidth:110,padding:'12px 14px'}},
+          h('div',{style:{fontSize:11,color:'#64748B'}},'Trabajadores'),
+          h('div',{style:{fontSize:16,fontWeight:600}},per.n_trabajadores+(per.n_sin_match>0?(' ('+per.n_sin_match+' sin cruce)'):'')))
+      ),
+      h('div',{style:{display:'flex',gap:14,flexWrap:'wrap'}},
+        h('div',{className:'card',style:{flex:1,minWidth:300,padding:14}},
+          h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Costo por faena'),
+          h(TBL,{cols:[
+            {lbl:'Faena',render:function(r){return r.faena;}},
+            {lbl:'Trab.',c:true,render:function(r){return r.n;}},
+            {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo))));}}
+          ],rows:resumen.por_faena})),
+        h('div',{className:'card',style:{flex:1,minWidth:300,padding:14}},
+          h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Costo por centro de costo'),
+          h(TBL,{cols:[
+            {lbl:'Centro de costo',render:function(r){return r.centro;}},
+            {lbl:'Trab.',c:true,render:function(r){return r.n;}},
+            {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo))));}}
+          ],rows:resumen.por_centro}))
+      ),
+      h('div',{className:'card',style:{padding:14,marginTop:14}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:4}},'Costo por cargo'),
+        h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},'Base para mapear cada cargo a un proceso productivo y clasificarlo como costo directo o indirecto.'),
+        h(TBL,{cols:[
+          {lbl:'Cargo',render:function(r){return r.cargo;}},
+          {lbl:'Trab.',c:true,render:function(r){return r.n;}},
+          {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo))));}}
+        ],rows:resumen.por_cargo||[]})),
+      resumen.sin_match&&resumen.sin_match.length>0&&h('div',{className:'card',style:{padding:14,marginTop:14,borderLeft:'5px solid #F59E0B'}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:6,color:'#92400E'}},'⚠ '+resumen.sin_match.length+' trabajador(es) del libro no se encontraron en el maestro de personal'),
+        h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},'Su costo quedó como "(Sin faena asignada)". Revisa el RUT en el maestro de personal para que se clasifique correctamente.'),
+        h(TBL,{cols:[
+          {lbl:'RUT',render:function(r){return r.rut;}},
+          {lbl:'Nombre (del libro)',render:function(r){return r.nombre;}},
+          {lbl:'Costo',r:true,render:function(r){return CLP(Math.round(parseFloat(r.costo)));}}
+        ],rows:resumen.sin_match})),
+      h('div',{style:{marginTop:14}},
+        h('button',{onClick:function(){setVerDet(!verDet);},style:{padding:'6px 12px',border:'1px solid #CBD5E1',borderRadius:6,background:'#F8FAFC',fontSize:12,cursor:'pointer'}},verDet?'Ocultar detalle por trabajador':'Ver detalle por trabajador ('+resumen.detalle.length+')'),
+        verDet&&h('div',{className:'card',style:{padding:14,marginTop:8}},
+          h(TBL,{cols:[
+            {lbl:'Trabajador',render:function(r){return h('span',null,r.nombre,!r.persona_id&&h('span',{style:{color:'#B91C1C',fontSize:10}},' ⚠ sin cruce'));}},
+            {lbl:'Faena',render:function(r){return r.faena_nombre||'—';}},
+            {lbl:'Cargo',render:function(r){return r.cargo||'—';}},
+            {lbl:'Centro costo',render:function(r){return r.centro_costo||'—';}},
+            {lbl:'T.Haberes',r:true,render:function(r){return CLP(Math.round(parseFloat(r.t_haberes)));}},
+            {lbl:'Asig.Fam',r:true,render:function(r){return CLP(Math.round(parseFloat(r.c_familiar)));}},
+            {lbl:'Aporte',r:true,render:function(r){return CLP(Math.round(parseFloat(r.aporte)));}},
+            {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo))));}}
+          ],rows:resumen.detalle}))
+      )
+    ),
+
+    !per&&periodos.length>0&&h('div',{className:'card',style:{padding:14,marginTop:4}},
+      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Períodos importados'),
+      h(TBL,{onRowClick:function(r){setAnio(r.anio);setMes(r.mes);setEmpresaId(r.empresa_id?String(r.empresa_id):'');},cols:[
+        {lbl:'Período',render:function(r){return MESES[r.mes]+' '+r.anio;}},
+        {lbl:'Empresa',render:function(r){return r.empresa||'(Todas)';}},
+        {lbl:'Trab.',c:true,render:function(r){return r.n_trabajadores;}},
+        {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo_total))));}}
+      ],rows:periodos}))
+  );
+}
+
 function InformeCostosView(p){
   var hoy=new Date();
   var primerDiaMes=new Date(hoy.getFullYear(),hoy.getMonth(),1).toISOString().slice(0,10);
@@ -20515,7 +20668,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -21173,7 +21326,7 @@ function App(){
     'transporte':'transporte',
     'personal':'contratos','contratos':'contratos','vacaciones':'contratos','finiquitos':'contratos','cartas':'contratos',
     'mantenedores':'mantenedores',
-    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas','fin-activos':'finanzas',
+    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas','fin-remu':'finanzas','fin-activos':'finanzas',
     'rem-parametros':'remuneraciones','rem-periodos':'remuneraciones','rem-movimientos':'remuneraciones','rem-liquidaciones':'remuneraciones','rem-prestamos':'remuneraciones','rem-previred':'remuneraciones','rem-prevision':'remuneraciones'
   };
   function viewAllowed(v){
@@ -21367,7 +21520,7 @@ function App(){
         canSee('solicitudes')&&grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
         canSee('solicitudes')&&h('div',{className:'sb-sep'}),
         canSee('finanzas')&&grpHdr('fin','FINANZAS'),
-        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true),navI('fin-costos','📊','Informe de Costos',true),navI('fin-activos','🏗','Activos Fijos',true)),
+        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true),navI('fin-costos','📊','Informe de Costos',true),navI('fin-remu','🧾','Costo Remuneraciones',true),navI('fin-activos','🏗','Activos Fijos',true)),
         canSee('finanzas')&&h('div',{className:'sb-sep'}),
         canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
         canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
@@ -21478,6 +21631,7 @@ function App(){
           view==='ia-chat'&&h(IAChatView,{tok,m,user}),
           view==='fin-cheques'&&h(FinChequesView,{tok,m}),
           view==='fin-costos'&&h(InformeCostosView,{tok,m}),
+          view==='fin-remu'&&h(RemuCostoView,{tok,m,user}),
           view==='fin-activos'&&h(ActivosFijosView,{tok,m}),
           view==='trans-traslados'&&h(TransporteView,{tok,m}),
           view==='trans-planificacion'&&h(PlanificacionView,{tok,m}),
