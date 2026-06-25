@@ -10518,6 +10518,90 @@ app.get('/api/previred/indicadores-pdf', auth, async(req,res)=>{
   }catch(e){ res.status(502).json({error:e.message, sugerencia:'No se pudo leer el PDF de Previred. Ingresa los valores manualmente.'}); }
 });
 
+// ═══ COSTO DE REMUNERACIONES (libro de remuneraciones → costo por faena/centro de costo) ═══
+let _finRemuOk=false;
+async function finRemuEnsure(){
+  if(_finRemuOk)return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS fin_remu_periodo (
+    periodo_id SERIAL PRIMARY KEY, empresa_id INT, anio SMALLINT NOT NULL, mes SMALLINT NOT NULL,
+    total_haberes NUMERIC(14,2) DEFAULT 0, total_asig_familiar NUMERIC(14,2) DEFAULT 0,
+    total_aporte NUMERIC(14,2) DEFAULT 0, costo_total NUMERIC(14,2) DEFAULT 0,
+    n_trabajadores INT DEFAULT 0, n_sin_match INT DEFAULT 0, creado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(empresa_id,anio,mes))`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS fin_remu_detalle (
+    detalle_id SERIAL PRIMARY KEY, periodo_id INT NOT NULL REFERENCES fin_remu_periodo(periodo_id) ON DELETE CASCADE,
+    rut VARCHAR(20), nombre VARCHAR(160), persona_id INT, faena_id INT, faena_nombre VARCHAR(120), centro_costo VARCHAR(120), cargo VARCHAR(120),
+    t_haberes NUMERIC(14,2) DEFAULT 0, c_familiar NUMERIC(14,2) DEFAULT 0, aporte NUMERIC(14,2) DEFAULT 0, costo NUMERIC(14,2) DEFAULT 0)`);
+  try{await pool.query('CREATE INDEX IF NOT EXISTS idx_finremu_det ON fin_remu_detalle(periodo_id)');}catch(e){}
+  try{await pool.query('ALTER TABLE fin_remu_detalle ADD COLUMN IF NOT EXISTS cargo VARCHAR(120)');}catch(e){}
+  _finRemuOk=true;
+}
+function finRemuNormRut(r){ return String(r||'').toUpperCase().replace(/[^0-9K]/g,''); }
+async function finRemuResumen(periodo_id){
+  const tot=await pool.query('SELECT * FROM fin_remu_periodo WHERE periodo_id=$1',[periodo_id]);
+  const faena=await pool.query("SELECT COALESCE(faena_nombre,'(Sin faena asignada)') AS faena, COUNT(*)::int n, SUM(costo) costo FROM fin_remu_detalle WHERE periodo_id=$1 GROUP BY COALESCE(faena_nombre,'(Sin faena asignada)') ORDER BY SUM(costo) DESC",[periodo_id]);
+  const centro=await pool.query("SELECT COALESCE(NULLIF(centro_costo,''),'(Sin centro de costo)') AS centro, COUNT(*)::int n, SUM(costo) costo FROM fin_remu_detalle WHERE periodo_id=$1 GROUP BY COALESCE(NULLIF(centro_costo,''),'(Sin centro de costo)') ORDER BY SUM(costo) DESC",[periodo_id]);
+  const cargo=await pool.query("SELECT COALESCE(NULLIF(cargo,''),'(Sin cargo)') AS cargo, COUNT(*)::int n, SUM(costo) costo FROM fin_remu_detalle WHERE periodo_id=$1 GROUP BY COALESCE(NULLIF(cargo,''),'(Sin cargo)') ORDER BY SUM(costo) DESC",[periodo_id]);
+  const sin=await pool.query('SELECT rut,nombre,costo FROM fin_remu_detalle WHERE periodo_id=$1 AND persona_id IS NULL ORDER BY nombre',[periodo_id]);
+  const det=await pool.query('SELECT rut,nombre,faena_nombre,centro_costo,cargo,t_haberes,c_familiar,aporte,costo,persona_id FROM fin_remu_detalle WHERE periodo_id=$1 ORDER BY costo DESC',[periodo_id]);
+  return {periodo:tot.rows[0], por_faena:faena.rows, por_centro:centro.rows, por_cargo:cargo.rows, sin_match:sin.rows, detalle:det.rows};
+}
+app.post('/api/fin/remuneraciones/importar', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await finRemuEnsure();
+    const{empresa_id,anio,mes,filas}=req.body;
+    if(!anio||!mes) return res.status(400).json({error:'Indica año y mes del período'});
+    if(!Array.isArray(filas)||!filas.length) return res.status(400).json({error:'No se recibieron filas del libro de remuneraciones'});
+    const per=await client.query("SELECT p.persona_id,p.rut,p.faena_id,p.centro_costo,p.cargo,p.nombre_completo,f.nombre AS faena_nombre FROM personal p LEFT JOIN faenas f ON p.faena_id=f.faena_id");
+    const mapa={}; per.rows.forEach(function(x){ mapa[finRemuNormRut(x.rut)]=x; });
+    await client.query('BEGIN');
+    const eId=empresa_id?parseInt(empresa_id):null;
+    let pe;
+    if(eId===null){
+      const ex=await client.query('SELECT periodo_id FROM fin_remu_periodo WHERE empresa_id IS NULL AND anio=$1 AND mes=$2',[anio,mes]);
+      if(ex.rows.length){ pe={rows:[{periodo_id:ex.rows[0].periodo_id}]}; }
+      else pe=await client.query('INSERT INTO fin_remu_periodo(empresa_id,anio,mes) VALUES(NULL,$1,$2) RETURNING periodo_id',[anio,mes]);
+    }else{
+      pe=await client.query('INSERT INTO fin_remu_periodo(empresa_id,anio,mes) VALUES($1,$2,$3) ON CONFLICT(empresa_id,anio,mes) DO UPDATE SET creado_en=NOW() RETURNING periodo_id',[eId,anio,mes]);
+    }
+    const periodo_id=pe.rows[0].periodo_id;
+    await client.query('DELETE FROM fin_remu_detalle WHERE periodo_id=$1',[periodo_id]);
+    let tH=0,tF=0,tA=0,tC=0,nT=0,nSin=0;
+    for(const f of filas){
+      const th=parseFloat(f.t_haberes)||0, cf=parseFloat(f.c_familiar)||0, ap=parseFloat(f.aporte)||0;
+      const costo=th-cf+ap;
+      const m=mapa[finRemuNormRut(f.rut)]||null;
+      await client.query('INSERT INTO fin_remu_detalle(periodo_id,rut,nombre,persona_id,faena_id,faena_nombre,centro_costo,cargo,t_haberes,c_familiar,aporte,costo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
+        [periodo_id,f.rut||null,(m?m.nombre_completo:f.nombre)||null,m?m.persona_id:null,m?m.faena_id:null,m?m.faena_nombre:null,m?m.centro_costo:null,m?m.cargo:null,th,cf,ap,costo]);
+      tH+=th;tF+=cf;tA+=ap;tC+=costo;nT++; if(!m)nSin++;
+    }
+    await client.query('UPDATE fin_remu_periodo SET total_haberes=$1,total_asig_familiar=$2,total_aporte=$3,costo_total=$4,n_trabajadores=$5,n_sin_match=$6 WHERE periodo_id=$7',[tH,tF,tA,tC,nT,nSin,periodo_id]);
+    await client.query('COMMIT');
+    res.json({ok:true, periodo_id:periodo_id, resumen:await finRemuResumen(periodo_id)});
+  }catch(e){ try{await client.query('ROLLBACK');}catch(_){}; res.status(400).json({error:e.message}); }
+  finally{ client.release(); }
+});
+app.get('/api/fin/remuneraciones', auth, async(req,res)=>{
+  try{
+    await finRemuEnsure();
+    const{empresa_id,anio,mes}=req.query;
+    if(!anio||!mes) return res.status(400).json({error:'Indica año y mes'});
+    let q='SELECT periodo_id FROM fin_remu_periodo WHERE anio=$1 AND mes=$2'; const v=[anio,mes];
+    if(empresa_id){ q+=' AND empresa_id=$3'; v.push(parseInt(empresa_id)); } else { q+=' AND empresa_id IS NULL'; }
+    const r=await pool.query(q,v);
+    if(!r.rows.length) return res.json({existe:false});
+    res.json({existe:true, resumen:await finRemuResumen(r.rows[0].periodo_id)});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/fin/remuneraciones/periodos', auth, async(req,res)=>{
+  try{
+    await finRemuEnsure();
+    const r=await pool.query("SELECT pr.periodo_id,pr.anio,pr.mes,pr.empresa_id,e.razon_social AS empresa,pr.costo_total,pr.n_trabajadores,pr.n_sin_match FROM fin_remu_periodo pr LEFT JOIN empresas e ON pr.empresa_id=e.empresa_id ORDER BY pr.anio DESC,pr.mes DESC LIMIT 60");
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 // Feriados de Chile — fuente oficial: apis.digital.gob.cl
 // (Helper aplicaABiobio() y feriadosCache definidos arriba en sección VACACIONES)
 app.get('/api/feriados-cl', auth, async(req,res)=>{
