@@ -4619,18 +4619,78 @@ function RemuCostoView(p){
   useEffect(function(){ cargarPeriodos(); },[]);
   useEffect(function(){ cargarExistente(); },[anio,mes,empresaId]);
 
-  function parseLibro(text){
-    var doc=new DOMParser().parseFromString(text,'text/html');
-    var trs=doc.querySelectorAll('tr'); var filas=[];
-    trs.forEach(function(tr){
-      var tds=tr.querySelectorAll('td,th'); if(tds.length<18) return;
-      var c=function(i){return (tds[i].textContent||'').trim();};
-      var rut=c(0);
-      if(!/\d/.test(rut)||/totales/i.test(rut)) return;
-      var num=function(s){var n=parseFloat(String(s).replace(/[^\d-]/g,''));return isNaN(n)?0:n;};
-      filas.push({rut:rut,nombre:c(1),c_familiar:num(c(7)),t_haberes:num(c(9)),aporte:num(c(17))});
-    });
+  // Normaliza encabezado: minúsculas, sin espacios/puntos/acentos
+  function normHdr(s){ return String(s||'').toLowerCase().replace(/[áàä]/g,'a').replace(/[éèë]/g,'e').replace(/[íìï]/g,'i').replace(/[óòö]/g,'o').replace(/[úùü]/g,'u').replace(/[\s.\-_]/g,''); }
+  function numMonto(s){ var n=parseFloat(String(s==null?'':s).replace(/[^\d-]/g,'')); return isNaN(n)?0:n; }
+  // Dado un arreglo de encabezados, ubica el índice de cada columna por su nombre (con variantes)
+  function mapearColumnas(headers){
+    var H=headers.map(normHdr);
+    function buscar(nombres){ for(var i=0;i<H.length;i++){ for(var j=0;j<nombres.length;j++){ if(H[i]===nombres[j]) return i; } } return -1; }
+    return {
+      rut:buscar(['rut']),
+      nombre:buscar(['nombre','nombres']),
+      cfam:buscar(['cfamiliar','cargasfamiliares','asignacionfamiliar','asigfamiliar','afamiliar']),
+      thab:buscar(['thaberes','totalhaberes','totalhab']),
+      aporte:buscar(['aporte','aportes','aporteempleador'])
+    };
+  }
+  function filasDesdeMatriz(matriz){
+    // matriz = arreglo de filas (cada fila = arreglo de celdas texto). Busca la fila de encabezado.
+    var hdrIdx=-1, cols=null;
+    for(var i=0;i<matriz.length && i<15;i++){
+      var m=mapearColumnas(matriz[i]);
+      if(m.rut>=0 && m.thab>=0 && m.aporte>=0){ hdrIdx=i; cols=m; break; }
+    }
+    if(hdrIdx<0) return [];
+    var filas=[];
+    for(var r=hdrIdx+1;r<matriz.length;r++){
+      var fila=matriz[r];
+      var rut=(fila[cols.rut]||'').toString().trim();
+      if(!/\d/.test(rut)||/totales/i.test(rut)) continue;
+      filas.push({
+        rut:rut,
+        nombre:cols.nombre>=0?(fila[cols.nombre]||'').toString().trim():'',
+        c_familiar:cols.cfam>=0?numMonto(fila[cols.cfam]):0,
+        t_haberes:numMonto(fila[cols.thab]),
+        aporte:numMonto(fila[cols.aporte])
+      });
+    }
     return filas;
+  }
+  function parseHTML(text){
+    if(!/<tr[\s>]/i.test(text) && !/<table/i.test(text)) return [];
+    var doc=new DOMParser().parseFromString(text,'text/html');
+    var trs=doc.querySelectorAll('tr'); var matriz=[];
+    trs.forEach(function(tr){
+      var celdas=tr.querySelectorAll('td,th'); var fila=[];
+      celdas.forEach(function(c){ fila.push((c.textContent||'').trim()); });
+      if(fila.length) matriz.push(fila);
+    });
+    return filasDesdeMatriz(matriz);
+  }
+  function cargarSheetJS(cb){
+    if(window.XLSX){ cb(); return; }
+    var s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+    s.onload=function(){ cb(); };
+    s.onerror=function(){ cb('No se pudo cargar el lector de Excel'); };
+    document.head.appendChild(s);
+  }
+  function parseBinario(file, done){
+    cargarSheetJS(function(err){
+      if(err){ done(err); return; }
+      var fr=new FileReader();
+      fr.onload=function(ev){
+        try{
+          var wb=window.XLSX.read(new Uint8Array(ev.target.result),{type:'array'});
+          var ws=wb.Sheets[wb.SheetNames[0]];
+          var matriz=window.XLSX.utils.sheet_to_json(ws,{header:1,raw:false,defval:''});
+          done(null, filasDesdeMatriz(matriz));
+        }catch(e){ done('No se pudo leer el Excel: '+e.message); }
+      };
+      fr.onerror=function(){ done('No se pudo leer el archivo'); };
+      fr.readAsArrayBuffer(file);
+    });
   }
   function onFile(e){
     var file=e.target.files&&e.target.files[0]; if(!file){return;}
@@ -4638,17 +4698,29 @@ function RemuCostoView(p){
     var existe=!!(resumen&&resumen.periodo);
     if(existe && !confirm('Ya hay datos cargados para '+MESES[mes]+' '+anio+' de esta empresa. Al continuar se REEMPLAZARÁN todos los datos de ese período. ¿Continuar?')){ e.target.value=''; return; }
     setMsg('Leyendo libro...');setLoading(true);
+    function enviar(filas){
+      if(!filas||!filas.length){ setLoading(false); setMsg('No se detectaron filas válidas. Verifica que el archivo tenga las columnas Rut, T.Haberes, C.Familiar y Aporte (es el Libro de Remuneraciones de tu sistema).'); return; }
+      api('/fin/remuneraciones/importar','POST',{empresa_id:empresaId,anio:anio,mes:mes,filas:filas},p.tok)
+        .then(function(r){ setResumen(r.resumen); setLoading(false); setMsg('✓ Libro procesado: '+filas.length+' trabajadores'+(existe?' (datos reemplazados)':'')); cargarPeriodos(); })
+        .catch(function(err){ setLoading(false); setMsg('Error al guardar: '+err.message); });
+    }
+    // 1) Intentar como HTML (formato más común del export). 2) Si no, como Excel binario/xlsx.
     var reader=new FileReader();
     reader.onload=function(ev){
-      try{
-        var filas=parseLibro(ev.target.result);
-        if(!filas.length){ setLoading(false); setMsg('No se detectaron filas válidas en el archivo. ¿Es el Libro de Remuneraciones (.xls) de tu sistema?'); return; }
-        api('/fin/remuneraciones/importar','POST',{empresa_id:empresaId,anio:anio,mes:mes,filas:filas},p.tok)
-          .then(function(r){ setResumen(r.resumen); setLoading(false); setMsg('✓ Libro procesado: '+filas.length+' trabajadores'+(existe?' (datos reemplazados)':'')); cargarPeriodos(); })
-          .catch(function(err){ setLoading(false); setMsg('Error al guardar: '+err.message); });
-      }catch(err){ setLoading(false); setMsg('Error al leer el archivo: '+err.message); }
+      var filasHTML=[];
+      try{ filasHTML=parseHTML(ev.target.result); }catch(e){ filasHTML=[]; }
+      if(filasHTML.length){ enviar(filasHTML); return; }
+      parseBinario(file, function(err2, filasBin){
+        if(err2){ setLoading(false); setMsg('Error al leer el archivo: '+err2); return; }
+        enviar(filasBin);
+      });
     };
-    reader.onerror=function(){ setLoading(false); setMsg('No se pudo leer el archivo'); };
+    reader.onerror=function(){
+      parseBinario(file, function(err2, filasBin){
+        if(err2){ setLoading(false); setMsg('Error al leer el archivo: '+err2); return; }
+        enviar(filasBin);
+      });
+    };
     reader.readAsText(file,'ISO-8859-1');
     e.target.value='';
   }
