@@ -4607,6 +4607,8 @@ function RemuCostoView(p){
   var[msg,setMsg]=useState('');
   var[periodos,setPeriodos]=useState([]);
   var[verDet,setVerDet]=useState(false);
+  var[filtFaena,setFiltFaena]=useState('');
+  var[filtCargo,setFiltCargo]=useState('');
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   var MESES=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
@@ -4618,7 +4620,7 @@ function RemuCostoView(p){
       .catch(function(e){ setMsg('Error al eliminar: '+e.message); });
   }
   function cargarExistente(){
-    setMsg('');setResumen(null);
+    setMsg('');setResumen(null);setFiltFaena('');setFiltCargo('');
     api('/fin/remuneraciones?anio='+anio+'&mes='+mes+(empresaId?'&empresa_id='+empresaId:''),'GET',null,p.tok)
       .then(function(r){ if(r.existe) setResumen(r.resumen); }).catch(function(){});
   }
@@ -4732,6 +4734,24 @@ function RemuCostoView(p){
   }
 
   var per=resumen&&resumen.periodo;
+  // ── Filtros por faena y cargo (recálculo en vivo desde el detalle) ──
+  var detalleAll=(resumen&&resumen.detalle)||[];
+  var faenaLbl=function(r){return r.faena_nombre||'(Sin faena asignada)';};
+  var cargoLbl=function(r){return r.cargo||'(Sin cargo)';};
+  var faenasOpts=[]; var cargosOpts=[];
+  detalleAll.forEach(function(r){ var f=faenaLbl(r),c=cargoLbl(r); if(faenasOpts.indexOf(f)<0)faenasOpts.push(f); if(cargosOpts.indexOf(c)<0)cargosOpts.push(c); });
+  faenasOpts.sort(); cargosOpts.sort();
+  var detFilt=detalleAll.filter(function(r){ return (!filtFaena||faenaLbl(r)===filtFaena)&&(!filtCargo||cargoLbl(r)===filtCargo); });
+  function agrupar(rows,keyFn){
+    var map={};
+    rows.forEach(function(r){ var k=keyFn(r); if(!map[k])map[k]={k:k,n:0,costo:0}; map[k].n++; map[k].costo+=parseFloat(r.costo)||0; });
+    return Object.keys(map).map(function(k){return map[k];}).sort(function(a,b){return b.costo-a.costo;});
+  }
+  var porFaenaF=agrupar(detFilt,faenaLbl).map(function(o){return {faena:o.k,n:o.n,costo:o.costo};});
+  var porCargoF=agrupar(detFilt,cargoLbl).map(function(o){return {cargo:o.k,n:o.n,costo:o.costo};});
+  var totF=detFilt.reduce(function(a,r){a.h+=parseFloat(r.t_haberes)||0;a.f+=parseFloat(r.c_familiar)||0;a.ap+=parseFloat(r.aporte)||0;a.c+=parseFloat(r.costo)||0;if(!r.persona_id)a.sin++;return a;},{h:0,f:0,ap:0,c:0,sin:0});
+  var hayFiltro=!!(filtFaena||filtCargo);
+  var sinMatchF=detFilt.filter(function(r){return !r.persona_id;});
   var inpS={padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13};
   return h('div',null,
     h('div',{className:'card',style:{padding:16,marginBottom:14}},
@@ -4755,22 +4775,34 @@ function RemuCostoView(p){
     ),
 
     per&&h('div',null,
+      h('div',{className:'card',style:{padding:'10px 14px',marginBottom:12,display:'flex',gap:12,flexWrap:'wrap',alignItems:'flex-end'}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Filtrar por faena'),
+          h('select',{value:filtFaena,onChange:function(e){setFiltFaena(e.target.value);},style:{padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13,minWidth:200}},
+            h('option',{value:''},'Todas las faenas'),
+            faenasOpts.map(function(f){return h('option',{key:f,value:f},f);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Filtrar por cargo'),
+          h('select',{value:filtCargo,onChange:function(e){setFiltCargo(e.target.value);},style:{padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13,minWidth:200}},
+            h('option',{value:''},'Todos los cargos'),
+            cargosOpts.map(function(c){return h('option',{key:c,value:c},c);}))),
+        hayFiltro&&h('button',{onClick:function(){setFiltFaena('');setFiltCargo('');},style:{padding:'7px 12px',border:'1px solid #CBD5E1',borderRadius:6,background:'#F8FAFC',fontSize:12,cursor:'pointer'}},'✕ Limpiar filtros'),
+        hayFiltro&&h('span',{style:{fontSize:11,color:'#64748B'}},'Mostrando '+detFilt.length+' de '+detalleAll.length+' trabajadores')
+      ),
       h('div',{style:{display:'flex',gap:10,flexWrap:'wrap',marginBottom:14}},
         h('div',{className:'card',style:{flex:1,minWidth:150,padding:'12px 14px',borderLeft:'5px solid #1E3A2D'}},
-          h('div',{style:{fontSize:11,color:'#64748B'}},'Costo remuneraciones'),
-          h('div',{style:{fontSize:22,fontWeight:700,color:'#1E3A2D'}},CLP(Math.round(parseFloat(per.costo_total))))),
+          h('div',{style:{fontSize:11,color:'#64748B'}},'Costo remuneraciones'+(hayFiltro?' (filtrado)':'')),
+          h('div',{style:{fontSize:22,fontWeight:700,color:'#1E3A2D'}},CLP(Math.round(totF.c)))),
         h('div',{className:'card',style:{flex:1,minWidth:130,padding:'12px 14px'}},
           h('div',{style:{fontSize:11,color:'#64748B'}},'Total haberes'),
-          h('div',{style:{fontSize:16,fontWeight:600}},CLP(Math.round(parseFloat(per.total_haberes))))),
+          h('div',{style:{fontSize:16,fontWeight:600}},CLP(Math.round(totF.h)))),
         h('div',{className:'card',style:{flex:1,minWidth:130,padding:'12px 14px'}},
           h('div',{style:{fontSize:11,color:'#64748B'}},'− Asig. familiar'),
-          h('div',{style:{fontSize:16,fontWeight:600,color:'#B91C1C'}},CLP(Math.round(parseFloat(per.total_asig_familiar))))),
+          h('div',{style:{fontSize:16,fontWeight:600,color:'#B91C1C'}},CLP(Math.round(totF.f)))),
         h('div',{className:'card',style:{flex:1,minWidth:130,padding:'12px 14px'}},
           h('div',{style:{fontSize:11,color:'#64748B'}},'+ Aporte'),
-          h('div',{style:{fontSize:16,fontWeight:600,color:'#15803D'}},CLP(Math.round(parseFloat(per.total_aporte))))),
+          h('div',{style:{fontSize:16,fontWeight:600,color:'#15803D'}},CLP(Math.round(totF.ap)))),
         h('div',{className:'card',style:{flex:1,minWidth:110,padding:'12px 14px'}},
           h('div',{style:{fontSize:11,color:'#64748B'}},'Trabajadores'),
-          h('div',{style:{fontSize:16,fontWeight:600}},per.n_trabajadores+(per.n_sin_match>0?(' ('+per.n_sin_match+' sin cruce)'):'')))
+          h('div',{style:{fontSize:16,fontWeight:600}},detFilt.length+(totF.sin>0?(' ('+totF.sin+' sin cruce)'):'')))
       ),
       h('div',{style:{display:'flex',gap:14,flexWrap:'wrap'}},
         h('div',{className:'card',style:{flex:1,minWidth:300,padding:14}},
@@ -4780,7 +4812,7 @@ function RemuCostoView(p){
             {lbl:'Faena',render:function(r){return r.faena;}},
             {lbl:'Trab.',c:true,render:function(r){return r.n;}},
             {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo))));}}
-          ],rows:resumen.por_faena}))
+          ],rows:porFaenaF}))
       ),
       h('div',{className:'card',style:{padding:14,marginTop:14}},
         h('div',{style:{fontWeight:600,fontSize:13,marginBottom:4}},'Costo por cargo'),
@@ -4789,17 +4821,17 @@ function RemuCostoView(p){
           {lbl:'Cargo',render:function(r){return r.cargo;}},
           {lbl:'Trab.',c:true,render:function(r){return r.n;}},
           {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo))));}}
-        ],rows:resumen.por_cargo||[]})),
-      resumen.sin_match&&resumen.sin_match.length>0&&h('div',{className:'card',style:{padding:14,marginTop:14,borderLeft:'5px solid #F59E0B'}},
-        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:6,color:'#92400E'}},'⚠ '+resumen.sin_match.length+' trabajador(es) del libro no se encontraron en el maestro de personal'),
+        ],rows:porCargoF})),
+      sinMatchF.length>0&&h('div',{className:'card',style:{padding:14,marginTop:14,borderLeft:'5px solid #F59E0B'}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:6,color:'#92400E'}},'⚠ '+sinMatchF.length+' trabajador(es) del libro no se encontraron en el maestro de personal'),
         h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},'Su costo quedó como "(Sin faena asignada)". Revisa el RUT en el maestro de personal para que se clasifique correctamente.'),
         h(TBL,{cols:[
           {lbl:'RUT',render:function(r){return r.rut;}},
           {lbl:'Nombre (del libro)',render:function(r){return r.nombre;}},
           {lbl:'Costo',r:true,render:function(r){return CLP(Math.round(parseFloat(r.costo)));}}
-        ],rows:resumen.sin_match})),
+        ],rows:sinMatchF})),
       h('div',{style:{marginTop:14}},
-        h('button',{onClick:function(){setVerDet(!verDet);},style:{padding:'6px 12px',border:'1px solid #CBD5E1',borderRadius:6,background:'#F8FAFC',fontSize:12,cursor:'pointer'}},verDet?'Ocultar detalle por trabajador':'Ver detalle por trabajador ('+resumen.detalle.length+')'),
+        h('button',{onClick:function(){setVerDet(!verDet);},style:{padding:'6px 12px',border:'1px solid #CBD5E1',borderRadius:6,background:'#F8FAFC',fontSize:12,cursor:'pointer'}},verDet?'Ocultar detalle por trabajador':'Ver detalle por trabajador ('+detFilt.length+')'),
         verDet&&h('div',{className:'card',style:{padding:14,marginTop:8}},
           h(TBL,{cols:[
             {lbl:'Trabajador',render:function(r){return h('span',null,r.nombre,!r.persona_id&&h('span',{style:{color:'#B91C1C',fontSize:10}},' ⚠ sin cruce'));}},
@@ -4809,7 +4841,7 @@ function RemuCostoView(p){
             {lbl:'Asig.Fam',r:true,render:function(r){return CLP(Math.round(parseFloat(r.c_familiar)));}},
             {lbl:'Aporte',r:true,render:function(r){return CLP(Math.round(parseFloat(r.aporte)));}},
             {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo))));}}
-          ],rows:resumen.detalle}))
+          ],rows:detFilt}))
       )
     ),
 
