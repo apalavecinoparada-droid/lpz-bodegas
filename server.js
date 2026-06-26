@@ -10536,7 +10536,7 @@ async function finRemuEnsure(){
   try{await pool.query('ALTER TABLE fin_remu_detalle ADD COLUMN IF NOT EXISTS cargo VARCHAR(120)');}catch(e){}
   _finRemuOk=true;
 }
-function finRemuNormRut(r){ return String(r||'').toUpperCase().replace(/[^0-9K]/g,''); }
+function finRemuNormRut(r){ return String(r||'').toUpperCase().replace(/[^0-9K]/g,'').replace(/^0+/,''); }
 async function finRemuResumen(periodo_id){
   const tot=await pool.query('SELECT * FROM fin_remu_periodo WHERE periodo_id=$1',[periodo_id]);
   const faena=await pool.query("SELECT COALESCE(faena_nombre,'(Sin faena asignada)') AS faena, COUNT(*)::int n, SUM(costo) costo FROM fin_remu_detalle WHERE periodo_id=$1 GROUP BY COALESCE(faena_nombre,'(Sin faena asignada)') ORDER BY SUM(costo) DESC",[periodo_id]);
