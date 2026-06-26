@@ -4611,6 +4611,12 @@ function RemuCostoView(p){
   var MESES=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
   function cargarPeriodos(){ api('/fin/remuneraciones/periodos','GET',null,p.tok).then(setPeriodos).catch(function(){}); }
+  function eliminarPeriodo(r){
+    if(!confirm('¿Eliminar el período '+MESES[r.mes]+' '+r.anio+(r.empresa?' de '+r.empresa:' (sin empresa)')+'? Se borrarán todos sus datos. Esta acción no se puede deshacer.'))return;
+    api('/fin/remuneraciones/periodos/'+r.periodo_id,'DELETE',null,p.tok)
+      .then(function(){ setMsg('✓ Período eliminado'); if(resumen&&resumen.periodo&&resumen.periodo.periodo_id===r.periodo_id) setResumen(null); cargarPeriodos(); })
+      .catch(function(e){ setMsg('Error al eliminar: '+e.message); });
+  }
   function cargarExistente(){
     setMsg('');setResumen(null);
     api('/fin/remuneraciones?anio='+anio+'&mes='+mes+(empresaId?'&empresa_id='+empresaId:''),'GET',null,p.tok)
@@ -4742,7 +4748,7 @@ function RemuCostoView(p){
           h('select',{value:mes,onChange:function(e){setMes(parseInt(e.target.value));},style:inpS},
             MESES.slice(1).map(function(nm,i){return h('option',{key:i+1,value:i+1},nm);}))),
         h('label',{style:{padding:'8px 14px',borderRadius:6,fontSize:13,cursor:empresaId?'pointer':'not-allowed',border:'1px solid '+(empresaId?'#16A34A':'#CBD5E1'),background:empresaId?'#16A34A':'#E2E8F0',color:empresaId?'#fff':'#94A3B8',fontWeight:600,display:'inline-flex',alignItems:'center',gap:6},title:empresaId?'':'Selecciona la empresa primero'},
-          (loading?'Procesando...':'⬆ Importar Libro (.xls)'),
+          (loading?'Procesando...':'⬆ Importar Libro (.xlsx)'),
           h('input',{type:'file',accept:'.xls,.xlsx,.xlsm,.html,.htm',onChange:onFile,disabled:loading||!empresaId,style:{display:'none'}}))
       ),
       msg&&h('div',{className:'al '+(msg.indexOf('Error')>=0?'al-e':'al-s'),style:{marginTop:10,marginBottom:0}},msg)
@@ -4809,11 +4815,13 @@ function RemuCostoView(p){
 
     !per&&periodos.length>0&&h('div',{className:'card',style:{padding:14,marginTop:4}},
       h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Períodos importados'),
+      h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},'Pincha una fila para ver su detalle, o usa 🗑 para eliminar un período cargado por error.'),
       h(TBL,{onRowClick:function(r){setAnio(r.anio);setMes(r.mes);setEmpresaId(r.empresa_id?String(r.empresa_id):'');},cols:[
         {lbl:'Período',render:function(r){return MESES[r.mes]+' '+r.anio;}},
-        {lbl:'Empresa',render:function(r){return r.empresa||'(Todas)';}},
+        {lbl:'Empresa',render:function(r){return r.empresa||'(Sin empresa)';}},
         {lbl:'Trab.',c:true,render:function(r){return r.n_trabajadores;}},
-        {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo_total))));}}
+        {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo_total))));}},
+        {lbl:'',c:true,render:function(r){return h('button',{onClick:function(ev){ev.stopPropagation();eliminarPeriodo(r);},style:{fontSize:13,padding:'2px 8px',background:'#FEF2F2',color:'#991B1B',border:'1px solid #FCA5A5',borderRadius:4,cursor:'pointer'},title:'Eliminar este período'},'🗑');}}
       ],rows:periodos}))
   );
 }
