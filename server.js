@@ -10601,6 +10601,15 @@ app.get('/api/fin/remuneraciones/periodos', auth, async(req,res)=>{
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
+app.delete('/api/fin/remuneraciones/periodos/:id', auth, async(req,res)=>{
+  try{
+    await finRemuEnsure();
+    const id=parseInt(req.params.id);
+    if(!id) return res.status(400).json({error:'ID no válido'});
+    await pool.query('DELETE FROM fin_remu_periodo WHERE periodo_id=$1',[id]); // cascade borra el detalle
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
 
 // Feriados de Chile — fuente oficial: apis.digital.gob.cl
 // (Helper aplicaABiobio() y feriadosCache definidos arriba en sección VACACIONES)
