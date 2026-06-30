@@ -15836,15 +15836,22 @@ function ContratosView(p){
       var nombre=(c.nombre_completo||'contrato').replace(/\s+/g,'_');
       var fecha=(c.fecha_contrato+'').slice(0,10).replace(/-/g,'');
       if(formato==='pdf'){
-        var w=window.open('','_blank');
-        if(!w){alert('Permita popups para generar el PDF');return;}
-        // Inyectar el disparo de impresión DENTRO del documento, en su propio onload
-        // (espera a que carguen logo/firma/timbre antes de imprimir; evita PDF en blanco)
-        var htmlPrint=html.replace('</body>','<scr'+'ipt>window.onload=function(){setTimeout(function(){window.focus();window.print();},600);};<\/scr'+'ipt></body>');
-        w.document.open();
-        w.document.write(htmlPrint);
-        w.document.close();
-        try{w.document.title='Contrato_'+nombre+'_'+fecha;}catch(e){}
+        // Imprimir vía iframe oculto (evita bloqueo de popups tras la llamada async y el PDF en blanco)
+        var ifr=document.createElement('iframe');
+        ifr.style.position='fixed';ifr.style.right='0';ifr.style.bottom='0';ifr.style.width='0';ifr.style.height='0';ifr.style.border='0';ifr.style.visibility='hidden';
+        document.body.appendChild(ifr);
+        var idoc=ifr.contentWindow.document;
+        idoc.open();idoc.write(html);idoc.close();
+        try{idoc.title='Contrato_'+nombre+'_'+fecha;}catch(e){}
+        var impreso=false;
+        function imprimirIfr(){
+          if(impreso)return; impreso=true;
+          try{ ifr.contentWindow.focus(); ifr.contentWindow.print(); }
+          catch(e){ alert('Error al imprimir: '+e.message); }
+          setTimeout(function(){ try{document.body.removeChild(ifr);}catch(e){} }, 60000);
+        }
+        ifr.onload=function(){ setTimeout(imprimirIfr,400); };
+        setTimeout(imprimirIfr,1500);
       }else{
         var blob=new Blob(['\ufeff'+html],{type:'application/msword;charset=utf-8'});
         var url=URL.createObjectURL(blob);
