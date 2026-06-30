@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,interactive-widget=resizes-content">
 <meta name="theme-color" content="#1E3A2D">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -19218,16 +19218,55 @@ function MobileSolicitudes(p){
   useEffect(function(){
     api('/usuarios','GET',null,p.tok).then(function(r){setUsuarios((Array.isArray(r)?r:[]).filter(function(u){return u.activo;}));}).catch(function(){});
   },[p.tok]);
-  // Evitar que el teclado tape el campo enfocado: al enfocar, centrar el campo en pantalla
+  // Evitar que el teclado tape el campo enfocado. En móvil el scroll ocurre dentro de
+  // un contenedor (.mob-wrap), no en la ventana, y el body tiene overflow:hidden. Usamos
+  // VisualViewport para saber el alto real visible y subimos el campo dentro del contenedor.
   useEffect(function(){
+    var campoActivo=null, contPad=null;
+    function getScrollParent(el){
+      var n=el&&el.parentElement;
+      while(n){
+        var s; try{ s=getComputedStyle(n); }catch(_){ s=null; }
+        if(s&&/(auto|scroll)/.test(s.overflowY)&&n.scrollHeight>n.clientHeight) return n;
+        n=n.parentElement;
+      }
+      return document.scrollingElement||document.documentElement;
+    }
+    function ajustar(){
+      var t=campoActivo; if(!t)return;
+      var vv=window.visualViewport;
+      var visibleBottom=vv?(vv.offsetTop+vv.height):window.innerHeight;
+      var kb=Math.max(0,window.innerHeight-visibleBottom); // alto aprox. del teclado
+      var cont=getScrollParent(t);
+      // Dar espacio extra al final para que el último campo pueda subir sobre el teclado
+      if(cont&&cont.style){ contPad=cont; cont.style.paddingBottom=(kb+60)+'px'; }
+      var rect=t.getBoundingClientRect();
+      var margen=20;
+      if(rect.bottom>visibleBottom-margen){
+        var delta=rect.bottom-(visibleBottom-margen);
+        if(cont===document.documentElement||cont===document.scrollingElement){ window.scrollBy(0,delta); }
+        else { cont.scrollTop+=delta; }
+      }
+    }
     function onFocusIn(e){
       var t=e.target;
       if(t&&(t.tagName==='TEXTAREA'||t.tagName==='INPUT'||t.tagName==='SELECT')){
-        setTimeout(function(){ try{ t.scrollIntoView({block:'center',behavior:'smooth'}); }catch(_){} },300);
+        campoActivo=t;
+        setTimeout(ajustar,200);setTimeout(ajustar,450);setTimeout(ajustar,800);
       }
     }
+    function onFocusOut(){
+      campoActivo=null;
+      if(contPad&&contPad.style){ contPad.style.paddingBottom=''; contPad=null; }
+    }
     document.addEventListener('focusin',onFocusIn);
-    return function(){ document.removeEventListener('focusin',onFocusIn); };
+    document.addEventListener('focusout',onFocusOut);
+    if(window.visualViewport){ window.visualViewport.addEventListener('resize',ajustar); }
+    return function(){
+      document.removeEventListener('focusin',onFocusIn);
+      document.removeEventListener('focusout',onFocusOut);
+      if(window.visualViewport){ window.visualViewport.removeEventListener('resize',ajustar); }
+    };
   },[]);
   function loadSolicitudes(){
     api('/solicitudes','GET',null,p.tok).then(function(r){setSolicitudes(Array.isArray(r)?r:[]);}).catch(function(){});
