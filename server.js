@@ -10120,7 +10120,13 @@ app.put('/api/contratos/:id', auth, async(req,res)=>{
     const r=await pool.query(`UPDATE contratos SET tipo_contrato=$1,es_actualizacion=$2,fecha_contrato=$3,fecha_inicio=$4,fecha_termino=$5,lugar_firma=$6,funcion_texto=$7,jornada_tipo=$8,jornada_horas=$9,jornada_texto=$10,lugar_prestacion=$11,sueldo_base=$12,bono_responsabilidad=$13,bono_produccion_fijo=$14,bono_produccion_variable=$15,bono_produccion_tarifa=$16,bono_produccion_detalle=$17,semana_corrida=$18,asig_colacion=$19,asig_movilizacion=$20,asig_viatico=$21,tiene_alimentacion=$22,alimentacion_detalle=$23,otros_beneficios=$24,observaciones=$25 WHERE contrato_id=$26 RETURNING *`,
       [b.tipo_contrato,b.es_actualizacion||false,b.fecha_contrato,b.fecha_inicio,b.fecha_termino||null,b.lugar_firma||'Nacimiento',b.funcion_texto,b.jornada_tipo||'normal',parseInt(b.jornada_horas)||44,b.jornada_texto||null,b.lugar_prestacion||null,parseFloat(b.sueldo_base)||0,parseFloat(b.bono_responsabilidad)||0,parseFloat(b.bono_produccion_fijo)||0,b.bono_produccion_variable||false,parseFloat(b.bono_produccion_tarifa)||0,b.bono_produccion_detalle||null,b.semana_corrida||false,parseFloat(b.asig_colacion)||0,parseFloat(b.asig_movilizacion)||0,parseFloat(b.asig_viatico)||0,b.tiene_alimentacion||false,b.alimentacion_detalle||null,b.otros_beneficios||null,b.observaciones||null,id]);
     if(!r.rows.length) return res.status(404).json({error:'Contrato no encontrado'});
-    res.json(r.rows[0]);
+    const cc=r.rows[0];
+    // Sincronizar la ficha del trabajador con los datos del contrato editado (igual que al crear)
+    await pool.query('UPDATE personal SET tipo_contrato=$1,fecha_termino=$2 WHERE persona_id=$3',
+      [({plazo_fijo:'A Plazo',indefinido:'Indefinido',obra_servicio:'Por Obra'})[b.tipo_contrato]||'Indefinido', b.fecha_termino||null, cc.persona_id]);
+    await pool.query(`UPDATE personal SET sueldo_base=$1,bono_responsabilidad=$2,bono_produccion_fijo=$3,bono_produccion_variable=$4,bono_produccion_tarifa=$5,bono_produccion_detalle=$6,semana_corrida=$7,asig_colacion=$8,asig_movilizacion=$9,asig_viatico=$10,tiene_alimentacion=$11,alimentacion_detalle=$12,funcion_contrato=$13 WHERE persona_id=$14`,
+      [parseFloat(b.sueldo_base)||0,parseFloat(b.bono_responsabilidad)||0,parseFloat(b.bono_produccion_fijo)||0,b.bono_produccion_variable||false,parseFloat(b.bono_produccion_tarifa)||0,b.bono_produccion_detalle||null,b.semana_corrida||false,parseFloat(b.asig_colacion)||0,parseFloat(b.asig_movilizacion)||0,parseFloat(b.asig_viatico)||0,b.tiene_alimentacion||false,b.alimentacion_detalle||null,b.funcion_texto,cc.persona_id]);
+    res.json(cc);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.delete('/api/contratos/:id', auth, async(req,res)=>{
