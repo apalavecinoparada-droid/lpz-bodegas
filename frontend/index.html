@@ -15740,6 +15740,7 @@ function ContratosView(p){
   var[fEmpresa,setFEmpresa]=useState('');
   var emptyForm={persona_id:'',empresa_id:'',tipo_contrato:'indefinido',es_actualizacion:false,fecha_contrato:new Date().toISOString().slice(0,10),fecha_inicio:new Date().toISOString().slice(0,10),fecha_termino:'',lugar_firma:'Nacimiento',funcion_texto:'',jornada_tipo:'taller_42',jornada_horas:42,jornada_texto:'en promedio, conforme a un sistema rotativo de turnos en ciclos de dos semanas, según el siguiente esquema: SEMANA A (40 horas), de lunes a viernes, de 08:30 a 12:00 hrs. y de 13:30 a 18:00 hrs.; SEMANA B (44 horas), de lunes a viernes, de 08:30 a 12:00 hrs. y de 13:30 a 18:00 hrs., y el día sábado de 09:00 a 13:00 hrs. El tiempo destinado a colación, esto es, de 12:00 a 13:30 hrs., no será imputable a la jornada de trabajo. Las semanas A y B se alternarán entre el personal del taller, según el rol de turnos que la Empresa determine y comunicará oportunamente al trabajador, garantizándose el promedio de 42 horas semanales conforme al artículo 28 del Código del Trabajo',lugar_prestacion:'',sueldo_base:'',bono_responsabilidad:'0',bono_produccion_fijo:'0',bono_produccion_variable:false,bono_produccion_tarifa:'0',bono_produccion_detalle:'',semana_corrida:false,asig_colacion:'0',asig_movilizacion:'0',asig_viatico:'0',tiene_alimentacion:false,alimentacion_detalle:'tres comidas preparadas según dieta, sin costo para el trabajador',otros_beneficios:'',observaciones:''};
   var[form,setForm]=useState(emptyForm);
+  var[editId,setEditId]=useState(null);
 
   function loadContratos(){
     var q=fPersona?'?persona_id='+fPersona:'';
@@ -15792,6 +15793,16 @@ function ContratosView(p){
     if(!form.funcion_texto){setMsg('La función del trabajador es obligatoria');return;}
     if(form.tipo_contrato==='plazo_fijo'&&!form.fecha_termino){setMsg('Contrato a plazo fijo requiere fecha de término');return;}
     if(!form.sueldo_base||parseFloat(form.sueldo_base)<=0){setMsg('Ingrese sueldo base');return;}
+    if(editId){
+      api('/contratos/'+editId,'PUT',form,p.tok).then(function(r){
+        setMsg('Contrato actualizado');
+        loadContratos();
+        if(p.onRefresh)p.onRefresh();
+        var idGen=editId; setEditId(null); setForm(emptyForm); setSelPersona(null);
+        if(formato){ generarContratoDoc(idGen,formato); }
+      }).catch(function(e){setMsg('Error: '+e.message);});
+      return;
+    }
     api('/contratos','POST',form,p.tok).then(function(r){
       setMsg('Contrato generado y haberes actualizados en la ficha del trabajador');
       loadContratos();
@@ -15799,6 +15810,26 @@ function ContratosView(p){
       generarContratoDoc(r.contrato_id,formato||'word');
     }).catch(function(e){setMsg('Error: '+e.message);});
   }
+  function editarContrato(id){
+    api('/contratos/'+id,'GET',null,p.tok).then(function(c){
+      var nd=function(f){return f?(f+'').slice(0,10):'';};
+      setForm({
+        persona_id:c.persona_id||'',empresa_id:c.empresa_id||'',tipo_contrato:c.tipo_contrato||'indefinido',
+        es_actualizacion:!!c.es_actualizacion,fecha_contrato:nd(c.fecha_contrato),fecha_inicio:nd(c.fecha_inicio),fecha_termino:nd(c.fecha_termino),
+        lugar_firma:c.lugar_firma||'Nacimiento',funcion_texto:c.funcion_texto||'',jornada_tipo:c.jornada_tipo||'normal',jornada_horas:c.jornada_horas||42,jornada_texto:c.jornada_texto||'',
+        lugar_prestacion:c.lugar_prestacion||'',sueldo_base:c.sueldo_base||'',bono_responsabilidad:c.bono_responsabilidad||'0',bono_produccion_fijo:c.bono_produccion_fijo||'0',
+        bono_produccion_variable:!!c.bono_produccion_variable,bono_produccion_tarifa:c.bono_produccion_tarifa||'0',bono_produccion_detalle:c.bono_produccion_detalle||'',semana_corrida:!!c.semana_corrida,
+        asig_colacion:c.asig_colacion||'0',asig_movilizacion:c.asig_movilizacion||'0',asig_viatico:c.asig_viatico||'0',tiene_alimentacion:!!c.tiene_alimentacion,alimentacion_detalle:c.alimentacion_detalle||'',
+        otros_beneficios:c.otros_beneficios||'',observaciones:c.observaciones||''
+      });
+      setSelPersona(c.persona_id||null);
+      setEditId(id);
+      setTab('generar');
+      setMsg('Editando contrato existente. Modifica lo necesario y guarda los cambios.');
+      window.scrollTo(0,0);
+    }).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function cancelarEdicion(){ setEditId(null); setForm(emptyForm); setSelPersona(null); setMsg(''); }
   function eliminar(id){if(!confirm('¿Eliminar este contrato?'))return;api('/contratos/'+id,'DELETE',null,p.tok).then(loadContratos).catch(function(e){alert(e.message);});}
 
   // Generar documento del contrato (Word o PDF)
@@ -15881,6 +15912,9 @@ function ContratosView(p){
 
     // TAB GENERAR
     tab==='generar'&&h('div',{className:'card'},
+      editId&&h('div',{style:{background:'#FEF9C3',border:'1px solid #FDE047',borderRadius:6,padding:'8px 12px',marginBottom:12,display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}},
+        h('span',{style:{fontSize:12,color:'#854D0E',fontWeight:600}},'✏ Estás editando un contrato existente (N° '+editId+'). Al guardar se actualizará ese mismo contrato.'),
+        h('button',{onClick:cancelarEdicion,style:{padding:'4px 10px',fontSize:11,border:'1px solid #CA8A04',background:'#fff',color:'#854D0E',borderRadius:5,cursor:'pointer',fontWeight:600}},'Cancelar')),
       h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:12}},
         h('div',null,h('label',{style:lblS},'Empresa *'),h('select',{value:form.empresa_id,onChange:function(e){upd('empresa_id',e.target.value);upd('persona_id','');setSelPersona(null);},style:inpS},h('option',{value:''},'Seleccione empresa...'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
         h('div',null,h('label',{style:lblS},'Trabajador *'),h('select',{value:form.persona_id,onChange:function(e){onPersonaChange(e.target.value);},style:inpS,disabled:!form.empresa_id},h('option',{value:''},form.empresa_id?'Seleccione trabajador...':'Primero seleccione empresa'),personal.filter(function(x){return !form.empresa_id||String(x.empresa_id)===String(form.empresa_id);}).map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo+(x.rut?' ('+x.rut+')':''));}))),
@@ -16065,9 +16099,10 @@ function ContratosView(p){
         )
       ),
       h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:10}},
-        h(Btn,{v:'g',onClick:function(){setForm(emptyForm);setSelPersona(null);setMsg('');}},null,'Limpiar'),
-        h(Btn,{onClick:function(){guardar('word');}},'💾 Guardar + Word'),
-        h(Btn,{onClick:function(){guardar('pdf');}},'💾 Guardar + PDF')
+        editId&&h(Btn,{v:'g',onClick:cancelarEdicion},null,'Cancelar edición'),
+        !editId&&h(Btn,{v:'g',onClick:function(){setForm(emptyForm);setSelPersona(null);setMsg('');}},null,'Limpiar'),
+        h(Btn,{onClick:function(){guardar('word');}},editId?'💾 Guardar cambios + Word':'💾 Guardar + Word'),
+        h(Btn,{onClick:function(){guardar('pdf');}},editId?'💾 Guardar cambios + PDF':'💾 Guardar + PDF')
       )
     ),
 
@@ -16097,6 +16132,7 @@ function ContratosView(p){
           {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:4}},
             h(Btn,{v:'a',sm:true,onClick:function(){generarContratoDoc(r.contrato_id,'word');},title:'Descargar Word'},null,'📄 Word'),
             h(Btn,{v:'a',sm:true,onClick:function(){generarContratoDoc(r.contrato_id,'pdf');},title:'Ver/imprimir PDF'},null,'📑 PDF'),
+            h(Btn,{v:'g',sm:true,onClick:function(){editarContrato(r.contrato_id);},title:'Editar contrato'},null,'✏ Editar'),
             h(Btn,{v:'r',sm:true,onClick:function(){eliminar(r.contrato_id);}},null,'🗑')
           );}}
         ],rows:contratos.filter(function(c){return !fEmpresa||String(c.empresa_id)===String(fEmpresa);}).slice().sort(function(a,b){
