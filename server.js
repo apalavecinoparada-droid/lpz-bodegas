@@ -10058,7 +10058,7 @@ app.get('/api/contratos', auth, async(req,res)=>{
     const{persona_id}=req.query;
     let w=['1=1'],v=[];
     if(persona_id){v.push(persona_id);w.push(`c.persona_id=$${v.length}`);}
-    const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut AS persona_rut,p.cargo,e.razon_social AS empresa_nombre FROM contratos c JOIN personal p ON c.persona_id=p.persona_id JOIN empresas e ON c.empresa_id=e.empresa_id WHERE ${w.join(' AND ')} ORDER BY c.fecha_contrato DESC,c.contrato_id DESC`,v);
+    const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut AS persona_rut,p.cargo,p.faena_id,fa.nombre AS faena_nombre,e.razon_social AS empresa_nombre FROM contratos c JOIN personal p ON c.persona_id=p.persona_id LEFT JOIN faenas fa ON p.faena_id=fa.faena_id JOIN empresas e ON c.empresa_id=e.empresa_id WHERE ${w.join(' AND ')} ORDER BY c.fecha_contrato DESC,c.contrato_id DESC`,v);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -10336,12 +10336,13 @@ app.get('/api/finiquitos', auth, async(req,res)=>{
     const{persona_id}=req.query;
     let w=['1=1'],v=[];
     if(persona_id){v.push(persona_id);w.push(`f.persona_id=$${v.length}`);}
-    const r=await pool.query(`SELECT f.*,p.nombre_completo,p.rut,p.cargo,p.fecha_ingreso,
+    const r=await pool.query(`SELECT f.*,p.nombre_completo,p.rut,p.cargo,p.fecha_ingreso,p.faena_id,fa.nombre AS faena_nombre,
       e.razon_social AS empresa_nombre,e.rut AS empresa_rut,e.direccion AS empresa_direccion,
       e.comuna AS empresa_comuna,e.region AS empresa_region,
       e.representante_nombre,e.representante_rut,e.logo_base64,e.firma_representante,e.timbre_empresa
       FROM finiquitos f
       JOIN personal p ON f.persona_id=p.persona_id
+      LEFT JOIN faenas fa ON p.faena_id=fa.faena_id
       JOIN empresas e ON f.empresa_id=e.empresa_id
       WHERE ${w.join(' AND ')}
       ORDER BY f.creado_en DESC`,v);
@@ -10687,11 +10688,12 @@ app.get('/api/cartas-termino', auth, async(req,res)=>{
     const{persona_id}=req.query;
     let w=['1=1'],v=[];
     if(persona_id){v.push(persona_id);w.push(`c.persona_id=$${v.length}`);}
-    const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut,p.cargo,p.direccion AS persona_direccion,p.comuna AS persona_comuna,
+    const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut,p.cargo,p.direccion AS persona_direccion,p.comuna AS persona_comuna,p.faena_id,fa.nombre AS faena_nombre,
       e.razon_social AS empresa_nombre,e.rut AS empresa_rut,
       e.representante_nombre,e.representante_rut,e.logo_base64,e.firma_representante,e.timbre_empresa
       FROM cartas_termino c
       JOIN personal p ON c.persona_id=p.persona_id
+      LEFT JOIN faenas fa ON p.faena_id=fa.faena_id
       JOIN empresas e ON c.empresa_id=e.empresa_id
       WHERE ${w.join(' AND ')}
       ORDER BY c.fecha_carta DESC,c.carta_id DESC`,v);
