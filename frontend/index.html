@@ -15738,6 +15738,7 @@ function ContratosView(p){
   var[msg,setMsg]=useState('');
   var[fPersona,setFPersona]=useState('');
   var[fEmpresa,setFEmpresa]=useState('');
+  var[fFaenaHist,setFFaenaHist]=useState('');
   var emptyForm={persona_id:'',empresa_id:'',tipo_contrato:'indefinido',es_actualizacion:false,fecha_contrato:new Date().toISOString().slice(0,10),fecha_inicio:new Date().toISOString().slice(0,10),fecha_termino:'',lugar_firma:'Nacimiento',funcion_texto:'',jornada_tipo:'taller_42',jornada_horas:42,jornada_texto:'en promedio, conforme a un sistema rotativo de turnos en ciclos de dos semanas, según el siguiente esquema: SEMANA A (40 horas), de lunes a viernes, de 08:30 a 12:00 hrs. y de 13:30 a 18:00 hrs.; SEMANA B (44 horas), de lunes a viernes, de 08:30 a 12:00 hrs. y de 13:30 a 18:00 hrs., y el día sábado de 09:00 a 13:00 hrs. El tiempo destinado a colación, esto es, de 12:00 a 13:30 hrs., no será imputable a la jornada de trabajo. Las semanas A y B se alternarán entre el personal del taller, según el rol de turnos que la Empresa determine y comunicará oportunamente al trabajador, garantizándose el promedio de 42 horas semanales conforme al artículo 28 del Código del Trabajo',lugar_prestacion:'',sueldo_base:'',bono_responsabilidad:'0',bono_produccion_fijo:'0',bono_produccion_variable:false,bono_produccion_tarifa:'0',bono_produccion_detalle:'',semana_corrida:false,asig_colacion:'0',asig_movilizacion:'0',asig_viatico:'0',tiene_alimentacion:false,alimentacion_detalle:'tres comidas preparadas según dieta, sin costo para el trabajador',otros_beneficios:'',observaciones:''};
   var[form,setForm]=useState(emptyForm);
   var[editId,setEditId]=useState(null);
@@ -16113,6 +16114,10 @@ function ContratosView(p){
           h('option',{value:''},'Todas las empresas'),
           empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})
         ),
+        h('select',{value:fFaenaHist,onChange:function(e){setFFaenaHist(e.target.value);},style:{padding:'6px 10px',border:'1px solid '+(fFaenaHist?'#1E3A2D':'#CBD5E1'),borderRadius:5,fontSize:12,minWidth:200,fontWeight:fFaenaHist?600:400,background:fFaenaHist?'#F0FDF4':'#fff'}},
+          h('option',{value:''},'Todas las faenas'),
+          (p.m.faenas||[]).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})
+        ),
         h('select',{value:fPersona,onChange:function(e){setFPersona(e.target.value);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:240}},
           h('option',{value:''},'Todos los trabajadores'),
           personal.filter(function(x){return !fEmpresa||String(x.empresa_id)===String(fEmpresa);}).map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo);})
@@ -16135,7 +16140,7 @@ function ContratosView(p){
             h(Btn,{v:'g',sm:true,onClick:function(){editarContrato(r.contrato_id);},title:'Editar contrato'},null,'✏ Editar'),
             h(Btn,{v:'r',sm:true,onClick:function(){eliminar(r.contrato_id);}},null,'🗑')
           );}}
-        ],rows:contratos.filter(function(c){return !fEmpresa||String(c.empresa_id)===String(fEmpresa);}).slice().sort(function(a,b){
+        ],rows:contratos.filter(function(c){return (!fEmpresa||String(c.empresa_id)===String(fEmpresa))&&(!fFaenaHist||String(c.faena_id)===String(fFaenaHist));}).slice().sort(function(a,b){
           var ea=(a.empresa_nombre||''),eb=(b.empresa_nombre||'');if(ea!==eb)return ea.localeCompare(eb);
           var na=(a.nombre_completo||''),nb=(b.nombre_completo||'');if(na!==nb)return na.localeCompare(nb);
           return new Date(b.fecha_contrato||0)-new Date(a.fecha_contrato||0);
@@ -16837,8 +16842,9 @@ function AnexosView(p){
   // Selección múltiple para eliminación masiva
   var[selAnexos,setSelAnexos]=useState([]);
   var[fEmpresaListar,setFEmpresaListar]=useState('');
-  // Lista filtrada por empresa y ordenada (empresa → trabajador → fecha desc)
-  var anexosVista=anexos.filter(function(a){return !fEmpresaListar||String(a.empresa_id)===String(fEmpresaListar);}).slice().sort(function(a,b){
+  var[fFaenaListar,setFFaenaListar]=useState('');
+  // Lista filtrada por empresa/faena y ordenada (empresa → trabajador → fecha desc)
+  var anexosVista=anexos.filter(function(a){return (!fEmpresaListar||String(a.empresa_id)===String(fEmpresaListar))&&(!fFaenaListar||String(a.faena_id)===String(fFaenaListar));}).slice().sort(function(a,b){
     var ea=(a.empresa_nombre||''),eb=(b.empresa_nombre||'');if(ea!==eb)return ea.localeCompare(eb);
     var na=(a.nombre_completo||''),nb=(b.nombre_completo||'');if(na!==nb)return na.localeCompare(nb);
     return new Date(b.fecha_anexo||0)-new Date(a.fecha_anexo||0);
@@ -17059,9 +17065,10 @@ function AnexosView(p){
     // LISTAR
     modo==='listar'&&h('div',{className:'card'},
       h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:10,alignItems:'center',gap:8,flexWrap:'wrap'}},
-        h('div',{style:{fontSize:13,fontWeight:700}},'Anexos generados ('+anexosVista.length+(fEmpresaListar?' de '+anexos.length:'')+')'),
+        h('div',{style:{fontSize:13,fontWeight:700}},'Anexos generados ('+anexosVista.length+((fEmpresaListar||fFaenaListar)?' de '+anexos.length:'')+')'),
         h('div',{style:{display:'flex',gap:8,flexWrap:'wrap'}},
           h('select',{value:fEmpresaListar,onChange:function(e){setFEmpresaListar(e.target.value);setSelAnexos([]);},style:Object.assign({},inpS,{maxWidth:240,fontWeight:fEmpresaListar?600:400,background:fEmpresaListar?'#F0FDF4':'#fff',border:'1px solid '+(fEmpresaListar?'#1E3A2D':'#CBD5E1')})},h('option',{value:''},'Todas las empresas'),(p.empresas||[]).map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
+          h('select',{value:fFaenaListar,onChange:function(e){setFFaenaListar(e.target.value);setSelAnexos([]);},style:Object.assign({},inpS,{maxWidth:220,fontWeight:fFaenaListar?600:400,background:fFaenaListar?'#F0FDF4':'#fff',border:'1px solid '+(fFaenaListar?'#1E3A2D':'#CBD5E1')})},h('option',{value:''},'Todas las faenas'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})),
           h('select',{value:fPersona,onChange:function(e){setFPersona(e.target.value);},style:Object.assign({},inpS,{maxWidth:260})},h('option',{value:''},'Todos los trabajadores'),p.personal.filter(function(x){return !fEmpresaListar||String(x.empresa_id)===String(fEmpresaListar);}).map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo);}))
         )
       ),
@@ -17076,7 +17083,7 @@ function AnexosView(p){
           selAnexos.length>0&&h('button',{onClick:eliminarMasivo,style:{padding:'4px 12px',fontSize:10,border:'none',background:'#DC2626',color:'#fff',borderRadius:4,cursor:'pointer',fontWeight:700}},'🗑 Eliminar '+selAnexos.length+' anexo(s)')
         )
       ),
-      anexosVista.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:20,textAlign:'center'}},fEmpresaListar?'No hay anexos para esta empresa':'No hay anexos registrados'):
+      anexosVista.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:20,textAlign:'center'}},(fEmpresaListar||fFaenaListar)?'No hay anexos para el filtro actual':'No hay anexos registrados'):
       h('table',{className:'tbl',style:{width:'100%',fontSize:11}},
         h('thead',null,h('tr',null,
           h('th',{style:{width:30}},h('input',{type:'checkbox',checked:anexosVista.length>0&&selAnexos.length===anexosVista.length,onChange:function(e){e.target.checked?selAllAnexos():selNoneAnexos();}})),
@@ -17412,6 +17419,8 @@ function FiniquitosView(p){
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   var[modo,setModo]=useState('carta'); // carta | calcular | listar
   var[finiquitos,setFiniquitos]=useState([]);
+  var[fEmpresaLis,setFEmpresaLis]=useState('');
+  var[fFaenaLis,setFFaenaLis]=useState('');
   var[feriados,setFeriados]=useState([]); // lista de fechas YYYY-MM-DD
   var hoy=new Date().toISOString().slice(0,10);
   var emptyForm={
@@ -17965,26 +17974,42 @@ function FiniquitosView(p){
     ),
     // LISTAR
     modo==='listar'&&h('div',null,
+      // Filtros empresa/faena (aplican a cartas y finiquitos)
+      h('div',{style:{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap'}},
+        h('select',{value:fEmpresaLis,onChange:function(e){setFEmpresaLis(e.target.value);},style:{padding:'6px 10px',border:'1px solid '+(fEmpresaLis?'#1E3A2D':'#CBD5E1'),borderRadius:5,fontSize:12,minWidth:220,fontWeight:fEmpresaLis?600:400,background:fEmpresaLis?'#F0FDF4':'#fff'}},
+          h('option',{value:''},'Todas las empresas'),
+          empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
+        h('select',{value:fFaenaLis,onChange:function(e){setFFaenaLis(e.target.value);},style:{padding:'6px 10px',border:'1px solid '+(fFaenaLis?'#1E3A2D':'#CBD5E1'),borderRadius:5,fontSize:12,minWidth:200,fontWeight:fFaenaLis?600:400,background:fFaenaLis?'#F0FDF4':'#fff'}},
+          h('option',{value:''},'Todas las faenas'),
+          (p.m.faenas||[]).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))
+      ),
       // Cartas de término
+      (function(){
+        var filtro=function(x){return (!fEmpresaLis||String(x.empresa_id)===String(fEmpresaLis))&&(!fFaenaLis||String(x.faena_id)===String(fFaenaLis));};
+        var cartasV=cartas.filter(filtro);
+        var finiV=finiquitos.filter(filtro);
+        return h('div',null,
       h('div',{className:'card',style:{marginBottom:14}},
-        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10}},'📨 Cartas de término ('+cartas.length+')'),
-        cartas.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:14,textAlign:'center'}},'No hay cartas registradas'):
+        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10}},'📨 Cartas de término ('+cartasV.length+((fEmpresaLis||fFaenaLis)?' de '+cartas.length:'')+')'),
+        cartasV.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:14,textAlign:'center'}},(fEmpresaLis||fFaenaLis)?'No hay cartas para el filtro actual':'No hay cartas registradas'):
         h('table',{className:'tbl',style:{width:'100%',fontSize:11}},
           h('thead',null,h('tr',null,
             h('th',null,'Fecha carta'),
             h('th',null,'Trabajador'),
             h('th',null,'Empresa'),
+            h('th',null,'Faena'),
             h('th',null,'Causal'),
             h('th',null,'Fecha término'),
             h('th',null,'Estado'),
             h('th',null,'')
           )),
-          h('tbody',null,cartas.map(function(c){
+          h('tbody',null,cartasV.map(function(c){
             var pendiente=(c.estado||'PENDIENTE')==='PENDIENTE';
             return h('tr',{key:c.carta_id},
               h('td',null,fmtD(c.fecha_carta)),
               h('td',null,h('div',{style:{fontWeight:600}},c.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},c.rut||'')),
               h('td',null,c.empresa_nombre),
+              h('td',null,c.faena_nombre||'—'),
               h('td',null,h('span',{style:{fontSize:10}},(c.causal||'').replace(/^Art\. /,''))),
               h('td',null,fmtD(c.fecha_termino)),
               h('td',null,h('span',{style:{display:'inline-block',padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:pendiente?'#FEF3C7':'#DCFCE7',color:pendiente?'#92400E':'#15803D'}},pendiente?'⏳ PENDIENTE':'✓ COMPLETADA')),
@@ -18000,23 +18025,25 @@ function FiniquitosView(p){
       ),
       // Finiquitos
       h('div',{className:'card'},
-        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10}},'🧾 Finiquitos ('+finiquitos.length+')'),
-        finiquitos.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:14,textAlign:'center'}},'No hay finiquitos registrados'):
+        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10}},'🧾 Finiquitos ('+finiV.length+((fEmpresaLis||fFaenaLis)?' de '+finiquitos.length:'')+')'),
+        finiV.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:14,textAlign:'center'}},(fEmpresaLis||fFaenaLis)?'No hay finiquitos para el filtro actual':'No hay finiquitos registrados'):
         h('table',{className:'tbl',style:{width:'100%',fontSize:11}},
           h('thead',null,h('tr',null,
             h('th',null,'Fecha'),
             h('th',null,'Trabajador'),
             h('th',null,'Empresa'),
+            h('th',null,'Faena'),
             h('th',null,'Causal'),
             h('th',null,'Años'),
             h('th',null,'Total finiquito'),
             h('th',null,'')
           )),
-          h('tbody',null,finiquitos.map(function(f){
+          h('tbody',null,finiV.map(function(f){
             return h('tr',{key:f.finiquito_id},
               h('td',null,fmtD(f.fecha_termino)),
               h('td',null,h('div',{style:{fontWeight:600}},f.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},f.rut||'')),
               h('td',null,f.empresa_nombre),
+              h('td',null,f.faena_nombre||'—'),
               h('td',null,h('span',{style:{fontSize:10}},(f.causal||'').replace(/^Art\. /,''))),
               h('td',null,f.anios_servicio||0),
               h('td',null,h('span',{style:{fontFamily:'monospace',fontWeight:700,color:'#15803D'}},CLPF(f.total_finiquito))),
@@ -18030,6 +18057,8 @@ function FiniquitosView(p){
           }))
         )
       )
+        );
+      })()
     ),
     editCarta&&h(CartaEditModal,{tok:p.tok,carta:editCarta,onClose:function(){setEditCarta(null);},onSave:function(){setEditCarta(null);load();}})
   );
