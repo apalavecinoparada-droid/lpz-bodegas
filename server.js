@@ -7566,6 +7566,13 @@ app.post('/api/fin/cheques', auth, async(req,res)=>{
   try{
     const{empresa_id,cuenta_id,numero_cheque,fecha_emision,fecha_cobro,monto,tipo_beneficiario,proveedor_id,beneficiario_nombre,concepto,concepto_detalle,observaciones}=req.body;
     if(!cuenta_id||!numero_cheque||!fecha_cobro||!monto)return res.status(400).json({error:'Cuenta, N° cheque, fecha cobro y monto son obligatorios'});
+    // Validar número duplicado en la misma cuenta (se permite si el anterior está anulado)
+    const nch=String(numero_cheque).trim();
+    const dup=await pool.query("SELECT cheque_id,fecha_emision,monto,beneficiario_nombre,estado FROM fin_cheques WHERE cuenta_id=$1 AND TRIM(numero_cheque)=$2 AND estado<>'anulado' LIMIT 1",[cuenta_id,nch]);
+    if(dup.rows.length){
+      const d=dup.rows[0];
+      return res.status(400).json({error:'El cheque N° '+nch+' ya está registrado en esta cuenta (emitido el '+String(d.fecha_emision).slice(0,10)+', $'+Math.round(parseFloat(d.monto)).toLocaleString('es-CL')+(d.beneficiario_nombre?', a '+d.beneficiario_nombre:'')+', estado '+d.estado+'). Verifica el número o anula el cheque anterior.'});
+    }
     const cuenta=await pool.query('SELECT empresa_id FROM fin_cuentas_bancarias WHERE cuenta_id=$1',[cuenta_id]);
     const empId=empresa_id||cuenta.rows[0]?.empresa_id;
     const benNombre=tipo_beneficiario==='proveedor'&&proveedor_id?(await pool.query('SELECT nombre FROM proveedores WHERE proveedor_id=$1',[proveedor_id])).rows[0]?.nombre:beneficiario_nombre;
@@ -7577,6 +7584,13 @@ app.post('/api/fin/cheques', auth, async(req,res)=>{
 app.put('/api/fin/cheques/:id', auth, async(req,res)=>{
   try{
     const{cuenta_id,numero_cheque,fecha_emision,fecha_cobro,monto,tipo_beneficiario,proveedor_id,beneficiario_nombre,concepto,concepto_detalle,observaciones}=req.body;
+    // Validar número duplicado en la misma cuenta (excluyendo este mismo cheque; se permite si el otro está anulado)
+    const nch2=String(numero_cheque||'').trim();
+    const dup2=await pool.query("SELECT cheque_id,fecha_emision,monto,beneficiario_nombre,estado FROM fin_cheques WHERE cuenta_id=$1 AND TRIM(numero_cheque)=$2 AND estado<>'anulado' AND cheque_id<>$3 LIMIT 1",[cuenta_id,nch2,req.params.id]);
+    if(dup2.rows.length){
+      const d2=dup2.rows[0];
+      return res.status(400).json({error:'El cheque N° '+nch2+' ya está registrado en esta cuenta (emitido el '+String(d2.fecha_emision).slice(0,10)+', $'+Math.round(parseFloat(d2.monto)).toLocaleString('es-CL')+(d2.beneficiario_nombre?', a '+d2.beneficiario_nombre:'')+', estado '+d2.estado+'). Verifica el número o anula el cheque anterior.'});
+    }
     const benNombre=tipo_beneficiario==='proveedor'&&proveedor_id?(await pool.query('SELECT nombre FROM proveedores WHERE proveedor_id=$1',[proveedor_id])).rows[0]?.nombre:beneficiario_nombre;
     const r=await pool.query('UPDATE fin_cheques SET cuenta_id=$1,numero_cheque=$2,fecha_emision=$3,fecha_cobro=$4,monto=$5,tipo_beneficiario=$6,proveedor_id=$7,beneficiario_nombre=$8,concepto=$9,concepto_detalle=$10,observaciones=$11 WHERE cheque_id=$12 RETURNING *',
       [cuenta_id,numero_cheque,fecha_emision,fecha_cobro,parseFloat(monto),tipo_beneficiario,tipo_beneficiario==='proveedor'?proveedor_id:null,benNombre||null,concepto,concepto_detalle||null,observaciones||null,req.params.id]);
