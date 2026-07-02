@@ -16637,6 +16637,53 @@ var REGIONES_CL={
   'Magallanes y de la Antártica Chilena':['Antártica','Cabo de Hornos','Laguna Blanca','Natales','Porvenir','Primavera','Punta Arenas','Río Verde','San Gregorio','Timaukel','Torres del Paine']
 };
 
+// ── Tarifas de producción por cargo y VMA (anexo cláusula CUARTA) ──
+var TARIFAS_TRAMOS=['≥0,40 y <0,45','≥0,45 y <0,50','≥0,50 y <0,55','≥0,55 y <0,60','≥0,60 y <0,65','≥0,65 y <0,70','≥0,70 y <0,75','≥0,75 y <0,80','≥0,80 y <0,85','≥0,85 y <0,90','≥0,90 y <0,95','≥0,95 y <1,00','≥1,00 y <1,10','≥1,10 y <1,15','≥1,15 y <1,20','≥1,20 y <1,25','≥1,25 y <1,30','≥1,30'];
+var TARIFAS_FACTOR=[1.26,1.20,1.14,1.09,1.06,1.03,1.00,0.98,0.96,0.94,0.93,0.92,0.91,0.89,0.89,0.88,0.89,0.89];
+var TARIFAS_PRODUCCION=[
+  {cargo:'Operador de Feller',match:'FELLER',tarifas:[54.7,51.8,49.3,47.4,45.7,44.4,43.3,42.3,41.5,40.8,40.2,39.7,39.2,38.6,38.4,38.3,38.3,38.5]},
+  {cargo:'Operador de Skidder',match:'SKIDDER',tarifas:[45,43,41,39,38,37,36,35,35,34,33,33,33,32,32,32,32,32]},
+  {cargo:'Operador de Procesador',match:'PROCESADOR',tarifas:[51,48,46,44,42,41,40,39,38,38,37,37,36,36,35,35,35,36]},
+  {cargo:'Operador de Excavadora con Garra',match:'EXCAVADORA',tarifas:[32,30,28,27,26,26,25,24,24,24,23,23,23,22,22,22,22,22]},
+  {cargo:'Operador Garra (Torre de Madereo)',match:'TORRE',tarifas:[32,30,28,27,26,26,25,24,24,24,23,23,23,22,22,22,22,22]}
+];
+function tarifaTablaHTML(t){
+  var rows=TARIFAS_TRAMOS.map(function(tr,i){
+    return '<tr><td style="border:1px solid #000;padding:3px 10px;text-align:center">'+tr+'</td>'+
+      '<td style="border:1px solid #000;padding:3px 10px;text-align:center">'+TARIFAS_FACTOR[i].toFixed(2).replace('.',',')+'</td>'+
+      '<td style="border:1px solid #000;padding:3px 10px;text-align:center">$ '+String(t.tarifas[i]).replace('.',',')+'</td></tr>';
+  }).join('');
+  return '<table style="border-collapse:collapse;margin:10px auto;font-size:10pt;width:auto">'+
+    '<thead><tr><th style="border:1px solid #000;padding:4px 10px;background:#E8E8E8">Volumen Medio por Árbol — VMA (m³/árbol)</th>'+
+    '<th style="border:1px solid #000;padding:4px 10px;background:#E8E8E8">Factor tamaño árbol</th>'+
+    '<th style="border:1px solid #000;padding:4px 10px;background:#E8E8E8">Tarifa $/m³</th></tr></thead><tbody>'+rows+'</tbody></table>';
+}
+function tarifaClausula(t){
+  return {numero:'CUARTA',titulo:'Remuneraciones — Bono de producción por m³ según VMA',
+    texto:'En complemento de lo establecido en la cláusula CUARTA del Contrato de Trabajo, las partes acuerdan que el trabajador, en su calidad de '+t.cargo.toUpperCase()+', percibirá un bono de producción variable por metro cúbico (m³) efectivamente producido, cuya tarifa dependerá del Volumen Medio por Árbol (VMA) del bosque o rodal en que preste servicios, conforme a la siguiente tabla:'+
+    '</p>'+tarifaTablaHTML(t)+
+    '<p style="font-size:10pt">El VMA aplicable será el informado técnicamente para el bosque o rodal en que se ejecuten las faenas. La tarifa correspondiente se aplicará sobre la producción mensual efectiva expresada en m³. En todo lo no modificado por el presente anexo, la cláusula CUARTA del Contrato de Trabajo mantiene su plena vigencia.'};
+}
+
+// ── Impresión confiable vía iframe oculto (evita popups bloqueados y PDF en blanco) ──
+function imprimirHTMLViaIframe(html,titulo){
+  var ifr=document.createElement('iframe');
+  ifr.style.position='fixed';ifr.style.right='0';ifr.style.bottom='0';ifr.style.width='0';ifr.style.height='0';ifr.style.border='0';ifr.style.visibility='hidden';
+  document.body.appendChild(ifr);
+  var idoc=ifr.contentWindow.document;
+  idoc.open();idoc.write(html);idoc.close();
+  try{ if(titulo) idoc.title=titulo; }catch(e){}
+  var impreso=false;
+  function go(){
+    if(impreso)return; impreso=true;
+    try{ ifr.contentWindow.focus(); ifr.contentWindow.print(); }
+    catch(e){ alert('Error al imprimir: '+e.message); }
+    setTimeout(function(){ try{document.body.removeChild(ifr);}catch(e){} },60000);
+  }
+  ifr.onload=function(){ setTimeout(go,400); };
+  setTimeout(go,1500);
+}
+
 // ── Vista de Anexos ──
 function AnexosView(p){
   var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#475569'};
@@ -16652,6 +16699,41 @@ function AnexosView(p){
   var[form,setForm]=useState(emptyForm);
   // Form masivo
   var[masivoForm,setMasivoForm]=useState({faena_id:'',empresa_id:'',fecha_anexo:new Date().toISOString().slice(0,10),lugar_firma:'Nacimiento',fundo:'',propiedad:'Forestal Mininco Spa.',comuna:'',region:''});
+  // Anexo de tarifas (complemento cláusula CUARTA)
+  var[tarForm,setTarForm]=useState({empresa_id:'',faena_id:'',fecha_anexo:new Date().toISOString().slice(0,10),lugar_firma:'Nacimiento',cargoIdx:''});
+  function uTar(k,v){setTarForm(function(f){return Object.assign({},f,(function(o){o[k]=v;return o;})({}));});}
+  var personalTarifas=p.personal.filter(function(x){
+    if(tarForm.empresa_id&&String(x.empresa_id)!==String(tarForm.empresa_id))return false;
+    if(tarForm.faena_id&&String(x.faena_id)!==String(tarForm.faena_id))return false;
+    return x.activo!==false;
+  });
+  var tarSel=tarForm.cargoIdx!==''?TARIFAS_PRODUCCION[parseInt(tarForm.cargoIdx)]:null;
+  function selectCoincidentes(){
+    if(!tarSel)return;
+    setSelPersonas(personalTarifas.filter(function(x){return ((x.cargo||'').toUpperCase().indexOf(tarSel.match)>=0);}).map(function(x){return x.persona_id;}));
+  }
+  function guardarTarifas(){
+    if(!tarForm.empresa_id){alert('Seleccione la empresa');return;}
+    if(!tarSel){alert('Seleccione el cargo de la tabla de tarifas');return;}
+    if(!selPersonas.length){alert('Seleccione al menos un trabajador');return;}
+    var body={
+      empresa_id:tarForm.empresa_id,
+      fecha_anexo:tarForm.fecha_anexo,
+      lugar_firma:tarForm.lugar_firma,
+      persona_ids:selPersonas,
+      clausulas:[tarifaClausula(tarSel)],
+      observaciones:'Anexo de tarifas por producción — '+tarSel.cargo
+    };
+    api('/anexos','POST',body,p.tok).then(function(r){
+      alert('✅ Se crearon '+r.total+' anexo(s) de tarifas. Generando documento en '+(formatoSalida==='pdf'?'PDF':'Word')+'...');
+      setSelPersonas([]);loadAnexos();
+      if(r.creados&&r.creados.length){
+        Promise.all(r.creados.map(function(id){return api('/anexos/'+id,'GET',null,p.tok);}))
+          .then(function(anexos){ generarDocCombinado(anexos,formatoSalida); })
+          .catch(function(e){alert('Error al generar documento: '+e.message);});
+      }
+    }).catch(function(e){alert('Error: '+e.message);});
+  }
   var[selPersonas,setSelPersonas]=useState([]);
   var[formatoSalida,setFormatoSalida]=useState('word'); // 'word' o 'pdf'
 
@@ -16737,11 +16819,7 @@ function AnexosView(p){
     var faenaNombre=((faenas.find(function(f){return String(f.faena_id)===String(masivoForm.faena_id);})||{}).nombre||'masivo').replace(/\s+/g,'_');
     var nombre='Anexos_'+faenaNombre+'_'+fecha;
     if(formato==='pdf'){
-      var w=window.open('','_blank');
-      if(!w){alert('Permita popups para generar el PDF');return;}
-      w.document.write(fullHTML);w.document.close();
-      w.document.title=nombre;
-      setTimeout(function(){w.focus();w.print();},700);
+      imprimirHTMLViaIframe(fullHTML,nombre);
     }else{
       var blob=new Blob(['\ufeff'+fullHTML],{type:'application/msword;charset=utf-8'});
       var url=URL.createObjectURL(blob);
@@ -16783,11 +16861,7 @@ function AnexosView(p){
       var nombre=(a.nombre_completo||'anexo').replace(/\s+/g,'_');
       var fecha=(a.fecha_anexo+'').slice(0,10).replace(/-/g,'');
       if(formato==='pdf'){
-        var w=window.open('','_blank');
-        if(!w){alert('Permita popups');return;}
-        w.document.write(html);w.document.close();
-        w.document.title='Anexo_'+nombre+'_'+fecha;
-        setTimeout(function(){w.focus();w.print();},500);
+        imprimirHTMLViaIframe(html,'Anexo_'+nombre+'_'+fecha);
       }else{
         var blob=new Blob(['\ufeff'+html],{type:'application/msword;charset=utf-8'});
         var url=URL.createObjectURL(blob);
@@ -16802,8 +16876,8 @@ function AnexosView(p){
   return h('div',null,
     // Sub-tabs
     h('div',{style:{display:'flex',gap:6,marginBottom:12}},
-      [{k:'individual',l:'➕ Anexo Individual'},{k:'masivo',l:'📦 Generación Masiva'},{k:'listar',l:'📋 Listado de Anexos'}].map(function(t){
-        return h('button',{key:t.k,onClick:function(){setModo(t.k);},
+      [{k:'individual',l:'➕ Anexo Individual'},{k:'masivo',l:'📦 Generación Masiva'},{k:'tarifas',l:'💲 Anexo de Tarifas'},{k:'listar',l:'📋 Listado de Anexos'}].map(function(t){
+        return h('button',{key:t.k,onClick:function(){setModo(t.k);setSelPersonas([]);},
           style:{padding:'6px 14px',borderRadius:5,fontSize:11,cursor:'pointer',border:'1px solid #CBD5E1',background:modo===t.k?'#F59E0B':'#F8FAFC',color:modo===t.k?'#fff':'#475569',fontWeight:600}},t.l);
       })
     ),
@@ -16921,9 +16995,65 @@ function AnexosView(p){
           h('span',{style:{fontSize:11,fontWeight:600,color:'#475569'}},'Formato de salida:'),
           h('button',{onClick:function(){setFormatoSalida('word');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formatoSalida==='word'?'#1E40AF':'#CBD5E1'),background:formatoSalida==='word'?'#DBEAFE':'transparent',fontWeight:formatoSalida==='word'?700:400,fontSize:11,cursor:'pointer',color:formatoSalida==='word'?'#1E40AF':'#64748B'}},'📄 Word'),
           h('button',{onClick:function(){setFormatoSalida('pdf');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formatoSalida==='pdf'?'#DC2626':'#CBD5E1'),background:formatoSalida==='pdf'?'#FEE2E2':'transparent',fontWeight:formatoSalida==='pdf'?700:400,fontSize:11,cursor:'pointer',color:formatoSalida==='pdf'?'#DC2626':'#64748B'}},'📑 PDF'),
-          formatoSalida==='pdf'&&h('span',{style:{fontSize:10,color:'#92400E',marginLeft:6}},'⚠ Se abrirá 1 ventana con todos los anexos — autorice popups')
+          formatoSalida==='pdf'&&h('span',{style:{fontSize:10,color:'#92400E',marginLeft:6}},'Se abrirá el diálogo de impresión con todos los anexos (uno por página)')
         ),
         h(Btn,{onClick:guardarMasivo,disabled:!selPersonas.length},'📦 Crear '+selPersonas.length+' anexo(s) — '+(formatoSalida==='pdf'?'PDF combinado':'Word combinado'))
+      )
+    ),
+    // ANEXO DE TARIFAS (complemento cláusula CUARTA)
+    modo==='tarifas'&&h('div',{className:'card'},
+      h('div',{style:{fontSize:13,fontWeight:700,marginBottom:4}},'💲 Anexo de Tarifas por Producción'),
+      h('div',{style:{fontSize:11,color:'#64748B',marginBottom:12}},'Complementa la cláusula CUARTA del contrato con la tabla de tarifas por m³ según el cargo y el VMA (volumen medio por árbol) del bosque. Selecciona el cargo, marca los trabajadores y genera los anexos.'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10,marginBottom:12}},
+        h('div',null,h('label',{style:lblS},'Empresa *'),h('select',{value:tarForm.empresa_id,onChange:function(e){uTar('empresa_id',e.target.value);setSelPersonas([]);},style:inpS},
+          h('option',{value:''},'Seleccione empresa...'),
+          p.empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
+        h('div',null,h('label',{style:lblS},'Faena (opcional)'),h('select',{value:tarForm.faena_id,onChange:function(e){uTar('faena_id',e.target.value);setSelPersonas([]);},style:inpS},
+          h('option',{value:''},'Todas las faenas'),
+          faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+        h('div',null,h('label',{style:lblS},'Cargo (tabla de tarifas) *'),h('select',{value:tarForm.cargoIdx,onChange:function(e){uTar('cargoIdx',e.target.value);},style:inpS},
+          h('option',{value:''},'Seleccione cargo...'),
+          TARIFAS_PRODUCCION.map(function(t,i){return h('option',{key:i,value:i},t.cargo);}))),
+        h('div',null,h('label',{style:lblS},'Fecha anexo'),h('input',{type:'date',value:tarForm.fecha_anexo,onChange:function(e){uTar('fecha_anexo',e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:lblS},'Lugar firma'),h('input',{type:'text',value:tarForm.lugar_firma,onChange:function(e){uTar('lugar_firma',e.target.value);},style:inpS}))
+      ),
+      // Vista previa de la tabla del cargo elegido
+      tarSel&&h('div',{style:{background:'#FFFBEB',border:'1px dashed #FCD34D',borderRadius:6,padding:10,marginBottom:12}},
+        h('div',{style:{fontSize:11,fontWeight:700,color:'#78350F',marginBottom:6}},'Vista previa — tabla de tarifas para '+tarSel.cargo+':'),
+        h('div',{style:{maxHeight:240,overflow:'auto',background:'#fff',borderRadius:4,padding:6},dangerouslySetInnerHTML:{__html:tarifaTablaHTML(tarSel)}})
+      ),
+      // Lista de trabajadores
+      tarForm.empresa_id&&h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,padding:10,marginBottom:12}},
+        h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:8,flexWrap:'wrap',gap:6}},
+          h('div',{style:{fontSize:12,fontWeight:700}},'Trabajadores ('+personalTarifas.length+') — '+selPersonas.length+' seleccionado(s)'),
+          h('div',{style:{display:'flex',gap:6,flexWrap:'wrap'}},
+            tarSel&&h('button',{onClick:selectCoincidentes,style:{padding:'3px 10px',fontSize:10,border:'1px solid #F59E0B',background:'#FEF3C7',color:'#92400E',borderRadius:4,cursor:'pointer',fontWeight:600}},'Seleccionar '+tarSel.cargo+'(s)'),
+            h('button',{onClick:function(){setSelPersonas(personalTarifas.map(function(x){return x.persona_id;}));},style:{padding:'3px 10px',fontSize:10,border:'1px solid #CBD5E1',background:'#F8FAFC',borderRadius:4,cursor:'pointer'}},'Seleccionar todos'),
+            h('button',{onClick:function(){setSelPersonas([]);},style:{padding:'3px 10px',fontSize:10,border:'1px solid #CBD5E1',background:'#F8FAFC',borderRadius:4,cursor:'pointer'}},'Deseleccionar')
+          )
+        ),
+        personalTarifas.length===0?h('div',{style:{color:'#94A3B8',fontSize:11,padding:20,textAlign:'center'}},'No hay trabajadores para el filtro actual'):
+        h('div',{style:{maxHeight:300,overflow:'auto',display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:4}},
+          personalTarifas.map(function(x){
+            var sel=selPersonas.indexOf(x.persona_id)>=0;
+            var coincide=tarSel&&((x.cargo||'').toUpperCase().indexOf(tarSel.match)>=0);
+            return h('div',{key:x.persona_id,onClick:function(){toggleSel(x.persona_id);},style:{display:'flex',alignItems:'center',gap:6,padding:'5px 8px',background:sel?'#FEF3C7':'#F8FAFC',border:'1px solid '+(sel?'#F59E0B':(coincide?'#FCD34D':'#E2E8F0')),borderRadius:4,cursor:'pointer'}},
+              h('input',{type:'checkbox',checked:sel,readOnly:true}),
+              h('div',{style:{flex:1}},
+                h('div',{style:{fontSize:11,fontWeight:600}},x.nombre_completo),
+                h('div',{style:{fontSize:9,color:coincide?'#92400E':'#64748B',fontWeight:coincide?700:400}},(x.rut||'—')+' — '+(x.cargo||'Sin cargo')+(coincide?' ✓':''))
+              )
+            );
+          })
+        )
+      ),
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}},
+        h('div',{style:{display:'flex',alignItems:'center',gap:6}},
+          h('span',{style:{fontSize:11,fontWeight:600,color:'#475569'}},'Formato de salida:'),
+          h('button',{onClick:function(){setFormatoSalida('word');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formatoSalida==='word'?'#1E40AF':'#CBD5E1'),background:formatoSalida==='word'?'#DBEAFE':'transparent',fontWeight:formatoSalida==='word'?700:400,fontSize:11,cursor:'pointer',color:formatoSalida==='word'?'#1E40AF':'#64748B'}},'📄 Word'),
+          h('button',{onClick:function(){setFormatoSalida('pdf');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formatoSalida==='pdf'?'#DC2626':'#CBD5E1'),background:formatoSalida==='pdf'?'#FEE2E2':'transparent',fontWeight:formatoSalida==='pdf'?700:400,fontSize:11,cursor:'pointer',color:formatoSalida==='pdf'?'#DC2626':'#64748B'}},'📑 PDF')
+        ),
+        h(Btn,{onClick:guardarTarifas,disabled:!selPersonas.length},'💲 Crear '+selPersonas.length+' anexo(s) de tarifas — '+(formatoSalida==='pdf'?'PDF combinado':'Word combinado'))
       )
     ),
     // LISTAR
