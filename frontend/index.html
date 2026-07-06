@@ -16745,6 +16745,183 @@ function imprimirHTMLViaIframe(html,titulo){
   setTimeout(go,1500);
 }
 
+// ── Prevención de Riesgos: Registro de Entrega de EPP ──
+var EPP_PREDEFINIDOS=['CALZADO DE SEGURIDAD','CALZADO DE SEGURIDAD CON CLAVOS','CASCO DE SEGURIDAD','CASCO DE SEGURIDAD CON FONOS Y PROTECCIÓN FACIAL','PANTALÓN','PANTALÓN ANTICORTE / PIERNERAS','GUANTES','GUANTES CABRITILLA','LENTES','CUBRENUCA','GEÓLOGO','CHAQUETA DE MOTOSIERRISTA','TRAJE DE AGUA','CHALECO REFLECTANTE','PROTECTOR AUDITIVO','PROTECTOR SOLAR'];
+function buildEppHTML(d){
+  var fmtF=function(s){if(!s)return '';var p=(s+'').slice(0,10).split('-');return p[2]+'-'+p[1]+'-'+p[0];};
+  var items=Array.isArray(d.items)?d.items:JSON.parse(d.items||'[]');
+  var filas=items.map(function(it){
+    return '<tr><td style="border:1px solid #000;padding:6px 10px;font-weight:700">'+it.nombre+'</td>'+
+      '<td style="border:1px solid #000;padding:6px 10px;text-align:center;font-weight:700">'+fmtF(it.fecha||d.fecha)+'</td>'+
+      '<td style="border:1px solid #000;padding:6px 10px"></td></tr>';
+  }).join('');
+  // filas vacías de relleno (como el formato físico)
+  for(var i=items.length;i<Math.max(items.length+1,8);i++){filas+='<tr><td style="border:1px solid #000;padding:12px 10px"></td><td style="border:1px solid #000"></td><td style="border:1px solid #000"></td></tr>';}
+  var logo=d.logo_base64?'<img src="'+d.logo_base64+'" style="max-height:52px;max-width:130px">':'<div style="font-weight:700;font-size:10pt">'+(d.empresa_nombre||'')+'</div>';
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Registro Entrega EPP</title><style>'+
+    '@page{size:letter;margin:1.6cm 1.8cm}body{font-family:Arial,sans-serif;font-size:10.5pt;line-height:1.35;margin:0;color:#111}'+
+    'table{border-collapse:collapse}'+
+    '</style></head><body>'+
+    // Encabezado tipo formulario
+    '<table style="width:100%;border:1px solid #000;margin-bottom:16px"><tr>'+
+    '<td style="border:1px solid #000;padding:6px 10px;width:22%;text-align:center">'+logo+'</td>'+
+    '<td style="border:1px solid #000;padding:6px 10px;text-align:center;color:#16A34A;font-weight:700">INDUCCIÓN</td></tr>'+
+    '<tr><td style="border:1px solid #000;padding:6px 10px;text-align:center;font-size:9.5pt">'+(d.empresa_rut||'')+'</td>'+
+    '<td style="border:1px solid #000;padding:6px 10px;color:#16A34A;font-weight:600;font-size:9.5pt">CONTRATACIÓN E INDUCCIÓN DE PERSONAL</td></tr></table>'+
+    '<div style="text-align:center;font-weight:800;font-size:12pt;text-decoration:underline;margin:14px 0 18px">REGISTRO ENTREGA ELEMENTOS DE PROTECCIÓN PERSONAL</div>'+
+    '<table style="width:100%;margin-bottom:22px">'+
+    '<tr><td style="border:1px solid #000;padding:8px 10px;width:26%;font-weight:700">Nombre Trabajador</td><td style="border:1px solid #000;padding:8px 10px;font-weight:700">'+nombresPrimero(d.nombre_completo||'')+'</td></tr>'+
+    '<tr><td style="border:1px solid #000;padding:8px 10px;font-weight:700">Rut</td><td style="border:1px solid #000;padding:8px 10px;font-weight:700">'+(d.rut||'')+'</td></tr>'+
+    '<tr><td style="border:1px solid #000;padding:8px 10px;font-weight:700">Cargo</td><td style="border:1px solid #000;padding:8px 10px;font-weight:700">'+(d.cargo||'')+'</td></tr></table>'+
+    '<table style="width:100%;margin-bottom:24px"><thead><tr>'+
+    '<th style="border:1px solid #000;padding:6px 10px;background:#E8E8E8;width:46%">EPP Entregado</th>'+
+    '<th style="border:1px solid #000;padding:6px 10px;background:#E8E8E8;width:20%">Fecha</th>'+
+    '<th style="border:1px solid #000;padding:6px 10px;background:#E8E8E8">Firma</th></tr></thead><tbody>'+filas+'</tbody></table>'+
+    '<p style="font-size:9.5pt"><strong>Nota</strong>: La vigencia de este documento será de un año, debiendo informar los cambios por deterioro de los EPP a través de un nuevo documento. *El trabajador debe solicitar sin costo para él; el cambio de sus EPP cuando estos presenten deterioro o no sean adecuados al riesgo presente.</p>'+
+    '<p style="font-size:9.5pt;margin-bottom:2px"><strong>Prevencionista declara</strong>:</p>'+
+    '<ul style="font-size:9.5pt;margin-top:2px">'+
+    '<li>Haber capacitado en el uso correcto de los EPP del trabajador.</li>'+
+    '<li>Revisado el estado de los EPP, y todos se encuentran en perfecto estado.</li>'+
+    '<li>Los EPP entregados son los adecuados al riesgo a cubrir.</li>'+
+    '<li>Los EPP entregados se encuentran certificados, de acuerdo a las normas de calidad de conformidad a lo establecido Decreto Nro.</li></ul>'+
+    '<div style="text-align:center;margin-top:60px">'+
+    '<div style="border-top:1px solid #000;width:230px;margin:0 auto;padding-top:4px;font-weight:700">Firma Prevencionista</div>'+
+    '<div style="margin-top:10px;font-size:10pt">'+nombresPrimero(d.prevencionista_nombre||'')+(d.prevencionista_inscripcion?('&nbsp;&nbsp;&nbsp;&nbsp;N° INSCRIPCION&nbsp; '+d.prevencionista_inscripcion):'')+'</div>'+
+    '<div style="font-size:9pt">N° de Inscripción en el Registro del Servicio de Salud</div>'+
+    '</div>'+
+    '</body></html>';
+}
+function PrevencionView(p){
+  var hoyStr=(function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})();
+  var[tab,setTab]=useState('epp');
+  var[personas,setPersonas]=useState([]);
+  var[regs,setRegs]=useState([]);
+  var[msg,setMsg]=useState('');
+  var[fEmpresaReg,setFEmpresaReg]=useState('');
+  var[form,setForm]=useState({empresa_id:'',persona_id:'',prevencionista_id:'',prevencionista_inscripcion:'',fecha:hoyStr});
+  var[selItems,setSelItems]=useState({});
+  var[itemLibre,setItemLibre]=useState('');
+  var[itemsExtra,setItemsExtra]=useState([]);
+  var[guardando,setGuardando]=useState(false);
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  function uF(k,v){setForm(function(f){return Object.assign({},f,(function(o){o[k]=v;return o;})({}));});}
+  function loadRegs(){ api('/prevencion/epp','GET',null,p.tok).then(function(r){setRegs(Array.isArray(r)?r:[]);}).catch(function(){}); }
+  useEffect(function(){
+    api('/personal','GET',null,p.tok).then(function(r){setPersonas((Array.isArray(r)?r:[]).filter(function(x){return x.activo!==false;}));}).catch(function(){});
+    loadRegs();
+  },[]);
+  var trabajadores=personas.filter(function(x){return !form.empresa_id||String(x.empresa_id)===String(form.empresa_id);});
+  var prevencionistas=personas.filter(function(x){return ((x.cargo||'').toUpperCase().indexOf('PREVENCION')>=0);});
+  var trabSel=personas.find(function(x){return String(x.persona_id)===String(form.persona_id);});
+  // Al elegir prevencionista, precargar su última inscripción usada
+  function elegirPrev(pid){
+    uF('prevencionista_id',pid);
+    var ultimo=regs.find(function(r){return String(r.prevencionista_id)===String(pid)&&r.prevencionista_inscripcion;});
+    if(ultimo)uF('prevencionista_inscripcion',ultimo.prevencionista_inscripcion);
+  }
+  function toggleItem(nombre){ setSelItems(function(o){var n=Object.assign({},o);if(n[nombre])delete n[nombre];else n[nombre]=true;return n;}); }
+  function agregarLibre(){ var v=itemLibre.trim().toUpperCase(); if(!v)return; if(itemsExtra.indexOf(v)<0)setItemsExtra(itemsExtra.concat([v])); setSelItems(function(o){var n=Object.assign({},o);n[v]=true;return n;}); setItemLibre(''); }
+  var listaEpp=EPP_PREDEFINIDOS.concat(itemsExtra.filter(function(x){return EPP_PREDEFINIDOS.indexOf(x)<0;}));
+  var nSel=Object.keys(selItems).length;
+  function guardar(imprimir){
+    if(!form.empresa_id){setMsg('Error: selecciona la empresa');return;}
+    if(!form.persona_id){setMsg('Error: selecciona el trabajador');return;}
+    if(!form.prevencionista_id){setMsg('Error: selecciona el prevencionista de riesgos');return;}
+    if(!nSel){setMsg('Error: marca al menos un elemento entregado');return;}
+    setGuardando(true);setMsg('');
+    var items=Object.keys(selItems).map(function(n){return {nombre:n,fecha:form.fecha};});
+    api('/prevencion/epp','POST',{empresa_id:form.empresa_id,persona_id:form.persona_id,prevencionista_id:form.prevencionista_id,prevencionista_inscripcion:form.prevencionista_inscripcion,fecha:form.fecha,items:items},p.tok)
+      .then(function(r){
+        setGuardando(false);
+        setMsg('✓ Registro de entrega guardado ('+nSel+' elementos)');
+        setSelItems({});setItemsExtra([]);uF('persona_id','');
+        loadRegs();
+        if(imprimir)imprimirReg(r.entrega_id);
+      })
+      .catch(function(e){setGuardando(false);setMsg('Error: '+e.message);});
+  }
+  function imprimirReg(id){
+    api('/prevencion/epp/'+id,'GET',null,p.tok).then(function(d){
+      imprimirHTMLViaIframe(buildEppHTML(d),'EPP_'+(d.nombre_completo||'').split(' ')[0]+'_'+(d.fecha+'').slice(0,10));
+    }).catch(function(e){setMsg('Error al generar documento: '+e.message);});
+  }
+  function eliminarReg(r2){
+    if(!confirm('¿Eliminar el registro de entrega de EPP de '+r2.nombre_completo+' del '+(r2.fecha+'').slice(0,10).split('-').reverse().join('/')+'?'))return;
+    api('/prevencion/epp/'+r2.entrega_id,'DELETE',null,p.tok).then(function(){setMsg('✓ Registro eliminado');loadRegs();}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  var inpS={padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13};
+  var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#475569'};
+  var regsV=regs.filter(function(r2){return !fEmpresaReg||String(r2.empresa_id)===String(fEmpresaReg);});
+  return h('div',null,
+    h('div',{style:{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}},
+      [{k:'epp',l:'🦺 Entrega de EPP'},{k:'registros',l:'📋 Registros ('+regs.length+')'}].map(function(t){
+        return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'8px 16px',borderRadius:6,border:'1px solid '+(tab===t.k?'#1E3A2D':'#CBD5E1'),background:tab===t.k?'#1E3A2D':'#fff',color:tab===t.k?'#fff':'#475569',fontWeight:600,fontSize:12,cursor:'pointer'}},t.l);
+      })
+    ),
+    msg&&h('div',{className:'al '+(msg.indexOf('Error')>=0?'al-e':'al-s'),style:{marginBottom:10}},msg),
+    tab==='epp'&&h('div',{className:'card',style:{padding:16}},
+      h('div',{style:{fontSize:14,fontWeight:700,color:'#1E3A2D',marginBottom:4}},'Registro de Entrega de Elementos de Protección Personal'),
+      h('div',{style:{fontSize:11,color:'#64748B',marginBottom:14}},'Documento con vigencia de un año. El trabajador firma en papel la recepción de cada elemento; el prevencionista firma la declaración.'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(210px,1fr))',gap:10,marginBottom:14}},
+        h('div',null,h('label',{style:lblS},'Empresa *'),
+          h('select',{value:form.empresa_id,onChange:function(e){uF('empresa_id',e.target.value);uF('persona_id','');},style:Object.assign({},inpS,{width:'100%',borderColor:form.empresa_id?'#CBD5E1':'#F59E0B'})},
+            h('option',{value:''},'— Selecciona empresa —'),
+            empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
+        h('div',null,h('label',{style:lblS},'Trabajador *'),
+          h('select',{value:form.persona_id,onChange:function(e){uF('persona_id',e.target.value);},disabled:!form.empresa_id,style:Object.assign({},inpS,{width:'100%'})},
+            h('option',{value:''},form.empresa_id?'— Selecciona trabajador —':'Elige empresa primero'),
+            trabajadores.map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo);}))),
+        h('div',null,h('label',{style:lblS},'Fecha de entrega'),
+          h('input',{type:'date',value:form.fecha,onChange:function(e){uF('fecha',e.target.value);},style:Object.assign({},inpS,{width:'100%'})})),
+        h('div',null,h('label',{style:lblS},'Prevencionista de riesgos *'),
+          h('select',{value:form.prevencionista_id,onChange:function(e){elegirPrev(e.target.value);},style:Object.assign({},inpS,{width:'100%'})},
+            h('option',{value:''},prevencionistas.length?'— Selecciona prevencionista —':'No hay cargos "Prevencionista" en el maestro'),
+            prevencionistas.map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo+' ('+(x.empresa_nombre||'')+')');}))),
+        h('div',null,h('label',{style:lblS},'N° inscripción (Registro Servicio de Salud)'),
+          h('input',{type:'text',value:form.prevencionista_inscripcion,onChange:function(e){uF('prevencionista_inscripcion',e.target.value);},placeholder:'Ej: BB/P-795',style:Object.assign({},inpS,{width:'100%'})}))
+      ),
+      trabSel&&h('div',{style:{background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:6,padding:'8px 12px',marginBottom:14,fontSize:12,color:'#166534'}},
+        h('strong',null,trabSel.nombre_completo),' · RUT '+(trabSel.rut||'—')+' · Cargo: '+(trabSel.cargo||'—')+(trabSel.faena_nombre?' · '+trabSel.faena_nombre:'')),
+      h('div',{style:{fontSize:12,fontWeight:700,marginBottom:6}},'Elementos entregados ('+nSel+' seleccionados)'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(260px,1fr))',gap:6,marginBottom:10}},
+        listaEpp.map(function(nombre){
+          var sel=!!selItems[nombre];
+          return h('div',{key:nombre,onClick:function(){toggleItem(nombre);},style:{display:'flex',alignItems:'center',gap:8,padding:'7px 10px',background:sel?'#FEF3C7':'#F8FAFC',border:'1px solid '+(sel?'#F59E0B':'#E2E8F0'),borderRadius:6,cursor:'pointer',fontSize:12,fontWeight:sel?700:400}},
+            h('input',{type:'checkbox',checked:sel,readOnly:true}),nombre);
+        })
+      ),
+      h('div',{style:{display:'flex',gap:6,alignItems:'center',marginBottom:16}},
+        h('input',{type:'text',value:itemLibre,onChange:function(e){setItemLibre(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')agregarLibre();},placeholder:'Otro elemento no listado...',style:Object.assign({},inpS,{width:280})}),
+        h('button',{onClick:agregarLibre,style:{padding:'7px 14px',border:'1px solid #CBD5E1',borderRadius:6,background:'#F8FAFC',fontSize:12,cursor:'pointer',fontWeight:600}},'+ Agregar')
+      ),
+      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8}},
+        h(Btn,{v:'g',onClick:function(){guardar(false);},disabled:guardando},null,guardando?'Guardando...':'💾 Guardar'),
+        h(Btn,{onClick:function(){guardar(true);},disabled:guardando},guardando?'Guardando...':'💾 Guardar e imprimir PDF')
+      )
+    ),
+    tab==='registros'&&h('div',{className:'card',style:{padding:14}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
+        h('div',{style:{fontSize:13,fontWeight:700}},'Registros de entrega de EPP ('+regsV.length+(fEmpresaReg?' de '+regs.length:'')+')'),
+        h('select',{value:fEmpresaReg,onChange:function(e){setFEmpresaReg(e.target.value);},style:Object.assign({},inpS,{fontSize:12})},
+          h('option',{value:''},'Todas las empresas'),
+          empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))
+      ),
+      regsV.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:20,textAlign:'center'}},'No hay registros'+(fEmpresaReg?' para esta empresa':'')):
+      h(TBL,{cols:[
+        {lbl:'Fecha',render:function(r2){return (r2.fecha+'').slice(0,10).split('-').reverse().join('/');}},
+        {lbl:'Trabajador',render:function(r2){return h('div',null,h('div',{style:{fontWeight:600}},r2.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},(r2.rut||'')+' · '+(r2.cargo||'')));}},
+        {lbl:'Empresa',render:function(r2){return r2.empresa_nombre;}},
+        {lbl:'Faena',render:function(r2){return r2.faena_nombre||'—';}},
+        {lbl:'Elementos',c:true,render:function(r2){var its=Array.isArray(r2.items)?r2.items:JSON.parse(r2.items||'[]');return h('span',{title:its.map(function(i2){return i2.nombre;}).join(', ')},its.length);}},
+        {lbl:'Prevencionista',render:function(r2){return r2.prevencionista_nombre||'—';}},
+        {lbl:'',render:function(r2){return h('div',{style:{display:'flex',gap:4}},
+          h(Btn,{v:'a',sm:true,onClick:function(){imprimirReg(r2.entrega_id);}},null,'📑 PDF'),
+          h(Btn,{v:'r',sm:true,onClick:function(){eliminarReg(r2);}},null,'🗑'));}}
+      ],rows:regsV})
+    )
+  );
+}
+
 // ── Vista Turnos de Faena (7x7) ──
 function TurnosFaenaView(p){
   var[personas,setPersonas]=useState([]);
@@ -21202,7 +21379,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -21858,7 +22035,7 @@ function App(){
     'ia-chat':'ia',
     'solicitudes':'solicitudes',
     'transporte':'transporte',
-    'personal':'contratos','contratos':'contratos','vacaciones':'contratos','turnos-faena':'contratos','finiquitos':'contratos','cartas':'contratos',
+    'personal':'contratos','contratos':'contratos','vacaciones':'contratos','turnos-faena':'contratos','prevencion':'contratos','finiquitos':'contratos','cartas':'contratos',
     'mantenedores':'mantenedores',
     'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas','fin-remu':'finanzas','fin-activos':'finanzas',
     'rem-parametros':'remuneraciones','rem-periodos':'remuneraciones','rem-movimientos':'remuneraciones','rem-liquidaciones':'remuneraciones','rem-prestamos':'remuneraciones','rem-previred':'remuneraciones','rem-prevision':'remuneraciones'
@@ -22064,6 +22241,7 @@ function App(){
           navI('personal','👥','Maestro Personal',true),
           navI('vacaciones','🏖','Control de Vacaciones',true),
           navI('turnos-faena','🔄','Turnos de Faena',true),
+          navI('prevencion','🦺','Prevención de Riesgos',true),
           navI('contratos','📄','Contratos de Trabajo',true),
           navI('finiquitos','🧾','Cálculo de Finiquitos',true)
         ),
@@ -22144,6 +22322,7 @@ function App(){
           view==='mant-prog'&&h(MantProgView,{tok,m}),
           view==='personal'&&h(Personal,{tok,m,onMov}),
           view==='turnos-faena'&&h(TurnosFaenaView,{tok,m}),
+          view==='prevencion'&&h(PrevencionView,{tok,m}),
           view==='dashboard'&&h(Dashboard,{tok,alerts,setView}),
           view==='ingresos'&&h(IngresoView,{tok,m,user,onMov}),
           view==='salidas'&&h(SalidaView,{tok,m,user,onMov}),
