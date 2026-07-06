@@ -9644,14 +9644,41 @@ function MasterV(p){
 function FI(p){return h(FR,{label:p.l,req:p.req},h(Inp,{value:p.item[p.k]||'',onChange:v=>p.onChange(Object.assign({},p.item,{[p.k]:v})),type:p.type,ph:p.ph}));}
 function FS(p){return h(FR,{label:p.l,req:p.req},h(Sel,{value:str(p.item[p.k]||''),onChange:v=>p.onChange(Object.assign({},p.item,{[p.k]:v}))},h('option',{value:''},'Seleccione...'),(p.opts||[]).map(o=>h('option',{key:o.v,value:o.v},o.l))));}
 const BodegaForm=p=>h('div',{className:'g2'},h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FI,{k:'ubicacion',l:'Ubicacion',item:p.item,onChange:p.onChange}),h(FI,{k:'responsable',l:'Responsable',item:p.item,onChange:p.onChange}));
+// ── Turnos 7x7 (jornada excepcional): cálculo del turno vigente ──
+// inicioA = fecha (YYYY-MM-DD) en que comenzó un ciclo de trabajo del Turno A.
+function turnoFaenaInfo(inicioA,fechaRef){
+  if(!inicioA)return null;
+  function dLocal(s){var p=(s+'').slice(0,10).split('-');return new Date(+p[0],+p[1]-1,+p[2]);}
+  var hoy=fechaRef?dLocal(fechaRef):new Date(); hoy=new Date(hoy.getFullYear(),hoy.getMonth(),hoy.getDate());
+  var d0=dLocal(inicioA);
+  var dias=Math.round((hoy-d0)/86400000);
+  var ciclo=Math.floor(dias/7);
+  var turno=(((ciclo%2)+2)%2)===0?'A':'B';
+  var diaDelCiclo=((dias%7)+7)%7; // 0..6
+  var iniCiclo=new Date(hoy); iniCiclo.setDate(hoy.getDate()-diaDelCiclo);
+  var finCiclo=new Date(iniCiclo); finCiclo.setDate(iniCiclo.getDate()+6);
+  var cambio=new Date(iniCiclo); cambio.setDate(iniCiclo.getDate()+7);
+  var fmt=function(d){return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2)+'/'+d.getFullYear();};
+  return {turno:turno,otro:turno==='A'?'B':'A',dia:diaDelCiclo+1,desde:fmt(iniCiclo),hasta:fmt(finCiclo),cambio:fmt(cambio),dias_restantes:7-diaDelCiclo-1};
+}
+function TurnoBadge(t,extra){
+  if(!t)return h('span',{style:{color:'#94A3B8',fontSize:11}},'—');
+  var esA=t==='A';
+  return h('span',Object.assign({style:{display:'inline-block',padding:'2px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:esA?'#DCFCE7':'#DBEAFE',color:esA?'#15803D':'#1E40AF'}},extra||{}),'Turno '+t);
+}
 function FaenaForm(p){
   const emps=p.extra&&Array.isArray(p.extra.empresas)?p.extra.empresas:[];
+  if(p.item.turno_inicio_a&&(p.item.turno_inicio_a+'').length>10){p.item=Object.assign({},p.item,{turno_inicio_a:(p.item.turno_inicio_a+'').slice(0,10)});}
   return h('div',{className:'g2'},
     h(FS,{k:'empresa_id',l:'Empresa',req:true,item:p.item,onChange:p.onChange,opts:emps.filter(function(e){return e.activo;}).map(function(e){return{v:e.empresa_id,l:e.razon_social};})}),
     h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange}),
     h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),
     h(FI,{k:'descripcion',l:'Descripcion',item:p.item,onChange:p.onChange}),
-    h(FI,{k:'nombre_linea',l:'Nombre de línea (Forestal Mininco)',item:p.item,onChange:p.onChange,ph:'Código interno de línea'})
+    h(FI,{k:'nombre_linea',l:'Nombre de línea (Forestal Mininco)',item:p.item,onChange:p.onChange,ph:'Código interno de línea'}),
+    h('div',null,
+      h(FI,{k:'turno_inicio_a',l:'Turnos 7x7 — inicio de ciclo del Turno A',type:'date',item:p.item,onChange:p.onChange}),
+      h('div',{style:{fontSize:10,color:'#64748B',marginTop:2}},'Solo para faenas con jornada excepcional 7x7: indica un día en que el Turno A comenzó (o comenzará) sus 7 días de trabajo. Deja vacío si la faena no trabaja por turnos.')
+    )
   );
 }
 const ProvForm=p=>h('div',{className:'g2'},h(FI,{k:'rut',l:'RUT',req:true,item:p.item,onChange:p.onChange,ph:'76.543.210-5'}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FI,{k:'giro',l:'Giro',item:p.item,onChange:p.onChange}),h(FI,{k:'direccion',l:'Direccion',item:p.item,onChange:p.onChange}),h(FI,{k:'contacto',l:'Contacto',item:p.item,onChange:p.onChange}),h(FI,{k:'telefono',l:'Telefono',item:p.item,onChange:p.onChange}),h(FI,{k:'email',l:'Email',type:'email',item:p.item,onChange:p.onChange}));
@@ -15238,6 +15265,7 @@ function Personal(p){
   const[filtEstado,setFiltEstado]=useState('activos'); // 'activos' | 'inactivos' | 'todos'
   const[filtCargo,setFiltCargo]=useState('');
   const[filtContrato,setFiltContrato]=useState('');
+  const[filtTurno,setFiltTurno]=useState('');
   const[haberesPersona,setHaberesPersona]=useState(null); // trabajador en edición de haberes
   const[haberesForm,setHaberesForm]=useState(null);
   const[haberesLoading,setHaberesLoading]=useState(false);
@@ -15350,6 +15378,9 @@ function Personal(p){
     if(filtFaena&&String(x.faena_id)!==String(filtFaena)) return false;
     if(filtCargo&&String(x.cargo||'')!==String(filtCargo)) return false;
     if(filtContrato&&String(x.tipo_contrato||'')!==String(filtContrato)) return false;
+    if(filtTurno==='A'&&x.turno!=='A') return false;
+    if(filtTurno==='B'&&x.turno!=='B') return false;
+    if(filtTurno==='normal'&&(x.turno==='A'||x.turno==='B')) return false;
     // Filtro por estado
     if(filtEstado==='activos'&&!x.activo) return false;
     if(filtEstado==='inactivos'&&x.activo) return false;
@@ -15476,8 +15507,14 @@ function Personal(p){
           h('option',{value:''},'Todos los contratos'),
           TIPOS_CONTRATO.map(function(c){return h('option',{key:c.v,value:c.v},c.l);})
         ),
+        h('select',{value:filtTurno,onChange:function(e){setFiltTurno(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,fontWeight:filtTurno?600:400}},
+          h('option',{value:''},'Todos los turnos'),
+          h('option',{value:'A'},'Turno A'),
+          h('option',{value:'B'},'Turno B'),
+          h('option',{value:'normal'},'Jornada normal (sin turno)')
+        ),
         h('input',{type:'text',placeholder:'Buscar nombre, apellido, RUT, cargo...',value:buscar,onChange:function(e){setBuscar(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:230}}),
-        (filtEmpresa||filtFaena||filtCargo||filtContrato||buscar)&&h('button',{onClick:function(){setFiltEmpresa('');setFiltFaena('');setFiltCargo('');setFiltContrato('');setBuscar('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
+        (filtEmpresa||filtFaena||filtCargo||filtContrato||filtTurno||buscar)&&h('button',{onClick:function(){setFiltEmpresa('');setFiltFaena('');setFiltCargo('');setFiltContrato('');setFiltTurno('');setBuscar('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
         h('span',{style:{fontSize:11,color:'#64748B'}},rows.length+'/'+personas.length+' registros')
       ),
       h('div',{style:{display:'flex',gap:6}},
@@ -15608,6 +15645,7 @@ function Personal(p){
         {lbl:'Cargo',k:'cargo'},
         {lbl:'Categoría',render:function(r){return catLabel(r.categoria);}},
         {lbl:'Faena',render:function(r){return r.faena_nombre||r.centro_costo||'—';}},
+        {lbl:'Turno',render:function(r){return r.turno==='A'||r.turno==='B'?TurnoBadge(r.turno):h('span',{style:{color:'#94A3B8',fontSize:10}},'Normal');}},
         {lbl:'Contrato',k:'tipo_contrato'},
         {lbl:'Ingreso',render:function(r){return fmtD(r.fecha_ingreso);}},
         {lbl:'Término',render:function(r){
@@ -16687,6 +16725,121 @@ function imprimirHTMLViaIframe(html,titulo){
   }
   ifr.onload=function(){ setTimeout(go,400); };
   setTimeout(go,1500);
+}
+
+// ── Vista Turnos de Faena (7x7) ──
+function TurnosFaenaView(p){
+  var[personas,setPersonas]=useState([]);
+  var[msg,setMsg]=useState('');
+  var[fEmpresa,setFEmpresa]=useState('');
+  var _h=new Date();
+  var[calMes,setCalMes]=useState({y:_h.getFullYear(),m:_h.getMonth()}); // m: 0-11
+  var MESES_CAL=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  function moverMes(d){ setCalMes(function(c){var m=c.m+d,y=c.y; if(m<0){m=11;y--;} if(m>11){m=0;y++;} return{y:y,m:m};}); }
+  function miniCal(f){
+    var y=calMes.y,m=calMes.m;
+    var diasEnMes=new Date(y,m+1,0).getDate();
+    var dow=(new Date(y,m,1).getDay()+6)%7; // lunes=0
+    var hoy=new Date(); var esMesActual=(hoy.getFullYear()===y&&hoy.getMonth()===m); var hoyD=hoy.getDate();
+    var celdas=[]; for(var i=0;i<dow;i++)celdas.push(null); for(var d=1;d<=diasEnMes;d++)celdas.push(d);
+    while(celdas.length%7!==0)celdas.push(null);
+    var cellS=function(extra){return Object.assign({width:26,height:22,display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,borderRadius:4},extra||{});};
+    return h('div',{style:{minWidth:210}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
+        h('button',{onClick:function(){moverMes(-1);},style:{border:'1px solid #CBD5E1',background:'#fff',borderRadius:4,cursor:'pointer',fontSize:11,padding:'1px 7px'}},'‹'),
+        h('span',{style:{fontSize:11,fontWeight:700,color:'#334155'}},MESES_CAL[m]+' '+y),
+        h('button',{onClick:function(){moverMes(1);},style:{border:'1px solid #CBD5E1',background:'#fff',borderRadius:4,cursor:'pointer',fontSize:11,padding:'1px 7px'}},'›')
+      ),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,26px)',gap:2}},
+        ['L','M','M','J','V','S','D'].map(function(dn,i){return h('div',{key:'h'+i,style:cellS({fontWeight:700,color:'#94A3B8',height:14})},dn);}),
+        celdas.map(function(d,i){
+          if(d===null)return h('div',{key:'v'+i,style:cellS()},'');
+          var fecha=y+'-'+('0'+(m+1)).slice(-2)+'-'+('0'+d).slice(-2);
+          var ti=turnoFaenaInfo(f.turno_inicio_a,fecha);
+          var esA=ti&&ti.turno==='A';
+          var esHoy=esMesActual&&d===hoyD;
+          return h('div',{key:'d'+i,title:'Turno '+(ti?ti.turno:'—')+' — '+('0'+d).slice(-2)+'/'+('0'+(m+1)).slice(-2),style:cellS({
+            background:esA?'#DCFCE7':'#DBEAFE',color:esA?'#15803D':'#1E40AF',fontWeight:esHoy?800:500,
+            border:esHoy?'2px solid #F59E0B':'1px solid '+(esA?'#BBF7D0':'#BFDBFE')
+          })},d);
+        })
+      ),
+      h('div',{style:{display:'flex',gap:8,marginTop:5,fontSize:9,color:'#64748B',justifyContent:'center'}},
+        h('span',{style:{display:'inline-flex',alignItems:'center',gap:3}},h('span',{style:{width:10,height:10,background:'#DCFCE7',border:'1px solid #BBF7D0',borderRadius:2,display:'inline-block'}}),'Turno A'),
+        h('span',{style:{display:'inline-flex',alignItems:'center',gap:3}},h('span',{style:{width:10,height:10,background:'#DBEAFE',border:'1px solid #BFDBFE',borderRadius:2,display:'inline-block'}}),'Turno B'),
+        h('span',{style:{display:'inline-flex',alignItems:'center',gap:3}},h('span',{style:{width:10,height:10,border:'2px solid #F59E0B',borderRadius:2,display:'inline-block'}}),'Hoy')
+      )
+    );
+  }
+  var faenasTurno=(p.m.faenas||[]).filter(function(f){return f.activo&&f.turno_inicio_a&&(!fEmpresa||String(f.empresa_id)===String(fEmpresa));});
+  var faenasSin=(p.m.faenas||[]).filter(function(f){return f.activo&&!f.turno_inicio_a&&(!fEmpresa||String(f.empresa_id)===String(fEmpresa));});
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  function load(){ api('/personal','GET',null,p.tok).then(function(r){setPersonas((Array.isArray(r)?r:[]).filter(function(x){return x.activo!==false;}));}).catch(function(){}); }
+  useEffect(function(){ load(); },[]);
+  function setTurno(persona,t){
+    api('/personal/'+persona.persona_id+'/turno','PATCH',{turno:t||null},p.tok)
+      .then(function(){ setPersonas(function(l){return l.map(function(z){return z.persona_id===persona.persona_id?Object.assign({},z,{turno:t||null}):z;});}); })
+      .catch(function(e){ setMsg('Error: '+e.message); });
+  }
+  function selTurno(x){
+    return h('select',{value:x.turno||'',onChange:function(e){setTurno(x,e.target.value);},style:{fontSize:10,padding:'2px 4px',border:'1px solid #CBD5E1',borderRadius:4}},
+      h('option',{value:''},'Normal'),h('option',{value:'A'},'A'),h('option',{value:'B'},'B'));
+  }
+  return h('div',null,
+    h('div',{style:{display:'flex',gap:8,alignItems:'center',marginBottom:12,flexWrap:'wrap'}},
+      h('select',{value:fEmpresa,onChange:function(e){setFEmpresa(e.target.value);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:220}},
+        h('option',{value:''},'Todas las empresas'),
+        empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
+      h('span',{style:{fontSize:11,color:'#64748B'}},'Sistema 7x7: 7 días de trabajo por 7 de descanso, turnos A y B alternados. La fecha de inicio del ciclo A se configura en Mantenedores → Faenas.')
+    ),
+    msg&&h('div',{className:'al al-e',style:{marginBottom:10}},msg),
+    faenasTurno.length===0&&h('div',{className:'card',style:{padding:24,textAlign:'center',color:'#94A3B8',fontSize:13}},
+      'Ninguna faena tiene configurado el sistema de turnos 7x7.',h('br',null),
+      h('span',{style:{fontSize:11}},'Ve a Mantenedores → Faenas, edita la faena y define la fecha "inicio de ciclo del Turno A".')),
+    faenasTurno.map(function(f){
+      var ti=turnoFaenaInfo(f.turno_inicio_a);
+      var pers=personas.filter(function(x){return String(x.faena_id)===String(f.faena_id);});
+      var pA=pers.filter(function(x){return x.turno==='A';});
+      var pB=pers.filter(function(x){return x.turno==='B';});
+      var pSin=pers.filter(function(x){return x.turno!=='A'&&x.turno!=='B';});
+      function colTrab(lista,titulo,activos){
+        return h('div',{style:{flex:1,minWidth:240,background:activos?'#F0FDF4':'#F8FAFC',border:'1px solid '+(activos?'#86EFAC':'#E2E8F0'),borderRadius:6,padding:10}},
+          h('div',{style:{fontSize:12,fontWeight:700,marginBottom:6,color:activos?'#15803D':'#475569'}},titulo+' ('+lista.length+')'+(activos?' — TRABAJANDO':' — descanso')),
+          lista.length===0?h('div',{style:{fontSize:11,color:'#94A3B8'}},'Sin trabajadores asignados'):
+          lista.map(function(x){return h('div',{key:x.persona_id,style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:6,padding:'3px 0',borderBottom:'1px dotted #E2E8F0'}},
+            h('div',null,h('div',{style:{fontSize:11,fontWeight:600}},x.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},x.cargo||'')),
+            selTurno(x));})
+        );
+      }
+      return h('div',{key:f.faena_id,className:'card',style:{padding:14,marginBottom:14,borderLeft:'5px solid '+(ti.turno==='A'?'#16A34A':'#2563EB')}},
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:10,marginBottom:10}},
+          h('div',null,
+            h('div',{style:{fontSize:15,fontWeight:700,color:'#1E3A2D'}},f.nombre),
+            h('div',{style:{fontSize:11,color:'#64748B'}},(f.empresa_nombre||'')+' · '+f.codigo)
+          ),
+          h('div',{style:{textAlign:'right'}},
+            h('div',{style:{marginBottom:4}},TurnoBadge(ti.turno),h('span',{style:{fontSize:11,color:'#475569',marginLeft:6}},'trabajando — día '+ti.dia+' de 7')),
+            h('div',{style:{fontSize:11,color:'#64748B'}},'Ciclo: '+ti.desde+' al '+ti.hasta),
+            h('div',{style:{fontSize:11,fontWeight:600,color:'#92400E'}},'↻ El '+ti.cambio+' entra el Turno '+ti.otro)
+          )
+        ),
+        h('div',{style:{display:'flex',gap:10,flexWrap:'wrap'}},
+          h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,padding:10}},miniCal(f)),
+          colTrab(pA,'Turno A',ti.turno==='A'),
+          colTrab(pB,'Turno B',ti.turno==='B'),
+          pSin.length>0&&h('div',{style:{flex:1,minWidth:240,background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:6,padding:10}},
+            h('div',{style:{fontSize:12,fontWeight:700,marginBottom:6,color:'#92400E'}},'Sin turno asignado ('+pSin.length+')'),
+            h('div',{style:{fontSize:10,color:'#92400E',marginBottom:6}},'Asigna A o B, o deja "Normal" si trabaja jornada normal.'),
+            pSin.map(function(x){return h('div',{key:x.persona_id,style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:6,padding:'3px 0',borderBottom:'1px dotted #FDE68A'}},
+              h('div',null,h('div',{style:{fontSize:11,fontWeight:600}},x.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},x.cargo||'')),
+              selTurno(x));})
+          )
+        )
+      );
+    }),
+    faenasSin.length>0&&h('div',{className:'card',style:{padding:12,marginTop:4}},
+      h('div',{style:{fontSize:11,color:'#64748B'}},'Faenas sin sistema de turnos (jornada normal): '+faenasSin.map(function(f){return f.nombre;}).join(', ')+'. Si alguna trabaja 7x7, configura su fecha de inicio del Turno A en Mantenedores → Faenas.'))
+  );
 }
 
 // ── Vista de Anexos ──
@@ -21031,7 +21184,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -21687,7 +21840,7 @@ function App(){
     'ia-chat':'ia',
     'solicitudes':'solicitudes',
     'transporte':'transporte',
-    'personal':'contratos','contratos':'contratos','vacaciones':'contratos','finiquitos':'contratos','cartas':'contratos',
+    'personal':'contratos','contratos':'contratos','vacaciones':'contratos','turnos-faena':'contratos','finiquitos':'contratos','cartas':'contratos',
     'mantenedores':'mantenedores',
     'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas','fin-remu':'finanzas','fin-activos':'finanzas',
     'rem-parametros':'remuneraciones','rem-periodos':'remuneraciones','rem-movimientos':'remuneraciones','rem-liquidaciones':'remuneraciones','rem-prestamos':'remuneraciones','rem-previred':'remuneraciones','rem-prevision':'remuneraciones'
@@ -21892,6 +22045,7 @@ function App(){
         canSee('contratos')&&grp.pers&&h('div',null,
           navI('personal','👥','Maestro Personal',true),
           navI('vacaciones','🏖','Control de Vacaciones',true),
+          navI('turnos-faena','🔄','Turnos de Faena',true),
           navI('contratos','📄','Contratos de Trabajo',true),
           navI('finiquitos','🧾','Cálculo de Finiquitos',true)
         ),
@@ -21971,6 +22125,7 @@ function App(){
           view==='mant-tareas-std'&&h(MantTareasStdAdmin,{tok,m}),
           view==='mant-prog'&&h(MantProgView,{tok,m}),
           view==='personal'&&h(Personal,{tok,m,onMov}),
+          view==='turnos-faena'&&h(TurnosFaenaView,{tok,m}),
           view==='dashboard'&&h(Dashboard,{tok,alerts,setView}),
           view==='ingresos'&&h(IngresoView,{tok,m,user,onMov}),
           view==='salidas'&&h(SalidaView,{tok,m,user,onMov}),
@@ -22040,7 +22195,7 @@ function App(){
               h(MasterV,{tok,onMov,titulo:'Subcategoria',ep:'subcategorias',pk:'subcategoria_id',Form:SubcatForm,blank:{nombre:'',categoria_id:'',activo:true},extra:{cats:m.cats},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Categoria',render:r=>(m.cats.find(c=>c.categoria_id===r.categoria_id)||{}).nombre||'—'}]})
             )
           ),
-          view==='faenas'&&h(MasterV,{tok,onMov,titulo:'Faena',ep:'faenas',pk:'faena_id',Form:FaenaForm,blank:{codigo:'',nombre:'',descripcion:'',empresa_id:'',activo:true},extra:{empresas:m.empresas},importKey:'faenas',cols:[{lbl:'Empresa',render:function(r){return (m.empresas.find(function(e){return e.empresa_id===parseInt(r.empresa_id||0);})||{}).razon_social||'—';}},{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
+          view==='faenas'&&h(MasterV,{tok,onMov,titulo:'Faena',ep:'faenas',pk:'faena_id',Form:FaenaForm,blank:{codigo:'',nombre:'',descripcion:'',empresa_id:'',turno_inicio_a:'',activo:true},extra:{empresas:m.empresas},importKey:'faenas',cols:[{lbl:'Empresa',render:function(r){return (m.empresas.find(function(e){return e.empresa_id===parseInt(r.empresa_id||0);})||{}).razon_social||'—';}},{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'},{lbl:'Turno hoy',render:function(r){var ti=turnoFaenaInfo(r.turno_inicio_a);return ti?TurnoBadge(ti.turno,{title:'Ciclo '+ti.desde+' al '+ti.hasta+' — cambia el '+ti.cambio}):h('span',{style:{color:'#94A3B8',fontSize:11}},'—');}}]}),
           view==='equipos'&&h(MasterV,{tok,onMov,titulo:'Cargo / Centro de costo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',importBulkJSON:'/api/import/equipos',blank:{empresa_id:'',tipo_cargo:'maquinaria',codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',modelo_id:'',anio:'',placa_patente:'',chasis:'',contacto_terreno:'',horas_productivas_dia:'12',patente_serie:'',proceso_productivo:'',activo:true},extra:{faenas:m.faenas,empresas:m.empresas,modelos:m.modelos||[]},cols:[{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Tipo',render:function(r){var tc=r.tipo_cargo||'maquinaria';var colors={maquinaria:'b',camioneta:'teal',camion:'p',camion_estanque:'y',camion_cama_baja:'y',camion_mantencion:'p',furgon:'teal',estanque:'y',faena:'g',taller:'gray',equipos_taller:'gray',administracion:'b'};return h(Bg,{c:colors[tc]||'gray'},tc.replace(/_/g,' '));}},{lbl:'Código',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Proceso',render:function(r){return r.proceso_productivo?h(Bg,{c:'g'},r.proceso_productivo.replace(/_/g,' ')):'—';}},{lbl:'Modelo',render:function(r){return r.modelo_marca?(r.modelo_marca+' '+r.modelo_nombre):(r.marca?(r.marca+' '+(r.modelo||'')):'—');}},{lbl:'Faena',k:'faena_nombre'}]}),
           view==='fundos'&&h(FundosView,{tok,m}),
           view==='modelos'&&h(ModelosAdmin,{tok,m,onMov}),
