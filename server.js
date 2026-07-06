@@ -1393,7 +1393,7 @@ faenaRouter.put('/:id', auth, async(req,res)=>{
       empresa_id=er.rows[0].empresa_id;
     }
     empresa_id=empresa_id?parseInt(empresa_id):null;
-    const r=await pool.query('UPDATE faenas SET codigo=$1,nombre=$2,descripcion=$3,empresa_id=$4,nombre_linea=$5 WHERE faena_id=$6 RETURNING *',[codigo,nombre||null,descripcion||null,empresa_id,nombre_linea||null,req.params.id]);
+    const r=await pool.query('UPDATE faenas SET codigo=$1,nombre=$2,descripcion=$3,empresa_id=$4,nombre_linea=$5,turno_inicio_a=$6 WHERE faena_id=$7 RETURNING *',[codigo,nombre||null,descripcion||null,empresa_id,nombre_linea||null,req.body.turno_inicio_a||null,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -6282,6 +6282,17 @@ app.patch('/api/personal/:id/activo', auth, async(req,res)=>{
   try{const r=await pool.query('UPDATE personal SET activo=NOT activo WHERE persona_id=$1 RETURNING *',[req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
 
+// Asignar turno 7x7 (A/B) o jornada normal (null) a un trabajador
+app.patch('/api/personal/:id/turno', auth, async(req,res)=>{
+  try{
+    let t=req.body.turno;
+    t=(t==='A'||t==='B')?t:null;
+    const r=await pool.query('UPDATE personal SET turno=$1 WHERE persona_id=$2 RETURNING persona_id,nombre_completo,turno',[t,req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Trabajador no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 // Actualizar SOLO los haberes de un trabajador (editor por trabajador)
 app.patch('/api/personal/:id/haberes', auth, async(req,res)=>{
   try{
@@ -6732,6 +6743,8 @@ async function setupRendiciones(q){
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS bono_produccion_tarifa NUMERIC(12,2) DEFAULT 0');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS bono_produccion_detalle TEXT');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS semana_corrida BOOLEAN DEFAULT false');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS turno VARCHAR(1)');}catch(e){}
+  try{await q('ALTER TABLE faenas ADD COLUMN IF NOT EXISTS turno_inicio_a DATE');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS asig_colacion NUMERIC(10,2) DEFAULT 0');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS asig_movilizacion NUMERIC(10,2) DEFAULT 0');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS asig_viatico NUMERIC(10,2) DEFAULT 0');}catch(e){}
