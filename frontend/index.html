@@ -9567,9 +9567,13 @@ function RodalesModal(p){
 
 function MasterV(p){
   const[items,setItems]=useState([]);const[modal,setModal]=useState(null);const[q,setQ]=useState('');const[err,setErr]=useState('');const[delErr,setDelErr]=useState('');const[showImport,setShowImport]=useState(false);
+  const[fVals,setFVals]=useState({});
   function load(){api('/'+p.ep,'GET',null,p.tok).then(function(r){setItems(Array.isArray(r)?r:[]);}).catch(function(){});}
   useEffect(function(){load();},[p.ep,p.tok]);
-  const filtered=useMemo(function(){return items.filter(function(x){return !q||JSON.stringify(Object.values(x)).toLowerCase().includes(q.toLowerCase());});},[items,q]);
+  const filtered=useMemo(function(){return items.filter(function(x){
+    if(p.filters){for(var i=0;i<p.filters.length;i++){var f=p.filters[i];var v=fVals[f.k];if(v&&String(x[f.k]||'')!==String(v))return false;}}
+    return !q||JSON.stringify(Object.values(x)).toLowerCase().includes(q.toLowerCase());
+  });},[items,q,fVals,p.filters]);
   function save(item){
     setErr('');
     const method=item[p.pk]?'PUT':'POST';
@@ -9584,8 +9588,16 @@ function MasterV(p){
     api('/'+p.ep+'/'+id,'DELETE',null,p.tok).then(function(){load();p.onMov&&p.onMov();}).catch(function(ex){setDelErr(ex.message);});
   }
   return h('div',null,
-    h('div',{style:{display:'flex',gap:8,marginBottom:10}},
+    h('div',{style:{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap',alignItems:'center'}},
       h('input',{value:q,onChange:e=>setQ(e.target.value),placeholder:'Buscar...',style:{maxWidth:250}}),
+      p.filters&&p.filters.map(function(f){
+        var v=fVals[f.k]||'';
+        return h('select',{key:f.k,value:v,onChange:function(e){var nv=e.target.value;setFVals(function(o){var n=Object.assign({},o);n[f.k]=nv;return n;});},style:{padding:'6px 10px',border:'1px solid '+(v?'#1E3A2D':'#CBD5E1'),borderRadius:5,fontSize:12,minWidth:180,fontWeight:v?600:400,background:v?'#F0FDF4':'#fff'}},
+          h('option',{value:''},f.lbl),
+          f.opts.map(function(o){return h('option',{key:o.v,value:o.v},o.l);}));
+      }),
+      p.filters&&Object.keys(fVals).some(function(k){return fVals[k];})&&h('button',{onClick:function(){setFVals({});},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
+      p.filters&&h('span',{style:{fontSize:11,color:'#64748B'}},filtered.length+'/'+items.length),
       h(Btn,{onClick:function(){setErr('');setModal(Object.assign({},p.blank));}},'+ Agregar'),
       p.extraBtns&&p.extraBtns(),
       p.importKey&&h(Btn,{v:'g',sm:true,onClick:function(){setShowImport(true);}},null,'⬆ Importar CSV'),
@@ -22202,7 +22214,7 @@ function App(){
             )
           ),
           view==='faenas'&&h(MasterV,{tok,onMov,titulo:'Faena',ep:'faenas',pk:'faena_id',Form:FaenaForm,blank:{codigo:'',nombre:'',descripcion:'',empresa_id:'',turno_inicio_a:'',activo:true},extra:{empresas:m.empresas},importKey:'faenas',cols:[{lbl:'Empresa',render:function(r){return (m.empresas.find(function(e){return e.empresa_id===parseInt(r.empresa_id||0);})||{}).razon_social||'—';}},{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'},{lbl:'Turno hoy',render:function(r){var ti=turnoFaenaInfo(r.turno_inicio_a);return ti?TurnoBadge(ti.turno,{title:'Ciclo '+ti.desde+' al '+ti.hasta+' — cambia el '+ti.cambio}):h('span',{style:{color:'#94A3B8',fontSize:11}},'—');}}]}),
-          view==='equipos'&&h(MasterV,{tok,onMov,titulo:'Cargo / Centro de costo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',importBulkJSON:'/api/import/equipos',blank:{empresa_id:'',tipo_cargo:'maquinaria',codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',modelo_id:'',anio:'',placa_patente:'',chasis:'',contacto_terreno:'',horas_productivas_dia:'12',patente_serie:'',proceso_productivo:'',activo:true},extra:{faenas:m.faenas,empresas:m.empresas,modelos:m.modelos||[]},cols:[{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Tipo',render:function(r){var tc=r.tipo_cargo||'maquinaria';var colors={maquinaria:'b',camioneta:'teal',camion:'p',camion_estanque:'y',camion_cama_baja:'y',camion_mantencion:'p',furgon:'teal',estanque:'y',faena:'g',taller:'gray',equipos_taller:'gray',administracion:'b'};return h(Bg,{c:colors[tc]||'gray'},tc.replace(/_/g,' '));}},{lbl:'Código',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Proceso',render:function(r){return r.proceso_productivo?h(Bg,{c:'g'},r.proceso_productivo.replace(/_/g,' ')):'—';}},{lbl:'Modelo',render:function(r){return r.modelo_marca?(r.modelo_marca+' '+r.modelo_nombre):(r.marca?(r.marca+' '+(r.modelo||'')):'—');}},{lbl:'Faena',k:'faena_nombre'}]}),
+          view==='equipos'&&h(MasterV,{tok,onMov,titulo:'Cargo / Centro de costo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',importBulkJSON:'/api/import/equipos',filters:[{k:'empresa_id',lbl:'Todas las empresas',opts:(m.empresas||[]).filter(function(e){return e.activo;}).map(function(e){return{v:e.empresa_id,l:e.razon_social};})},{k:'faena_id',lbl:'Todas las faenas',opts:(m.faenas||[]).filter(function(f){return f.activo;}).map(function(f){return{v:f.faena_id,l:f.nombre};})}],blank:{empresa_id:'',tipo_cargo:'maquinaria',codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',modelo_id:'',anio:'',placa_patente:'',chasis:'',contacto_terreno:'',horas_productivas_dia:'12',patente_serie:'',proceso_productivo:'',activo:true},extra:{faenas:m.faenas,empresas:m.empresas,modelos:m.modelos||[]},cols:[{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Tipo',render:function(r){var tc=r.tipo_cargo||'maquinaria';var colors={maquinaria:'b',camioneta:'teal',camion:'p',camion_estanque:'y',camion_cama_baja:'y',camion_mantencion:'p',furgon:'teal',estanque:'y',faena:'g',taller:'gray',equipos_taller:'gray',administracion:'b'};return h(Bg,{c:colors[tc]||'gray'},tc.replace(/_/g,' '));}},{lbl:'Código',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Proceso',render:function(r){return r.proceso_productivo?h(Bg,{c:'g'},r.proceso_productivo.replace(/_/g,' ')):'—';}},{lbl:'Modelo',render:function(r){return r.modelo_marca?(r.modelo_marca+' '+r.modelo_nombre):(r.marca?(r.marca+' '+(r.modelo||'')):'—');}},{lbl:'Faena',k:'faena_nombre'}]}),
           view==='fundos'&&h(FundosView,{tok,m}),
           view==='modelos'&&h(ModelosAdmin,{tok,m,onMov}),
           view==='proveedores'&&h(ProveedoresViewW,{tok,onMov}),
