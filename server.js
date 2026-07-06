@@ -10643,6 +10643,72 @@ app.get('/api/fin/remuneraciones', auth, async(req,res)=>{
     res.json({existe:true, resumen:await finRemuResumen(r.rows[0].periodo_id)});
   }catch(e){res.status(500).json({error:e.message});}
 });
+// ═══ PREVENCIÓN DE RIESGOS — Registro de Entrega de EPP ═══
+let _prevEppOk=false;
+async function prevEppEnsure(){
+  if(_prevEppOk)return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS prev_epp_entregas (
+    entrega_id SERIAL PRIMARY KEY,
+    empresa_id INT NOT NULL,
+    persona_id INT NOT NULL,
+    prevencionista_id INT,
+    prevencionista_inscripcion VARCHAR(60),
+    fecha DATE NOT NULL,
+    items JSONB NOT NULL DEFAULT '[]',
+    observaciones TEXT,
+    creado_en TIMESTAMP DEFAULT NOW())`);
+  _prevEppOk=true;
+}
+app.post('/api/prevencion/epp', auth, async(req,res)=>{
+  try{
+    await prevEppEnsure();
+    const b=req.body;
+    if(!b.empresa_id||!b.persona_id) return res.status(400).json({error:'Empresa y trabajador son obligatorios'});
+    if(!b.fecha) return res.status(400).json({error:'Indica la fecha de entrega'});
+    if(!Array.isArray(b.items)||!b.items.length) return res.status(400).json({error:'Selecciona al menos un elemento de protección'});
+    if(!b.prevencionista_id) return res.status(400).json({error:'Selecciona el prevencionista de riesgos'});
+    const r=await pool.query('INSERT INTO prev_epp_entregas(empresa_id,persona_id,prevencionista_id,prevencionista_inscripcion,fecha,items,observaciones) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING entrega_id',
+      [b.empresa_id,b.persona_id,b.prevencionista_id,b.prevencionista_inscripcion||null,b.fecha,JSON.stringify(b.items),b.observaciones||null]);
+    res.json({ok:true,entrega_id:r.rows[0].entrega_id});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.get('/api/prevencion/epp', auth, async(req,res)=>{
+  try{
+    await prevEppEnsure();
+    const r=await pool.query(`SELECT ep.entrega_id,ep.empresa_id,ep.persona_id,ep.prevencionista_id,ep.prevencionista_inscripcion,ep.fecha,ep.items,ep.creado_en,
+      p.nombre_completo,p.rut,p.cargo,p.faena_id,fa.nombre AS faena_nombre,
+      pr.nombre_completo AS prevencionista_nombre,
+      e.razon_social AS empresa_nombre
+      FROM prev_epp_entregas ep
+      JOIN personal p ON ep.persona_id=p.persona_id
+      LEFT JOIN faenas fa ON p.faena_id=fa.faena_id
+      LEFT JOIN personal pr ON ep.prevencionista_id=pr.persona_id
+      JOIN empresas e ON ep.empresa_id=e.empresa_id
+      ORDER BY ep.fecha DESC, ep.entrega_id DESC LIMIT 500`);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/prevencion/epp/:id', auth, async(req,res)=>{
+  try{
+    await prevEppEnsure();
+    const r=await pool.query(`SELECT ep.*,
+      p.nombre_completo,p.rut,p.cargo,
+      pr.nombre_completo AS prevencionista_nombre,
+      e.razon_social AS empresa_nombre,e.rut AS empresa_rut,e.logo_base64
+      FROM prev_epp_entregas ep
+      JOIN personal p ON ep.persona_id=p.persona_id
+      LEFT JOIN personal pr ON ep.prevencionista_id=pr.persona_id
+      JOIN empresas e ON ep.empresa_id=e.empresa_id
+      WHERE ep.entrega_id=$1`,[req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Registro no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.delete('/api/prevencion/epp/:id', auth, async(req,res)=>{
+  try{ await prevEppEnsure(); await pool.query('DELETE FROM prev_epp_entregas WHERE entrega_id=$1',[req.params.id]); res.json({ok:true}); }
+  catch(e){res.status(400).json({error:e.message});}
+});
+
 app.get('/api/fin/remuneraciones/periodos', auth, async(req,res)=>{
   try{
     await finRemuEnsure();
