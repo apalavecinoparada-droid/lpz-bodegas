@@ -8050,7 +8050,7 @@ app.get('/api/terreno/registros', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.get('/api/terreno/registros/:id/tob', auth, async(req,res)=>{
-  try{res.json((await pool.query('SELECT d.*,c.causa,c.clasificacion FROM terreno_tob_detalle d JOIN terreno_tob_categorias c ON d.tob_cat_id=c.tob_cat_id WHERE d.registro_id=$1 ORDER BY d.detalle_id',[req.params.id])).rows);}catch(e){res.status(500).json({error:e.message});}
+  try{res.json((await pool.query("SELECT d.*,c.causa,COALESCE(NULLIF(TRIM(d.clasificacion),''),'E') AS clasificacion FROM terreno_tob_detalle d JOIN terreno_tob_categorias c ON d.tob_cat_id=c.tob_cat_id WHERE d.registro_id=$1 ORDER BY d.detalle_id",[req.params.id])).rows);}catch(e){res.status(500).json({error:e.message});}
 });
 
 // ── INFORME DE TERRENO: agrupado por empresa/faena/equipo ──
@@ -8091,7 +8091,7 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
     if(det.rows.length){
       const regIds=det.rows.map(r=>r.registro_id);
       const tobDet=await pool.query(`
-        SELECT t.registro_id, c.causa, c.clasificacion, t.horas, t.observacion
+        SELECT t.registro_id, c.causa, COALESCE(NULLIF(TRIM(t.clasificacion),''),'E') AS clasificacion, t.horas, t.observacion
         FROM terreno_tob_detalle t
         JOIN terreno_tob_categorias c ON t.tob_cat_id=c.tob_cat_id
         WHERE t.registro_id = ANY($1::int[])
