@@ -9741,10 +9741,24 @@ function turnoFaenaInfo(inicioA,fechaRef){
   var fmt=function(d){return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2)+'/'+d.getFullYear();};
   return {turno:turno,otro:turno==='A'?'B':'A',dia:diaDelCiclo+1,desde:fmt(iniCiclo),hasta:fmt(finCiclo),cambio:fmt(cambio),dias_restantes:7-diaDelCiclo-1};
 }
+// Ciclo 7x7 individual (desfasado de la faena): estado de una persona según su fecha ancla
+function cicloPropioInfo(inicio,fechaRef){
+  if(!inicio)return null;
+  function dL(s){var p=(s+'').slice(0,10).split('-');return new Date(+p[0],+p[1]-1,+p[2]);}
+  var hoy=fechaRef?dL(fechaRef):new Date(); hoy=new Date(hoy.getFullYear(),hoy.getMonth(),hoy.getDate());
+  var dias=Math.round((hoy-dL(inicio))/86400000);
+  var ciclo=Math.floor(dias/7);
+  var trabajando=(((ciclo%2)+2)%2)===0;
+  var dia=((dias%7)+7)%7;
+  var iniC=new Date(hoy); iniC.setDate(hoy.getDate()-dia);
+  var cambio=new Date(iniC); cambio.setDate(iniC.getDate()+7);
+  var fmt=function(d){return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2);};
+  return {trabajando:trabajando,dia:dia+1,cambio:fmt(cambio)};
+}
 function TurnoBadge(t,extra){
   if(!t)return h('span',{style:{color:'#94A3B8',fontSize:11}},'—');
-  var esA=t==='A';
-  return h('span',Object.assign({style:{display:'inline-block',padding:'2px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:esA?'#DCFCE7':'#DBEAFE',color:esA?'#15803D':'#1E40AF'}},extra||{}),'Turno '+t);
+  var colores=t==='A'?{bg:'#DCFCE7',fg:'#15803D'}:(t==='B'?{bg:'#DBEAFE',fg:'#1E40AF'}:(t==='P'?{bg:'#F3E8FF',fg:'#7E22CE'}:{bg:'#FEF3C7',fg:'#92400E'}));
+  return h('span',Object.assign({style:{display:'inline-block',padding:'2px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:colores.bg,color:colores.fg}},extra||{}),t==='AB'?'Turno A+B':(t==='P'?'Ciclo propio':'Turno '+t));
 }
 function FaenaForm(p){
   const emps=p.extra&&Array.isArray(p.extra.empresas)?p.extra.empresas:[];
@@ -15460,7 +15474,9 @@ function Personal(p){
     if(filtContrato&&String(x.tipo_contrato||'')!==String(filtContrato)) return false;
     if(filtTurno==='A'&&x.turno!=='A') return false;
     if(filtTurno==='B'&&x.turno!=='B') return false;
-    if(filtTurno==='normal'&&(x.turno==='A'||x.turno==='B')) return false;
+    if(filtTurno==='AB'&&x.turno!=='AB') return false;
+    if(filtTurno==='P'&&x.turno!=='P') return false;
+    if(filtTurno==='normal'&&(x.turno==='A'||x.turno==='B'||x.turno==='AB'||x.turno==='P')) return false;
     // Filtro por estado
     if(filtEstado==='activos'&&!x.activo) return false;
     if(filtEstado==='inactivos'&&x.activo) return false;
@@ -15591,6 +15607,8 @@ function Personal(p){
           h('option',{value:''},'Todos los turnos'),
           h('option',{value:'A'},'Turno A'),
           h('option',{value:'B'},'Turno B'),
+          h('option',{value:'AB'},'Ambos turnos (A+B)'),
+          h('option',{value:'P'},'Ciclo propio 7x7 (desfasado)'),
           h('option',{value:'normal'},'Jornada normal (sin turno)')
         ),
         h('input',{type:'text',placeholder:'Buscar nombre, apellido, RUT, cargo...',value:buscar,onChange:function(e){setBuscar(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:230}}),
@@ -15731,7 +15749,7 @@ function Personal(p){
         {lbl:'Cargo',k:'cargo'},
         {lbl:'Categoría',render:function(r){return catLabel(r.categoria);}},
         {lbl:'Faena',render:function(r){return r.faena_nombre||r.centro_costo||'—';}},
-        {lbl:'Turno',render:function(r){return r.turno==='A'||r.turno==='B'?TurnoBadge(r.turno):h('span',{style:{color:'#94A3B8',fontSize:10}},'Normal');}},
+        {lbl:'Turno',render:function(r){if(r.turno==='P'){var ci=cicloPropioInfo(r.turno_inicio);return TurnoBadge('P',{title:ci?(ci.trabajando?'Trabajando, día '+ci.dia+' de 7':'Descanso, vuelve el '+ci.cambio):'Sin fecha de inicio definida'});} return r.turno==='A'||r.turno==='B'||r.turno==='AB'?TurnoBadge(r.turno):h('span',{style:{color:'#94A3B8',fontSize:10}},'Normal');}},
         {lbl:'Contrato',k:'tipo_contrato'},
         {lbl:'Ingreso',render:function(r){return fmtD(r.fecha_ingreso);}},
         {lbl:'Término',render:function(r){
@@ -17074,14 +17092,18 @@ function TurnosFaenaView(p){
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   function load(){ api('/personal','GET',null,p.tok).then(function(r){setPersonas((Array.isArray(r)?r:[]).filter(function(x){return x.activo!==false;}));}).catch(function(){}); }
   useEffect(function(){ load(); },[]);
-  function setTurno(persona,t){
-    api('/personal/'+persona.persona_id+'/turno','PATCH',{turno:t||null},p.tok)
-      .then(function(){ setPersonas(function(l){return l.map(function(z){return z.persona_id===persona.persona_id?Object.assign({},z,{turno:t||null}):z;});}); })
+  function setTurno(persona,t,inicio){
+    var ini=(t==='P')?(inicio!==undefined?inicio:(persona.turno_inicio?(persona.turno_inicio+'').slice(0,10):null)):null;
+    api('/personal/'+persona.persona_id+'/turno','PATCH',{turno:t||null,turno_inicio:ini},p.tok)
+      .then(function(){ setPersonas(function(l){return l.map(function(z){return z.persona_id===persona.persona_id?Object.assign({},z,{turno:t||null,turno_inicio:ini}):z;});}); })
       .catch(function(e){ setMsg('Error: '+e.message); });
   }
   function selTurno(x){
-    return h('select',{value:x.turno||'',onChange:function(e){setTurno(x,e.target.value);},style:{fontSize:10,padding:'2px 4px',border:'1px solid #CBD5E1',borderRadius:4}},
-      h('option',{value:''},'Normal'),h('option',{value:'A'},'A'),h('option',{value:'B'},'B'));
+    return h('span',{style:{display:'inline-flex',gap:4,alignItems:'center'}},
+      h('select',{value:x.turno||'',onChange:function(e){setTurno(x,e.target.value);},style:{fontSize:10,padding:'2px 4px',border:'1px solid #CBD5E1',borderRadius:4}},
+        h('option',{value:''},'Normal'),h('option',{value:'A'},'A'),h('option',{value:'B'},'B'),h('option',{value:'AB'},'A+B'),h('option',{value:'P'},'Propio')),
+      x.turno==='P'&&h('input',{type:'date',value:x.turno_inicio?(x.turno_inicio+'').slice(0,10):'',onChange:function(e){setTurno(x,'P',e.target.value);},title:'Fecha en que inició (o iniciará) un ciclo de 7 días de TRABAJO',style:{fontSize:9,padding:'1px 3px',border:'1px solid '+(x.turno_inicio?'#CBD5E1':'#F59E0B'),background:x.turno_inicio?'#fff':'#FEF3C7',borderRadius:4,width:105}})
+    );
   }
   return h('div',null,
     h('div',{style:{display:'flex',gap:8,alignItems:'center',marginBottom:12,flexWrap:'wrap'}},
@@ -17099,7 +17121,9 @@ function TurnosFaenaView(p){
       var pers=personas.filter(function(x){return String(x.faena_id)===String(f.faena_id);});
       var pA=pers.filter(function(x){return x.turno==='A';});
       var pB=pers.filter(function(x){return x.turno==='B';});
-      var pSin=pers.filter(function(x){return x.turno!=='A'&&x.turno!=='B';});
+      var pAB=pers.filter(function(x){return x.turno==='AB';});
+      var pP=pers.filter(function(x){return x.turno==='P';});
+      var pSin=pers.filter(function(x){return x.turno!=='A'&&x.turno!=='B'&&x.turno!=='AB'&&x.turno!=='P';});
       function colTrab(lista,titulo,activos){
         return h('div',{style:{flex:1,minWidth:240,background:activos?'#F0FDF4':'#F8FAFC',border:'1px solid '+(activos?'#86EFAC':'#E2E8F0'),borderRadius:6,padding:10}},
           h('div',{style:{fontSize:12,fontWeight:700,marginBottom:6,color:activos?'#15803D':'#475569'}},titulo+' ('+lista.length+')'+(activos?' — TRABAJANDO':' — descanso')),
@@ -17125,6 +17149,20 @@ function TurnosFaenaView(p){
           h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,padding:10}},miniCal(f)),
           colTrab(pA,'Turno A',ti.turno==='A'),
           colTrab(pB,'Turno B',ti.turno==='B'),
+          pAB.length>0&&colTrab(pAB,'Ambos turnos (A+B)',true),
+          pP.length>0&&h('div',{style:{flex:1,minWidth:260,background:'#FAF5FF',border:'1px solid #D8B4FE',borderRadius:6,padding:10}},
+            h('div',{style:{fontSize:12,fontWeight:700,marginBottom:6,color:'#7E22CE'}},'Ciclo propio 7x7 ('+pP.length+') — desfasado de la faena'),
+            pP.map(function(x){
+              var ci=cicloPropioInfo(x.turno_inicio);
+              return h('div',{key:x.persona_id,style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:6,padding:'3px 0',borderBottom:'1px dotted #E9D5FF'}},
+                h('div',null,
+                  h('div',{style:{fontSize:11,fontWeight:600}},x.nombre_completo),
+                  h('div',{style:{fontSize:9,color:'#64748B'}},x.cargo||''),
+                  ci?h('div',{style:{fontSize:9,fontWeight:700,color:ci.trabajando?'#15803D':'#92400E'}},ci.trabajando?('\ud83d\udfe2 Trabajando \u2014 d\u00eda '+ci.dia+' de 7 (descansa el '+ci.cambio+')'):('\u26aa Descanso \u2014 d\u00eda '+ci.dia+' de 7 (vuelve el '+ci.cambio+')')):h('div',{style:{fontSize:9,fontWeight:700,color:'#B45309'}},'\u26a0 Define su fecha de inicio de ciclo'),
+                ),
+                selTurno(x));
+            })
+          ),
           pSin.length>0&&h('div',{style:{flex:1,minWidth:240,background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:6,padding:10}},
             h('div',{style:{fontSize:12,fontWeight:700,marginBottom:6,color:'#92400E'}},'Sin turno asignado ('+pSin.length+')'),
             h('div',{style:{fontSize:10,color:'#92400E',marginBottom:6}},'Asigna A o B, o deja "Normal" si trabaja jornada normal.'),
