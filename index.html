@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,interactive-widget=resizes-content">
 <meta name="theme-color" content="#1E3A2D">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -37,8 +37,8 @@ tr:hover>td{background:#F8FAFC}
 .nav .cnt{margin-left:auto;background:#EF4444;color:#fff;border-radius:10px;font-size:10px;padding:1px 6px;font-weight:700}
 .main{flex:1;display:flex;flex-direction:column;overflow:hidden}
 .topbar{padding:10px 20px;background:#fff;border-bottom:1px solid #E2E8F0;display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
-.topbar h2{font-size:15px;font-weight:700;color:#0F172A}
-.topbar-r{display:flex;align-items:center;gap:8px;font-size:12px;color:#64748B}
+.topbar h2{font-size:15px;font-weight:700;color:#0F172A;margin-right:16px}
+.topbar-r{display:flex;align-items:center;gap:8px;font-size:12px;color:#64748B;margin-left:auto}
 .content{flex:1;overflow-y:auto;padding:18px 20px}
 .card{background:#fff;border:1px solid #E2E8F0;border-radius:10px;overflow:hidden;margin-bottom:14px}
 .card-h{padding:12px 16px;border-bottom:1px solid #F1F4F9;display:flex;align-items:center;justify-content:space-between}
@@ -4607,12 +4607,20 @@ function RemuCostoView(p){
   var[msg,setMsg]=useState('');
   var[periodos,setPeriodos]=useState([]);
   var[verDet,setVerDet]=useState(false);
+  var[filtFaena,setFiltFaena]=useState('');
+  var[filtCargo,setFiltCargo]=useState('');
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   var MESES=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
   function cargarPeriodos(){ api('/fin/remuneraciones/periodos','GET',null,p.tok).then(setPeriodos).catch(function(){}); }
+  function eliminarPeriodo(r){
+    if(!confirm('¿Eliminar el período '+MESES[r.mes]+' '+r.anio+(r.empresa?' de '+r.empresa:' (sin empresa)')+'? Se borrarán todos sus datos. Esta acción no se puede deshacer.'))return;
+    api('/fin/remuneraciones/periodos/'+r.periodo_id,'DELETE',null,p.tok)
+      .then(function(){ setMsg('✓ Período eliminado'); if(resumen&&resumen.periodo&&resumen.periodo.periodo_id===r.periodo_id) setResumen(null); cargarPeriodos(); })
+      .catch(function(e){ setMsg('Error al eliminar: '+e.message); });
+  }
   function cargarExistente(){
-    setMsg('');setResumen(null);
+    setMsg('');setResumen(null);setFiltFaena('');setFiltCargo('');
     api('/fin/remuneraciones?anio='+anio+'&mes='+mes+(empresaId?'&empresa_id='+empresaId:''),'GET',null,p.tok)
       .then(function(r){ if(r.existe) setResumen(r.resumen); }).catch(function(){});
   }
@@ -4726,6 +4734,24 @@ function RemuCostoView(p){
   }
 
   var per=resumen&&resumen.periodo;
+  // ── Filtros por faena y cargo (recálculo en vivo desde el detalle) ──
+  var detalleAll=(resumen&&resumen.detalle)||[];
+  var faenaLbl=function(r){return r.faena_nombre||'(Sin faena asignada)';};
+  var cargoLbl=function(r){return r.cargo||'(Sin cargo)';};
+  var faenasOpts=[]; var cargosOpts=[];
+  detalleAll.forEach(function(r){ var f=faenaLbl(r),c=cargoLbl(r); if(faenasOpts.indexOf(f)<0)faenasOpts.push(f); if(cargosOpts.indexOf(c)<0)cargosOpts.push(c); });
+  faenasOpts.sort(); cargosOpts.sort();
+  var detFilt=detalleAll.filter(function(r){ return (!filtFaena||faenaLbl(r)===filtFaena)&&(!filtCargo||cargoLbl(r)===filtCargo); });
+  function agrupar(rows,keyFn){
+    var map={};
+    rows.forEach(function(r){ var k=keyFn(r); if(!map[k])map[k]={k:k,n:0,costo:0}; map[k].n++; map[k].costo+=parseFloat(r.costo)||0; });
+    return Object.keys(map).map(function(k){return map[k];}).sort(function(a,b){return b.costo-a.costo;});
+  }
+  var porFaenaF=agrupar(detFilt,faenaLbl).map(function(o){return {faena:o.k,n:o.n,costo:o.costo};});
+  var porCargoF=agrupar(detFilt,cargoLbl).map(function(o){return {cargo:o.k,n:o.n,costo:o.costo};});
+  var totF=detFilt.reduce(function(a,r){a.h+=parseFloat(r.t_haberes)||0;a.f+=parseFloat(r.c_familiar)||0;a.ap+=parseFloat(r.aporte)||0;a.c+=parseFloat(r.costo)||0;if(!r.persona_id)a.sin++;return a;},{h:0,f:0,ap:0,c:0,sin:0});
+  var hayFiltro=!!(filtFaena||filtCargo);
+  var sinMatchF=detFilt.filter(function(r){return !r.persona_id;});
   var inpS={padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13};
   return h('div',null,
     h('div',{className:'card',style:{padding:16,marginBottom:14}},
@@ -4742,29 +4768,41 @@ function RemuCostoView(p){
           h('select',{value:mes,onChange:function(e){setMes(parseInt(e.target.value));},style:inpS},
             MESES.slice(1).map(function(nm,i){return h('option',{key:i+1,value:i+1},nm);}))),
         h('label',{style:{padding:'8px 14px',borderRadius:6,fontSize:13,cursor:empresaId?'pointer':'not-allowed',border:'1px solid '+(empresaId?'#16A34A':'#CBD5E1'),background:empresaId?'#16A34A':'#E2E8F0',color:empresaId?'#fff':'#94A3B8',fontWeight:600,display:'inline-flex',alignItems:'center',gap:6},title:empresaId?'':'Selecciona la empresa primero'},
-          (loading?'Procesando...':'⬆ Importar Libro (.xls)'),
-          h('input',{type:'file',accept:'.xls,.html,.htm',onChange:onFile,disabled:loading||!empresaId,style:{display:'none'}}))
+          (loading?'Procesando...':'⬆ Importar Libro (.xlsx)'),
+          h('input',{type:'file',accept:'.xls,.xlsx,.xlsm,.html,.htm',onChange:onFile,disabled:loading||!empresaId,style:{display:'none'}}))
       ),
       msg&&h('div',{className:'al '+(msg.indexOf('Error')>=0?'al-e':'al-s'),style:{marginTop:10,marginBottom:0}},msg)
     ),
 
     per&&h('div',null,
+      h('div',{className:'card',style:{padding:'10px 14px',marginBottom:12,display:'flex',gap:12,flexWrap:'wrap',alignItems:'flex-end'}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Filtrar por faena'),
+          h('select',{value:filtFaena,onChange:function(e){setFiltFaena(e.target.value);},style:{padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13,minWidth:200}},
+            h('option',{value:''},'Todas las faenas'),
+            faenasOpts.map(function(f){return h('option',{key:f,value:f},f);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Filtrar por cargo'),
+          h('select',{value:filtCargo,onChange:function(e){setFiltCargo(e.target.value);},style:{padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13,minWidth:200}},
+            h('option',{value:''},'Todos los cargos'),
+            cargosOpts.map(function(c){return h('option',{key:c,value:c},c);}))),
+        hayFiltro&&h('button',{onClick:function(){setFiltFaena('');setFiltCargo('');},style:{padding:'7px 12px',border:'1px solid #CBD5E1',borderRadius:6,background:'#F8FAFC',fontSize:12,cursor:'pointer'}},'✕ Limpiar filtros'),
+        hayFiltro&&h('span',{style:{fontSize:11,color:'#64748B'}},'Mostrando '+detFilt.length+' de '+detalleAll.length+' trabajadores')
+      ),
       h('div',{style:{display:'flex',gap:10,flexWrap:'wrap',marginBottom:14}},
         h('div',{className:'card',style:{flex:1,minWidth:150,padding:'12px 14px',borderLeft:'5px solid #1E3A2D'}},
-          h('div',{style:{fontSize:11,color:'#64748B'}},'Costo remuneraciones'),
-          h('div',{style:{fontSize:22,fontWeight:700,color:'#1E3A2D'}},CLP(Math.round(parseFloat(per.costo_total))))),
+          h('div',{style:{fontSize:11,color:'#64748B'}},'Costo remuneraciones'+(hayFiltro?' (filtrado)':'')),
+          h('div',{style:{fontSize:22,fontWeight:700,color:'#1E3A2D'}},CLP(Math.round(totF.c)))),
         h('div',{className:'card',style:{flex:1,minWidth:130,padding:'12px 14px'}},
           h('div',{style:{fontSize:11,color:'#64748B'}},'Total haberes'),
-          h('div',{style:{fontSize:16,fontWeight:600}},CLP(Math.round(parseFloat(per.total_haberes))))),
+          h('div',{style:{fontSize:16,fontWeight:600}},CLP(Math.round(totF.h)))),
         h('div',{className:'card',style:{flex:1,minWidth:130,padding:'12px 14px'}},
           h('div',{style:{fontSize:11,color:'#64748B'}},'− Asig. familiar'),
-          h('div',{style:{fontSize:16,fontWeight:600,color:'#B91C1C'}},CLP(Math.round(parseFloat(per.total_asig_familiar))))),
+          h('div',{style:{fontSize:16,fontWeight:600,color:'#B91C1C'}},CLP(Math.round(totF.f)))),
         h('div',{className:'card',style:{flex:1,minWidth:130,padding:'12px 14px'}},
           h('div',{style:{fontSize:11,color:'#64748B'}},'+ Aporte'),
-          h('div',{style:{fontSize:16,fontWeight:600,color:'#15803D'}},CLP(Math.round(parseFloat(per.total_aporte))))),
+          h('div',{style:{fontSize:16,fontWeight:600,color:'#15803D'}},CLP(Math.round(totF.ap)))),
         h('div',{className:'card',style:{flex:1,minWidth:110,padding:'12px 14px'}},
           h('div',{style:{fontSize:11,color:'#64748B'}},'Trabajadores'),
-          h('div',{style:{fontSize:16,fontWeight:600}},per.n_trabajadores+(per.n_sin_match>0?(' ('+per.n_sin_match+' sin cruce)'):'')))
+          h('div',{style:{fontSize:16,fontWeight:600}},detFilt.length+(totF.sin>0?(' ('+totF.sin+' sin cruce)'):'')))
       ),
       h('div',{style:{display:'flex',gap:14,flexWrap:'wrap'}},
         h('div',{className:'card',style:{flex:1,minWidth:300,padding:14}},
@@ -4774,7 +4812,7 @@ function RemuCostoView(p){
             {lbl:'Faena',render:function(r){return r.faena;}},
             {lbl:'Trab.',c:true,render:function(r){return r.n;}},
             {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo))));}}
-          ],rows:resumen.por_faena}))
+          ],rows:porFaenaF}))
       ),
       h('div',{className:'card',style:{padding:14,marginTop:14}},
         h('div',{style:{fontWeight:600,fontSize:13,marginBottom:4}},'Costo por cargo'),
@@ -4783,17 +4821,17 @@ function RemuCostoView(p){
           {lbl:'Cargo',render:function(r){return r.cargo;}},
           {lbl:'Trab.',c:true,render:function(r){return r.n;}},
           {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo))));}}
-        ],rows:resumen.por_cargo||[]})),
-      resumen.sin_match&&resumen.sin_match.length>0&&h('div',{className:'card',style:{padding:14,marginTop:14,borderLeft:'5px solid #F59E0B'}},
-        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:6,color:'#92400E'}},'⚠ '+resumen.sin_match.length+' trabajador(es) del libro no se encontraron en el maestro de personal'),
+        ],rows:porCargoF})),
+      sinMatchF.length>0&&h('div',{className:'card',style:{padding:14,marginTop:14,borderLeft:'5px solid #F59E0B'}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:6,color:'#92400E'}},'⚠ '+sinMatchF.length+' trabajador(es) del libro no se encontraron en el maestro de personal'),
         h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},'Su costo quedó como "(Sin faena asignada)". Revisa el RUT en el maestro de personal para que se clasifique correctamente.'),
         h(TBL,{cols:[
           {lbl:'RUT',render:function(r){return r.rut;}},
           {lbl:'Nombre (del libro)',render:function(r){return r.nombre;}},
           {lbl:'Costo',r:true,render:function(r){return CLP(Math.round(parseFloat(r.costo)));}}
-        ],rows:resumen.sin_match})),
+        ],rows:sinMatchF})),
       h('div',{style:{marginTop:14}},
-        h('button',{onClick:function(){setVerDet(!verDet);},style:{padding:'6px 12px',border:'1px solid #CBD5E1',borderRadius:6,background:'#F8FAFC',fontSize:12,cursor:'pointer'}},verDet?'Ocultar detalle por trabajador':'Ver detalle por trabajador ('+resumen.detalle.length+')'),
+        h('button',{onClick:function(){setVerDet(!verDet);},style:{padding:'6px 12px',border:'1px solid #CBD5E1',borderRadius:6,background:'#F8FAFC',fontSize:12,cursor:'pointer'}},verDet?'Ocultar detalle por trabajador':'Ver detalle por trabajador ('+detFilt.length+')'),
         verDet&&h('div',{className:'card',style:{padding:14,marginTop:8}},
           h(TBL,{cols:[
             {lbl:'Trabajador',render:function(r){return h('span',null,r.nombre,!r.persona_id&&h('span',{style:{color:'#B91C1C',fontSize:10}},' ⚠ sin cruce'));}},
@@ -4803,17 +4841,19 @@ function RemuCostoView(p){
             {lbl:'Asig.Fam',r:true,render:function(r){return CLP(Math.round(parseFloat(r.c_familiar)));}},
             {lbl:'Aporte',r:true,render:function(r){return CLP(Math.round(parseFloat(r.aporte)));}},
             {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo))));}}
-          ],rows:resumen.detalle}))
+          ],rows:detFilt}))
       )
     ),
 
     !per&&periodos.length>0&&h('div',{className:'card',style:{padding:14,marginTop:4}},
       h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Períodos importados'),
+      h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},'Pincha una fila para ver su detalle, o usa 🗑 para eliminar un período cargado por error.'),
       h(TBL,{onRowClick:function(r){setAnio(r.anio);setMes(r.mes);setEmpresaId(r.empresa_id?String(r.empresa_id):'');},cols:[
         {lbl:'Período',render:function(r){return MESES[r.mes]+' '+r.anio;}},
-        {lbl:'Empresa',render:function(r){return r.empresa||'(Todas)';}},
+        {lbl:'Empresa',render:function(r){return r.empresa||'(Sin empresa)';}},
         {lbl:'Trab.',c:true,render:function(r){return r.n_trabajadores;}},
-        {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo_total))));}}
+        {lbl:'Costo',r:true,render:function(r){return h('strong',null,CLP(Math.round(parseFloat(r.costo_total))));}},
+        {lbl:'',c:true,render:function(r){return h('button',{onClick:function(ev){ev.stopPropagation();eliminarPeriodo(r);},style:{fontSize:13,padding:'2px 8px',background:'#FEF2F2',color:'#991B1B',border:'1px solid #FCA5A5',borderRadius:4,cursor:'pointer'},title:'Eliminar este período'},'🗑');}}
       ],rows:periodos}))
   );
 }
@@ -5234,6 +5274,8 @@ function FinChequesView(p){
     if(!sel.length){alert('Seleccione al menos un cheque');return;}
     var totalMonto=sel.reduce(function(s,c){return s+parseFloat(c.monto);},0);
     var empresaNombre=sel[0].empresa_nombre;
+    var empLogoA=(empresas.find(function(e){return String(e.empresa_id)===String(sel[0].empresa_id);})||{}).logo_base64;
+    var logoImgA=empLogoA?'<img src="'+empLogoA+'" style="max-height:80px;max-width:200px;margin-bottom:6px;display:block">':'<img src="https://serviciosforestalespoo.cl/wp-content/uploads/2025/09/Logo.svg" style="max-height:50px;max-width:160px;margin-bottom:6px;display:block">';
     var beneficiarios=[...new Set(sel.map(function(c){return c.proveedor_nombre||c.beneficiario_nombre||'—';}))].join(', ');
     var css='body{font-family:Arial,sans-serif;font-size:12px;color:#1E293B;margin:24px}'+
       '.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #1E3A2D;padding-bottom:14px;margin-bottom:16px}'+
@@ -5256,7 +5298,7 @@ function FinChequesView(p){
     var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'</style></head><body>'+
       '<div class="header">'+
       '<div class="empresa">'+
-      '<img src="https://serviciosforestalespoo.cl/wp-content/uploads/2025/09/Logo.svg" style="max-height:50px;max-width:160px;margin-bottom:6px;display:block"><br>'+
+      logoImgA+'<br>'+
       '<strong>'+empresaNombre+'</strong></div>'+
       '<div class="title-box"><h2>COMPROBANTE DE GIRO</h2><div class="subtitle">'+sel.length+' cheque'+(sel.length>1?'s':'')+' agrupados</div></div>'+
       '</div>'+
@@ -5286,9 +5328,7 @@ function FinChequesView(p){
       '</div>'+
       '<div class="footer">Documento generado el '+new Date().toLocaleDateString('es-CL')+' | Empresas Poo — Sistema de Gestión</div>'+
       '</body></html>';
-    var w=window.open('','_blank','width=900,height=700');
-    w.document.write(html);w.document.close();w.focus();
-    setTimeout(function(){w.print();},500);
+    imprimirHTMLViaIframe(html,'Comprobante de cheques');
   }
   function openEditCta(c){setEditCta(c);setCtaForm({empresa_id:c.empresa_id,banco:c.banco,numero_cuenta:c.numero_cuenta,tipo_cuenta:c.tipo_cuenta||'corriente'});setShowCtaForm(true);}
   function guardarCta(){
@@ -5306,6 +5346,8 @@ function FinChequesView(p){
     var cta=cuentas.find(function(c){return c.cuenta_id===ch.cuenta_id;})||{};
     var conceptoLabel=conceptoL[ch.concepto]||(ch.concepto_detalle||ch.concepto);
     var estadoClass=ch.estado==='emitido'?'est-emitido':ch.estado==='pagado'?'est-pagado':'est-anulado';
+    var empLogoI=(empresas.find(function(e){return String(e.empresa_id)===String(ch.empresa_id);})||{}).logo_base64;
+    var logoImgI=empLogoI?'<img src="'+empLogoI+'" style="max-height:80px;max-width:200px;margin-bottom:6px;display:block">':'<img src="https://serviciosforestalespoo.cl/wp-content/uploads/2025/09/Logo.svg" style="max-height:50px;max-width:160px;margin-bottom:6px;display:block">';
     var css='body{font-family:Arial,sans-serif;font-size:12px;color:#1E293B;margin:24px}'+
       '.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #1E3A2D;padding-bottom:14px;margin-bottom:16px}'+
       '.empresa{font-size:12px;line-height:1.7} .empresa strong{font-size:15px;color:#0F172A}'+
@@ -5324,7 +5366,7 @@ function FinChequesView(p){
     var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'</style></head><body>'+
       '<div class="header">'+
       '<div class="empresa">'+
-      '<img src="https://serviciosforestalespoo.cl/wp-content/uploads/2025/09/Logo.svg" style="max-height:50px;max-width:160px;margin-bottom:6px;display:block"><br>'+
+      logoImgI+'<br>'+
       '<strong>'+(ch.empresa_nombre||'')+'</strong><br>'+
       'Cuenta '+cta.tipo_cuenta+': '+cta.numero_cuenta+'<br>'+
       cta.banco+
@@ -5352,9 +5394,7 @@ function FinChequesView(p){
       '</div>'+
       '<div class="footer">Documento generado el '+new Date().toLocaleDateString('es-CL')+' | Empresas Poo — Sistema de Gestión</div>'+
       '</body></html>';
-    var w=window.open('','_blank','width=900,height=700');
-    w.document.write(html);w.document.close();w.focus();
-    setTimeout(function(){w.print();},500);
+    imprimirHTMLViaIframe(html,'Comprobante de cheques');
   }
   var tot=dash&&dash.totales?dash.totales:{};
   return h('div',null,
@@ -9527,9 +9567,13 @@ function RodalesModal(p){
 
 function MasterV(p){
   const[items,setItems]=useState([]);const[modal,setModal]=useState(null);const[q,setQ]=useState('');const[err,setErr]=useState('');const[delErr,setDelErr]=useState('');const[showImport,setShowImport]=useState(false);
+  const[fVals,setFVals]=useState({});
   function load(){api('/'+p.ep,'GET',null,p.tok).then(function(r){setItems(Array.isArray(r)?r:[]);}).catch(function(){});}
   useEffect(function(){load();},[p.ep,p.tok]);
-  const filtered=useMemo(function(){return items.filter(function(x){return !q||JSON.stringify(Object.values(x)).toLowerCase().includes(q.toLowerCase());});},[items,q]);
+  const filtered=useMemo(function(){return items.filter(function(x){
+    if(p.filters){for(var i=0;i<p.filters.length;i++){var f=p.filters[i];var v=fVals[f.k];if(v&&String(x[f.k]||'')!==String(v))return false;}}
+    return !q||JSON.stringify(Object.values(x)).toLowerCase().includes(q.toLowerCase());
+  });},[items,q,fVals,p.filters]);
   function save(item){
     setErr('');
     const method=item[p.pk]?'PUT':'POST';
@@ -9544,8 +9588,16 @@ function MasterV(p){
     api('/'+p.ep+'/'+id,'DELETE',null,p.tok).then(function(){load();p.onMov&&p.onMov();}).catch(function(ex){setDelErr(ex.message);});
   }
   return h('div',null,
-    h('div',{style:{display:'flex',gap:8,marginBottom:10}},
+    h('div',{style:{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap',alignItems:'center'}},
       h('input',{value:q,onChange:e=>setQ(e.target.value),placeholder:'Buscar...',style:{maxWidth:250}}),
+      p.filters&&p.filters.map(function(f){
+        var v=fVals[f.k]||'';
+        return h('select',{key:f.k,value:v,onChange:function(e){var nv=e.target.value;setFVals(function(o){var n=Object.assign({},o);n[f.k]=nv;return n;});},style:{padding:'6px 10px',border:'1px solid '+(v?'#1E3A2D':'#CBD5E1'),borderRadius:5,fontSize:12,minWidth:180,fontWeight:v?600:400,background:v?'#F0FDF4':'#fff'}},
+          h('option',{value:''},f.lbl),
+          f.opts.map(function(o){return h('option',{key:o.v,value:o.v},o.l);}));
+      }),
+      p.filters&&Object.keys(fVals).some(function(k){return fVals[k];})&&h('button',{onClick:function(){setFVals({});},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
+      p.filters&&h('span',{style:{fontSize:11,color:'#64748B'}},filtered.length+'/'+items.length),
       h(Btn,{onClick:function(){setErr('');setModal(Object.assign({},p.blank));}},'+ Agregar'),
       p.extraBtns&&p.extraBtns(),
       p.importKey&&h(Btn,{v:'g',sm:true,onClick:function(){setShowImport(true);}},null,'⬆ Importar CSV'),
@@ -9604,14 +9656,41 @@ function MasterV(p){
 function FI(p){return h(FR,{label:p.l,req:p.req},h(Inp,{value:p.item[p.k]||'',onChange:v=>p.onChange(Object.assign({},p.item,{[p.k]:v})),type:p.type,ph:p.ph}));}
 function FS(p){return h(FR,{label:p.l,req:p.req},h(Sel,{value:str(p.item[p.k]||''),onChange:v=>p.onChange(Object.assign({},p.item,{[p.k]:v}))},h('option',{value:''},'Seleccione...'),(p.opts||[]).map(o=>h('option',{key:o.v,value:o.v},o.l))));}
 const BodegaForm=p=>h('div',{className:'g2'},h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FI,{k:'ubicacion',l:'Ubicacion',item:p.item,onChange:p.onChange}),h(FI,{k:'responsable',l:'Responsable',item:p.item,onChange:p.onChange}));
+// ── Turnos 7x7 (jornada excepcional): cálculo del turno vigente ──
+// inicioA = fecha (YYYY-MM-DD) en que comenzó un ciclo de trabajo del Turno A.
+function turnoFaenaInfo(inicioA,fechaRef){
+  if(!inicioA)return null;
+  function dLocal(s){var p=(s+'').slice(0,10).split('-');return new Date(+p[0],+p[1]-1,+p[2]);}
+  var hoy=fechaRef?dLocal(fechaRef):new Date(); hoy=new Date(hoy.getFullYear(),hoy.getMonth(),hoy.getDate());
+  var d0=dLocal(inicioA);
+  var dias=Math.round((hoy-d0)/86400000);
+  var ciclo=Math.floor(dias/7);
+  var turno=(((ciclo%2)+2)%2)===0?'A':'B';
+  var diaDelCiclo=((dias%7)+7)%7; // 0..6
+  var iniCiclo=new Date(hoy); iniCiclo.setDate(hoy.getDate()-diaDelCiclo);
+  var finCiclo=new Date(iniCiclo); finCiclo.setDate(iniCiclo.getDate()+6);
+  var cambio=new Date(iniCiclo); cambio.setDate(iniCiclo.getDate()+7);
+  var fmt=function(d){return ('0'+d.getDate()).slice(-2)+'/'+('0'+(d.getMonth()+1)).slice(-2)+'/'+d.getFullYear();};
+  return {turno:turno,otro:turno==='A'?'B':'A',dia:diaDelCiclo+1,desde:fmt(iniCiclo),hasta:fmt(finCiclo),cambio:fmt(cambio),dias_restantes:7-diaDelCiclo-1};
+}
+function TurnoBadge(t,extra){
+  if(!t)return h('span',{style:{color:'#94A3B8',fontSize:11}},'—');
+  var esA=t==='A';
+  return h('span',Object.assign({style:{display:'inline-block',padding:'2px 10px',borderRadius:10,fontSize:11,fontWeight:700,background:esA?'#DCFCE7':'#DBEAFE',color:esA?'#15803D':'#1E40AF'}},extra||{}),'Turno '+t);
+}
 function FaenaForm(p){
   const emps=p.extra&&Array.isArray(p.extra.empresas)?p.extra.empresas:[];
+  if(p.item.turno_inicio_a&&(p.item.turno_inicio_a+'').length>10){p.item=Object.assign({},p.item,{turno_inicio_a:(p.item.turno_inicio_a+'').slice(0,10)});}
   return h('div',{className:'g2'},
     h(FS,{k:'empresa_id',l:'Empresa',req:true,item:p.item,onChange:p.onChange,opts:emps.filter(function(e){return e.activo;}).map(function(e){return{v:e.empresa_id,l:e.razon_social};})}),
     h(FI,{k:'codigo',l:'Codigo',req:true,item:p.item,onChange:p.onChange}),
     h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),
     h(FI,{k:'descripcion',l:'Descripcion',item:p.item,onChange:p.onChange}),
-    h(FI,{k:'nombre_linea',l:'Nombre de línea (Forestal Mininco)',item:p.item,onChange:p.onChange,ph:'Código interno de línea'})
+    h(FI,{k:'nombre_linea',l:'Nombre de línea (Forestal Mininco)',item:p.item,onChange:p.onChange,ph:'Código interno de línea'}),
+    h('div',null,
+      h(FI,{k:'turno_inicio_a',l:'Turnos 7x7 — inicio de ciclo del Turno A',type:'date',item:p.item,onChange:p.onChange}),
+      h('div',{style:{fontSize:10,color:'#64748B',marginTop:2}},'Solo para faenas con jornada excepcional 7x7: indica un día en que el Turno A comenzó (o comenzará) sus 7 días de trabajo. Deja vacío si la faena no trabaja por turnos.')
+    )
   );
 }
 const ProvForm=p=>h('div',{className:'g2'},h(FI,{k:'rut',l:'RUT',req:true,item:p.item,onChange:p.onChange,ph:'76.543.210-5'}),h(FI,{k:'nombre',l:'Nombre',req:true,item:p.item,onChange:p.onChange}),h(FI,{k:'giro',l:'Giro',item:p.item,onChange:p.onChange}),h(FI,{k:'direccion',l:'Direccion',item:p.item,onChange:p.onChange}),h(FI,{k:'contacto',l:'Contacto',item:p.item,onChange:p.onChange}),h(FI,{k:'telefono',l:'Telefono',item:p.item,onChange:p.onChange}),h(FI,{k:'email',l:'Email',type:'email',item:p.item,onChange:p.onChange}));
@@ -15198,6 +15277,7 @@ function Personal(p){
   const[filtEstado,setFiltEstado]=useState('activos'); // 'activos' | 'inactivos' | 'todos'
   const[filtCargo,setFiltCargo]=useState('');
   const[filtContrato,setFiltContrato]=useState('');
+  const[filtTurno,setFiltTurno]=useState('');
   const[haberesPersona,setHaberesPersona]=useState(null); // trabajador en edición de haberes
   const[haberesForm,setHaberesForm]=useState(null);
   const[haberesLoading,setHaberesLoading]=useState(false);
@@ -15310,6 +15390,9 @@ function Personal(p){
     if(filtFaena&&String(x.faena_id)!==String(filtFaena)) return false;
     if(filtCargo&&String(x.cargo||'')!==String(filtCargo)) return false;
     if(filtContrato&&String(x.tipo_contrato||'')!==String(filtContrato)) return false;
+    if(filtTurno==='A'&&x.turno!=='A') return false;
+    if(filtTurno==='B'&&x.turno!=='B') return false;
+    if(filtTurno==='normal'&&(x.turno==='A'||x.turno==='B')) return false;
     // Filtro por estado
     if(filtEstado==='activos'&&!x.activo) return false;
     if(filtEstado==='inactivos'&&x.activo) return false;
@@ -15436,8 +15519,14 @@ function Personal(p){
           h('option',{value:''},'Todos los contratos'),
           TIPOS_CONTRATO.map(function(c){return h('option',{key:c.v,value:c.v},c.l);})
         ),
+        h('select',{value:filtTurno,onChange:function(e){setFiltTurno(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,fontWeight:filtTurno?600:400}},
+          h('option',{value:''},'Todos los turnos'),
+          h('option',{value:'A'},'Turno A'),
+          h('option',{value:'B'},'Turno B'),
+          h('option',{value:'normal'},'Jornada normal (sin turno)')
+        ),
         h('input',{type:'text',placeholder:'Buscar nombre, apellido, RUT, cargo...',value:buscar,onChange:function(e){setBuscar(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:230}}),
-        (filtEmpresa||filtFaena||filtCargo||filtContrato||buscar)&&h('button',{onClick:function(){setFiltEmpresa('');setFiltFaena('');setFiltCargo('');setFiltContrato('');setBuscar('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
+        (filtEmpresa||filtFaena||filtCargo||filtContrato||filtTurno||buscar)&&h('button',{onClick:function(){setFiltEmpresa('');setFiltFaena('');setFiltCargo('');setFiltContrato('');setFiltTurno('');setBuscar('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
         h('span',{style:{fontSize:11,color:'#64748B'}},rows.length+'/'+personas.length+' registros')
       ),
       h('div',{style:{display:'flex',gap:6}},
@@ -15504,7 +15593,13 @@ function Personal(p){
           h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
             h('div',null,h('label',{style:lblS},'Nacionalidad'),h('input',{type:'text',value:form.nacionalidad,onChange:function(e){setForm(function(f){return Object.assign({},f,{nacionalidad:e.target.value});});},style:inp,placeholder:'Chileno(a)'})),
             h('div',null,h('label',{style:lblS},'Estado civil'),h('select',{value:form.estado_civil,onChange:function(e){setForm(function(f){return Object.assign({},f,{estado_civil:e.target.value});});},style:inp},h('option',{value:''},'—'),['Soltero/a','Casado/a','Conviviente Civil','Viudo/a','Divorciado/a','Separado/a'].map(function(ec){return h('option',{key:ec,value:ec},ec);}))),
-            h('div',null,h('label',{style:lblS},'Región'),h('input',{type:'text',value:form.region,onChange:function(e){setForm(function(f){return Object.assign({},f,{region:e.target.value});});},style:inp})),
+            h('div',null,h('label',{style:lblS},'Región'),(function(){
+              var REGIONES_CL=['XV de Arica y Parinacota','I de Tarapacá','II de Antofagasta','III de Atacama','IV de Coquimbo','V de Valparaíso','Metropolitana de Santiago','VI del Libertador General Bernardo O\u2019Higgins','VII del Maule','XVI de Ñuble','VIII del Bio Bio','IX de La Araucanía','XIV de Los Ríos','X de Los Lagos','XI de Aysén del General Carlos Ibáñez del Campo','XII de Magallanes y de la Antártica Chilena'];
+              var opts=REGIONES_CL.slice();
+              if(form.region&&opts.indexOf(form.region)<0)opts.unshift(form.region);
+              return h('select',{value:form.region,onChange:function(e){setForm(function(f){return Object.assign({},f,{region:e.target.value});});},style:inp},
+                opts.map(function(r){return h('option',{key:r,value:r},r);}));
+            })()),
             h('div',null,h('label',{style:lblS},'AFP'),h('select',{value:form.afp,onChange:function(e){setForm(function(f){return Object.assign({},f,{afp:e.target.value});});},style:inp},h('option',{value:''},'—'),['CAPITAL','CUPRUM','HABITAT','MODELO','PLANVITAL','PROVIDA','UNO','NO COTIZA'].map(function(a){return h('option',{key:a,value:a},a);}))),
             h('div',null,h('label',{style:lblS},'Salud'),h('select',{value:form.salud,onChange:function(e){setForm(function(f){return Object.assign({},f,{salud:e.target.value});});},style:inp},['FONASA','ISAPRE BANMEDICA','ISAPRE COLMENA','ISAPRE CONSALUD','ISAPRE CRUZ BLANCA','ISAPRE NUEVA MASVIDA','ISAPRE VIDA TRES','ESENCIAL'].map(function(s){return h('option',{key:s,value:s},s);})))
           ),
@@ -15568,6 +15663,7 @@ function Personal(p){
         {lbl:'Cargo',k:'cargo'},
         {lbl:'Categoría',render:function(r){return catLabel(r.categoria);}},
         {lbl:'Faena',render:function(r){return r.faena_nombre||r.centro_costo||'—';}},
+        {lbl:'Turno',render:function(r){return r.turno==='A'||r.turno==='B'?TurnoBadge(r.turno):h('span',{style:{color:'#94A3B8',fontSize:10}},'Normal');}},
         {lbl:'Contrato',k:'tipo_contrato'},
         {lbl:'Ingreso',render:function(r){return fmtD(r.fecha_ingreso);}},
         {lbl:'Término',render:function(r){
@@ -15698,8 +15794,10 @@ function ContratosView(p){
   var[msg,setMsg]=useState('');
   var[fPersona,setFPersona]=useState('');
   var[fEmpresa,setFEmpresa]=useState('');
+  var[fFaenaHist,setFFaenaHist]=useState('');
   var emptyForm={persona_id:'',empresa_id:'',tipo_contrato:'indefinido',es_actualizacion:false,fecha_contrato:new Date().toISOString().slice(0,10),fecha_inicio:new Date().toISOString().slice(0,10),fecha_termino:'',lugar_firma:'Nacimiento',funcion_texto:'',jornada_tipo:'taller_42',jornada_horas:42,jornada_texto:'en promedio, conforme a un sistema rotativo de turnos en ciclos de dos semanas, según el siguiente esquema: SEMANA A (40 horas), de lunes a viernes, de 08:30 a 12:00 hrs. y de 13:30 a 18:00 hrs.; SEMANA B (44 horas), de lunes a viernes, de 08:30 a 12:00 hrs. y de 13:30 a 18:00 hrs., y el día sábado de 09:00 a 13:00 hrs. El tiempo destinado a colación, esto es, de 12:00 a 13:30 hrs., no será imputable a la jornada de trabajo. Las semanas A y B se alternarán entre el personal del taller, según el rol de turnos que la Empresa determine y comunicará oportunamente al trabajador, garantizándose el promedio de 42 horas semanales conforme al artículo 28 del Código del Trabajo',lugar_prestacion:'',sueldo_base:'',bono_responsabilidad:'0',bono_produccion_fijo:'0',bono_produccion_variable:false,bono_produccion_tarifa:'0',bono_produccion_detalle:'',semana_corrida:false,asig_colacion:'0',asig_movilizacion:'0',asig_viatico:'0',tiene_alimentacion:false,alimentacion_detalle:'tres comidas preparadas según dieta, sin costo para el trabajador',otros_beneficios:'',observaciones:''};
   var[form,setForm]=useState(emptyForm);
+  var[editId,setEditId]=useState(null);
 
   function loadContratos(){
     var q=fPersona?'?persona_id='+fPersona:'';
@@ -15752,6 +15850,16 @@ function ContratosView(p){
     if(!form.funcion_texto){setMsg('La función del trabajador es obligatoria');return;}
     if(form.tipo_contrato==='plazo_fijo'&&!form.fecha_termino){setMsg('Contrato a plazo fijo requiere fecha de término');return;}
     if(!form.sueldo_base||parseFloat(form.sueldo_base)<=0){setMsg('Ingrese sueldo base');return;}
+    if(editId){
+      api('/contratos/'+editId,'PUT',form,p.tok).then(function(r){
+        setMsg('Contrato actualizado y haberes/datos sincronizados en la ficha del trabajador');
+        loadContratos();
+        if(p.onRefresh)p.onRefresh();
+        var idGen=editId; setEditId(null); setForm(emptyForm); setSelPersona(null);
+        if(formato){ generarContratoDoc(idGen,formato); }
+      }).catch(function(e){setMsg('Error: '+e.message);});
+      return;
+    }
     api('/contratos','POST',form,p.tok).then(function(r){
       setMsg('Contrato generado y haberes actualizados en la ficha del trabajador');
       loadContratos();
@@ -15759,6 +15867,26 @@ function ContratosView(p){
       generarContratoDoc(r.contrato_id,formato||'word');
     }).catch(function(e){setMsg('Error: '+e.message);});
   }
+  function editarContrato(id){
+    api('/contratos/'+id,'GET',null,p.tok).then(function(c){
+      var nd=function(f){return f?(f+'').slice(0,10):'';};
+      setForm({
+        persona_id:c.persona_id||'',empresa_id:c.empresa_id||'',tipo_contrato:c.tipo_contrato||'indefinido',
+        es_actualizacion:!!c.es_actualizacion,fecha_contrato:nd(c.fecha_contrato),fecha_inicio:nd(c.fecha_inicio),fecha_termino:nd(c.fecha_termino),
+        lugar_firma:c.lugar_firma||'Nacimiento',funcion_texto:c.funcion_texto||'',jornada_tipo:c.jornada_tipo||'normal',jornada_horas:c.jornada_horas||42,jornada_texto:c.jornada_texto||'',
+        lugar_prestacion:c.lugar_prestacion||'',sueldo_base:c.sueldo_base||'',bono_responsabilidad:c.bono_responsabilidad||'0',bono_produccion_fijo:c.bono_produccion_fijo||'0',
+        bono_produccion_variable:!!c.bono_produccion_variable,bono_produccion_tarifa:c.bono_produccion_tarifa||'0',bono_produccion_detalle:c.bono_produccion_detalle||'',semana_corrida:!!c.semana_corrida,
+        asig_colacion:c.asig_colacion||'0',asig_movilizacion:c.asig_movilizacion||'0',asig_viatico:c.asig_viatico||'0',tiene_alimentacion:!!c.tiene_alimentacion,alimentacion_detalle:c.alimentacion_detalle||'',
+        otros_beneficios:c.otros_beneficios||'',observaciones:c.observaciones||''
+      });
+      setSelPersona(c.persona_id||null);
+      setEditId(id);
+      setTab('generar');
+      setMsg('Editando contrato existente. Modifica lo necesario y guarda los cambios.');
+      window.scrollTo(0,0);
+    }).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  function cancelarEdicion(){ setEditId(null); setForm(emptyForm); setSelPersona(null); setMsg(''); }
   function eliminar(id){if(!confirm('¿Eliminar este contrato?'))return;api('/contratos/'+id,'DELETE',null,p.tok).then(loadContratos).catch(function(e){alert(e.message);});}
 
   // Generar documento del contrato (Word o PDF)
@@ -15796,12 +15924,22 @@ function ContratosView(p){
       var nombre=(c.nombre_completo||'contrato').replace(/\s+/g,'_');
       var fecha=(c.fecha_contrato+'').slice(0,10).replace(/-/g,'');
       if(formato==='pdf'){
-        var w=window.open('','_blank');
-        if(!w){alert('Permita popups para generar el PDF');return;}
-        w.document.write(html);
-        w.document.close();
-        w.document.title='Contrato_'+nombre+'_'+fecha;
-        setTimeout(function(){w.focus();w.print();},500);
+        // Imprimir vía iframe oculto (evita bloqueo de popups tras la llamada async y el PDF en blanco)
+        var ifr=document.createElement('iframe');
+        ifr.style.position='fixed';ifr.style.right='0';ifr.style.bottom='0';ifr.style.width='0';ifr.style.height='0';ifr.style.border='0';ifr.style.visibility='hidden';
+        document.body.appendChild(ifr);
+        var idoc=ifr.contentWindow.document;
+        idoc.open();idoc.write(html);idoc.close();
+        try{idoc.title='Contrato_'+nombre+'_'+fecha;}catch(e){}
+        var impreso=false;
+        function imprimirIfr(){
+          if(impreso)return; impreso=true;
+          try{ ifr.contentWindow.focus(); ifr.contentWindow.print(); }
+          catch(e){ alert('Error al imprimir: '+e.message); }
+          setTimeout(function(){ try{document.body.removeChild(ifr);}catch(e){} }, 60000);
+        }
+        ifr.onload=function(){ setTimeout(imprimirIfr,400); };
+        setTimeout(imprimirIfr,1500);
       }else{
         var blob=new Blob(['\ufeff'+html],{type:'application/msword;charset=utf-8'});
         var url=URL.createObjectURL(blob);
@@ -15831,6 +15969,9 @@ function ContratosView(p){
 
     // TAB GENERAR
     tab==='generar'&&h('div',{className:'card'},
+      editId&&h('div',{style:{background:'#FEF9C3',border:'1px solid #FDE047',borderRadius:6,padding:'8px 12px',marginBottom:12,display:'flex',justifyContent:'space-between',alignItems:'center',gap:10}},
+        h('span',{style:{fontSize:12,color:'#854D0E',fontWeight:600}},'✏ Estás editando un contrato existente (N° '+editId+'). Al guardar se actualizará ese mismo contrato.'),
+        h('button',{onClick:cancelarEdicion,style:{padding:'4px 10px',fontSize:11,border:'1px solid #CA8A04',background:'#fff',color:'#854D0E',borderRadius:5,cursor:'pointer',fontWeight:600}},'Cancelar')),
       h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:12}},
         h('div',null,h('label',{style:lblS},'Empresa *'),h('select',{value:form.empresa_id,onChange:function(e){upd('empresa_id',e.target.value);upd('persona_id','');setSelPersona(null);},style:inpS},h('option',{value:''},'Seleccione empresa...'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
         h('div',null,h('label',{style:lblS},'Trabajador *'),h('select',{value:form.persona_id,onChange:function(e){onPersonaChange(e.target.value);},style:inpS,disabled:!form.empresa_id},h('option',{value:''},form.empresa_id?'Seleccione trabajador...':'Primero seleccione empresa'),personal.filter(function(x){return !form.empresa_id||String(x.empresa_id)===String(form.empresa_id);}).map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo+(x.rut?' ('+x.rut+')':''));}))),
@@ -16015,9 +16156,10 @@ function ContratosView(p){
         )
       ),
       h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:10}},
-        h(Btn,{v:'g',onClick:function(){setForm(emptyForm);setSelPersona(null);setMsg('');}},null,'Limpiar'),
-        h(Btn,{onClick:function(){guardar('word');}},'💾 Guardar + Word'),
-        h(Btn,{onClick:function(){guardar('pdf');}},'💾 Guardar + PDF')
+        editId&&h(Btn,{v:'g',onClick:cancelarEdicion},null,'Cancelar edición'),
+        !editId&&h(Btn,{v:'g',onClick:function(){setForm(emptyForm);setSelPersona(null);setMsg('');}},null,'Limpiar'),
+        h(Btn,{onClick:function(){guardar('word');}},editId?'💾 Guardar cambios + Word':'💾 Guardar + Word'),
+        h(Btn,{onClick:function(){guardar('pdf');}},editId?'💾 Guardar cambios + PDF':'💾 Guardar + PDF')
       )
     ),
 
@@ -16027,6 +16169,10 @@ function ContratosView(p){
         h('select',{value:fEmpresa,onChange:function(e){setFEmpresa(e.target.value);setFPersona('');},style:{padding:'6px 10px',border:'1px solid '+(fEmpresa?'#1E3A2D':'#CBD5E1'),borderRadius:5,fontSize:12,minWidth:220,fontWeight:fEmpresa?600:400,background:fEmpresa?'#F0FDF4':'#fff'}},
           h('option',{value:''},'Todas las empresas'),
           empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})
+        ),
+        h('select',{value:fFaenaHist,onChange:function(e){setFFaenaHist(e.target.value);},style:{padding:'6px 10px',border:'1px solid '+(fFaenaHist?'#1E3A2D':'#CBD5E1'),borderRadius:5,fontSize:12,minWidth:200,fontWeight:fFaenaHist?600:400,background:fFaenaHist?'#F0FDF4':'#fff'}},
+          h('option',{value:''},'Todas las faenas'),
+          (p.m.faenas||[]).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})
         ),
         h('select',{value:fPersona,onChange:function(e){setFPersona(e.target.value);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:240}},
           h('option',{value:''},'Todos los trabajadores'),
@@ -16047,9 +16193,10 @@ function ContratosView(p){
           {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:4}},
             h(Btn,{v:'a',sm:true,onClick:function(){generarContratoDoc(r.contrato_id,'word');},title:'Descargar Word'},null,'📄 Word'),
             h(Btn,{v:'a',sm:true,onClick:function(){generarContratoDoc(r.contrato_id,'pdf');},title:'Ver/imprimir PDF'},null,'📑 PDF'),
+            h(Btn,{v:'g',sm:true,onClick:function(){editarContrato(r.contrato_id);},title:'Editar contrato'},null,'✏ Editar'),
             h(Btn,{v:'r',sm:true,onClick:function(){eliminar(r.contrato_id);}},null,'🗑')
           );}}
-        ],rows:contratos.filter(function(c){return !fEmpresa||String(c.empresa_id)===String(fEmpresa);}).slice().sort(function(a,b){
+        ],rows:contratos.filter(function(c){return (!fEmpresa||String(c.empresa_id)===String(fEmpresa))&&(!fFaenaHist||String(c.faena_id)===String(fFaenaHist));}).slice().sort(function(a,b){
           var ea=(a.empresa_nombre||''),eb=(b.empresa_nombre||'');if(ea!==eb)return ea.localeCompare(eb);
           var na=(a.nombre_completo||''),nb=(b.nombre_completo||'');if(na!==nb)return na.localeCompare(nb);
           return new Date(b.fecha_contrato||0)-new Date(a.fecha_contrato||0);
@@ -16551,6 +16698,380 @@ var REGIONES_CL={
   'Magallanes y de la Antártica Chilena':['Antártica','Cabo de Hornos','Laguna Blanca','Natales','Porvenir','Primavera','Punta Arenas','Río Verde','San Gregorio','Timaukel','Torres del Paine']
 };
 
+// ── Tarifas de producción por cargo y VMA (anexo cláusula CUARTA) ──
+var TARIFAS_TRAMOS=['≥0,40 y <0,45','≥0,45 y <0,50','≥0,50 y <0,55','≥0,55 y <0,60','≥0,60 y <0,65','≥0,65 y <0,70','≥0,70 y <0,75','≥0,75 y <0,80','≥0,80 y <0,85','≥0,85 y <0,90','≥0,90 y <0,95','≥0,95 y <1,00','≥1,00 y <1,10','≥1,10 y <1,15','≥1,15 y <1,20','≥1,20 y <1,25','≥1,25 y <1,30','≥1,30'];
+var TARIFAS_FACTOR=[1.26,1.20,1.14,1.09,1.06,1.03,1.00,0.98,0.96,0.94,0.93,0.92,0.91,0.89,0.89,0.88,0.89,0.89];
+var TARIFAS_PRODUCCION=[
+  {cargo:'Operador de Feller',match:'FELLER',tarifas:[54.7,51.8,49.3,47.4,45.7,44.4,43.3,42.3,41.5,40.8,40.2,39.7,39.2,38.6,38.4,38.3,38.3,38.5]},
+  {cargo:'Operador de Skidder',match:'SKIDDER',tarifas:[45,43,41,39,38,37,36,35,35,34,33,33,33,32,32,32,32,32]},
+  {cargo:'Operador de Procesador',match:'PROCESADOR',tarifas:[51,48,46,44,42,41,40,39,38,38,37,37,36,36,35,35,35,36]},
+  {cargo:'Operador de Excavadora con Garra',match:'EXCAVADORA',tarifas:[32,30,28,27,26,26,25,24,24,24,23,23,23,22,22,22,22,22]},
+  {cargo:'Operador Garra (Torre de Madereo)',match:'TORRE',tarifas:[32,30,28,27,26,26,25,24,24,24,23,23,23,22,22,22,22,22]}
+];
+function tarifaTablaHTML(t){
+  var rows=TARIFAS_TRAMOS.map(function(tr,i){
+    return '<tr><td style="border:1px solid #000;padding:3px 10px;text-align:center">'+tr+'</td>'+
+      '<td style="border:1px solid #000;padding:3px 10px;text-align:center">'+TARIFAS_FACTOR[i].toFixed(2).replace('.',',')+'</td>'+
+      '<td style="border:1px solid #000;padding:3px 10px;text-align:center">$ '+String(t.tarifas[i]).replace('.',',')+'</td></tr>';
+  }).join('');
+  return '<table style="border-collapse:collapse;margin:10px auto;font-size:10pt;width:auto">'+
+    '<thead><tr><th style="border:1px solid #000;padding:4px 10px;background:#E8E8E8">Volumen Medio por Árbol — VMA (m³/árbol)</th>'+
+    '<th style="border:1px solid #000;padding:4px 10px;background:#E8E8E8">Factor tamaño árbol</th>'+
+    '<th style="border:1px solid #000;padding:4px 10px;background:#E8E8E8">Tarifa $/m³</th></tr></thead><tbody>'+rows+'</tbody></table>';
+}
+function tarifaClausula(t){
+  return {numero:'CUARTA',titulo:'Remuneraciones — Bono de producción por m³ según VMA',
+    texto:'En complemento de lo establecido en la cláusula CUARTA del Contrato de Trabajo, las partes acuerdan que el trabajador, en su calidad de '+t.cargo.toUpperCase()+', percibirá un bono de producción variable por metro cúbico (m³) efectivamente producido, cuya tarifa dependerá del Volumen Medio por Árbol (VMA) del bosque o rodal en que preste servicios, conforme a la siguiente tabla:'+
+    '</p>'+tarifaTablaHTML(t)+
+    '<p style="font-size:10pt">El VMA aplicable será el informado técnicamente para el bosque o rodal en que se ejecuten las faenas. La tarifa correspondiente se aplicará sobre la producción mensual efectiva expresada en m³. En todo lo no modificado por el presente anexo, la cláusula CUARTA del Contrato de Trabajo mantiene su plena vigencia.'};
+}
+
+// ── Impresión confiable vía iframe oculto (evita popups bloqueados y PDF en blanco) ──
+function imprimirHTMLViaIframe(html,titulo){
+  var ifr=document.createElement('iframe');
+  ifr.style.position='fixed';ifr.style.right='0';ifr.style.bottom='0';ifr.style.width='0';ifr.style.height='0';ifr.style.border='0';ifr.style.visibility='hidden';
+  document.body.appendChild(ifr);
+  var idoc=ifr.contentWindow.document;
+  idoc.open();idoc.write(html);idoc.close();
+  try{ if(titulo) idoc.title=titulo; }catch(e){}
+  var impreso=false;
+  function go(){
+    if(impreso)return; impreso=true;
+    try{ ifr.contentWindow.focus(); ifr.contentWindow.print(); }
+    catch(e){ alert('Error al imprimir: '+e.message); }
+    setTimeout(function(){ try{document.body.removeChild(ifr);}catch(e){} },60000);
+  }
+  ifr.onload=function(){ setTimeout(go,400); };
+  setTimeout(go,1500);
+}
+
+// ── Prevención de Riesgos: Registro de Entrega de EPP ──
+// Prevencionistas conocidos: inscripción en Registro del Servicio de Salud + firma digitalizada
+var PREV_CONOCIDOS=[
+  {match:['MENDEZ','GUILLERMO'],insc:'BB/P-795',firma:'data:image/png;base64,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'},
+  {match:['ALARCON','MARTA'],insc:'BB/T-94',firma:'data:image/png;base64,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'}
+];
+function prevConocido(nombre){var n=(nombre||'').toUpperCase();return PREV_CONOCIDOS.find(function(c){return c.match.every(function(w){return n.indexOf(w)>=0;});})||null;}
+var EPP_PREDEFINIDOS=['CALZADO DE SEGURIDAD','CALZADO DE SEGURIDAD CON CLAVOS','CASCO DE SEGURIDAD','CASCO DE SEGURIDAD CON FONOS Y PROTECCIÓN FACIAL','PANTALÓN','PANTALÓN ANTICORTE / PIERNERAS','GUANTES','GUANTES CABRITILLA','LENTES','CUBRENUCA','GEÓLOGO','CHAQUETA DE MOTOSIERRISTA','TRAJE DE AGUA','CHALECO REFLECTANTE','PROTECTOR AUDITIVO','PROTECTOR SOLAR'];
+function buildEppHTML(d){
+  var fmtF=function(s){if(!s)return '';var p=(s+'').slice(0,10).split('-');return p[2]+'-'+p[1]+'-'+p[0];};
+  var items=Array.isArray(d.items)?d.items:JSON.parse(d.items||'[]');
+  var filas=items.map(function(it,i){
+    return '<tr style="background:'+(i%2?'#F8FAF9':'#fff')+'">'+
+      '<td style="padding:9px 14px;border-bottom:1px solid #E2E8F0;font-weight:600;color:#1E293B">'+it.nombre+'</td>'+
+      '<td style="padding:9px 14px;border-bottom:1px solid #E2E8F0;text-align:center;color:#334155">'+fmtF(it.fecha||d.fecha)+'</td>'+
+      '<td style="padding:9px 14px;border-bottom:1px solid #E2E8F0"><div style="border-bottom:1px dotted #94A3B8;height:16px;width:85%;margin:0 auto"></div></td></tr>';
+  }).join('');
+  var logo=d.logo_base64?'<img src="'+d.logo_base64+'" style="max-height:60px;max-width:170px">':'<div style="font-weight:800;font-size:14pt;color:#1E3A2D">'+(d.empresa_nombre||'')+'</div>';
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Registro Entrega EPP</title><style>'+
+    '@page{size:letter;margin:1.5cm 1.7cm}'+
+    'body{font-family:Arial,Helvetica,sans-serif;font-size:10.5pt;line-height:1.4;margin:0;color:#1E293B;-webkit-print-color-adjust:exact;print-color-adjust:exact}'+
+    'table{border-collapse:collapse}'+
+    '</style></head><body>'+
+    // Encabezado corporativo
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">'+
+    '<div>'+logo+'</div>'+
+    '<div style="text-align:right">'+
+    '<div style="font-weight:700;font-size:11pt;color:#1E3A2D">'+(d.empresa_nombre||'')+'</div>'+
+    '<div style="font-size:9pt;color:#64748B">RUT '+(d.empresa_rut||'')+'</div>'+
+    '<div style="font-size:8.5pt;color:#64748B;margin-top:2px">Inducci\u00f3n \u00b7 Contrataci\u00f3n e inducci\u00f3n de personal</div>'+
+    '</div></div>'+
+    '<div style="background:#fff;color:#1E3A2D;border:2px solid #1E3A2D;border-radius:8px;padding:12px 18px;margin-bottom:18px">'+
+    '<div style="font-size:13.5pt;font-weight:800;letter-spacing:.4px">REGISTRO DE ENTREGA \u2014 ELEMENTOS DE PROTECCI\u00d3N PERSONAL</div>'+
+    '<div style="font-size:9pt;color:#64748B;margin-top:2px">Prevenci\u00f3n de Riesgos \u00b7 Vigencia: un a\u00f1o desde la fecha de entrega</div>'+
+    '</div>'+
+    // Datos del trabajador (tarjeta)
+    '<div style="border:1px solid #E2E8F0;border-radius:8px;padding:12px 16px;margin-bottom:18px;background:#F8FAFC">'+
+    '<div style="display:flex;flex-wrap:wrap;gap:24px">'+
+    '<div style="flex:2;min-width:200px"><div style="font-size:8pt;color:#64748B;text-transform:uppercase;letter-spacing:.5px">Trabajador</div><div style="font-weight:700;font-size:11pt">'+nombresPrimero(d.nombre_completo||'')+'</div></div>'+
+    '<div style="flex:1;min-width:110px"><div style="font-size:8pt;color:#64748B;text-transform:uppercase;letter-spacing:.5px">RUT</div><div style="font-weight:700">'+(d.rut||'')+'</div></div>'+
+    '<div style="flex:1;min-width:140px"><div style="font-size:8pt;color:#64748B;text-transform:uppercase;letter-spacing:.5px">Cargo</div><div style="font-weight:700">'+(d.cargo||'')+'</div></div>'+
+    '<div style="flex:1;min-width:110px"><div style="font-size:8pt;color:#64748B;text-transform:uppercase;letter-spacing:.5px">Fecha entrega</div><div style="font-weight:700">'+fmtF(d.fecha)+'</div></div>'+
+    '</div></div>'+
+    // Tabla EPP
+    '<table style="width:100%;margin-bottom:6px;border:1px solid #E2E8F0;border-radius:8px;overflow:hidden">'+
+    '<thead><tr style="background:#E9F1EC;color:#1E3A2D;border-bottom:2px solid #1E3A2D">'+
+    '<th style="padding:9px 14px;text-align:left;font-size:9.5pt;letter-spacing:.4px;width:46%">EPP ENTREGADO</th>'+
+    '<th style="padding:9px 14px;font-size:9.5pt;letter-spacing:.4px;width:20%">FECHA</th>'+
+    '<th style="padding:9px 14px;font-size:9.5pt;letter-spacing:.4px">FIRMA DEL TRABAJADOR</th>'+
+    '</tr></thead><tbody>'+filas+'</tbody></table>'+
+    '<div style="font-size:8.5pt;color:#64748B;margin-bottom:16px">'+items.length+' elemento(s) entregado(s). El trabajador firma cada elemento recibido.</div>'+
+    // Nota
+    '<div style="background:#FFFBEB;border:1px solid #FDE68A;border-left:4px solid #F59E0B;border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:9pt;color:#78350F">'+
+    '<strong>Nota:</strong> La vigencia de este documento ser\u00e1 de un a\u00f1o, debiendo informar los cambios por deterioro de los EPP a trav\u00e9s de un nuevo documento. El trabajador debe solicitar, sin costo para \u00e9l, el cambio de sus EPP cuando estos presenten deterioro o no sean adecuados al riesgo presente.'+
+    '</div>'+
+    // Declaración del prevencionista
+    '<div style="border:1px solid #E2E8F0;border-radius:8px;padding:12px 16px;margin-bottom:8px">'+
+    '<div style="font-weight:700;color:#1E3A2D;margin-bottom:6px;font-size:10pt">El Prevencionista de Riesgos declara:</div>'+
+    '<ul style="margin:0;padding-left:18px;font-size:9.5pt;color:#334155">'+
+    '<li style="margin-bottom:3px">Haber capacitado en el uso correcto de los EPP del trabajador.</li>'+
+    '<li style="margin-bottom:3px">Haber revisado el estado de los EPP, encontr\u00e1ndose todos en perfecto estado.</li>'+
+    '<li style="margin-bottom:3px">Que los EPP entregados son los adecuados al riesgo a cubrir.</li>'+
+    '<li>Los EPP entregados se encuentran certificados, de acuerdo a las normas de calidad de conformidad a lo establecido Decreto Nro. 18.</li>'+
+    '</ul></div>'+
+    // Firma
+    '<div style="text-align:center;margin-top:'+(d.prevencionista_firma?'26':'70')+'px">'+
+    (d.prevencionista_firma?('<img src="'+d.prevencionista_firma+'" style="max-height:72px;max-width:220px;display:block;margin:0 auto -8px">'):'')+
+    '<div style="border-top:1.5px solid #1E3A2D;width:250px;margin:0 auto;padding-top:6px;font-weight:700;color:#1E3A2D">Firma Prevencionista de Riesgos</div>'+
+    '<div style="margin-top:8px;font-size:10pt;font-weight:600">'+nombresPrimero(d.prevencionista_nombre||'')+'</div>'+
+    (d.prevencionista_inscripcion?('<div style="font-size:9pt;color:#334155">N\u00b0 Inscripci\u00f3n: '+d.prevencionista_inscripcion+'</div>'):'')+
+    '<div style="font-size:8pt;color:#64748B">Registro del Servicio de Salud</div>'+
+    '</div>'+
+    '<div style="position:fixed;bottom:0;left:0;right:0;text-align:center;font-size:7.5pt;color:#94A3B8;border-top:1px solid #E2E8F0;padding-top:4px">Documento generado el '+fmtF(new Date().getFullYear()+'-'+('0'+(new Date().getMonth()+1)).slice(-2)+'-'+('0'+new Date().getDate()).slice(-2))+' \u00b7 Empresas Poo \u2014 Sistema de Gesti\u00f3n</div>'+
+    '</body></html>';
+}
+function PrevencionView(p){
+  var hoyStr=(function(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);})();
+  var[tab,setTab]=useState('epp');
+  var[personas,setPersonas]=useState([]);
+  var[regs,setRegs]=useState([]);
+  var[msg,setMsg]=useState('');
+  var[fEmpresaReg,setFEmpresaReg]=useState('');
+  var[form,setForm]=useState({empresa_id:'',persona_id:'',prevencionista_id:'',prevencionista_inscripcion:'',fecha:hoyStr});
+  var[selItems,setSelItems]=useState({});
+  var[itemLibre,setItemLibre]=useState('');
+  var[itemsExtra,setItemsExtra]=useState([]);
+  var[guardando,setGuardando]=useState(false);
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  function uF(k,v){setForm(function(f){return Object.assign({},f,(function(o){o[k]=v;return o;})({}));});}
+  function loadRegs(){ api('/prevencion/epp','GET',null,p.tok).then(function(r){setRegs(Array.isArray(r)?r:[]);}).catch(function(){}); }
+  useEffect(function(){
+    api('/personal','GET',null,p.tok).then(function(r){setPersonas((Array.isArray(r)?r:[]).filter(function(x){return x.activo!==false;}));}).catch(function(){});
+    loadRegs();
+  },[]);
+  var trabajadores=personas.filter(function(x){return !form.empresa_id||String(x.empresa_id)===String(form.empresa_id);});
+  var prevencionistas=personas.filter(function(x){return ((x.cargo||'').toUpperCase().indexOf('PREVENCION')>=0);});
+  var trabSel=personas.find(function(x){return String(x.persona_id)===String(form.persona_id);});
+  // Al elegir prevencionista, precargar su última inscripción usada
+  function elegirPrev(pid){
+    uF('prevencionista_id',pid);
+    var pr=personas.find(function(x){return String(x.persona_id)===String(pid);});
+    var conocido=prevConocido(pr&&pr.nombre_completo);
+    if(conocido){ uF('prevencionista_inscripcion',conocido.insc); return; }
+    var ultimo=regs.find(function(r){return String(r.prevencionista_id)===String(pid)&&r.prevencionista_inscripcion;});
+    uF('prevencionista_inscripcion',ultimo?ultimo.prevencionista_inscripcion:'');
+  }
+  function toggleItem(nombre){ setSelItems(function(o){var n=Object.assign({},o);if(n[nombre])delete n[nombre];else n[nombre]=true;return n;}); }
+  function agregarLibre(){ var v=itemLibre.trim().toUpperCase(); if(!v)return; if(itemsExtra.indexOf(v)<0)setItemsExtra(itemsExtra.concat([v])); setSelItems(function(o){var n=Object.assign({},o);n[v]=true;return n;}); setItemLibre(''); }
+  var listaEpp=EPP_PREDEFINIDOS.concat(itemsExtra.filter(function(x){return EPP_PREDEFINIDOS.indexOf(x)<0;}));
+  var nSel=Object.keys(selItems).length;
+  function guardar(imprimir){
+    if(!form.empresa_id){setMsg('Error: selecciona la empresa');return;}
+    if(!form.persona_id){setMsg('Error: selecciona el trabajador');return;}
+    if(!form.prevencionista_id){setMsg('Error: selecciona el prevencionista de riesgos');return;}
+    if(!nSel){setMsg('Error: marca al menos un elemento entregado');return;}
+    setGuardando(true);setMsg('');
+    var items=Object.keys(selItems).map(function(n){return {nombre:n,fecha:form.fecha};});
+    api('/prevencion/epp','POST',{empresa_id:form.empresa_id,persona_id:form.persona_id,prevencionista_id:form.prevencionista_id,prevencionista_inscripcion:form.prevencionista_inscripcion,fecha:form.fecha,items:items},p.tok)
+      .then(function(r){
+        setGuardando(false);
+        setMsg('✓ Registro de entrega guardado ('+nSel+' elementos)');
+        setSelItems({});setItemsExtra([]);uF('persona_id','');
+        loadRegs();
+        if(imprimir)imprimirReg(r.entrega_id);
+      })
+      .catch(function(e){setGuardando(false);setMsg('Error: '+e.message);});
+  }
+  function imprimirReg(id){
+    api('/prevencion/epp/'+id,'GET',null,p.tok).then(function(d){
+      var c=prevConocido(d.prevencionista_nombre);
+      if(c&&c.firma)d.prevencionista_firma=c.firma;
+      imprimirHTMLViaIframe(buildEppHTML(d),'EPP_'+(d.nombre_completo||'').split(' ')[0]+'_'+(d.fecha+'').slice(0,10));
+    }).catch(function(e){setMsg('Error al generar documento: '+e.message);});
+  }
+  function eliminarReg(r2){
+    if(!confirm('¿Eliminar el registro de entrega de EPP de '+r2.nombre_completo+' del '+(r2.fecha+'').slice(0,10).split('-').reverse().join('/')+'?'))return;
+    api('/prevencion/epp/'+r2.entrega_id,'DELETE',null,p.tok).then(function(){setMsg('✓ Registro eliminado');loadRegs();}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  var inpS={padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13};
+  var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#475569'};
+  var regsV=regs.filter(function(r2){return !fEmpresaReg||String(r2.empresa_id)===String(fEmpresaReg);});
+  return h('div',null,
+    h('div',{style:{display:'flex',gap:6,marginBottom:12,flexWrap:'wrap'}},
+      [{k:'epp',l:'🦺 Entrega de EPP'},{k:'registros',l:'📋 Registros ('+regs.length+')'}].map(function(t){
+        return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'8px 16px',borderRadius:6,border:'1px solid '+(tab===t.k?'#1E3A2D':'#CBD5E1'),background:tab===t.k?'#1E3A2D':'#fff',color:tab===t.k?'#fff':'#475569',fontWeight:600,fontSize:12,cursor:'pointer'}},t.l);
+      })
+    ),
+    msg&&h('div',{className:'al '+(msg.indexOf('Error')>=0?'al-e':'al-s'),style:{marginBottom:10}},msg),
+    tab==='epp'&&h('div',{className:'card',style:{padding:16}},
+      h('div',{style:{fontSize:14,fontWeight:700,color:'#1E3A2D',marginBottom:4}},'Registro de Entrega de Elementos de Protección Personal'),
+      h('div',{style:{fontSize:11,color:'#64748B',marginBottom:14}},'Documento con vigencia de un año. El trabajador firma en papel la recepción de cada elemento; el prevencionista firma la declaración.'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(210px,1fr))',gap:10,marginBottom:14}},
+        h('div',null,h('label',{style:lblS},'Empresa *'),
+          h('select',{value:form.empresa_id,onChange:function(e){uF('empresa_id',e.target.value);uF('persona_id','');},style:Object.assign({},inpS,{width:'100%',borderColor:form.empresa_id?'#CBD5E1':'#F59E0B'})},
+            h('option',{value:''},'— Selecciona empresa —'),
+            empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
+        h('div',null,h('label',{style:lblS},'Trabajador *'),
+          h('select',{value:form.persona_id,onChange:function(e){uF('persona_id',e.target.value);},disabled:!form.empresa_id,style:Object.assign({},inpS,{width:'100%'})},
+            h('option',{value:''},form.empresa_id?'— Selecciona trabajador —':'Elige empresa primero'),
+            trabajadores.map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo);}))),
+        h('div',null,h('label',{style:lblS},'Fecha de entrega'),
+          h('input',{type:'date',value:form.fecha,onChange:function(e){uF('fecha',e.target.value);},style:Object.assign({},inpS,{width:'100%'})})),
+        h('div',null,h('label',{style:lblS},'Prevencionista de riesgos *'),
+          h('select',{value:form.prevencionista_id,onChange:function(e){elegirPrev(e.target.value);},style:Object.assign({},inpS,{width:'100%'})},
+            h('option',{value:''},prevencionistas.length?'— Selecciona prevencionista —':'No hay cargos "Prevencionista" en el maestro'),
+            prevencionistas.map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo+' ('+(x.empresa_nombre||'')+')');}))),
+        h('div',null,h('label',{style:lblS},'N° inscripción (Registro Servicio de Salud)'),
+          h('input',{type:'text',value:form.prevencionista_inscripcion,onChange:function(e){uF('prevencionista_inscripcion',e.target.value);},placeholder:'Ej: BB/P-795',style:Object.assign({},inpS,{width:'100%'})}))
+      ),
+      trabSel&&h('div',{style:{background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:6,padding:'8px 12px',marginBottom:14,fontSize:12,color:'#166534'}},
+        h('strong',null,trabSel.nombre_completo),' · RUT '+(trabSel.rut||'—')+' · Cargo: '+(trabSel.cargo||'—')+(trabSel.faena_nombre?' · '+trabSel.faena_nombre:'')),
+      h('div',{style:{fontSize:12,fontWeight:700,marginBottom:6}},'Elementos entregados ('+nSel+' seleccionados)'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(230px,1fr))',gap:6,marginBottom:10}},
+        listaEpp.map(function(nombre){
+          var sel=!!selItems[nombre];
+          return h('div',{key:nombre,onClick:function(){toggleItem(nombre);},style:{display:'flex',alignItems:'center',gap:8,padding:'6px 10px',background:sel?'#FEF3C7':'#F8FAFC',border:'1px solid '+(sel?'#F59E0B':'#E2E8F0'),borderRadius:6,cursor:'pointer',fontSize:11,fontWeight:sel?700:500,color:sel?'#78350F':'#334155',userSelect:'none'}},
+            h('input',{type:'checkbox',checked:sel,readOnly:true,style:{width:14,height:14,minWidth:14,flex:'none',margin:0,accentColor:'#F59E0B',pointerEvents:'none'}}),
+            h('span',{style:{flex:1,textAlign:'left',lineHeight:1.25}},nombre));
+        })
+      ),
+      h('div',{style:{display:'flex',gap:6,alignItems:'center',marginBottom:16}},
+        h('input',{type:'text',value:itemLibre,onChange:function(e){setItemLibre(e.target.value);},onKeyDown:function(e){if(e.key==='Enter')agregarLibre();},placeholder:'Otro elemento no listado...',style:Object.assign({},inpS,{width:280})}),
+        h('button',{onClick:agregarLibre,style:{padding:'7px 14px',border:'1px solid #CBD5E1',borderRadius:6,background:'#F8FAFC',fontSize:12,cursor:'pointer',fontWeight:600}},'+ Agregar')
+      ),
+      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8}},
+        h(Btn,{v:'g',onClick:function(){guardar(false);},disabled:guardando},null,guardando?'Guardando...':'💾 Guardar'),
+        h(Btn,{onClick:function(){guardar(true);},disabled:guardando},guardando?'Guardando...':'💾 Guardar e imprimir PDF')
+      )
+    ),
+    tab==='registros'&&h('div',{className:'card',style:{padding:14}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
+        h('div',{style:{fontSize:13,fontWeight:700}},'Registros de entrega de EPP ('+regsV.length+(fEmpresaReg?' de '+regs.length:'')+')'),
+        h('select',{value:fEmpresaReg,onChange:function(e){setFEmpresaReg(e.target.value);},style:Object.assign({},inpS,{fontSize:12})},
+          h('option',{value:''},'Todas las empresas'),
+          empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))
+      ),
+      regsV.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:20,textAlign:'center'}},'No hay registros'+(fEmpresaReg?' para esta empresa':'')):
+      h(TBL,{cols:[
+        {lbl:'Fecha',render:function(r2){return (r2.fecha+'').slice(0,10).split('-').reverse().join('/');}},
+        {lbl:'Trabajador',render:function(r2){return h('div',null,h('div',{style:{fontWeight:600}},r2.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},(r2.rut||'')+' · '+(r2.cargo||'')));}},
+        {lbl:'Empresa',render:function(r2){return r2.empresa_nombre;}},
+        {lbl:'Faena',render:function(r2){return r2.faena_nombre||'—';}},
+        {lbl:'Elementos',c:true,render:function(r2){var its=Array.isArray(r2.items)?r2.items:JSON.parse(r2.items||'[]');return h('span',{title:its.map(function(i2){return i2.nombre;}).join(', ')},its.length);}},
+        {lbl:'Prevencionista',render:function(r2){return r2.prevencionista_nombre||'—';}},
+        {lbl:'',render:function(r2){return h('div',{style:{display:'flex',gap:4}},
+          h(Btn,{v:'a',sm:true,onClick:function(){imprimirReg(r2.entrega_id);}},null,'📑 PDF'),
+          h(Btn,{v:'r',sm:true,onClick:function(){eliminarReg(r2);}},null,'🗑'));}}
+      ],rows:regsV})
+    )
+  );
+}
+
+// ── Vista Turnos de Faena (7x7) ──
+function TurnosFaenaView(p){
+  var[personas,setPersonas]=useState([]);
+  var[msg,setMsg]=useState('');
+  var[fEmpresa,setFEmpresa]=useState('');
+  var _h=new Date();
+  var[calMes,setCalMes]=useState({y:_h.getFullYear(),m:_h.getMonth()}); // m: 0-11
+  var MESES_CAL=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  function moverMes(d){ setCalMes(function(c){var m=c.m+d,y=c.y; if(m<0){m=11;y--;} if(m>11){m=0;y++;} return{y:y,m:m};}); }
+  function miniCal(f){
+    var y=calMes.y,m=calMes.m;
+    var diasEnMes=new Date(y,m+1,0).getDate();
+    var dow=(new Date(y,m,1).getDay()+6)%7; // lunes=0
+    var hoy=new Date(); var esMesActual=(hoy.getFullYear()===y&&hoy.getMonth()===m); var hoyD=hoy.getDate();
+    var celdas=[]; for(var i=0;i<dow;i++)celdas.push(null); for(var d=1;d<=diasEnMes;d++)celdas.push(d);
+    while(celdas.length%7!==0)celdas.push(null);
+    var cellS=function(extra){return Object.assign({width:26,height:22,display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,borderRadius:4},extra||{});};
+    return h('div',{style:{minWidth:210}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
+        h('button',{onClick:function(){moverMes(-1);},style:{border:'1px solid #CBD5E1',background:'#fff',borderRadius:4,cursor:'pointer',fontSize:11,padding:'1px 7px'}},'‹'),
+        h('span',{style:{fontSize:11,fontWeight:700,color:'#334155'}},MESES_CAL[m]+' '+y),
+        h('button',{onClick:function(){moverMes(1);},style:{border:'1px solid #CBD5E1',background:'#fff',borderRadius:4,cursor:'pointer',fontSize:11,padding:'1px 7px'}},'›')
+      ),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,26px)',gap:2}},
+        ['L','M','M','J','V','S','D'].map(function(dn,i){return h('div',{key:'h'+i,style:cellS({fontWeight:700,color:'#94A3B8',height:14})},dn);}),
+        celdas.map(function(d,i){
+          if(d===null)return h('div',{key:'v'+i,style:cellS()},'');
+          var fecha=y+'-'+('0'+(m+1)).slice(-2)+'-'+('0'+d).slice(-2);
+          var ti=turnoFaenaInfo(f.turno_inicio_a,fecha);
+          var esA=ti&&ti.turno==='A';
+          var esHoy=esMesActual&&d===hoyD;
+          return h('div',{key:'d'+i,title:'Turno '+(ti?ti.turno:'—')+' — '+('0'+d).slice(-2)+'/'+('0'+(m+1)).slice(-2),style:cellS({
+            background:esA?'#DCFCE7':'#DBEAFE',color:esA?'#15803D':'#1E40AF',fontWeight:esHoy?800:500,
+            border:esHoy?'2px solid #F59E0B':'1px solid '+(esA?'#BBF7D0':'#BFDBFE')
+          })},d);
+        })
+      ),
+      h('div',{style:{display:'flex',gap:8,marginTop:5,fontSize:9,color:'#64748B',justifyContent:'center'}},
+        h('span',{style:{display:'inline-flex',alignItems:'center',gap:3}},h('span',{style:{width:10,height:10,background:'#DCFCE7',border:'1px solid #BBF7D0',borderRadius:2,display:'inline-block'}}),'Turno A'),
+        h('span',{style:{display:'inline-flex',alignItems:'center',gap:3}},h('span',{style:{width:10,height:10,background:'#DBEAFE',border:'1px solid #BFDBFE',borderRadius:2,display:'inline-block'}}),'Turno B'),
+        h('span',{style:{display:'inline-flex',alignItems:'center',gap:3}},h('span',{style:{width:10,height:10,border:'2px solid #F59E0B',borderRadius:2,display:'inline-block'}}),'Hoy')
+      )
+    );
+  }
+  var faenasTurno=(p.m.faenas||[]).filter(function(f){return f.activo&&f.turno_inicio_a&&(!fEmpresa||String(f.empresa_id)===String(fEmpresa));});
+  var faenasSin=(p.m.faenas||[]).filter(function(f){return f.activo&&!f.turno_inicio_a&&(!fEmpresa||String(f.empresa_id)===String(fEmpresa));});
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  function load(){ api('/personal','GET',null,p.tok).then(function(r){setPersonas((Array.isArray(r)?r:[]).filter(function(x){return x.activo!==false;}));}).catch(function(){}); }
+  useEffect(function(){ load(); },[]);
+  function setTurno(persona,t){
+    api('/personal/'+persona.persona_id+'/turno','PATCH',{turno:t||null},p.tok)
+      .then(function(){ setPersonas(function(l){return l.map(function(z){return z.persona_id===persona.persona_id?Object.assign({},z,{turno:t||null}):z;});}); })
+      .catch(function(e){ setMsg('Error: '+e.message); });
+  }
+  function selTurno(x){
+    return h('select',{value:x.turno||'',onChange:function(e){setTurno(x,e.target.value);},style:{fontSize:10,padding:'2px 4px',border:'1px solid #CBD5E1',borderRadius:4}},
+      h('option',{value:''},'Normal'),h('option',{value:'A'},'A'),h('option',{value:'B'},'B'));
+  }
+  return h('div',null,
+    h('div',{style:{display:'flex',gap:8,alignItems:'center',marginBottom:12,flexWrap:'wrap'}},
+      h('select',{value:fEmpresa,onChange:function(e){setFEmpresa(e.target.value);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:220}},
+        h('option',{value:''},'Todas las empresas'),
+        empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
+      h('span',{style:{fontSize:11,color:'#64748B'}},'Sistema 7x7: 7 días de trabajo por 7 de descanso, turnos A y B alternados. La fecha de inicio del ciclo A se configura en Mantenedores → Faenas.')
+    ),
+    msg&&h('div',{className:'al al-e',style:{marginBottom:10}},msg),
+    faenasTurno.length===0&&h('div',{className:'card',style:{padding:24,textAlign:'center',color:'#94A3B8',fontSize:13}},
+      'Ninguna faena tiene configurado el sistema de turnos 7x7.',h('br',null),
+      h('span',{style:{fontSize:11}},'Ve a Mantenedores → Faenas, edita la faena y define la fecha "inicio de ciclo del Turno A".')),
+    faenasTurno.map(function(f){
+      var ti=turnoFaenaInfo(f.turno_inicio_a);
+      var pers=personas.filter(function(x){return String(x.faena_id)===String(f.faena_id);});
+      var pA=pers.filter(function(x){return x.turno==='A';});
+      var pB=pers.filter(function(x){return x.turno==='B';});
+      var pSin=pers.filter(function(x){return x.turno!=='A'&&x.turno!=='B';});
+      function colTrab(lista,titulo,activos){
+        return h('div',{style:{flex:1,minWidth:240,background:activos?'#F0FDF4':'#F8FAFC',border:'1px solid '+(activos?'#86EFAC':'#E2E8F0'),borderRadius:6,padding:10}},
+          h('div',{style:{fontSize:12,fontWeight:700,marginBottom:6,color:activos?'#15803D':'#475569'}},titulo+' ('+lista.length+')'+(activos?' — TRABAJANDO':' — descanso')),
+          lista.length===0?h('div',{style:{fontSize:11,color:'#94A3B8'}},'Sin trabajadores asignados'):
+          lista.map(function(x){return h('div',{key:x.persona_id,style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:6,padding:'3px 0',borderBottom:'1px dotted #E2E8F0'}},
+            h('div',null,h('div',{style:{fontSize:11,fontWeight:600}},x.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},x.cargo||'')),
+            selTurno(x));})
+        );
+      }
+      return h('div',{key:f.faena_id,className:'card',style:{padding:14,marginBottom:14,borderLeft:'5px solid '+(ti.turno==='A'?'#16A34A':'#2563EB')}},
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'flex-start',flexWrap:'wrap',gap:10,marginBottom:10}},
+          h('div',null,
+            h('div',{style:{fontSize:15,fontWeight:700,color:'#1E3A2D'}},f.nombre),
+            h('div',{style:{fontSize:11,color:'#64748B'}},(f.empresa_nombre||'')+' · '+f.codigo)
+          ),
+          h('div',{style:{textAlign:'right'}},
+            h('div',{style:{marginBottom:4}},TurnoBadge(ti.turno),h('span',{style:{fontSize:11,color:'#475569',marginLeft:6}},'trabajando — día '+ti.dia+' de 7')),
+            h('div',{style:{fontSize:11,color:'#64748B'}},'Ciclo: '+ti.desde+' al '+ti.hasta),
+            h('div',{style:{fontSize:11,fontWeight:600,color:'#92400E'}},'↻ El '+ti.cambio+' entra el Turno '+ti.otro)
+          )
+        ),
+        h('div',{style:{display:'flex',gap:10,flexWrap:'wrap'}},
+          h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,padding:10}},miniCal(f)),
+          colTrab(pA,'Turno A',ti.turno==='A'),
+          colTrab(pB,'Turno B',ti.turno==='B'),
+          pSin.length>0&&h('div',{style:{flex:1,minWidth:240,background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:6,padding:10}},
+            h('div',{style:{fontSize:12,fontWeight:700,marginBottom:6,color:'#92400E'}},'Sin turno asignado ('+pSin.length+')'),
+            h('div',{style:{fontSize:10,color:'#92400E',marginBottom:6}},'Asigna A o B, o deja "Normal" si trabaja jornada normal.'),
+            pSin.map(function(x){return h('div',{key:x.persona_id,style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:6,padding:'3px 0',borderBottom:'1px dotted #FDE68A'}},
+              h('div',null,h('div',{style:{fontSize:11,fontWeight:600}},x.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},x.cargo||'')),
+              selTurno(x));})
+          )
+        )
+      );
+    }),
+    faenasSin.length>0&&h('div',{className:'card',style:{padding:12,marginTop:4}},
+      h('div',{style:{fontSize:11,color:'#64748B'}},'Faenas sin sistema de turnos (jornada normal): '+faenasSin.map(function(f){return f.nombre;}).join(', ')+'. Si alguna trabaja 7x7, configura su fecha de inicio del Turno A en Mantenedores → Faenas.'))
+  );
+}
+
 // ── Vista de Anexos ──
 function AnexosView(p){
   var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#475569'};
@@ -16566,6 +17087,41 @@ function AnexosView(p){
   var[form,setForm]=useState(emptyForm);
   // Form masivo
   var[masivoForm,setMasivoForm]=useState({faena_id:'',empresa_id:'',fecha_anexo:new Date().toISOString().slice(0,10),lugar_firma:'Nacimiento',fundo:'',propiedad:'Forestal Mininco Spa.',comuna:'',region:''});
+  // Anexo de tarifas (complemento cláusula CUARTA)
+  var[tarForm,setTarForm]=useState({empresa_id:'',faena_id:'',fecha_anexo:new Date().toISOString().slice(0,10),lugar_firma:'Nacimiento',cargoIdx:''});
+  function uTar(k,v){setTarForm(function(f){return Object.assign({},f,(function(o){o[k]=v;return o;})({}));});}
+  var personalTarifas=p.personal.filter(function(x){
+    if(tarForm.empresa_id&&String(x.empresa_id)!==String(tarForm.empresa_id))return false;
+    if(tarForm.faena_id&&String(x.faena_id)!==String(tarForm.faena_id))return false;
+    return x.activo!==false;
+  });
+  var tarSel=tarForm.cargoIdx!==''?TARIFAS_PRODUCCION[parseInt(tarForm.cargoIdx)]:null;
+  function selectCoincidentes(){
+    if(!tarSel)return;
+    setSelPersonas(personalTarifas.filter(function(x){return ((x.cargo||'').toUpperCase().indexOf(tarSel.match)>=0);}).map(function(x){return x.persona_id;}));
+  }
+  function guardarTarifas(){
+    if(!tarForm.empresa_id){alert('Seleccione la empresa');return;}
+    if(!tarSel){alert('Seleccione el cargo de la tabla de tarifas');return;}
+    if(!selPersonas.length){alert('Seleccione al menos un trabajador');return;}
+    var body={
+      empresa_id:tarForm.empresa_id,
+      fecha_anexo:tarForm.fecha_anexo,
+      lugar_firma:tarForm.lugar_firma,
+      persona_ids:selPersonas,
+      clausulas:[tarifaClausula(tarSel)],
+      observaciones:'Anexo de tarifas por producción — '+tarSel.cargo
+    };
+    api('/anexos','POST',body,p.tok).then(function(r){
+      alert('✅ Se crearon '+r.total+' anexo(s) de tarifas. Generando documento en '+(formatoSalida==='pdf'?'PDF':'Word')+'...');
+      setSelPersonas([]);loadAnexos();
+      if(r.creados&&r.creados.length){
+        Promise.all(r.creados.map(function(id){return api('/anexos/'+id,'GET',null,p.tok);}))
+          .then(function(anexos){ generarDocCombinado(anexos,formatoSalida); })
+          .catch(function(e){alert('Error al generar documento: '+e.message);});
+      }
+    }).catch(function(e){alert('Error: '+e.message);});
+  }
   var[selPersonas,setSelPersonas]=useState([]);
   var[formatoSalida,setFormatoSalida]=useState('word'); // 'word' o 'pdf'
 
@@ -16651,11 +17207,7 @@ function AnexosView(p){
     var faenaNombre=((faenas.find(function(f){return String(f.faena_id)===String(masivoForm.faena_id);})||{}).nombre||'masivo').replace(/\s+/g,'_');
     var nombre='Anexos_'+faenaNombre+'_'+fecha;
     if(formato==='pdf'){
-      var w=window.open('','_blank');
-      if(!w){alert('Permita popups para generar el PDF');return;}
-      w.document.write(fullHTML);w.document.close();
-      w.document.title=nombre;
-      setTimeout(function(){w.focus();w.print();},700);
+      imprimirHTMLViaIframe(fullHTML,nombre);
     }else{
       var blob=new Blob(['\ufeff'+fullHTML],{type:'application/msword;charset=utf-8'});
       var url=URL.createObjectURL(blob);
@@ -16673,8 +17225,9 @@ function AnexosView(p){
   // Selección múltiple para eliminación masiva
   var[selAnexos,setSelAnexos]=useState([]);
   var[fEmpresaListar,setFEmpresaListar]=useState('');
-  // Lista filtrada por empresa y ordenada (empresa → trabajador → fecha desc)
-  var anexosVista=anexos.filter(function(a){return !fEmpresaListar||String(a.empresa_id)===String(fEmpresaListar);}).slice().sort(function(a,b){
+  var[fFaenaListar,setFFaenaListar]=useState('');
+  // Lista filtrada por empresa/faena y ordenada (empresa → trabajador → fecha desc)
+  var anexosVista=anexos.filter(function(a){return (!fEmpresaListar||String(a.empresa_id)===String(fEmpresaListar))&&(!fFaenaListar||String(a.faena_id)===String(fFaenaListar));}).slice().sort(function(a,b){
     var ea=(a.empresa_nombre||''),eb=(b.empresa_nombre||'');if(ea!==eb)return ea.localeCompare(eb);
     var na=(a.nombre_completo||''),nb=(b.nombre_completo||'');if(na!==nb)return na.localeCompare(nb);
     return new Date(b.fecha_anexo||0)-new Date(a.fecha_anexo||0);
@@ -16697,11 +17250,7 @@ function AnexosView(p){
       var nombre=(a.nombre_completo||'anexo').replace(/\s+/g,'_');
       var fecha=(a.fecha_anexo+'').slice(0,10).replace(/-/g,'');
       if(formato==='pdf'){
-        var w=window.open('','_blank');
-        if(!w){alert('Permita popups');return;}
-        w.document.write(html);w.document.close();
-        w.document.title='Anexo_'+nombre+'_'+fecha;
-        setTimeout(function(){w.focus();w.print();},500);
+        imprimirHTMLViaIframe(html,'Anexo_'+nombre+'_'+fecha);
       }else{
         var blob=new Blob(['\ufeff'+html],{type:'application/msword;charset=utf-8'});
         var url=URL.createObjectURL(blob);
@@ -16716,8 +17265,8 @@ function AnexosView(p){
   return h('div',null,
     // Sub-tabs
     h('div',{style:{display:'flex',gap:6,marginBottom:12}},
-      [{k:'individual',l:'➕ Anexo Individual'},{k:'masivo',l:'📦 Generación Masiva'},{k:'listar',l:'📋 Listado de Anexos'}].map(function(t){
-        return h('button',{key:t.k,onClick:function(){setModo(t.k);},
+      [{k:'individual',l:'➕ Anexo Individual'},{k:'masivo',l:'📦 Generación Masiva'},{k:'tarifas',l:'💲 Anexo de Tarifas'},{k:'listar',l:'📋 Listado de Anexos'}].map(function(t){
+        return h('button',{key:t.k,onClick:function(){setModo(t.k);setSelPersonas([]);},
           style:{padding:'6px 14px',borderRadius:5,fontSize:11,cursor:'pointer',border:'1px solid #CBD5E1',background:modo===t.k?'#F59E0B':'#F8FAFC',color:modo===t.k?'#fff':'#475569',fontWeight:600}},t.l);
       })
     ),
@@ -16835,17 +17384,74 @@ function AnexosView(p){
           h('span',{style:{fontSize:11,fontWeight:600,color:'#475569'}},'Formato de salida:'),
           h('button',{onClick:function(){setFormatoSalida('word');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formatoSalida==='word'?'#1E40AF':'#CBD5E1'),background:formatoSalida==='word'?'#DBEAFE':'transparent',fontWeight:formatoSalida==='word'?700:400,fontSize:11,cursor:'pointer',color:formatoSalida==='word'?'#1E40AF':'#64748B'}},'📄 Word'),
           h('button',{onClick:function(){setFormatoSalida('pdf');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formatoSalida==='pdf'?'#DC2626':'#CBD5E1'),background:formatoSalida==='pdf'?'#FEE2E2':'transparent',fontWeight:formatoSalida==='pdf'?700:400,fontSize:11,cursor:'pointer',color:formatoSalida==='pdf'?'#DC2626':'#64748B'}},'📑 PDF'),
-          formatoSalida==='pdf'&&h('span',{style:{fontSize:10,color:'#92400E',marginLeft:6}},'⚠ Se abrirá 1 ventana con todos los anexos — autorice popups')
+          formatoSalida==='pdf'&&h('span',{style:{fontSize:10,color:'#92400E',marginLeft:6}},'Se abrirá el diálogo de impresión con todos los anexos (uno por página)')
         ),
         h(Btn,{onClick:guardarMasivo,disabled:!selPersonas.length},'📦 Crear '+selPersonas.length+' anexo(s) — '+(formatoSalida==='pdf'?'PDF combinado':'Word combinado'))
+      )
+    ),
+    // ANEXO DE TARIFAS (complemento cláusula CUARTA)
+    modo==='tarifas'&&h('div',{className:'card'},
+      h('div',{style:{fontSize:13,fontWeight:700,marginBottom:4}},'💲 Anexo de Tarifas por Producción'),
+      h('div',{style:{fontSize:11,color:'#64748B',marginBottom:12}},'Complementa la cláusula CUARTA del contrato con la tabla de tarifas por m³ según el cargo y el VMA (volumen medio por árbol) del bosque. Selecciona el cargo, marca los trabajadores y genera los anexos.'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10,marginBottom:12}},
+        h('div',null,h('label',{style:lblS},'Empresa *'),h('select',{value:tarForm.empresa_id,onChange:function(e){uTar('empresa_id',e.target.value);setSelPersonas([]);},style:inpS},
+          h('option',{value:''},'Seleccione empresa...'),
+          p.empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
+        h('div',null,h('label',{style:lblS},'Faena (opcional)'),h('select',{value:tarForm.faena_id,onChange:function(e){uTar('faena_id',e.target.value);setSelPersonas([]);},style:inpS},
+          h('option',{value:''},'Todas las faenas'),
+          faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+        h('div',null,h('label',{style:lblS},'Cargo (tabla de tarifas) *'),h('select',{value:tarForm.cargoIdx,onChange:function(e){uTar('cargoIdx',e.target.value);},style:inpS},
+          h('option',{value:''},'Seleccione cargo...'),
+          TARIFAS_PRODUCCION.map(function(t,i){return h('option',{key:i,value:i},t.cargo);}))),
+        h('div',null,h('label',{style:lblS},'Fecha anexo'),h('input',{type:'date',value:tarForm.fecha_anexo,onChange:function(e){uTar('fecha_anexo',e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:lblS},'Lugar firma'),h('input',{type:'text',value:tarForm.lugar_firma,onChange:function(e){uTar('lugar_firma',e.target.value);},style:inpS}))
+      ),
+      // Vista previa de la tabla del cargo elegido
+      tarSel&&h('div',{style:{background:'#FFFBEB',border:'1px dashed #FCD34D',borderRadius:6,padding:10,marginBottom:12}},
+        h('div',{style:{fontSize:11,fontWeight:700,color:'#78350F',marginBottom:6}},'Vista previa — tabla de tarifas para '+tarSel.cargo+':'),
+        h('div',{style:{maxHeight:240,overflow:'auto',background:'#fff',borderRadius:4,padding:6},dangerouslySetInnerHTML:{__html:tarifaTablaHTML(tarSel)}})
+      ),
+      // Lista de trabajadores
+      tarForm.empresa_id&&h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:6,padding:10,marginBottom:12}},
+        h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:8,flexWrap:'wrap',gap:6}},
+          h('div',{style:{fontSize:12,fontWeight:700}},'Trabajadores ('+personalTarifas.length+') — '+selPersonas.length+' seleccionado(s)'),
+          h('div',{style:{display:'flex',gap:6,flexWrap:'wrap'}},
+            tarSel&&h('button',{onClick:selectCoincidentes,style:{padding:'3px 10px',fontSize:10,border:'1px solid #F59E0B',background:'#FEF3C7',color:'#92400E',borderRadius:4,cursor:'pointer',fontWeight:600}},'Seleccionar '+tarSel.cargo+'(s)'),
+            h('button',{onClick:function(){setSelPersonas(personalTarifas.map(function(x){return x.persona_id;}));},style:{padding:'3px 10px',fontSize:10,border:'1px solid #CBD5E1',background:'#F8FAFC',borderRadius:4,cursor:'pointer'}},'Seleccionar todos'),
+            h('button',{onClick:function(){setSelPersonas([]);},style:{padding:'3px 10px',fontSize:10,border:'1px solid #CBD5E1',background:'#F8FAFC',borderRadius:4,cursor:'pointer'}},'Deseleccionar')
+          )
+        ),
+        personalTarifas.length===0?h('div',{style:{color:'#94A3B8',fontSize:11,padding:20,textAlign:'center'}},'No hay trabajadores para el filtro actual'):
+        h('div',{style:{maxHeight:300,overflow:'auto',display:'grid',gridTemplateColumns:'repeat(2,1fr)',gap:4}},
+          personalTarifas.map(function(x){
+            var sel=selPersonas.indexOf(x.persona_id)>=0;
+            var coincide=tarSel&&((x.cargo||'').toUpperCase().indexOf(tarSel.match)>=0);
+            return h('div',{key:x.persona_id,onClick:function(){toggleSel(x.persona_id);},style:{display:'flex',alignItems:'center',gap:6,padding:'5px 8px',background:sel?'#FEF3C7':'#F8FAFC',border:'1px solid '+(sel?'#F59E0B':(coincide?'#FCD34D':'#E2E8F0')),borderRadius:4,cursor:'pointer'}},
+              h('input',{type:'checkbox',checked:sel,readOnly:true}),
+              h('div',{style:{flex:1}},
+                h('div',{style:{fontSize:11,fontWeight:600}},x.nombre_completo),
+                h('div',{style:{fontSize:9,color:coincide?'#92400E':'#64748B',fontWeight:coincide?700:400}},(x.rut||'—')+' — '+(x.cargo||'Sin cargo')+(coincide?' ✓':''))
+              )
+            );
+          })
+        )
+      ),
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap'}},
+        h('div',{style:{display:'flex',alignItems:'center',gap:6}},
+          h('span',{style:{fontSize:11,fontWeight:600,color:'#475569'}},'Formato de salida:'),
+          h('button',{onClick:function(){setFormatoSalida('word');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formatoSalida==='word'?'#1E40AF':'#CBD5E1'),background:formatoSalida==='word'?'#DBEAFE':'transparent',fontWeight:formatoSalida==='word'?700:400,fontSize:11,cursor:'pointer',color:formatoSalida==='word'?'#1E40AF':'#64748B'}},'📄 Word'),
+          h('button',{onClick:function(){setFormatoSalida('pdf');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formatoSalida==='pdf'?'#DC2626':'#CBD5E1'),background:formatoSalida==='pdf'?'#FEE2E2':'transparent',fontWeight:formatoSalida==='pdf'?700:400,fontSize:11,cursor:'pointer',color:formatoSalida==='pdf'?'#DC2626':'#64748B'}},'📑 PDF')
+        ),
+        h(Btn,{onClick:guardarTarifas,disabled:!selPersonas.length},'💲 Crear '+selPersonas.length+' anexo(s) de tarifas — '+(formatoSalida==='pdf'?'PDF combinado':'Word combinado'))
       )
     ),
     // LISTAR
     modo==='listar'&&h('div',{className:'card'},
       h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:10,alignItems:'center',gap:8,flexWrap:'wrap'}},
-        h('div',{style:{fontSize:13,fontWeight:700}},'Anexos generados ('+anexosVista.length+(fEmpresaListar?' de '+anexos.length:'')+')'),
+        h('div',{style:{fontSize:13,fontWeight:700}},'Anexos generados ('+anexosVista.length+((fEmpresaListar||fFaenaListar)?' de '+anexos.length:'')+')'),
         h('div',{style:{display:'flex',gap:8,flexWrap:'wrap'}},
           h('select',{value:fEmpresaListar,onChange:function(e){setFEmpresaListar(e.target.value);setSelAnexos([]);},style:Object.assign({},inpS,{maxWidth:240,fontWeight:fEmpresaListar?600:400,background:fEmpresaListar?'#F0FDF4':'#fff',border:'1px solid '+(fEmpresaListar?'#1E3A2D':'#CBD5E1')})},h('option',{value:''},'Todas las empresas'),(p.empresas||[]).map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
+          h('select',{value:fFaenaListar,onChange:function(e){setFFaenaListar(e.target.value);setSelAnexos([]);},style:Object.assign({},inpS,{maxWidth:220,fontWeight:fFaenaListar?600:400,background:fFaenaListar?'#F0FDF4':'#fff',border:'1px solid '+(fFaenaListar?'#1E3A2D':'#CBD5E1')})},h('option',{value:''},'Todas las faenas'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})),
           h('select',{value:fPersona,onChange:function(e){setFPersona(e.target.value);},style:Object.assign({},inpS,{maxWidth:260})},h('option',{value:''},'Todos los trabajadores'),p.personal.filter(function(x){return !fEmpresaListar||String(x.empresa_id)===String(fEmpresaListar);}).map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo);}))
         )
       ),
@@ -16860,7 +17466,7 @@ function AnexosView(p){
           selAnexos.length>0&&h('button',{onClick:eliminarMasivo,style:{padding:'4px 12px',fontSize:10,border:'none',background:'#DC2626',color:'#fff',borderRadius:4,cursor:'pointer',fontWeight:700}},'🗑 Eliminar '+selAnexos.length+' anexo(s)')
         )
       ),
-      anexosVista.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:20,textAlign:'center'}},fEmpresaListar?'No hay anexos para esta empresa':'No hay anexos registrados'):
+      anexosVista.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:20,textAlign:'center'}},(fEmpresaListar||fFaenaListar)?'No hay anexos para el filtro actual':'No hay anexos registrados'):
       h('table',{className:'tbl',style:{width:'100%',fontSize:11}},
         h('thead',null,h('tr',null,
           h('th',{style:{width:30}},h('input',{type:'checkbox',checked:anexosVista.length>0&&selAnexos.length===anexosVista.length,onChange:function(e){e.target.checked?selAllAnexos():selNoneAnexos();}})),
@@ -17196,6 +17802,8 @@ function FiniquitosView(p){
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   var[modo,setModo]=useState('carta'); // carta | calcular | listar
   var[finiquitos,setFiniquitos]=useState([]);
+  var[fEmpresaLis,setFEmpresaLis]=useState('');
+  var[fFaenaLis,setFFaenaLis]=useState('');
   var[feriados,setFeriados]=useState([]); // lista de fechas YYYY-MM-DD
   var hoy=new Date().toISOString().slice(0,10);
   var emptyForm={
@@ -17749,26 +18357,42 @@ function FiniquitosView(p){
     ),
     // LISTAR
     modo==='listar'&&h('div',null,
+      // Filtros empresa/faena (aplican a cartas y finiquitos)
+      h('div',{style:{display:'flex',gap:8,marginBottom:10,flexWrap:'wrap'}},
+        h('select',{value:fEmpresaLis,onChange:function(e){setFEmpresaLis(e.target.value);},style:{padding:'6px 10px',border:'1px solid '+(fEmpresaLis?'#1E3A2D':'#CBD5E1'),borderRadius:5,fontSize:12,minWidth:220,fontWeight:fEmpresaLis?600:400,background:fEmpresaLis?'#F0FDF4':'#fff'}},
+          h('option',{value:''},'Todas las empresas'),
+          empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
+        h('select',{value:fFaenaLis,onChange:function(e){setFFaenaLis(e.target.value);},style:{padding:'6px 10px',border:'1px solid '+(fFaenaLis?'#1E3A2D':'#CBD5E1'),borderRadius:5,fontSize:12,minWidth:200,fontWeight:fFaenaLis?600:400,background:fFaenaLis?'#F0FDF4':'#fff'}},
+          h('option',{value:''},'Todas las faenas'),
+          (p.m.faenas||[]).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))
+      ),
       // Cartas de término
+      (function(){
+        var filtro=function(x){return (!fEmpresaLis||String(x.empresa_id)===String(fEmpresaLis))&&(!fFaenaLis||String(x.faena_id)===String(fFaenaLis));};
+        var cartasV=cartas.filter(filtro);
+        var finiV=finiquitos.filter(filtro);
+        return h('div',null,
       h('div',{className:'card',style:{marginBottom:14}},
-        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10}},'📨 Cartas de término ('+cartas.length+')'),
-        cartas.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:14,textAlign:'center'}},'No hay cartas registradas'):
+        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10}},'📨 Cartas de término ('+cartasV.length+((fEmpresaLis||fFaenaLis)?' de '+cartas.length:'')+')'),
+        cartasV.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:14,textAlign:'center'}},(fEmpresaLis||fFaenaLis)?'No hay cartas para el filtro actual':'No hay cartas registradas'):
         h('table',{className:'tbl',style:{width:'100%',fontSize:11}},
           h('thead',null,h('tr',null,
             h('th',null,'Fecha carta'),
             h('th',null,'Trabajador'),
             h('th',null,'Empresa'),
+            h('th',null,'Faena'),
             h('th',null,'Causal'),
             h('th',null,'Fecha término'),
             h('th',null,'Estado'),
             h('th',null,'')
           )),
-          h('tbody',null,cartas.map(function(c){
+          h('tbody',null,cartasV.map(function(c){
             var pendiente=(c.estado||'PENDIENTE')==='PENDIENTE';
             return h('tr',{key:c.carta_id},
               h('td',null,fmtD(c.fecha_carta)),
               h('td',null,h('div',{style:{fontWeight:600}},c.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},c.rut||'')),
               h('td',null,c.empresa_nombre),
+              h('td',null,c.faena_nombre||'—'),
               h('td',null,h('span',{style:{fontSize:10}},(c.causal||'').replace(/^Art\. /,''))),
               h('td',null,fmtD(c.fecha_termino)),
               h('td',null,h('span',{style:{display:'inline-block',padding:'2px 8px',borderRadius:10,fontSize:9,fontWeight:700,background:pendiente?'#FEF3C7':'#DCFCE7',color:pendiente?'#92400E':'#15803D'}},pendiente?'⏳ PENDIENTE':'✓ COMPLETADA')),
@@ -17784,23 +18408,25 @@ function FiniquitosView(p){
       ),
       // Finiquitos
       h('div',{className:'card'},
-        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10}},'🧾 Finiquitos ('+finiquitos.length+')'),
-        finiquitos.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:14,textAlign:'center'}},'No hay finiquitos registrados'):
+        h('div',{style:{fontSize:13,fontWeight:700,marginBottom:10}},'🧾 Finiquitos ('+finiV.length+((fEmpresaLis||fFaenaLis)?' de '+finiquitos.length:'')+')'),
+        finiV.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:14,textAlign:'center'}},(fEmpresaLis||fFaenaLis)?'No hay finiquitos para el filtro actual':'No hay finiquitos registrados'):
         h('table',{className:'tbl',style:{width:'100%',fontSize:11}},
           h('thead',null,h('tr',null,
             h('th',null,'Fecha'),
             h('th',null,'Trabajador'),
             h('th',null,'Empresa'),
+            h('th',null,'Faena'),
             h('th',null,'Causal'),
             h('th',null,'Años'),
             h('th',null,'Total finiquito'),
             h('th',null,'')
           )),
-          h('tbody',null,finiquitos.map(function(f){
+          h('tbody',null,finiV.map(function(f){
             return h('tr',{key:f.finiquito_id},
               h('td',null,fmtD(f.fecha_termino)),
               h('td',null,h('div',{style:{fontWeight:600}},f.nombre_completo),h('div',{style:{fontSize:9,color:'#64748B'}},f.rut||'')),
               h('td',null,f.empresa_nombre),
+              h('td',null,f.faena_nombre||'—'),
               h('td',null,h('span',{style:{fontSize:10}},(f.causal||'').replace(/^Art\. /,''))),
               h('td',null,f.anios_servicio||0),
               h('td',null,h('span',{style:{fontFamily:'monospace',fontWeight:700,color:'#15803D'}},CLPF(f.total_finiquito))),
@@ -17814,6 +18440,8 @@ function FiniquitosView(p){
           }))
         )
       )
+        );
+      })()
     ),
     editCarta&&h(CartaEditModal,{tok:p.tok,carta:editCarta,onClose:function(){setEditCarta(null);},onSave:function(){setEditCarta(null);load();}})
   );
@@ -19132,6 +19760,56 @@ function MobileSolicitudes(p){
   useEffect(function(){
     api('/usuarios','GET',null,p.tok).then(function(r){setUsuarios((Array.isArray(r)?r:[]).filter(function(u){return u.activo;}));}).catch(function(){});
   },[p.tok]);
+  // Evitar que el teclado tape el campo enfocado. En móvil el scroll ocurre dentro de
+  // un contenedor (.mob-wrap), no en la ventana, y el body tiene overflow:hidden. Usamos
+  // VisualViewport para saber el alto real visible y subimos el campo dentro del contenedor.
+  useEffect(function(){
+    var campoActivo=null, contPad=null;
+    function getScrollParent(el){
+      var n=el&&el.parentElement;
+      while(n){
+        var s; try{ s=getComputedStyle(n); }catch(_){ s=null; }
+        if(s&&/(auto|scroll)/.test(s.overflowY)&&n.scrollHeight>n.clientHeight) return n;
+        n=n.parentElement;
+      }
+      return document.scrollingElement||document.documentElement;
+    }
+    function ajustar(){
+      var t=campoActivo; if(!t)return;
+      var vv=window.visualViewport;
+      var visibleBottom=vv?(vv.offsetTop+vv.height):window.innerHeight;
+      var kb=Math.max(0,window.innerHeight-visibleBottom); // alto aprox. del teclado
+      var cont=getScrollParent(t);
+      // Dar espacio extra al final para que el último campo pueda subir sobre el teclado
+      if(cont&&cont.style){ contPad=cont; cont.style.paddingBottom=(kb+60)+'px'; }
+      var rect=t.getBoundingClientRect();
+      var margen=20;
+      if(rect.bottom>visibleBottom-margen){
+        var delta=rect.bottom-(visibleBottom-margen);
+        if(cont===document.documentElement||cont===document.scrollingElement){ window.scrollBy(0,delta); }
+        else { cont.scrollTop+=delta; }
+      }
+    }
+    function onFocusIn(e){
+      var t=e.target;
+      if(t&&(t.tagName==='TEXTAREA'||t.tagName==='INPUT'||t.tagName==='SELECT')){
+        campoActivo=t;
+        setTimeout(ajustar,200);setTimeout(ajustar,450);setTimeout(ajustar,800);
+      }
+    }
+    function onFocusOut(){
+      campoActivo=null;
+      if(contPad&&contPad.style){ contPad.style.paddingBottom=''; contPad=null; }
+    }
+    document.addEventListener('focusin',onFocusIn);
+    document.addEventListener('focusout',onFocusOut);
+    if(window.visualViewport){ window.visualViewport.addEventListener('resize',ajustar); }
+    return function(){
+      document.removeEventListener('focusin',onFocusIn);
+      document.removeEventListener('focusout',onFocusOut);
+      if(window.visualViewport){ window.visualViewport.removeEventListener('resize',ajustar); }
+    };
+  },[]);
   function loadSolicitudes(){
     api('/solicitudes','GET',null,p.tok).then(function(r){setSolicitudes(Array.isArray(r)?r:[]);}).catch(function(){});
   }
@@ -20736,7 +21414,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -21392,7 +22070,7 @@ function App(){
     'ia-chat':'ia',
     'solicitudes':'solicitudes',
     'transporte':'transporte',
-    'personal':'contratos','contratos':'contratos','vacaciones':'contratos','finiquitos':'contratos','cartas':'contratos',
+    'personal':'contratos','contratos':'contratos','vacaciones':'contratos','turnos-faena':'contratos','prevencion':'contratos','finiquitos':'contratos','cartas':'contratos',
     'mantenedores':'mantenedores',
     'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas','fin-remu':'finanzas','fin-activos':'finanzas',
     'rem-parametros':'remuneraciones','rem-periodos':'remuneraciones','rem-movimientos':'remuneraciones','rem-liquidaciones':'remuneraciones','rem-prestamos':'remuneraciones','rem-previred':'remuneraciones','rem-prevision':'remuneraciones'
@@ -21597,6 +22275,8 @@ function App(){
         canSee('contratos')&&grp.pers&&h('div',null,
           navI('personal','👥','Maestro Personal',true),
           navI('vacaciones','🏖','Control de Vacaciones',true),
+          navI('turnos-faena','🔄','Turnos de Faena',true),
+          navI('prevencion','🦺','Prevención de Riesgos',true),
           navI('contratos','📄','Contratos de Trabajo',true),
           navI('finiquitos','🧾','Cálculo de Finiquitos',true)
         ),
@@ -21613,7 +22293,6 @@ function App(){
           navI('rem-previred','📤','PreviRed',true),
           navI('rem-prevision','⚙️','Config. Previsional',true)
         ),
-        h('div',{className:'sb-sep'}),
         canSee('mantenedores')&&grpHdr('man','MANTENEDORES'),
         canSee('mantenedores')&&grp.man&&h('div',null,
           navI('empresas','▸','Empresas',true),
@@ -21642,7 +22321,7 @@ function App(){
     ),
     h('div',{className:'main'},
       h('div',{className:'topbar'},
-        h('h2',null,TITLES[view]||view),
+        h('h2',null,view==='panel'?((user&&user.rol)||TITLES.panel):(TITLES[view]||view)),
         h('div',{className:'topbar-r'},user&&h('span',null,user.nombre),h('button',{className:'btn btn-g btn-sm',onClick:handleLogout},'Salir'))
       ),
       h('div',{className:'content'},
@@ -21677,6 +22356,8 @@ function App(){
           view==='mant-tareas-std'&&h(MantTareasStdAdmin,{tok,m}),
           view==='mant-prog'&&h(MantProgView,{tok,m}),
           view==='personal'&&h(Personal,{tok,m,onMov}),
+          view==='turnos-faena'&&h(TurnosFaenaView,{tok,m}),
+          view==='prevencion'&&h(PrevencionView,{tok,m}),
           view==='dashboard'&&h(Dashboard,{tok,alerts,setView}),
           view==='ingresos'&&h(IngresoView,{tok,m,user,onMov}),
           view==='salidas'&&h(SalidaView,{tok,m,user,onMov}),
@@ -21746,8 +22427,8 @@ function App(){
               h(MasterV,{tok,onMov,titulo:'Subcategoria',ep:'subcategorias',pk:'subcategoria_id',Form:SubcatForm,blank:{nombre:'',categoria_id:'',activo:true},extra:{cats:m.cats},cols:[{lbl:'Nombre',k:'nombre'},{lbl:'Categoria',render:r=>(m.cats.find(c=>c.categoria_id===r.categoria_id)||{}).nombre||'—'}]})
             )
           ),
-          view==='faenas'&&h(MasterV,{tok,onMov,titulo:'Faena',ep:'faenas',pk:'faena_id',Form:FaenaForm,blank:{codigo:'',nombre:'',descripcion:'',empresa_id:'',activo:true},extra:{empresas:m.empresas},importKey:'faenas',cols:[{lbl:'Empresa',render:function(r){return (m.empresas.find(function(e){return e.empresa_id===parseInt(r.empresa_id||0);})||{}).razon_social||'—';}},{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'}]}),
-          view==='equipos'&&h(MasterV,{tok,onMov,titulo:'Cargo / Centro de costo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',importBulkJSON:'/api/import/equipos',blank:{empresa_id:'',tipo_cargo:'maquinaria',codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',modelo_id:'',anio:'',placa_patente:'',chasis:'',contacto_terreno:'',horas_productivas_dia:'12',patente_serie:'',proceso_productivo:'',activo:true},extra:{faenas:m.faenas,empresas:m.empresas,modelos:m.modelos||[]},cols:[{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Tipo',render:function(r){var tc=r.tipo_cargo||'maquinaria';var colors={maquinaria:'b',camioneta:'teal',camion:'p',camion_estanque:'y',camion_cama_baja:'y',camion_mantencion:'p',furgon:'teal',estanque:'y',faena:'g',taller:'gray',equipos_taller:'gray',administracion:'b'};return h(Bg,{c:colors[tc]||'gray'},tc.replace(/_/g,' '));}},{lbl:'Código',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Proceso',render:function(r){return r.proceso_productivo?h(Bg,{c:'g'},r.proceso_productivo.replace(/_/g,' ')):'—';}},{lbl:'Modelo',render:function(r){return r.modelo_marca?(r.modelo_marca+' '+r.modelo_nombre):(r.marca?(r.marca+' '+(r.modelo||'')):'—');}},{lbl:'Faena',k:'faena_nombre'}]}),
+          view==='faenas'&&h(MasterV,{tok,onMov,titulo:'Faena',ep:'faenas',pk:'faena_id',Form:FaenaForm,blank:{codigo:'',nombre:'',descripcion:'',empresa_id:'',turno_inicio_a:'',activo:true},extra:{empresas:m.empresas},importKey:'faenas',cols:[{lbl:'Empresa',render:function(r){return (m.empresas.find(function(e){return e.empresa_id===parseInt(r.empresa_id||0);})||{}).razon_social||'—';}},{lbl:'Codigo',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Descripcion',k:'descripcion'},{lbl:'Turno hoy',render:function(r){var ti=turnoFaenaInfo(r.turno_inicio_a);return ti?TurnoBadge(ti.turno,{title:'Ciclo '+ti.desde+' al '+ti.hasta+' — cambia el '+ti.cambio}):h('span',{style:{color:'#94A3B8',fontSize:11}},'—');}}]}),
+          view==='equipos'&&h(MasterV,{tok,onMov,titulo:'Cargo / Centro de costo',ep:'equipos',pk:'equipo_id',Form:EquipoForm,importKey:'equipos',importBulkJSON:'/api/import/equipos',filters:[{k:'empresa_id',lbl:'Todas las empresas',opts:(m.empresas||[]).filter(function(e){return e.activo;}).map(function(e){return{v:e.empresa_id,l:e.razon_social};})},{k:'faena_id',lbl:'Todas las faenas',opts:(m.faenas||[]).filter(function(f){return f.activo;}).map(function(f){return{v:f.faena_id,l:f.nombre};})}],blank:{empresa_id:'',tipo_cargo:'maquinaria',codigo:'',nombre:'',tipo:'',faena_id:'',marca:'',modelo:'',modelo_id:'',anio:'',placa_patente:'',chasis:'',contacto_terreno:'',horas_productivas_dia:'12',patente_serie:'',proceso_productivo:'',activo:true},extra:{faenas:m.faenas,empresas:m.empresas,modelos:m.modelos||[]},cols:[{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Tipo',render:function(r){var tc=r.tipo_cargo||'maquinaria';var colors={maquinaria:'b',camioneta:'teal',camion:'p',camion_estanque:'y',camion_cama_baja:'y',camion_mantencion:'p',furgon:'teal',estanque:'y',faena:'g',taller:'gray',equipos_taller:'gray',administracion:'b'};return h(Bg,{c:colors[tc]||'gray'},tc.replace(/_/g,' '));}},{lbl:'Código',k:'codigo',mono:true},{lbl:'Nombre',k:'nombre'},{lbl:'Proceso',render:function(r){return r.proceso_productivo?h(Bg,{c:'g'},r.proceso_productivo.replace(/_/g,' ')):'—';}},{lbl:'Modelo',render:function(r){return r.modelo_marca?(r.modelo_marca+' '+r.modelo_nombre):(r.marca?(r.marca+' '+(r.modelo||'')):'—');}},{lbl:'Faena',k:'faena_nombre'}]}),
           view==='fundos'&&h(FundosView,{tok,m}),
           view==='modelos'&&h(ModelosAdmin,{tok,m,onMov}),
           view==='proveedores'&&h(ProveedoresViewW,{tok,onMov}),
