@@ -8260,6 +8260,7 @@ app.post('/api/terreno/registros', auth, async(req,res)=>{
     // Validate TOB sum = horas_perdidas
     const hp=parseFloat(horas_perdidas||0);
     const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
+    for(const dtx of detalle){ if((dtx.tob_cat_id||parseFloat(dtx.horas)>0)&&dtx.clasificacion!=='E'&&dtx.clasificacion!=='F') throw new Error('Cada tiempo perdido debe tener clasificación E (Empresa) o F (Mandante)'); }
     const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
     if(hp>0&&Math.abs(hp-sumTob)>0.01)throw new Error(`La suma del desglose de tiempos obvios (${sumTob}) no coincide con las horas perdidas (${hp})`);
     // Producción: obtener VMA del rodal (snapshot)
@@ -8277,7 +8278,7 @@ app.post('/api/terreno/registros', auth, async(req,res)=>{
     const regId=r.rows[0].registro_id;
     for(const d of detalle){
       if(d.tob_cat_id&&parseFloat(d.horas)>0){
-        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,clasificacion,horas,observacion) VALUES($1,$2,$3,$4,$5)',[regId,d.tob_cat_id,d.clasificacion||'E',parseFloat(d.horas),d.observacion||null]);
+        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,clasificacion,horas,observacion) VALUES($1,$2,$3,$4,$5)',[regId,d.tob_cat_id,d.clasificacion,parseFloat(d.horas),d.observacion||null]);
       }
     }
     // Actualizar horómetro del equipo si el final es mayor al actual
@@ -8296,6 +8297,7 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
     if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
     const hp=parseFloat(horas_perdidas||0);
     const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
+    for(const dtx of detalle){ if((dtx.tob_cat_id||parseFloat(dtx.horas)>0)&&dtx.clasificacion!=='E'&&dtx.clasificacion!=='F') throw new Error('Cada tiempo perdido debe tener clasificación E (Empresa) o F (Mandante)'); }
     const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
     if(hp>0&&Math.abs(hp-sumTob)>0.01)throw new Error(`La suma del desglose (${sumTob}) no coincide con las horas perdidas (${hp})`);
     // Producción: VMA snapshot del rodal
@@ -8314,7 +8316,7 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
     await client.query('DELETE FROM terreno_tob_detalle WHERE registro_id=$1',[req.params.id]);
     for(const d of detalle){
       if(d.tob_cat_id&&parseFloat(d.horas)>0){
-        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,clasificacion,horas,observacion) VALUES($1,$2,$3,$4,$5)',[req.params.id,d.tob_cat_id,d.clasificacion||'E',parseFloat(d.horas),d.observacion||null]);
+        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,clasificacion,horas,observacion) VALUES($1,$2,$3,$4,$5)',[req.params.id,d.tob_cat_id,d.clasificacion,parseFloat(d.horas),d.observacion||null]);
       }
     }
     await client.query('COMMIT');
