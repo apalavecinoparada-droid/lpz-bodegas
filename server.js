@@ -6288,8 +6288,9 @@ app.patch('/api/personal/:id/activo', auth, async(req,res)=>{
 app.patch('/api/personal/:id/turno', auth, async(req,res)=>{
   try{
     let t=req.body.turno;
-    t=(t==='A'||t==='B')?t:null;
-    const r=await pool.query('UPDATE personal SET turno=$1 WHERE persona_id=$2 RETURNING persona_id,nombre_completo,turno',[t,req.params.id]);
+    t=(t==='A'||t==='B'||t==='AB'||t==='P')?t:null;
+    const inicio=(t==='P'&&req.body.turno_inicio)?req.body.turno_inicio:null;
+    const r=await pool.query('UPDATE personal SET turno=$1,turno_inicio=$2 WHERE persona_id=$3 RETURNING persona_id,nombre_completo,turno,turno_inicio',[t,inicio,req.params.id]);
     if(!r.rows.length)return res.status(404).json({error:'Trabajador no encontrado'});
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
@@ -6745,7 +6746,9 @@ async function setupRendiciones(q){
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS bono_produccion_tarifa NUMERIC(12,2) DEFAULT 0');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS bono_produccion_detalle TEXT');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS semana_corrida BOOLEAN DEFAULT false');}catch(e){}
-  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS turno VARCHAR(1)');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS turno VARCHAR(2)');}catch(e){}
+  try{await q('ALTER TABLE personal ALTER COLUMN turno TYPE VARCHAR(2)');}catch(e){}
+  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS turno_inicio DATE');}catch(e){}
   try{await q('ALTER TABLE faenas ADD COLUMN IF NOT EXISTS turno_inicio_a DATE');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS asig_colacion NUMERIC(10,2) DEFAULT 0');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS asig_movilizacion NUMERIC(10,2) DEFAULT 0');}catch(e){}
