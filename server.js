@@ -2681,7 +2681,7 @@ app.get('/api/reportes/ingresos', auth, async(req,res)=>{
 const ocR=express.Router();
 ocR.get('/', auth, async(req,res)=>{
   try{
-    const{estado,proveedor_id,desde,hasta,empresa_id,numero_documento,numero_factura,numero_oc}=req.query;
+    const{estado,proveedor_id,desde,hasta,empresa_id,numero_documento,numero_factura,numero_oc,doc_respaldo}=req.query;
     let where=['1=1'],vals=[];
     if(estado){vals.push(estado);where.push(`oc.estado=$${vals.length}`);}
     if(proveedor_id){vals.push(proveedor_id);where.push(`oc.proveedor_id=$${vals.length}`);}
@@ -2691,6 +2691,8 @@ ocR.get('/', auth, async(req,res)=>{
     if(numero_documento){vals.push('%'+numero_documento+'%');where.push(`oc.numero_documento ILIKE $${vals.length}`);}
     if(numero_factura){vals.push('%'+numero_factura+'%');where.push(`fac.numero_factura ILIKE $${vals.length}`);}
     if(numero_oc){vals.push('%'+numero_oc+'%');where.push(`oc.numero_oc ILIKE $${vals.length}`);}
+    if(doc_respaldo==='sin'){where.push(`TRIM(COALESCE(oc.numero_documento,''))='' AND oc.anulado_en IS NULL`);}
+    if(doc_respaldo==='con'){where.push(`TRIM(COALESCE(oc.numero_documento,''))<>''`);}
     const r=await pool.query(`SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,pr.rut AS proveedor_rut,cp.nombre AS condicion_nombre,td.nombre AS tipo_doc_nombre,uc.nombre AS usuario_nombre,uk.nombre AS cerrada_por_nombre,
       fac.numero_factura AS factura_asociada_numero, fac.fecha_factura AS factura_asociada_fecha, fac.total AS factura_asociada_total
       FROM ordenes_compra oc 
