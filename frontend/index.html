@@ -3939,7 +3939,7 @@ function TerrenoView(p){
   var sumTob=(form.tob_detalle||[]).reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
   var hp=parseFloat(form.horas_perdidas)||0;
   var tobDesc=Math.abs(hp-sumTob)>0.01;
-  function addLineaTOB(){setForm(function(f){return Object.assign({},f,{tob_detalle:(f.tob_detalle||[]).concat([{tob_cat_id:'',clasificacion:'E',horas:'',observacion:''}])});});}
+  function addLineaTOB(){setForm(function(f){return Object.assign({},f,{tob_detalle:(f.tob_detalle||[]).concat([{tob_cat_id:'',clasificacion:'',horas:'',observacion:''}])});});}
   function removeLineaTOB(idx){setForm(function(f){var nl=(f.tob_detalle||[]).filter(function(_,i){return i!==idx;});return Object.assign({},f,{tob_detalle:nl});});}
   function updLineaTOB(idx,k,v){setForm(function(f){var nl=(f.tob_detalle||[]).map(function(l,i){if(i!==idx)return l;var u=Object.assign({},l);u[k]=v;return u;});return Object.assign({},f,{tob_detalle:nl});});}
   function guardar(){
@@ -3947,6 +3947,8 @@ function TerrenoView(p){
     if(form.horometro_inicial===''||form.horometro_final===''){setMsg('Error: Horómetros son obligatorios');return;}
     if(parseFloat(form.horometro_final)<parseFloat(form.horometro_inicial)){setMsg('Error: Horómetro final debe ser mayor o igual al inicial');return;}
     if(hp>0&&tobDesc){setMsg('Error: La suma del desglose TOB ('+sumTob.toFixed(2)+') no coincide con horas perdidas ('+hp.toFixed(2)+')');return;}
+    var tobSinClas=(form.tob_detalle||[]).filter(function(l){return (l.tob_cat_id||parseFloat(l.horas)>0)&&l.clasificacion!=='E'&&l.clasificacion!=='F';});
+    if(tobSinClas.length){setMsg('Error: Selecciona la clasificaci\u00f3n (E = Empresa o F = Mandante) en cada tiempo perdido; falta en '+tobSinClas.length+' l\u00ednea(s)');return;}
     var submitForm=Object.assign({},form);
     var method=editReg?'PUT':'POST';var url='/terreno/registros'+(editReg?'/'+editReg.registro_id:'');
     api(url,method,submitForm,p.tok).then(function(){loadReg();loadRend();setShowForm(false);setEditReg(null);setForm(emptyForm);setShowTOB(false);setMsg(editReg?'Registro actualizado':'Registro guardado');}).catch(function(e){setMsg('Error: '+e.message);});
@@ -4051,7 +4053,7 @@ function TerrenoView(p){
         showTOB&&h('div',{style:{marginTop:10}},
           (form.tob_detalle||[]).map(function(l,idx){
             return h('div',{key:idx,style:{display:'grid',gridTemplateColumns:'60px 1fr 80px 1fr 40px',gap:6,marginBottom:4}},
-              h('select',{value:l.clasificacion||'E',onChange:function(e){updLineaTOB(idx,'clasificacion',e.target.value);},style:Object.assign({},inpS,{fontWeight:700,textAlign:'center',color:l.clasificacion==='F'?'#DC2626':'#1E3A2D',background:l.clasificacion==='F'?'#FEF2F2':'#F0FDF4'})},h('option',{value:'E'},'E'),h('option',{value:'F'},'F')),
+              h('select',{value:l.clasificacion||'',onChange:function(e){updLineaTOB(idx,'clasificacion',e.target.value);},style:Object.assign({},inpS,{fontWeight:700,textAlign:'center',color:l.clasificacion==='F'?'#DC2626':(l.clasificacion==='E'?'#1E3A2D':'#92400E'),background:l.clasificacion==='F'?'#FEF2F2':(l.clasificacion==='E'?'#F0FDF4':'#FEF3C7'),border:'1px solid '+(l.clasificacion?'#CBD5E1':'#F59E0B')})},h('option',{value:''},'E/F *'),h('option',{value:'E'},'E'),h('option',{value:'F'},'F')),
               h('select',{value:l.tob_cat_id,onChange:function(e){updLineaTOB(idx,'tob_cat_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione causa...'),tobCats.map(function(c){return h('option',{key:c.tob_cat_id,value:c.tob_cat_id},c.causa);})),
               h('input',{type:'number',step:'0.1',value:l.horas,onChange:function(e){updLineaTOB(idx,'horas',e.target.value);},style:inpS,placeholder:'Horas'}),
               h('input',{value:l.observacion||'',onChange:function(e){updLineaTOB(idx,'observacion',e.target.value);},style:inpS,placeholder:'Observaci\u00f3n (opcional)'}),
@@ -20162,7 +20164,7 @@ function MobileTerreno(p){
   var hPerd=parseFloat(form.horas_perdidas)||0;
   var sumTob=tobLineas.reduce(function(s,l){return s+(parseFloat(l.horas)||0);},0);
   var tobOk=hPerd===0||Math.abs(hPerd-sumTob)<0.01;
-  function addTobLinea(){setTobLineas(function(l){return l.concat([{tob_cat_id:'',horas:'',clasificacion:'E'}]);});}
+  function addTobLinea(){setTobLineas(function(l){return l.concat([{tob_cat_id:'',horas:'',clasificacion:''}]);});}
   function updTobLinea(i,k,v){setTobLineas(function(l){var n=l.slice();n[i]=Object.assign({},n[i],{[k]:v});return n;});}
   function delTobLinea(i){setTobLineas(function(l){return l.filter(function(_,idx){return idx!==i;});});}
   function guardar(){
@@ -20173,6 +20175,8 @@ function MobileTerreno(p){
     if(hPerd>0){
       var linVal=tobLineas.filter(function(l){return l.tob_cat_id&&parseFloat(l.horas)>0;});
       if(linVal.length===0){setMsg('Debe desglosar las horas perdidas en tiempos obvios');return;}
+      var sinClasM=linVal.filter(function(l){return l.clasificacion!=='E'&&l.clasificacion!=='F';});
+      if(sinClasM.length){setMsg('Selecciona la clasificaci\u00f3n (E o F) en cada tiempo perdido');return;}
       if(Math.abs(hPerd-sumTob)>0.01){setMsg('El desglose ('+sumTob.toFixed(1)+'h) debe ser igual a las horas perdidas ('+hPerd.toFixed(1)+'h)');return;}
     }
     var payload=Object.assign({},form,{tob_detalle:tobLineas.filter(function(l){return l.tob_cat_id&&parseFloat(l.horas)>0;})});
@@ -20204,7 +20208,7 @@ function MobileTerreno(p){
     // Cargar el desglose TOB existente del backend
     api('/terreno/registros/'+reg.registro_id+'/tob','GET',null,p.tok).then(function(tobRes){
       var lineas=Array.isArray(tobRes)?tobRes:(tobRes&&tobRes.lineas?tobRes.lineas:[]);
-      setTobLineas(lineas.map(function(l){return{tob_cat_id:l.tob_cat_id,horas:l.horas,clasificacion:l.clasificacion||'E',observacion:l.observacion||''};}));
+      setTobLineas(lineas.map(function(l){return{tob_cat_id:l.tob_cat_id,horas:l.horas,clasificacion:(l.clasificacion==='E'||l.clasificacion==='F')?l.clasificacion:'',observacion:l.observacion||''};}));
     }).catch(function(){setTobLineas([]);});
     setMsg('');setSaved(false);setModo('form');
   }
@@ -20388,7 +20392,8 @@ function MobileTerreno(p){
             ),
             h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}},
               h('input',{type:'number',value:l.horas,onChange:function(e){updTobLinea(i,'horas',e.target.value);},step:0.1,min:0,inputMode:'decimal',placeholder:'Horas',style:{padding:'10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13,fontWeight:600}}),
-              h('select',{value:l.clasificacion,onChange:function(e){updTobLinea(i,'clasificacion',e.target.value);},style:{padding:'10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13}},
+              h('select',{value:l.clasificacion||'',onChange:function(e){updTobLinea(i,'clasificacion',e.target.value);},style:{padding:'10px',border:'1px solid '+(l.clasificacion?'#CBD5E1':'#F59E0B'),background:l.clasificacion?'#fff':'#FEF3C7',borderRadius:6,fontSize:13}},
+                h('option',{value:''},'\u2014 Clasificaci\u00f3n (E/F) * \u2014'),
                 h('option',{value:'E'},'E - Causa Empresa'),
                 h('option',{value:'F'},'F - Causa Mandante')
               )
