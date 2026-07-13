@@ -7450,10 +7450,12 @@ function CompraAuditoriaView(p){
         {t:Math.round((r.similitud||0)*100)+'%',a:'c'},{t:r.dias_diferencia,a:'c'},{t:(r.oc_a||'')+' / '+(r.oc_b||'')}
       ];}));
     var s3=tabla(
-      [{t:'Proveedor'},{t:'Empresa'},{t:'OC A'},{t:'OC B'},{t:'Total A',a:'r'},{t:'Total B',a:'r'},{t:'Días dif.',a:'c'}],
+      [{t:'Proveedor'},{t:'Empresa'},{t:'OC A'},{t:'OC B'},{t:'Doc A'},{t:'Doc B'},{t:'Total A',a:'r'},{t:'Total B',a:'r'},{t:'Días dif.',a:'c'},{t:'Estado',a:'c'}],
       (data.oc_duplicadas||[]).map(function(r){return [
         {t:r.proveedor_nombre||''},{t:r.empresa_nombre||''},{t:(r.num_a||'')+' ('+fmtFecha(r.fecha_a)+')'},{t:(r.num_b||'')+' ('+fmtFecha(r.fecha_b)+')'},
-        {t:fmtMonto(r.total_a),a:'r'},{t:fmtMonto(r.total_b),a:'r'},{t:r.dias_diferencia,a:'c'}
+        {t:r.doc_a||r.dte_a||'sin doc'},{t:r.doc_b||r.dte_b||'sin doc'},
+        {t:fmtMonto(r.total_a),a:'r'},{t:fmtMonto(r.total_b),a:'r'},{t:r.dias_diferencia,a:'c'},
+        {t:r.docs_distintos?'DTE distinto':'REVISAR',a:'c'}
       ];}));
     var s4=tabla(
       [{t:'N° Documento'},{t:'Tipo'},{t:'Proveedor'},{t:'Veces',a:'c'},{t:'OCs'}],
@@ -7479,11 +7481,12 @@ function CompraAuditoriaView(p){
         {t:r.critico?'CRÍTICO':'Normal',a:'c'}
       ];}));
     var s8=tabla(
-      [{t:'Producto'},{t:'Proveedor'},{t:'Cant.',a:'c'},{t:'Precio unit.',a:'r'},{t:'Monto línea',a:'r'},{t:'OC A'},{t:'OC B'},{t:'Días',a:'c'}],
+      [{t:'Producto'},{t:'Proveedor'},{t:'Cant.',a:'c'},{t:'Precio unit.',a:'r'},{t:'Monto línea',a:'r'},{t:'OC A'},{t:'OC B'},{t:'Días',a:'c'},{t:'Estado',a:'c'}],
       (data.linea_duplicada||[]).map(function(r){return [
         {t:(r.producto_codigo||'')+' '+(r.producto_nombre||'')},{t:r.proveedor_nombre||''},
         {t:parseFloat(r.cantidad).toFixed(0),a:'c'},{t:fmtMonto(r.precio_unitario),a:'r'},{t:fmtMonto(r.monto_linea),a:'r'},
-        {t:(r.oc_a||'')+' ('+fmtFecha(r.fecha_a)+')'},{t:(r.oc_b||'')+' ('+fmtFecha(r.fecha_b)+')'},{t:r.dias_diferencia,a:'c'}
+        {t:(r.oc_a||'')+' ('+fmtFecha(r.fecha_a)+')'},{t:(r.oc_b||'')+' ('+fmtFecha(r.fecha_b)+')'},{t:r.dias_diferencia,a:'c'},
+        {t:r.docs_distintos?'DTE distinto':'REVISAR',a:'c'}
       ];}));
     var s9=tabla(
       [{t:'OC'},{t:'Proveedor'},{t:'Empresa'},{t:'Emisión'},{t:'Días',a:'c'},{t:'Total',a:'r'},{t:'Doc.',a:'c'},{t:'Solicitante'}],
@@ -7532,12 +7535,12 @@ function CompraAuditoriaView(p){
       '</div>'+
       seccion('Producto repetido para el mismo equipo','#DC2626','Mismo producto comprado para el mismo equipo más de una vez dentro de '+(P.dias_producto)+' días.',s1)+
       seccion('Productos similares','#EA580C','Nombres parecidos (no idénticos) comprados para el mismo equipo en '+(P.dias_producto)+' días.',s2)+
-      seccion('OC duplicadas','#D97706','Pares de OC del mismo proveedor y empresa con monto casi idéntico (±1%) dentro de '+(P.dias_duplicado)+' días.',s3)+
+      seccion('OC duplicadas','#D97706','Pares de OC del mismo proveedor y empresa con monto casi idéntico (±1%) dentro de '+(P.dias_duplicado)+' días. Los pares donde ambas OC tienen DTE distinto se marcan como probable compra legítima y no cuentan como hallazgo.',s3)+
       seccion('N° de documento duplicado','#CA8A04','Mismo número de documento tributario usado en más de una OC del mismo proveedor.',s4)+
       seccion('Variación de precio','#7C3AED','Productos cuyo precio unitario varió más de '+(P.umbral_precio)+'% entre compras.',s5)+
       seccion('Compra fraccionada','#2563EB','3 o más OC al mismo proveedor el mismo día.',s6)+
       seccion('Durabilidad deficiente (vida útil por equipo)','#0F766E','Duración entre recambios del mismo producto por equipo (días y horas de uso según horómetros de combustible). CRÍTICO = dura menos del '+(P.umbral_vida||50)+'% del promedio del producto en la flota.',s7)+
-      seccion('Línea duplicada','#BE185D','Misma línea (producto + cantidad + precio) en dos OC distintas del mismo proveedor dentro de '+(P.dias_duplicado)+' días. Posible doble digitación.',s8)+
+      seccion('Línea duplicada','#BE185D','Misma línea (producto + cantidad + precio) en dos OC distintas del mismo proveedor dentro de '+(P.dias_duplicado)+' días. Posible doble digitación; con DTE distinto se considera compra recurrente legítima.',s8)+
       seccion('OC pendientes antiguas','#475569','OC en estado PENDIENTE con '+(P.dias_pendiente||30)+' o más días desde su emisión.',s9)+
       '<div class="firma"><div>Responsable de adquisiciones</div><div>Gerencia</div></div>'+
       '<div class="pie">Total de hallazgos: '+totalHallazgos+'. Los hallazgos son indicios para revisión, no necesariamente irregularidades. Documento generado automáticamente por el sistema.</div>'+
@@ -7645,19 +7648,21 @@ function CompraAuditoriaView(p){
         ),
         // ── OC duplicadas ──
         tab==='oc_duplicadas'&&h('div',null,
-          h('div',{style:{padding:'8px 12px',background:'#FFFBEB',fontSize:11,color:'#92400E'}},'Pares de OC del mismo proveedor y empresa con monto casi idéntico (±1%) emitidas dentro de '+(data.parametros.dias_duplicado)+' días. Posible orden duplicada.'),
+          h('div',{style:{padding:'8px 12px',background:'#FFFBEB',fontSize:11,color:'#92400E'}},'Pares de OC del mismo proveedor y empresa con monto casi idéntico (±1%) emitidas dentro de '+(data.parametros.dias_duplicado)+' días. Si ambas OC tienen documento tributario (DTE) DISTINTO, se marcan como probable compra legítima recurrente y no cuentan como hallazgo ('+(R.oc_duplicadas||0)+' por revisar · '+(R.oc_duplicadas_dte_distinto||0)+' con DTE distinto).'),
           data.oc_duplicadas.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin coincidencias.'):
           h('table',{style:{fontSize:11,width:'100%',borderCollapse:'collapse'}},
-            h('thead',null,h('tr',null,h('th',null,'Proveedor'),h('th',null,'Empresa'),h('th',null,'OC A'),h('th',null,'OC B'),h('th',{className:'r'},'Total A'),h('th',{className:'r'},'Total B'),h('th',{className:'c'},'Días dif.'))),
+            h('thead',null,h('tr',null,h('th',null,'Proveedor'),h('th',null,'Empresa'),h('th',null,'OC A'),h('th',null,'OC B'),h('th',{className:'r'},'Total A'),h('th',{className:'r'},'Total B'),h('th',{className:'c'},'Días dif.'),h('th',{className:'c'},'Respaldo'))),
             h('tbody',null,data.oc_duplicadas.map(function(r,i){
-              return h('tr',{key:i},
+              var leg=!!r.docs_distintos;
+              return h('tr',{key:i,style:leg?{opacity:0.55}:null},
                 h('td',null,r.proveedor_nombre),
                 h('td',{style:{fontSize:10}},r.empresa_nombre),
-                h('td',null,h('strong',null,r.num_a),h('div',{style:{fontSize:9,color:'#64748B'}},fmtFecha(r.fecha_a))),
-                h('td',null,h('strong',null,r.num_b),h('div',{style:{fontSize:9,color:'#64748B'}},fmtFecha(r.fecha_b))),
+                h('td',null,h('strong',null,r.num_a),h('div',{style:{fontSize:9,color:'#64748B'}},fmtFecha(r.fecha_a)),h('div',{style:{fontSize:9,color:'#0369A1'}},'Doc: '+(r.doc_a||r.dte_a||'sin doc'))),
+                h('td',null,h('strong',null,r.num_b),h('div',{style:{fontSize:9,color:'#64748B'}},fmtFecha(r.fecha_b)),h('div',{style:{fontSize:9,color:'#0369A1'}},'Doc: '+(r.doc_b||r.dte_b||'sin doc'))),
                 h('td',{className:'r mono'},fmtMonto(r.total_a)),
                 h('td',{className:'r mono'},fmtMonto(r.total_b)),
-                h('td',{className:'c'},h('span',{style:{padding:'2px 7px',background:r.dias_diferencia===0?'#FEE2E2':'#FEF3C7',borderRadius:10,fontWeight:700}},r.dias_diferencia))
+                h('td',{className:'c'},h('span',{style:{padding:'2px 7px',background:r.dias_diferencia===0?'#FEE2E2':'#FEF3C7',borderRadius:10,fontWeight:700}},r.dias_diferencia)),
+                h('td',{className:'c'},leg?h('span',{style:{padding:'2px 8px',background:'#DCFCE7',color:'#15803D',borderRadius:10,fontWeight:600,fontSize:10}},'✓ DTE distinto'):h('span',{style:{padding:'2px 8px',background:'#FEE2E2',color:'#991B1B',borderRadius:10,fontWeight:700,fontSize:10}},'⚠ Revisar'))
               );
             }))
           )
@@ -7739,21 +7744,23 @@ function CompraAuditoriaView(p){
         ),
         // ── Línea duplicada ──
         tab==='linea_duplicada'&&h('div',null,
-          h('div',{style:{padding:'8px 12px',background:'#FDF2F8',fontSize:11,color:'#9D174D'}},'Misma línea (producto + cantidad + precio unitario) en dos OC distintas del mismo proveedor dentro de '+(data.parametros.dias_duplicado)+' días. Señal fuerte de doble digitación de la misma compra.'),
+          h('div',{style:{padding:'8px 12px',background:'#FDF2F8',fontSize:11,color:'#9D174D'}},'Misma línea (producto + cantidad + precio unitario) en dos OC distintas del mismo proveedor dentro de '+(data.parametros.dias_duplicado)+' días. Si ambas OC tienen DTE distinto, es probable compra recurrente legítima y no cuenta como hallazgo ('+(R.linea_duplicada||0)+' por revisar · '+(R.linea_duplicada_dte_distinto||0)+' con DTE distinto).'),
           (data.linea_duplicada||[]).length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin coincidencias.'):
           h('table',{style:{fontSize:11,width:'100%',borderCollapse:'collapse'}},
-            h('thead',null,h('tr',null,h('th',null,'Producto'),h('th',null,'Proveedor'),h('th',{className:'c'},'Cant.'),h('th',{className:'r'},'Precio unit.'),h('th',{className:'r'},'Monto línea'),h('th',null,'OC A'),h('th',null,'OC B'),h('th',{className:'c'},'Días dif.'),h('th',{className:'c'},'Equipos'))),
+            h('thead',null,h('tr',null,h('th',null,'Producto'),h('th',null,'Proveedor'),h('th',{className:'c'},'Cant.'),h('th',{className:'r'},'Precio unit.'),h('th',{className:'r'},'Monto línea'),h('th',null,'OC A'),h('th',null,'OC B'),h('th',{className:'c'},'Días dif.'),h('th',{className:'c'},'Equipos'),h('th',{className:'c'},'Respaldo'))),
             h('tbody',null,(data.linea_duplicada||[]).map(function(r,i){
-              return h('tr',{key:i},
+              var leg=!!r.docs_distintos;
+              return h('tr',{key:i,style:leg?{opacity:0.55}:null},
                 h('td',null,h('strong',null,r.producto_codigo),' ',r.producto_nombre),
                 h('td',null,r.proveedor_nombre||'—'),
                 h('td',{className:'c'},parseFloat(r.cantidad).toFixed(0)),
                 h('td',{className:'r mono'},fmtMonto(r.precio_unitario)),
                 h('td',{className:'r mono',style:{fontWeight:700,color:'#9D174D'}},fmtMonto(r.monto_linea)),
-                h('td',null,r.oc_a+' ('+fmtFecha(r.fecha_a)+')'),
-                h('td',null,r.oc_b+' ('+fmtFecha(r.fecha_b)+')'),
+                h('td',null,r.oc_a+' ('+fmtFecha(r.fecha_a)+')',h('div',{style:{fontSize:9,color:'#0369A1'}},'Doc: '+(r.doc_a||r.dte_a||'sin doc'))),
+                h('td',null,r.oc_b+' ('+fmtFecha(r.fecha_b)+')',h('div',{style:{fontSize:9,color:'#0369A1'}},'Doc: '+(r.doc_b||r.dte_b||'sin doc'))),
                 h('td',{className:'c'},h('span',{style:{padding:'2px 7px',background:'#FCE7F3',color:'#9D174D',borderRadius:10,fontWeight:700}},r.dias_diferencia)),
-                h('td',{className:'c',style:{fontSize:10}},r.equipo_a+' / '+r.equipo_b)
+                h('td',{className:'c',style:{fontSize:10}},r.equipo_a+' / '+r.equipo_b),
+                h('td',{className:'c'},leg?h('span',{style:{padding:'2px 8px',background:'#DCFCE7',color:'#15803D',borderRadius:10,fontWeight:600,fontSize:10}},'✓ DTE distinto'):h('span',{style:{padding:'2px 8px',background:'#FEE2E2',color:'#991B1B',borderRadius:10,fontWeight:700,fontSize:10}},'⚠ Revisar'))
               );
             }))
           )
