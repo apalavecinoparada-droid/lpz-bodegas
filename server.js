@@ -2775,21 +2775,28 @@ ocR.put('/:id', auth, async(req,res)=>{
     if(_numDoc && _tipoDoc && proveedor_id){
       try{
         const dteMatch=await client.query(
-          `SELECT d.dte_id FROM dte_recibidos d 
+          `SELECT d.dte_id, d.total,
+                  COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.dte_id=d.dte_id),0) AS asignado
+             FROM dte_recibidos d
              JOIN tipos_documento t ON t.tipo_doc_id=$1
-             WHERE d.proveedor_id=$2 AND d.folio=$3
+             WHERE d.proveedor_id=$2
+               AND regexp_replace(d.folio,'^0+','')=regexp_replace($3,'^0+','')
                AND (UPPER(d.tipo_doc)=UPPER(t.codigo) OR UPPER(d.tipo_dte)=UPPER(t.codigo))
              LIMIT 1`,
           [_tipoDoc, proveedor_id, _numDoc]
         );
         if(dteMatch.rows.length){
-          const dteId=dteMatch.rows[0].dte_id;
+          const dm=dteMatch.rows[0];
+          const dteId=dm.dte_id;
+          // Tope: nunca asignar más que el saldo sin asignar del DTE ni más que el total de la OC
+          const restanteDte=(parseFloat(dm.total)||0)-(parseFloat(dm.asignado)||0);
+          const montoVinc=Math.min(total, Math.max(0,restanteDte));
           // Verificar que no exista ya el vínculo
           const ex=await client.query('SELECT rel_id FROM dte_oc WHERE dte_id=$1 AND oc_id=$2',[dteId,req.params.id]);
-          if(!ex.rows.length){
+          if(!ex.rows.length && montoVinc>1){
             await client.query(
               'INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5)',
-              [dteId, req.params.id, total, 'Vinculación automática al editar OC con DTE', req.user.email]
+              [dteId, req.params.id, montoVinc, 'Vinculación automática al editar OC con DTE', req.user.email]
             );
           }
         }
@@ -2948,6 +2955,8 @@ ocR.patch('/:id/anular', auth, async(req,res)=>{
       }
     }
     await client.query("UPDATE ordenes_compra SET estado='ANULADA',anulado_en=NOW(),anulado_por=$1,recibido_en=NULL WHERE oc_id=$2",[req.user.email,req.params.id]);
+    // Quitar vinculaciones con DTE recibidos: una OC anulada no debe seguir contando en el avance de cierre de las facturas
+    await client.query('DELETE FROM dte_oc WHERE oc_id=$1',[req.params.id]);
     await client.query('COMMIT');
     res.json({ok:true});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
@@ -6718,6 +6727,10 @@ async function setupRendiciones(q){
   // Migración por si la tabla existía sin columna oc_id
   try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS oc_id INT REFERENCES ordenes_compra(oc_id)');}catch(e){}
   try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS xml_completo TEXT');}catch(e){}
+  // Documento de referencia (notas de crédito/débito: factura original según <Referencia> del XML SII)
+  try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS ref_tipo_dte VARCHAR(5)');}catch(e){}
+  try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS ref_folio VARCHAR(30)');}catch(e){}
+  try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS ref_razon TEXT');}catch(e){}
 
 
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS fecha_ingreso DATE');}catch(e){}
@@ -11013,10 +11026,11 @@ app.post('/api/dte-recibidos/import', auth, async(req,res)=>{
         // ❸ Si pasa los dos filtros → insertar normalmente
         var ins=await client.query(`INSERT INTO dte_recibidos
           (tipo_dte,tipo_doc,folio,fecha_emision,proveedor_rut,proveedor_nombre,proveedor_giro,proveedor_direccion,proveedor_id,
-           cliente_rut,cliente_nombre,empresa_id,neto,iva,total,xml_completo,importado_por)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING dte_id`,
+           cliente_rut,cliente_nombre,empresa_id,neto,iva,total,xml_completo,importado_por,ref_tipo_dte,ref_folio,ref_razon)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING dte_id`,
           [d.tipo_dte,d.tipo_doc,String(d.folio),d.fecha_emision||null,d.proveedor_rut,d.proveedor_nombre,d.proveedor_giro,d.proveedor_direccion,d.proveedor_id||null,
-           d.cliente_rut,d.cliente_nombre,d.empresa_id||null,parseFloat(d.neto)||0,parseFloat(d.iva)||0,parseFloat(d.total)||0,d.xml_completo||null,req.user.email]);
+           d.cliente_rut,d.cliente_nombre,d.empresa_id||null,parseFloat(d.neto)||0,parseFloat(d.iva)||0,parseFloat(d.total)||0,d.xml_completo||null,req.user.email,
+           d.ref_tipo_dte||null,d.ref_folio||null,d.ref_razon||null]);
         var dteId=ins.rows[0].dte_id;
         if(Array.isArray(d.lineas)){
           for(var j=0;j<d.lineas.length;j++){
@@ -11072,7 +11086,7 @@ app.post('/api/dte-recibidos/import', auth, async(req,res)=>{
             AND ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.05
             AND dte.fecha_emision >= oc.fecha_emision
             AND dte.fecha_emision <= oc.fecha_emision + INTERVAL '180 days'
-          WHERE dte.dte_id = ANY($1)
+          WHERE dte.dte_id = ANY($1) AND dte.tipo_dte<>'61'
           GROUP BY dte.dte_id, dte.folio, dte.tipo_dte, dte.fecha_emision, dte.total, pr.nombre, emp.razon_social
           ORDER BY dte.fecha_emision DESC NULLS LAST`, [idsImportados]);
         resumen.dtes_con_candidatos=cand.rows;
@@ -11105,9 +11119,22 @@ app.post('/api/dte-recibidos/:id/oc', auth, async(req,res)=>{
     if(!req.body.oc_id)return res.status(400).json({error:'oc_id requerido'});
     var monto=parseFloat(req.body.monto_aplicado);
     if(!monto||monto<=0)return res.status(400).json({error:'monto_aplicado debe ser mayor a 0'});
-    // Verificar que la OC exista
-    var oc=await pool.query('SELECT oc_id, total FROM ordenes_compra WHERE oc_id=$1',[req.body.oc_id]);
+    // Verificar que la OC exista y esté vigente
+    var oc=await pool.query(`SELECT oc_id, total, estado,
+        COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.oc_id=ordenes_compra.oc_id),0) AS facturado
+      FROM ordenes_compra WHERE oc_id=$1`,[req.body.oc_id]);
     if(!oc.rows.length)return res.status(404).json({error:'OC no encontrada'});
+    if(oc.rows[0].estado==='ANULADA'||oc.rows[0].estado==='CANCELADA')return res.status(400).json({error:'No se puede vincular una OC anulada'});
+    // Saldo sin asignar del DTE: no sobre-asignar la factura
+    var dq=await pool.query(`SELECT d.total,
+        COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.dte_id=d.dte_id),0) AS asignado
+      FROM dte_recibidos d WHERE d.dte_id=$1`,[req.params.id]);
+    if(!dq.rows.length)return res.status(404).json({error:'DTE no encontrado'});
+    var restanteDte=(parseFloat(dq.rows[0].total)||0)-(parseFloat(dq.rows[0].asignado)||0);
+    if(monto>restanteDte+1)return res.status(400).json({error:'El monto excede el saldo sin asignar del DTE ($'+Math.round(restanteDte)+')'});
+    // Saldo por facturar de la OC: no sobre-facturar la OC
+    var saldoOc=(parseFloat(oc.rows[0].total)||0)-(parseFloat(oc.rows[0].facturado)||0);
+    if(monto>saldoOc+1)return res.status(400).json({error:'El monto excede el saldo por facturar de la OC ($'+Math.round(saldoOc)+')'});
     var r=await pool.query(`INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5) RETURNING *`,
       [req.params.id,req.body.oc_id,monto,req.body.observacion||null,req.user.email]);
     res.json(r.rows[0]);
@@ -11134,7 +11161,9 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, async(req,res)=>{
     await client.query('BEGIN');
 
     // DTE no asignados completamente (sin asignar o parciales)
-    const w=['1=1'];const pv=[];
+    // Notas de crédito (61) quedan fuera del cruce automático: se tratan como documento aparte,
+    // con vinculación manual y registro del documento de referencia (ref_folio)
+    const w=["d.tipo_dte<>'61'"];const pv=[];
     if(empresa_id){pv.push(empresa_id);w.push('d.empresa_id=$'+pv.length);}
     const dtes=(await client.query(`
       SELECT d.dte_id, d.folio, d.total, d.proveedor_id, d.proveedor_rut, d.proveedor_nombre, d.fecha_emision,
@@ -11190,6 +11219,7 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, async(req,res)=>{
           SELECT oc.oc_id, oc.numero_oc, oc.total, oc.numero_documento
           FROM ordenes_compra oc
           WHERE oc.factura_guia_id=$1
+            AND oc.estado NOT IN ('ANULADA','CANCELADA')
             AND NOT EXISTS (SELECT 1 FROM dte_oc x WHERE x.oc_id=oc.oc_id)
           ORDER BY oc.total DESC`,[faci.factura_id])).rows;
         let rem=restante;
@@ -11260,6 +11290,19 @@ app.put('/api/dte-oc/:relId', auth, async(req,res)=>{
   try{
     var monto=parseFloat(req.body.monto_aplicado);
     if(!monto||monto<=0)return res.status(400).json({error:'monto_aplicado debe ser mayor a 0'});
+    var rel=await pool.query('SELECT dte_id, oc_id FROM dte_oc WHERE rel_id=$1',[req.params.relId]);
+    if(!rel.rows.length)return res.status(404).json({error:'No encontrado'});
+    // Saldos excluyendo esta misma vinculación (se está reemplazando su monto)
+    var dq=await pool.query(`SELECT d.total,
+        COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.dte_id=d.dte_id AND x.rel_id<>$2),0) AS asignado
+      FROM dte_recibidos d WHERE d.dte_id=$1`,[rel.rows[0].dte_id,req.params.relId]);
+    var restanteDte=(parseFloat(dq.rows[0].total)||0)-(parseFloat(dq.rows[0].asignado)||0);
+    if(monto>restanteDte+1)return res.status(400).json({error:'El monto excede el saldo sin asignar del DTE ($'+Math.round(restanteDte)+')'});
+    var oq=await pool.query(`SELECT total,
+        COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.oc_id=$1 AND x.rel_id<>$2),0) AS facturado
+      FROM ordenes_compra WHERE oc_id=$1`,[rel.rows[0].oc_id,req.params.relId]);
+    var saldoOc=(parseFloat(oq.rows[0].total)||0)-(parseFloat(oq.rows[0].facturado)||0);
+    if(monto>saldoOc+1)return res.status(400).json({error:'El monto excede el saldo por facturar de la OC ($'+Math.round(saldoOc)+')'});
     var r=await pool.query(`UPDATE dte_oc SET monto_aplicado=$1, observacion=$2 WHERE rel_id=$3 RETURNING *`,
       [monto,req.body.observacion||null,req.params.relId]);
     if(!r.rows.length)return res.status(404).json({error:'No encontrado'});
@@ -11329,6 +11372,7 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
         AND dte.fecha_emision <= oc.fecha_emision + INTERVAL '180 days'
       WHERE NOT EXISTS (SELECT 1 FROM dte_oc WHERE dte_id=dte.dte_id)
         AND (dte.observaciones IS NULL OR dte.observaciones NOT LIKE '%[GASTO SIN OC]%')
+        AND dte.tipo_dte<>'61'
       GROUP BY dte.dte_id, dte.folio, dte.tipo_dte, dte.fecha_emision, dte.total, dte.proveedor_id, dte.empresa_id, pr.nombre, emp.razon_social
       ORDER BY dte.fecha_emision DESC NULLS LAST
       LIMIT 200`;
@@ -11370,12 +11414,12 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
       LEFT JOIN empresas emp ON dte.empresa_id=emp.empresa_id
       WHERE NOT EXISTS (SELECT 1 FROM dte_oc WHERE dte_id=dte.dte_id)
         AND (dte.observaciones IS NULL OR dte.observaciones NOT LIKE '%[GASTO SIN OC]%')
-        AND NOT EXISTS (
+        AND (dte.tipo_dte='61' OR NOT EXISTS (
           SELECT 1 FROM ordenes_compra oc
           WHERE oc.proveedor_id=dte.proveedor_id AND oc.estado='PENDIENTE'
             AND ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.05
             AND dte.fecha_emision BETWEEN oc.fecha_emision AND oc.fecha_emision + INTERVAL '180 days'
-        )
+        ))
       ORDER BY dte.fecha_emision DESC NULLS LAST
       LIMIT 300`;
     var r3 = await pool.query(sql3);
@@ -11408,11 +11452,22 @@ app.post('/api/bandeja-dte-oc/vincular', auth, async(req,res)=>{
         await client.query('ROLLBACK');
         return res.status(400).json({error:'Cada vinculo requiere oc_id y monto_aplicado > 0'});
       }
-      // Verificar OC y que no esté ya vinculada a este DTE
-      var oc=await client.query('SELECT oc_id, total FROM ordenes_compra WHERE oc_id=$1',[v.oc_id]);
+      // Verificar OC vigente y que no esté ya vinculada a este DTE
+      var oc=await client.query(`SELECT oc_id, total, estado,
+          COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.oc_id=ordenes_compra.oc_id),0) AS facturado
+        FROM ordenes_compra WHERE oc_id=$1`,[v.oc_id]);
       if(!oc.rows.length){await client.query('ROLLBACK');return res.status(404).json({error:'OC '+v.oc_id+' no existe'});}
+      if(oc.rows[0].estado==='ANULADA'||oc.rows[0].estado==='CANCELADA'){await client.query('ROLLBACK');return res.status(400).json({error:'OC '+v.oc_id+' está anulada'});}
       var dup=await client.query('SELECT rel_id FROM dte_oc WHERE dte_id=$1 AND oc_id=$2',[b.dte_id,v.oc_id]);
       if(dup.rows.length){await client.query('ROLLBACK');return res.status(400).json({error:'OC '+v.oc_id+' ya está vinculada a este DTE'});}
+      // Saldos: la consulta corre dentro de la transacción, así que ve los vínculos ya insertados en este mismo loop
+      var dq2=await client.query(`SELECT d.total,
+          COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.dte_id=d.dte_id),0) AS asignado
+        FROM dte_recibidos d WHERE d.dte_id=$1`,[b.dte_id]);
+      var restanteDte2=(parseFloat(dq2.rows[0].total)||0)-(parseFloat(dq2.rows[0].asignado)||0);
+      if(parseFloat(v.monto_aplicado)>restanteDte2+1){await client.query('ROLLBACK');return res.status(400).json({error:'El monto para OC '+v.oc_id+' excede el saldo sin asignar del DTE ($'+Math.round(restanteDte2)+')'});}
+      var saldoOc2=(parseFloat(oc.rows[0].total)||0)-(parseFloat(oc.rows[0].facturado)||0);
+      if(parseFloat(v.monto_aplicado)>saldoOc2+1){await client.query('ROLLBACK');return res.status(400).json({error:'El monto excede el saldo por facturar de la OC '+v.oc_id+' ($'+Math.round(saldoOc2)+')'});}
       var ins=await client.query(
         'INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5) RETURNING *',
         [b.dte_id, v.oc_id, parseFloat(v.monto_aplicado), v.observacion||'Vinculación desde bandeja', req.user.email]
