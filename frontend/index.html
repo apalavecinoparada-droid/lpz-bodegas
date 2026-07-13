@@ -3957,6 +3957,7 @@ function TerrenoView(p){
     if(!form.fecha||!form.equipo_id||!form.faena_id){setMsg('Error: Fecha, equipo y faena son obligatorios');return;}
     if(form.horometro_inicial===''||form.horometro_final===''){setMsg('Error: Horómetros son obligatorios');return;}
     if(parseFloat(form.horometro_final)<parseFloat(form.horometro_inicial)){setMsg('Error: Horómetro final debe ser mayor o igual al inicial');return;}
+    if(parseFloat(form.horometro_final)-parseFloat(form.horometro_inicial)>24){setMsg('Error: Las horas trabajadas de un día no pueden superar 24. La diferencia de horómetros ingresada es '+(parseFloat(form.horometro_final)-parseFloat(form.horometro_inicial)).toFixed(1)+' horas — revise los horómetros');return;}
     if(hp>0&&tobDesc){setMsg('Error: La suma del desglose TOB ('+sumTob.toFixed(2)+') no coincide con horas perdidas ('+hp.toFixed(2)+')');return;}
     var tobSinClas=(form.tob_detalle||[]).filter(function(l){return (l.tob_cat_id||parseFloat(l.horas)>0)&&l.clasificacion!=='E'&&l.clasificacion!=='F';});
     if(tobSinClas.length){setMsg('Error: Selecciona la clasificaci\u00f3n (E = Empresa o F = Mandante) en cada tiempo perdido; falta en '+tobSinClas.length+' l\u00ednea(s)');return;}
@@ -7402,6 +7403,8 @@ function CompraAuditoriaView(p){
   const[diasProd,setDiasProd]=useState(15);
   const[umbralPrecio,setUmbralPrecio]=useState(30);
   const[simUmbral,setSimUmbral]=useState(0.45);
+  const[umbralVida,setUmbralVida]=useState(50);
+  const[diasPend,setDiasPend]=useState(30);
   const[desde,setDesde]=useState('');
   const[hasta,setHasta]=useState('');
 
@@ -7410,7 +7413,7 @@ function CompraAuditoriaView(p){
 
   function analizar(){
     setLoading(true);setErr('');
-    var qs='?dias_duplicado='+diasDup+'&dias_producto='+diasProd+'&umbral_precio='+umbralPrecio+'&umbral_similitud='+simUmbral;
+    var qs='?dias_duplicado='+diasDup+'&dias_producto='+diasProd+'&umbral_precio='+umbralPrecio+'&umbral_similitud='+simUmbral+'&umbral_vida='+umbralVida+'&dias_pendiente='+diasPend;
     if(desde)qs+='&desde='+desde;
     if(hasta)qs+='&hasta='+hasta;
     api('/ordenes-compra/auditoria/analisis'+qs,'GET',null,p.tok)
@@ -7466,10 +7469,31 @@ function CompraAuditoriaView(p){
       (data.compra_fraccionada||[]).map(function(r){return [
         {t:r.proveedor_nombre||''},{t:r.empresa_nombre||''},{t:fmtFecha(r.fecha_emision)},{t:r.num_ocs,a:'c'},{t:fmtMonto(r.monto_total),a:'r'},{t:r.ocs||''}
       ];}));
+    var s7=tabla(
+      [{t:'Producto'},{t:'Equipo'},{t:'Recambios',a:'c'},{t:'Dura (prom)',a:'c'},{t:'Mínimo',a:'c'},{t:'Prom. flota',a:'c'},{t:'Horas uso',a:'c'},{t:'Monto',a:'r'},{t:'Estado',a:'c'}],
+      (data.durabilidad||[]).map(function(r){return [
+        {t:(r.producto_codigo||'')+' '+(r.producto_nombre||'')},{t:(r.equipo_codigo||'')+' — '+(r.equipo_nombre||'')},
+        {t:r.recambios,a:'c'},{t:(r.dias_prom||0)+' d',a:'c'},{t:(r.dias_min||0)+' d',a:'c'},{t:(r.dias_prom_producto||0)+' d',a:'c'},
+        {t:r.horas_prom_uso!=null?(parseFloat(r.horas_prom_uso).toFixed(0)+' h'):'—',a:'c'},{t:fmtMonto(r.monto_total),a:'r'},
+        {t:r.critico?'CRÍTICO':'Normal',a:'c'}
+      ];}));
+    var s8=tabla(
+      [{t:'Producto'},{t:'Proveedor'},{t:'Cant.',a:'c'},{t:'Precio unit.',a:'r'},{t:'Monto línea',a:'r'},{t:'OC A'},{t:'OC B'},{t:'Días',a:'c'}],
+      (data.linea_duplicada||[]).map(function(r){return [
+        {t:(r.producto_codigo||'')+' '+(r.producto_nombre||'')},{t:r.proveedor_nombre||''},
+        {t:parseFloat(r.cantidad).toFixed(0),a:'c'},{t:fmtMonto(r.precio_unitario),a:'r'},{t:fmtMonto(r.monto_linea),a:'r'},
+        {t:(r.oc_a||'')+' ('+fmtFecha(r.fecha_a)+')'},{t:(r.oc_b||'')+' ('+fmtFecha(r.fecha_b)+')'},{t:r.dias_diferencia,a:'c'}
+      ];}));
+    var s9=tabla(
+      [{t:'OC'},{t:'Proveedor'},{t:'Empresa'},{t:'Emisión'},{t:'Días',a:'c'},{t:'Total',a:'r'},{t:'Doc.',a:'c'},{t:'Solicitante'}],
+      (data.oc_antiguas||[]).map(function(r){return [
+        {t:r.numero_oc||''},{t:r.proveedor_nombre||''},{t:r.empresa_nombre||''},{t:fmtFecha(r.fecha_emision)},
+        {t:(r.dias_pendiente||0)+' d',a:'c'},{t:fmtMonto(r.total),a:'r'},{t:r.con_documento?'✓':'✗',a:'c'},{t:r.solicitante||''}
+      ];}));
 
     var hoy=new Date().toLocaleDateString('es-CL',{day:'2-digit',month:'long',year:'numeric'});
     var rango=(desde||hasta)?((desde||'inicio')+' a '+(hasta||'hoy')):'Todo el historial';
-    var totalHallazgos=(R.producto_repetido||0)+(R.productos_similares||0)+(R.oc_duplicadas||0)+(R.doc_duplicado||0)+(R.precio_variable||0)+(R.compra_fraccionada||0);
+    var totalHallazgos=(R.producto_repetido||0)+(R.productos_similares||0)+(R.oc_duplicadas||0)+(R.doc_duplicado||0)+(R.precio_variable||0)+(R.compra_fraccionada||0)+(R.durabilidad_critica||0)+(R.linea_duplicada||0)+(R.oc_antiguas||0);
     var html='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Auditoría de Compras</title><style>'+
       '@page{size:letter;margin:1.5cm}*{font-family:Arial,Helvetica,sans-serif;box-sizing:border-box}'+
       'body{color:#1f2937;font-size:11px;margin:0}'+
@@ -7493,7 +7517,7 @@ function CompraAuditoriaView(p){
       '</style></head><body>'+
       '<div class="hd"><div><h1>Informe de Auditoría de Compras</h1><div class="sub">Empresas Poo · Cruce de información — Órdenes de Compra</div></div>'+
       '<div class="meta">Emitido: '+hoy+'<br>Emitido por: '+esc(p.user?(p.user.nombre||p.user.email):'')+'<br>Período: '+esc(rango)+'</div></div>'+
-      '<div class="params"><b>Parámetros:</b> OC duplicada ≤ '+(P.dias_duplicado)+' días · Producto/equipo ≤ '+(P.dias_producto)+' días · Variación precio > '+(P.umbral_precio)+'% · Similitud ≥ '+Math.round((P.umbral_similitud||simUmbral)*100)+'%</div>'+
+      '<div class="params"><b>Parámetros:</b> OC duplicada ≤ '+(P.dias_duplicado)+' días · Producto/equipo ≤ '+(P.dias_producto)+' días · Variación precio > '+(P.umbral_precio)+'% · Similitud ≥ '+Math.round((P.umbral_similitud||simUmbral)*100)+'% · Vida crítica < '+(P.umbral_vida||50)+'% del promedio · OC pendiente ≥ '+(P.dias_pendiente||30)+' días</div>'+
       '<div class="resumen">'+
       '<div class="kpi" style="border-left-color:#DC2626"><b>'+(R.producto_repetido||0)+'</b><span>Producto repetido</span></div>'+
       '<div class="kpi" style="border-left-color:#EA580C"><b>'+(R.productos_similares||0)+'</b><span>Productos similares</span></div>'+
@@ -7501,6 +7525,9 @@ function CompraAuditoriaView(p){
       '<div class="kpi" style="border-left-color:#CA8A04"><b>'+(R.doc_duplicado||0)+'</b><span>Doc. duplicado</span></div>'+
       '<div class="kpi" style="border-left-color:#7C3AED"><b>'+(R.precio_variable||0)+'</b><span>Variación de precio</span></div>'+
       '<div class="kpi" style="border-left-color:#2563EB"><b>'+(R.compra_fraccionada||0)+'</b><span>Compra fraccionada</span></div>'+
+      '<div class="kpi" style="border-left-color:#0F766E"><b>'+(R.durabilidad_critica||0)+'</b><span>Durabilidad crítica</span></div>'+
+      '<div class="kpi" style="border-left-color:#BE185D"><b>'+(R.linea_duplicada||0)+'</b><span>Línea duplicada</span></div>'+
+      '<div class="kpi" style="border-left-color:#475569"><b>'+(R.oc_antiguas||0)+'</b><span>OC pend. antiguas</span></div>'+
       '</div>'+
       seccion('Producto repetido para el mismo equipo','#DC2626','Mismo producto comprado para el mismo equipo más de una vez dentro de '+(P.dias_producto)+' días.',s1)+
       seccion('Productos similares','#EA580C','Nombres parecidos (no idénticos) comprados para el mismo equipo en '+(P.dias_producto)+' días.',s2)+
@@ -7508,6 +7535,9 @@ function CompraAuditoriaView(p){
       seccion('N° de documento duplicado','#CA8A04','Mismo número de documento tributario usado en más de una OC del mismo proveedor.',s4)+
       seccion('Variación de precio','#7C3AED','Productos cuyo precio unitario varió más de '+(P.umbral_precio)+'% entre compras.',s5)+
       seccion('Compra fraccionada','#2563EB','3 o más OC al mismo proveedor el mismo día.',s6)+
+      seccion('Durabilidad deficiente (vida útil por equipo)','#0F766E','Duración entre recambios del mismo producto por equipo (días y horas de uso según horómetros de combustible). CRÍTICO = dura menos del '+(P.umbral_vida||50)+'% del promedio del producto en la flota.',s7)+
+      seccion('Línea duplicada','#BE185D','Misma línea (producto + cantidad + precio) en dos OC distintas del mismo proveedor dentro de '+(P.dias_duplicado)+' días. Posible doble digitación.',s8)+
+      seccion('OC pendientes antiguas','#475569','OC en estado PENDIENTE con '+(P.dias_pendiente||30)+' o más días desde su emisión.',s9)+
       '<div class="firma"><div>Responsable de adquisiciones</div><div>Gerencia</div></div>'+
       '<div class="pie">Total de hallazgos: '+totalHallazgos+'. Los hallazgos son indicios para revisión, no necesariamente irregularidades. Documento generado automáticamente por el sistema.</div>'+
       '<script>window.onload=function(){window.print();}<\/script></body></html>';
@@ -7538,6 +7568,8 @@ function CompraAuditoriaView(p){
         h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Días producto/equipo'),h('input',{type:'number',value:diasProd,onChange:function(e){setDiasProd(e.target.value);},style:inpS})),
         h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'% variación precio'),h('input',{type:'number',value:umbralPrecio,onChange:function(e){setUmbralPrecio(e.target.value);},style:inpS})),
         h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Similitud (0-1)'),h('input',{type:'number',step:'0.05',min:'0',max:'1',value:simUmbral,onChange:function(e){setSimUmbral(e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'},title:'Un equipo es crítico si el producto le dura menos que este % del promedio de la flota'},'% vida crítica'),h('input',{type:'number',min:'10',max:'90',value:umbralVida,onChange:function(e){setUmbralVida(e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Días OC pendiente'),h('input',{type:'number',value:diasPend,onChange:function(e){setDiasPend(e.target.value);},style:inpS})),
         h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Desde'),h('input',{type:'date',value:desde,onChange:function(e){setDesde(e.target.value);},style:Object.assign({},inpS,{width:'auto'})})),
         h('div',null,h('label',{style:{fontSize:10,display:'block',marginBottom:2,color:'#64748B'}},'Hasta'),h('input',{type:'date',value:hasta,onChange:function(e){setHasta(e.target.value);},style:Object.assign({},inpS,{width:'auto'})})),
         h(Btn,{onClick:analizar,disabled:loading},loading?'⏳ Analizando...':'🔍 Analizar'),
@@ -7548,22 +7580,28 @@ function CompraAuditoriaView(p){
     loading&&!data&&h('div',{className:'spin'},'Analizando compras...'),
     data&&h('div',null,
       // Cards resumen
-      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:8,marginBottom:14}},
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))',gap:8,marginBottom:14}},
+        h(Card,{tabKey:'durabilidad',n:R.durabilidad_critica,label:'Durabilidad crítica',color:'#0F766E'}),
+        h(Card,{tabKey:'linea_duplicada',n:R.linea_duplicada,label:'Línea duplicada',color:'#BE185D'}),
         h(Card,{tabKey:'producto_repetido',n:R.producto_repetido,label:'Producto repetido / equipo',color:'#DC2626'}),
         h(Card,{tabKey:'productos_similares',n:R.productos_similares,label:'Productos similares',color:'#EA580C'}),
         h(Card,{tabKey:'oc_duplicadas',n:R.oc_duplicadas,label:'OC duplicadas',color:'#D97706'}),
         h(Card,{tabKey:'doc_duplicado',n:R.doc_duplicado,label:'N° doc. duplicado',color:'#CA8A04'}),
         h(Card,{tabKey:'precio_variable',n:R.precio_variable,label:'Variación de precio',color:'#7C3AED'}),
-        h(Card,{tabKey:'compra_fraccionada',n:R.compra_fraccionada,label:'Compra fraccionada',color:'#2563EB'})
+        h(Card,{tabKey:'compra_fraccionada',n:R.compra_fraccionada,label:'Compra fraccionada',color:'#2563EB'}),
+        h(Card,{tabKey:'oc_antiguas',n:R.oc_antiguas,label:'OC pendientes antiguas',color:'#475569'})
       ),
       // Tabs
       h('div',{style:{marginBottom:10}},
+        h(TabBtn,{tabKey:'durabilidad',label:'⏳ Durabilidad',n:R.durabilidad_critica}),
+        h(TabBtn,{tabKey:'linea_duplicada',label:'📋 Línea duplicada',n:R.linea_duplicada}),
         h(TabBtn,{tabKey:'producto_repetido',label:'🔁 Producto repetido',n:R.producto_repetido}),
         h(TabBtn,{tabKey:'productos_similares',label:'🔀 Similares',n:R.productos_similares}),
         h(TabBtn,{tabKey:'oc_duplicadas',label:'📑 OC duplicadas',n:R.oc_duplicadas}),
         h(TabBtn,{tabKey:'doc_duplicado',label:'🧾 Doc duplicado',n:R.doc_duplicado}),
         h(TabBtn,{tabKey:'precio_variable',label:'💲 Precio variable',n:R.precio_variable}),
-        h(TabBtn,{tabKey:'compra_fraccionada',label:'✂ Fraccionada',n:R.compra_fraccionada})
+        h(TabBtn,{tabKey:'compra_fraccionada',label:'✂ Fraccionada',n:R.compra_fraccionada}),
+        h(TabBtn,{tabKey:'oc_antiguas',label:'⏰ OC antiguas',n:R.oc_antiguas})
       ),
       h('div',{className:'card',style:{padding:0,overflow:'hidden'}},
         // ── Producto repetido ──
@@ -7671,6 +7709,71 @@ function CompraAuditoriaView(p){
                 h('td',{className:'c'},h('span',{style:{padding:'2px 7px',background:'#DBEAFE',color:'#1E40AF',borderRadius:10,fontWeight:700}},r.num_ocs)),
                 h('td',{className:'r mono',style:{fontWeight:600}},fmtMonto(r.monto_total)),
                 h('td',{style:{fontSize:10}},r.ocs)
+              );
+            }))
+          )
+        ),
+        // ── Durabilidad deficiente (vida útil por equipo) ──
+        tab==='durabilidad'&&h('div',null,
+          h('div',{style:{padding:'8px 12px',background:'#F0FDFA',fontSize:11,color:'#0F766E'}},'Duración entre recambios del mismo producto en cada equipo (días entre compras sucesivas y horas de uso según horómetros del control de combustible). Un equipo es CRÍTICO si el producto le dura menos del '+(data.parametros.umbral_vida||umbralVida)+'% del promedio de ese producto en toda la flota (con al menos 3 recambios en el producto). Ej: neumáticos que duran poco en un equipo específico.'),
+          data.durabilidad_error&&h('div',{style:{padding:'6px 12px',background:'#FEF2F2',fontSize:11,color:'#991B1B'}},'Error en el cálculo: '+data.durabilidad_error),
+          (data.durabilidad||[]).length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin productos con recambios registrados (se requieren al menos 2 compras del mismo producto para el mismo equipo).'):
+          h('table',{style:{fontSize:11,width:'100%',borderCollapse:'collapse'}},
+            h('thead',null,h('tr',null,h('th',null,'Producto'),h('th',null,'Equipo'),h('th',{className:'c'},'Recambios'),h('th',{className:'c'},'Dura (prom)'),h('th',{className:'c'},'Mínimo'),h('th',{className:'c'},'Prom. flota'),h('th',{className:'c'},'Horas uso'),h('th',{className:'r'},'Monto'),h('th',{className:'c'},'Última compra'),h('th',{className:'c'},'Estado'))),
+            h('tbody',null,(data.durabilidad||[]).map(function(r,i){
+              return h('tr',{key:i,style:r.critico?{background:'#FEF2F2'}:null},
+                h('td',null,h('strong',null,r.producto_codigo),' ',r.producto_nombre),
+                h('td',null,r.equipo_codigo+' — '+r.equipo_nombre),
+                h('td',{className:'c'},r.recambios),
+                h('td',{className:'c',style:{fontWeight:700,color:r.critico?'#DC2626':'#1E293B'}},(r.dias_prom||0)+' d'),
+                h('td',{className:'c'},(r.dias_min||0)+' d'),
+                h('td',{className:'c',style:{color:'#64748B'}},(r.dias_prom_producto||0)+' d ('+(r.recambios_producto||0)+')'),
+                h('td',{className:'c'},r.horas_prom_uso!=null?(parseFloat(r.horas_prom_uso).toFixed(0)+' h'):'—'),
+                h('td',{className:'r mono'},fmtMonto(r.monto_total)),
+                h('td',{className:'c'},fmtFecha(r.ultima_compra)),
+                h('td',{className:'c'},r.critico?h('span',{style:{padding:'2px 8px',background:'#FEE2E2',color:'#991B1B',borderRadius:10,fontWeight:700,fontSize:10}},'⚠ CRÍTICO'):h('span',{style:{color:'#94A3B8',fontSize:10}},'Normal'))
+              );
+            }))
+          )
+        ),
+        // ── Línea duplicada ──
+        tab==='linea_duplicada'&&h('div',null,
+          h('div',{style:{padding:'8px 12px',background:'#FDF2F8',fontSize:11,color:'#9D174D'}},'Misma línea (producto + cantidad + precio unitario) en dos OC distintas del mismo proveedor dentro de '+(data.parametros.dias_duplicado)+' días. Señal fuerte de doble digitación de la misma compra.'),
+          (data.linea_duplicada||[]).length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin coincidencias.'):
+          h('table',{style:{fontSize:11,width:'100%',borderCollapse:'collapse'}},
+            h('thead',null,h('tr',null,h('th',null,'Producto'),h('th',null,'Proveedor'),h('th',{className:'c'},'Cant.'),h('th',{className:'r'},'Precio unit.'),h('th',{className:'r'},'Monto línea'),h('th',null,'OC A'),h('th',null,'OC B'),h('th',{className:'c'},'Días dif.'),h('th',{className:'c'},'Equipos'))),
+            h('tbody',null,(data.linea_duplicada||[]).map(function(r,i){
+              return h('tr',{key:i},
+                h('td',null,h('strong',null,r.producto_codigo),' ',r.producto_nombre),
+                h('td',null,r.proveedor_nombre||'—'),
+                h('td',{className:'c'},parseFloat(r.cantidad).toFixed(0)),
+                h('td',{className:'r mono'},fmtMonto(r.precio_unitario)),
+                h('td',{className:'r mono',style:{fontWeight:700,color:'#9D174D'}},fmtMonto(r.monto_linea)),
+                h('td',null,r.oc_a+' ('+fmtFecha(r.fecha_a)+')'),
+                h('td',null,r.oc_b+' ('+fmtFecha(r.fecha_b)+')'),
+                h('td',{className:'c'},h('span',{style:{padding:'2px 7px',background:'#FCE7F3',color:'#9D174D',borderRadius:10,fontWeight:700}},r.dias_diferencia)),
+                h('td',{className:'c',style:{fontSize:10}},r.equipo_a+' / '+r.equipo_b)
+              );
+            }))
+          )
+        ),
+        // ── OC pendientes antiguas ──
+        tab==='oc_antiguas'&&h('div',null,
+          h('div',{style:{padding:'8px 12px',background:'#F8FAFC',fontSize:11,color:'#475569'}},'OC en estado PENDIENTE emitidas hace '+(data.parametros.dias_pendiente||diasPend)+' o más días. Pueden ser compras no recibidas, entregas sin registrar o OC que quedaron abiertas sin documento de respaldo.'),
+          (data.oc_antiguas||[]).length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B'}},'Sin OC pendientes antiguas. Proceso al día.'):
+          h('table',{style:{fontSize:11,width:'100%',borderCollapse:'collapse'}},
+            h('thead',null,h('tr',null,h('th',null,'OC'),h('th',null,'Proveedor'),h('th',null,'Empresa'),h('th',{className:'c'},'Emisión'),h('th',{className:'c'},'Días'),h('th',{className:'r'},'Total'),h('th',{className:'c'},'Doc. respaldo'),h('th',null,'Solicitante'))),
+            h('tbody',null,(data.oc_antiguas||[]).map(function(r,i){
+              var dias=parseInt(r.dias_pendiente)||0;
+              return h('tr',{key:i},
+                h('td',null,h('strong',null,r.numero_oc)),
+                h('td',null,r.proveedor_nombre||'—'),
+                h('td',{style:{fontSize:10}},r.empresa_nombre||'—'),
+                h('td',{className:'c'},fmtFecha(r.fecha_emision)),
+                h('td',{className:'c'},h('span',{style:{padding:'2px 7px',background:dias>=90?'#FEE2E2':'#FEF3C7',color:dias>=90?'#991B1B':'#92400E',borderRadius:10,fontWeight:700}},dias+' d')),
+                h('td',{className:'r mono',style:{fontWeight:600}},fmtMonto(r.total)),
+                h('td',{className:'c'},r.con_documento?h('span',{style:{color:'#16A34A',fontWeight:700}},'✓'):h('span',{style:{color:'#DC2626',fontWeight:700}},'✗ Sin doc')),
+                h('td',{style:{fontSize:10}},r.solicitante||'—')
               );
             }))
           )
@@ -20387,6 +20490,7 @@ function MobileTerreno(p){
     if(!form.faena_id){setMsg('Seleccione faena');return;}
     if(form.horometro_final===''||form.horometro_final==null){setMsg('Ingrese horómetro final');return;}
     if(hf<hi){setMsg('Horómetro final debe ser mayor o igual al inicial');return;}
+    if(hf-hi>24){setMsg('Las horas trabajadas de un día no pueden superar 24 ('+(hf-hi).toFixed(1)+' h ingresadas) — revisa los horómetros');return;}
     if(hPerd>0){
       var linVal=tobLineas.filter(function(l){return l.tob_cat_id&&parseFloat(l.horas)>0;});
       if(linVal.length===0){setMsg('Debe desglosar las horas perdidas en tiempos obvios');return;}
