@@ -11702,6 +11702,149 @@ app.get('/api/dte-recibidos/:id/ocs-candidatas', auth, async(req,res)=>{
 
 
 
+// ════════════════════════════════════════════════════════════════════
+// FINANZAS — LIQUIDACIONES DE PRODUCCIÓN (ingresos del mandante)
+// Registro simplificado: encabezado por período + líneas por equipo/fundo/tipo.
+// tipo: 'PRODUCCION' (boletines P×Q) o 'PE' (partidas especiales: ajustes/multas/premios).
+// ════════════════════════════════════════════════════════════════════
+let _finLiqOk=false;
+async function finLiqEnsure(){
+  if(_finLiqOk)return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS fin_liquidaciones (
+    liq_id SERIAL PRIMARY KEY,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    mandante VARCHAR(120),
+    periodo VARCHAR(7) NOT NULL,
+    numero_ref VARCHAR(40),
+    fecha_recepcion DATE,
+    observaciones TEXT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW()
+  )`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS fin_liquidacion_lineas (
+    linea_id SERIAL PRIMARY KEY,
+    liq_id INT NOT NULL REFERENCES fin_liquidaciones(liq_id) ON DELETE CASCADE,
+    equipo_contrato VARCHAR(30),
+    fundo_codigo VARCHAR(20),
+    fundo_nombre VARCHAR(120),
+    faena_id INT REFERENCES faenas(faena_id),
+    tipo VARCHAR(20) NOT NULL DEFAULT 'PRODUCCION',
+    concepto VARCHAR(200),
+    volumen_m3 NUMERIC(14,3) DEFAULT 0,
+    monto NUMERIC(14,2) NOT NULL DEFAULT 0
+  )`);
+  _finLiqOk=true;
+}
+
+// GET: lista con totales por liquidación
+app.get('/api/fin/liquidaciones', auth, async(req,res)=>{
+  try{
+    await finLiqEnsure();
+    var w=['1=1'],v=[];
+    if(req.query.empresa_id){v.push(req.query.empresa_id);w.push('l.empresa_id=$'+v.length);}
+    if(req.query.anio){v.push(req.query.anio+'-%');w.push('l.periodo LIKE $'+v.length);}
+    var r=await pool.query(`
+      SELECT l.*, e.razon_social AS empresa_nombre,
+        COALESCE(SUM(d.monto) FILTER (WHERE d.tipo='PRODUCCION'),0) AS total_produccion,
+        COALESCE(SUM(d.monto) FILTER (WHERE d.tipo<>'PRODUCCION'),0) AS total_pe,
+        COALESCE(SUM(d.monto),0) AS total_neto,
+        COALESCE(SUM(d.volumen_m3) FILTER (WHERE d.tipo='PRODUCCION'),0) AS volumen_m3,
+        COUNT(d.linea_id) AS n_lineas
+      FROM fin_liquidaciones l
+      LEFT JOIN empresas e ON l.empresa_id=e.empresa_id
+      LEFT JOIN fin_liquidacion_lineas d ON d.liq_id=l.liq_id
+      WHERE ${w.join(' AND ')}
+      GROUP BY l.liq_id, e.razon_social
+      ORDER BY l.periodo DESC, l.liq_id DESC LIMIT 300`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// GET: detalle con líneas
+app.get('/api/fin/liquidaciones/:id', auth, async(req,res)=>{
+  try{
+    await finLiqEnsure();
+    var hR=await pool.query('SELECT l.*, e.razon_social AS empresa_nombre FROM fin_liquidaciones l LEFT JOIN empresas e ON l.empresa_id=e.empresa_id WHERE l.liq_id=$1',[req.params.id]);
+    if(!hR.rows.length)return res.status(404).json({error:'Liquidación no encontrada'});
+    var lR=await pool.query('SELECT d.*, f.nombre AS faena_nombre FROM fin_liquidacion_lineas d LEFT JOIN faenas f ON d.faena_id=f.faena_id WHERE d.liq_id=$1 ORDER BY d.tipo, d.equipo_contrato, d.fundo_codigo, d.linea_id',[req.params.id]);
+    var out=hR.rows[0];out.lineas=lR.rows;
+    res.json(out);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// POST: crear (manual o importada). Duplicado por empresa+período requiere force:true
+app.post('/api/fin/liquidaciones', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await finLiqEnsure();
+    var b=req.body||{};
+    if(!b.periodo||!/^\d{4}-\d{2}$/.test(b.periodo))return res.status(400).json({error:'Período requerido (formato AAAA-MM)'});
+    if(!b.empresa_id)return res.status(400).json({error:'Empresa requerida'});
+    var lineas=Array.isArray(b.lineas)?b.lineas.filter(function(l){return l&&(parseFloat(l.monto)||0)!==0;}):[];
+    if(!lineas.length)return res.status(400).json({error:'Debe ingresar al menos una línea con monto'});
+    if(!b.force){
+      var dup=await client.query('SELECT liq_id FROM fin_liquidaciones WHERE empresa_id=$1 AND periodo=$2',[b.empresa_id,b.periodo]);
+      if(dup.rows.length)return res.status(400).json({error:'Ya existe una liquidación de esta empresa para el período '+b.periodo+'. Elimina la anterior o marca "permitir período repetido".'});
+    }
+    await client.query('BEGIN');
+    var ins=await client.query(`INSERT INTO fin_liquidaciones(empresa_id,mandante,periodo,numero_ref,fecha_recepcion,observaciones,usuario)
+      VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING liq_id`,
+      [b.empresa_id,b.mandante||null,b.periodo,b.numero_ref||null,b.fecha_recepcion||null,b.observaciones||null,req.user.email]);
+    var liqId=ins.rows[0].liq_id;
+    for(var i=0;i<lineas.length;i++){
+      var l=lineas[i];
+      await client.query(`INSERT INTO fin_liquidacion_lineas(liq_id,equipo_contrato,fundo_codigo,fundo_nombre,faena_id,tipo,concepto,volumen_m3,monto)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [liqId,String(l.equipo_contrato||'').trim()||null,String(l.fundo_codigo||'').trim()||null,l.fundo_nombre||null,l.faena_id||null,
+         l.tipo==='PE'?'PE':'PRODUCCION',l.concepto||null,parseFloat(l.volumen_m3)||0,parseFloat(l.monto)||0]);
+    }
+    await client.query('COMMIT');
+    res.status(201).json({ok:true,liq_id:liqId,lineas:lineas.length});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// PUT: actualizar encabezado y reemplazar líneas
+app.put('/api/fin/liquidaciones/:id', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await finLiqEnsure();
+    var b=req.body||{};
+    if(b.periodo&&!/^\d{4}-\d{2}$/.test(b.periodo))return res.status(400).json({error:'Período inválido (formato AAAA-MM)'});
+    await client.query('BEGIN');
+    var up=await client.query(`UPDATE fin_liquidaciones SET
+      empresa_id=COALESCE($1,empresa_id),mandante=$2,periodo=COALESCE($3,periodo),numero_ref=$4,fecha_recepcion=$5,observaciones=$6
+      WHERE liq_id=$7 RETURNING liq_id`,
+      [b.empresa_id||null,b.mandante||null,b.periodo||null,b.numero_ref||null,b.fecha_recepcion||null,b.observaciones||null,req.params.id]);
+    if(!up.rows.length){await client.query('ROLLBACK');return res.status(404).json({error:'Liquidación no encontrada'});}
+    if(Array.isArray(b.lineas)){
+      var lineas=b.lineas.filter(function(l){return l&&(parseFloat(l.monto)||0)!==0;});
+      if(!lineas.length){await client.query('ROLLBACK');return res.status(400).json({error:'Debe quedar al menos una línea con monto'});}
+      await client.query('DELETE FROM fin_liquidacion_lineas WHERE liq_id=$1',[req.params.id]);
+      for(var i=0;i<lineas.length;i++){
+        var l=lineas[i];
+        await client.query(`INSERT INTO fin_liquidacion_lineas(liq_id,equipo_contrato,fundo_codigo,fundo_nombre,faena_id,tipo,concepto,volumen_m3,monto)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [req.params.id,String(l.equipo_contrato||'').trim()||null,String(l.fundo_codigo||'').trim()||null,l.fundo_nombre||null,l.faena_id||null,
+           l.tipo==='PE'?'PE':'PRODUCCION',l.concepto||null,parseFloat(l.volumen_m3)||0,parseFloat(l.monto)||0]);
+      }
+    }
+    await client.query('COMMIT');
+    res.json({ok:true});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// DELETE: eliminar liquidación (líneas caen por CASCADE)
+app.delete('/api/fin/liquidaciones/:id', auth, async(req,res)=>{
+  try{
+    await finLiqEnsure();
+    var r=await pool.query('DELETE FROM fin_liquidaciones WHERE liq_id=$1 RETURNING liq_id',[req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Liquidación no encontrada'});
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Empresas Poo
 // ════════════════════════════════════════════════════════════════════════════
