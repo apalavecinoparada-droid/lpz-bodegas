@@ -3141,6 +3141,8 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
     const diasFracc = parseInt(req.query.dias_fraccion)||3;      // ventana para compra fraccionada
     const umbralPrecio = parseFloat(req.query.umbral_precio)||30;// % variación de precio
     const simUmbral = parseFloat(req.query.umbral_similitud)||0.45; // similitud de nombres
+    const umbralVida = Math.min(Math.max(parseFloat(req.query.umbral_vida)||50,10),90); // % del promedio del producto bajo el cual la duración en un equipo es crítica
+    const diasPendiente = parseInt(req.query.dias_pendiente)||30;   // antigüedad mínima de OC pendientes
     const desde = req.query.desde||null;
     const hasta = req.query.hasta||null;
     var fechaFiltro = '';
@@ -3264,15 +3266,113 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
       ORDER BY num_ocs DESC, monto_total DESC
       LIMIT 100`, baseVals);
 
+    // ─── CHECK 7: Durabilidad deficiente (vida útil de productos por equipo) ───
+    // Intervalos entre compras sucesivas del mismo producto para el mismo equipo.
+    // Las HORAS DE USO se estiman desde los horómetros del control de COMBUSTIBLE
+    // (fuente más fidedigna que terreno): span MAX-MIN del horómetro dentro de la ventana.
+    // Compara la duración en cada equipo contra el promedio del producto en toda la flota.
+    var durabilidad={rows:[]};
+    try{
+      durabilidad = await pool.query(`
+        WITH compras AS (
+          SELECT d.producto_id, d.equipo_id, oc.fecha_emision AS fecha,
+                 SUM(d.cantidad) AS cantidad, SUM(d.total_linea) AS monto
+          FROM ordenes_compra_detalle d
+          JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
+          WHERE oc.estado!='ANULADA' AND d.producto_id IS NOT NULL AND d.equipo_id IS NOT NULL ${fechaFiltro}
+          GROUP BY d.producto_id, d.equipo_id, oc.fecha_emision
+        ),
+        intervalos AS (
+          SELECT c.*, LAG(c.fecha) OVER (PARTITION BY c.producto_id, c.equipo_id ORDER BY c.fecha) AS fecha_anterior
+          FROM compras c
+        ),
+        con_dias AS (
+          SELECT i.*, (i.fecha - i.fecha_anterior) AS dias_intervalo
+          FROM intervalos i WHERE i.fecha_anterior IS NOT NULL
+        ),
+        por_equipo AS (
+          SELECT producto_id, equipo_id, COUNT(*) AS recambios,
+                 ROUND(AVG(dias_intervalo)::numeric,0) AS dias_prom,
+                 MIN(dias_intervalo) AS dias_min,
+                 MIN(fecha_anterior) AS primera_compra,
+                 MAX(fecha) AS ultima_compra,
+                 SUM(cantidad) AS cantidad_total, SUM(monto) AS monto_total
+          FROM con_dias GROUP BY producto_id, equipo_id
+        ),
+        por_producto AS (
+          SELECT producto_id, ROUND(AVG(dias_intervalo)::numeric,0) AS dias_prom_producto, COUNT(*) AS recambios_producto
+          FROM con_dias GROUP BY producto_id
+        )
+        SELECT p.codigo AS producto_codigo, p.nombre AS producto_nombre,
+               eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
+               pe.recambios, pe.dias_prom, pe.dias_min, pe.ultima_compra,
+               pe.cantidad_total, pe.monto_total,
+               pp.dias_prom_producto, pp.recambios_producto,
+               ROUND((SELECT MAX(m.horometro)-MIN(m.horometro) FROM comb_movimientos m
+                      WHERE m.equipo_id=pe.equipo_id AND m.estado='ACTIVO' AND m.horometro>0
+                        AND m.fecha>=pe.primera_compra AND m.fecha<=pe.ultima_compra)::numeric
+                     / NULLIF(pe.recambios,0), 0) AS horas_prom_uso,
+               (pp.recambios_producto>=3 AND pe.dias_prom < pp.dias_prom_producto*${umbralVida}/100.0) AS critico
+        FROM por_equipo pe
+        JOIN por_producto pp ON pp.producto_id=pe.producto_id
+        JOIN productos p ON p.producto_id=pe.producto_id
+        JOIN equipos eq ON eq.equipo_id=pe.equipo_id
+        ORDER BY (pp.recambios_producto>=3 AND pe.dias_prom < pp.dias_prom_producto*${umbralVida}/100.0) DESC, pe.dias_prom ASC
+        LIMIT 150`, baseVals);
+    }catch(e){ durabilidad={rows:[],error:e.message}; }
+
+    // ─── CHECK 8: Línea duplicada (mismo producto + cantidad + precio en OCs distintas del mismo proveedor) ───
+    // Señal fuerte de doble digitación: más precisa que comparar totales de OC.
+    const lineaDup = await pool.query(`
+      SELECT p.codigo AS producto_codigo, p.nombre AS producto_nombre,
+             pr.nombre AS proveedor_nombre,
+             da.cantidad, da.precio_unitario, (da.cantidad*da.precio_unitario) AS monto_linea,
+             oca.numero_oc AS oc_a, ocb.numero_oc AS oc_b,
+             oca.fecha_emision AS fecha_a, ocb.fecha_emision AS fecha_b,
+             ABS(oca.fecha_emision-ocb.fecha_emision) AS dias_diferencia,
+             COALESCE(eqa.codigo,'—') AS equipo_a, COALESCE(eqb.codigo,'—') AS equipo_b
+      FROM ordenes_compra_detalle da
+      JOIN ordenes_compra oca ON da.oc_id=oca.oc_id
+      JOIN ordenes_compra_detalle db ON da.producto_id=db.producto_id
+        AND da.detalle_id<db.detalle_id AND da.oc_id<>db.oc_id
+        AND da.cantidad=db.cantidad AND da.precio_unitario=db.precio_unitario
+      JOIN ordenes_compra ocb ON db.oc_id=ocb.oc_id
+        AND ocb.proveedor_id=oca.proveedor_id
+        AND ABS(oca.fecha_emision-ocb.fecha_emision)<=${diasDup}
+      JOIN productos p ON da.producto_id=p.producto_id
+      LEFT JOIN proveedores pr ON oca.proveedor_id=pr.proveedor_id
+      LEFT JOIN equipos eqa ON da.equipo_id=eqa.equipo_id
+      LEFT JOIN equipos eqb ON db.equipo_id=eqb.equipo_id
+      WHERE oca.estado!='ANULADA' AND ocb.estado!='ANULADA'
+        AND da.cantidad>0 AND da.precio_unitario>0 ${fechaFiltro.replace(/oc\./g,'oca.')}
+      ORDER BY monto_linea DESC
+      LIMIT 100`, baseVals);
+
+    // ─── CHECK 9: OC pendientes antiguas (sin cierre hace más de N días) ───
+    const ocAntiguas = await pool.query(`
+      SELECT oc.oc_id, oc.numero_oc, oc.fecha_emision, oc.total, oc.solicitante,
+             (CURRENT_DATE - oc.fecha_emision) AS dias_pendiente,
+             (oc.numero_documento IS NOT NULL AND oc.numero_documento<>'') AS con_documento,
+             pr.nombre AS proveedor_nombre, e.razon_social AS empresa_nombre
+      FROM ordenes_compra oc
+      LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
+      LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id
+      WHERE oc.estado='PENDIENTE' AND (CURRENT_DATE - oc.fecha_emision) >= ${diasPendiente} ${fechaFiltro}
+      ORDER BY dias_pendiente DESC, oc.total DESC
+      LIMIT 150`, baseVals);
+
     res.json({
-      parametros:{dias_duplicado:diasDup,dias_producto:diasProd,dias_fraccion:diasFracc,umbral_precio:umbralPrecio,umbral_similitud:simUmbral,desde,hasta},
+      parametros:{dias_duplicado:diasDup,dias_producto:diasProd,dias_fraccion:diasFracc,umbral_precio:umbralPrecio,umbral_similitud:simUmbral,umbral_vida:umbralVida,dias_pendiente:diasPendiente,desde,hasta},
       resumen:{
         oc_duplicadas:dupMonto.rows.length,
         doc_duplicado:dupDoc.rows.length,
         producto_repetido:prodRepetido.rows.length,
         productos_similares:similares.rows.length,
         precio_variable:precioVar.rows.length,
-        compra_fraccionada:fraccionada.rows.length
+        compra_fraccionada:fraccionada.rows.length,
+        durabilidad_critica:durabilidad.rows.filter(function(r){return r.critico;}).length,
+        linea_duplicada:lineaDup.rows.length,
+        oc_antiguas:ocAntiguas.rows.length
       },
       oc_duplicadas:dupMonto.rows,
       doc_duplicado:dupDoc.rows,
@@ -3280,7 +3380,11 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
       productos_similares:similares.rows,
       similares_error:similares.error||null,
       precio_variable:precioVar.rows,
-      compra_fraccionada:fraccionada.rows
+      compra_fraccionada:fraccionada.rows,
+      durabilidad:durabilidad.rows,
+      durabilidad_error:durabilidad.error||null,
+      linea_duplicada:lineaDup.rows,
+      oc_antiguas:ocAntiguas.rows
     });
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -8275,8 +8379,10 @@ app.post('/api/terreno/registros', auth, async(req,res)=>{
           operador_id,fundo_id,rodal_id,arboles_producidos}=req.body;
     if(!fecha||!faena_id||!equipo_id||horometro_inicial==null||horometro_final==null)throw new Error('Fecha, faena, equipo y horómetros son obligatorios');
     if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
+    if(parseFloat(horometro_final)-parseFloat(horometro_inicial)>24)throw new Error('Las horas trabajadas de un día no pueden superar 24: la diferencia de horómetros ingresada es '+(parseFloat(horometro_final)-parseFloat(horometro_inicial)).toFixed(1)+' horas. Revise los horómetros');
     // Validate TOB sum = horas_perdidas
     const hp=parseFloat(horas_perdidas||0);
+    if(hp>24)throw new Error('Las horas perdidas de un día no pueden superar 24 (ingresado: '+hp.toFixed(1)+')');
     const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
     for(const dtx of detalle){ if((dtx.tob_cat_id||parseFloat(dtx.horas)>0)&&dtx.clasificacion!=='E'&&dtx.clasificacion!=='F') throw new Error('Cada tiempo perdido debe tener clasificación E (Empresa) o F (Mandante)'); }
     const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
@@ -8313,7 +8419,9 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
     const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle,
           operador_id,fundo_id,rodal_id,arboles_producidos}=req.body;
     if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
+    if(parseFloat(horometro_final)-parseFloat(horometro_inicial)>24)throw new Error('Las horas trabajadas de un día no pueden superar 24: la diferencia de horómetros ingresada es '+(parseFloat(horometro_final)-parseFloat(horometro_inicial)).toFixed(1)+' horas. Revise los horómetros');
     const hp=parseFloat(horas_perdidas||0);
+    if(hp>24)throw new Error('Las horas perdidas de un día no pueden superar 24 (ingresado: '+hp.toFixed(1)+')');
     const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
     for(const dtx of detalle){ if((dtx.tob_cat_id||parseFloat(dtx.horas)>0)&&dtx.clasificacion!=='E'&&dtx.clasificacion!=='F') throw new Error('Cada tiempo perdido debe tener clasificación E (Empresa) o F (Mandante)'); }
     const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
