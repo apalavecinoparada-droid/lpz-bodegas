@@ -2847,8 +2847,11 @@ function TerrenoInforme(p){
       '',t.disponibilidad_pct!=null?Number(t.disponibilidad_pct.toFixed(1)):'—']);
     XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(resData),'Resumen');
     // Hoja 2: Detalle (con descripción del tiempo perdido / TOB)
+    // Orden cronológico ASC (antigua->reciente), desempate por registro_id — mismo patrón ordFecha de combustible
+    var ordFechaTer=function(a,b){var fa=(a.fecha+'').slice(0,10),fb=(b.fecha+'').slice(0,10);if(fa!==fb)return fa<fb?-1:1;return (a.registro_id||0)-(b.registro_id||0);};
+    var detalleOrd=(data.detalle||[]).slice().sort(ordFechaTer);
     var detData=[['Fecha','Empresa','Faena','Código','Equipo','Tipo','Horómetro inicial','Horómetro final','Hrs trabajadas','Hrs perdidas','Descripción tiempo perdido (TOB)','Litros','Observaciones']];
-    (data.detalle||[]).forEach(function(r){
+    detalleOrd.forEach(function(r){
       detData.push([(r.fecha+'').slice(0,10),r.empresa_nombre||'—',r.faena_nombre||'—',r.equipo_codigo,r.equipo_nombre,r.tipo_cargo,
         Number((parseFloat(r.horometro_inicial)||0).toFixed(2)),
         Number((parseFloat(r.horometro_final)||0).toFixed(2)),
@@ -2862,7 +2865,7 @@ function TerrenoInforme(p){
 
     // Hoja extra: Detalle TOB (una fila por cada tiempo obvio individual)
     var tobRows=[['Fecha','Empresa','Faena','Código','Equipo','Causa','Clasificación','Horas','Observación TOB']];
-    (data.detalle||[]).forEach(function(r){
+    detalleOrd.forEach(function(r){
       (r.tob_detalle||[]).forEach(function(t){
         tobRows.push([
           (r.fecha+'').slice(0,10),
@@ -20560,9 +20563,11 @@ function DTERecibidosView(p){
   }
   useEffect(function(){load2();},[p.tok,fTipo,fProv,fEmpresa,fEstado,fVinc,fDesde,fHasta,fQ]);
   // KPIs del listado actual
-  var totalNeto=dtes.reduce(function(s,d){return s+(parseFloat(d.neto)||0);},0);
-  var totalIva=dtes.reduce(function(s,d){return s+(parseFloat(d.iva)||0);},0);
-  var totalGral=dtes.reduce(function(s,d){return s+(parseFloat(d.total)||0);},0);
+  // Notas de crédito (61) restan en los totales
+  var sgDte=function(d){return d.tipo_dte==='61'?-1:1;};
+  var totalNeto=dtes.reduce(function(s,d){return s+sgDte(d)*(parseFloat(d.neto)||0);},0);
+  var totalIva=dtes.reduce(function(s,d){return s+sgDte(d)*(parseFloat(d.iva)||0);},0);
+  var totalGral=dtes.reduce(function(s,d){return s+sgDte(d)*(parseFloat(d.total)||0);},0);
   // Pendientes = sin asignar; Parciales = con asignación parcial; Completos = totalmente asignados
   var pendientes=dtes.filter(function(d){return (parseFloat(d.monto_vinculado)||0)===0;}).length;
   var parciales=dtes.filter(function(d){var mv=parseFloat(d.monto_vinculado)||0;var t=parseFloat(d.total)||0;return mv>0&&Math.abs(t-mv)>=1;}).length;
@@ -20681,10 +20686,12 @@ function DTERecibidosView(p){
                 h('input',{type:'checkbox',checked:isSel,onChange:function(){toggleOne(d.dte_id);},style:{cursor:'pointer'}})
               ),
               h('td',{style:{padding:8}},h('span',{style:{padding:'2px 8px',background:d.tipo_dte==='61'?'#FEE2E2':d.tipo_dte==='56'?'#FEF3C7':'#DBEAFE',color:d.tipo_dte==='61'?'#991B1B':d.tipo_dte==='56'?'#92400E':'#1E40AF',borderRadius:10,fontSize:10,fontWeight:600}},d.tipo_doc||('Tipo '+d.tipo_dte))),
-              h('td',{style:{padding:8,fontWeight:700,color:'#1E40AF'}},'#'+d.folio),
+              h('td',{style:{padding:8,fontWeight:700,color:'#1E40AF'}},'#'+d.folio,
+                d.ref_folio&&h('div',{style:{fontSize:9,color:'#94A3B8',fontWeight:400}},'Ref: '+(d.ref_tipo_dte==='33'?'Factura':d.ref_tipo_dte==='34'?'F.Exenta':d.ref_tipo_dte==='52'?'Guía':d.ref_tipo_dte==='56'?'N.Débito':d.ref_tipo_dte?('Doc '+d.ref_tipo_dte):'Doc')+' #'+d.ref_folio)
+              ),
               h('td',{style:{padding:8}},d.fecha_emision?fmtD(d.fecha_emision):'—'),
               h('td',{style:{padding:8}},h('div',null,h('div',{style:{fontWeight:600}},d.proveedor_nombre_match||d.proveedor_nombre||'—'),h('div',{style:{fontSize:10,color:'#94A3B8'}},d.proveedor_rut||''))),
-              h('td',{style:{padding:8,textAlign:'right',fontWeight:700,color:'#1E3A2D'}},'$'+N(totalDte,0)),
+              h('td',{style:{padding:8,textAlign:'right',fontWeight:700,color:d.tipo_dte==='61'?'#DC2626':'#1E3A2D'}},(d.tipo_dte==='61'?'-$':'$')+N(totalDte,0)),
               // Columna de asignación con barra de progreso
               h('td',{style:{padding:8}},
                 h('div',{style:{background:'#E2E8F0',borderRadius:4,height:18,position:'relative',overflow:'hidden',marginBottom:3}},
@@ -21046,7 +21053,9 @@ function DTEDetalleModal(p){
         h('div',{className:'head',style:{background:'#1E3A2D',color:'#FCD34D',padding:14,borderRadius:6,marginBottom:18}},
           h('h1',{style:{margin:0,color:'#FCD34D',fontSize:18}},dte.tipo_doc||'Documento Tributario Electrónico'),
           h('div',{style:{fontSize:24,fontWeight:700,color:'#fff',marginTop:6}},'#'+dte.folio),
-          h('div',{style:{fontSize:11,opacity:0.85,marginTop:4}},'Tipo SII: '+dte.tipo_dte+' · Emisión: '+(dte.fecha_emision?fmtD(dte.fecha_emision):'—'))
+          h('div',{style:{fontSize:11,opacity:0.85,marginTop:4}},'Tipo SII: '+dte.tipo_dte+' · Emisión: '+(dte.fecha_emision?fmtD(dte.fecha_emision):'—')),
+          dte.ref_folio&&h('div',{style:{fontSize:12,fontWeight:600,color:'#fff',marginTop:6,padding:'4px 8px',background:'rgba(255,255,255,0.12)',borderRadius:4,display:'inline-block'}},
+            '📎 Referencia: '+(dte.ref_tipo_dte==='33'?'Factura':dte.ref_tipo_dte==='34'?'Factura Exenta':dte.ref_tipo_dte==='52'?'Guía Despacho':dte.ref_tipo_dte==='56'?'Nota Débito':'Doc tipo '+(dte.ref_tipo_dte||'—'))+' #'+dte.ref_folio+(dte.ref_razon?(' — '+dte.ref_razon):''))
         ),
         // Emisor y Receptor
         h('div',{className:'row',style:{display:'flex',gap:14,marginBottom:14}},
@@ -21168,7 +21177,8 @@ function GestionarVinculosOC(p){
         h('div',{style:{display:'flex',justifyContent:'space-between',marginBottom:10}},
           h('div',null,
             h('div',{style:{fontSize:11,color:'#64748B',fontWeight:600}},'PROVEEDOR'),
-            h('div',{style:{fontWeight:600}},p.dte.proveedor_nombre_match||p.dte.proveedor_nombre||'—')
+            h('div',{style:{fontWeight:600}},p.dte.proveedor_nombre_match||p.dte.proveedor_nombre||'—'),
+            p.dte.ref_folio&&h('div',{style:{fontSize:11,color:'#92400E',marginTop:3}},'📎 Referencia: doc '+(p.dte.ref_tipo_dte||'—')+' #'+p.dte.ref_folio)
           ),
           h('div',{style:{textAlign:'right'}},
             h('div',{style:{fontSize:11,color:'#64748B',fontWeight:600}},'TOTAL DTE'),
@@ -21291,6 +21301,8 @@ function ImportZipDTEBandeja(p){
         empresa_id:empMatch?empMatch.empresa_id:null,
         empresa_nombre:empMatch?empMatch.razon_social:null,
         neto:parseFloat(tag('MntNeto'))||0,iva:parseFloat(tag('IVA'))||0,total:parseFloat(tag('MntTotal'))||0,
+        // Documento de referencia (<Referencia> del XML SII): clave para notas de crédito/débito
+        ref_tipo_dte:tag('TpoDocRef'),ref_folio:tag('FolioRef'),ref_razon:tag('RazonRef'),
         lineas:lineas,xml_completo:xmlStr
       };
     }catch(e){return null;}
