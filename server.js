@@ -4203,7 +4203,7 @@ app.get('/api/comb/rendimientos', auth, async(req,res)=>{
       ORDER BY f.nombre NULLS LAST, eq.codigo`, vals);
 
     // Clasificación por tipo de cargo → categoría visible, orden y métrica
-    // metric: 'h' = máquina (L/h) · 'km' = rodante (L/km) · 'none' = sin rendimiento
+    // metric: 'h' = máquina (L/h) · 'km' = rodante (km/L) · 'none' = sin rendimiento
     const CAT={
       maquinaria:{label:'Máquinas',orden:1,metric:'h'},
       camioneta:{label:'Camionetas',orden:2,metric:'km'},
@@ -4233,8 +4233,8 @@ app.get('/api/comb/rendimientos', auth, async(req,res)=>{
         if(horas>0)rendimiento=litros/horas;
       }else if(cat.metric==='km'){
         km=kmSpan;
-        unidad='L/km';
-        if(km&&km>0){rendimiento=litros/km; l_100=litros/km*100;}
+        unidad='km/L';
+        if(km&&km>0&&litros>0){rendimiento=km/litros; l_100=litros/km*100;}
       }
       return{
         equipo_id:x.equipo_id, codigo:x.codigo, nombre:x.nombre, tipo_cargo:tc,
