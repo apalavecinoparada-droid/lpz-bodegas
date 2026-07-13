@@ -15360,6 +15360,91 @@ function ModelosAdmin(p){
   );
 }
 
+// ── Nómina oficial de personal: documento de impresión del maestro ──
+// d = { rows, empresa (obj o null si es multiempresa), empresas (todas, para agrupar), filtros:{faena,cargo,contrato,turno,estado,buscar} }
+function buildNominaHTML(d){
+  var fmtF=function(s){if(!s)return '—';var pp=(s+'').slice(0,10).split('-');return pp[2]+'-'+pp[1]+'-'+pp[0];};
+  var turnoLbl=function(t){return t==='A'?'Turno A':t==='B'?'Turno B':t==='AB'?'A+B':t==='P'?'7x7 propio':'Normal';};
+  var esc=function(s){return (s==null?'':String(s)).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
+  var hoy=new Date();
+  var emision=hoy.toLocaleDateString('es-CL')+' '+hoy.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
+  // Agrupar por empresa (con filtro de empresa queda un solo grupo)
+  var grupos={};
+  d.rows.forEach(function(x){
+    var k=String(x.empresa_id||0);
+    if(!grupos[k]){
+      var emp=(d.empresas||[]).find(function(e){return String(e.empresa_id)===k;});
+      grupos[k]={nombre:emp?emp.razon_social:(x.empresa_nombre||'Sin empresa'),rut:emp?(emp.rut||''):'',filas:[]};
+    }
+    grupos[k].filas.push(x);
+  });
+  var gruposArr=Object.values(grupos).sort(function(a,b){return (a.nombre||'').localeCompare(b.nombre||'');});
+  var multiEmpresa=gruposArr.length>1;
+  var thS='padding:7px 8px;font-size:8pt;letter-spacing:.4px;text-align:left;';
+  var tdS='padding:6px 8px;border-bottom:1px solid #E2E8F0;font-size:8.5pt;color:#1E293B;';
+  var cuerpo=gruposArr.map(function(g){
+    g.filas.sort(function(a,b){return (a.nombre_completo||'').localeCompare(b.nombre_completo||'');});
+    var filas=g.filas.map(function(x,i){
+      return '<tr style="background:'+(i%2?'#F8FAFC':'#fff')+'">'+
+        '<td style="'+tdS+'text-align:center;color:#64748B">'+(i+1)+'</td>'+
+        '<td style="'+tdS+'font-weight:600">'+esc(nombresPrimero(x.nombre_completo||''))+(x.activo?'':' <span style="color:#DC2626;font-size:7.5pt;font-weight:700">(INACTIVO)</span>')+'</td>'+
+        '<td style="'+tdS+'">'+esc(x.rut||'—')+'</td>'+
+        '<td style="'+tdS+'">'+esc(x.cargo||'—')+'</td>'+
+        '<td style="'+tdS+'">'+esc(x.faena_nombre||'—')+'</td>'+
+        '<td style="'+tdS+'">'+esc(x.tipo_contrato||'—')+'</td>'+
+        '<td style="'+tdS+'text-align:center">'+fmtF(x.fecha_ingreso)+'</td>'+
+        '<td style="'+tdS+'text-align:center">'+turnoLbl(x.turno)+'</td>'+
+        '</tr>';
+    }).join('');
+    var headGrupo=multiEmpresa?
+      '<div style="margin:14px 0 6px;padding:6px 12px;background:#E9F1EC;border-left:4px solid #1E3A2D;border-radius:4px;font-weight:700;font-size:10pt;color:#1E3A2D">'+esc(g.nombre)+(g.rut?' · RUT '+esc(g.rut):'')+' <span style="font-weight:600;font-size:8.5pt;color:#64748B">— '+g.filas.length+' trabajador(es)</span></div>':'';
+    return headGrupo+
+      '<table style="width:100%;border:1px solid #E2E8F0;border-radius:6px;overflow:hidden;margin-bottom:4px">'+
+      '<thead><tr style="background:#E9F1EC;color:#1E3A2D;border-bottom:2px solid #1E3A2D">'+
+      '<th style="'+thS+'width:4%;text-align:center">N°</th>'+
+      '<th style="'+thS+'width:26%">TRABAJADOR</th>'+
+      '<th style="'+thS+'width:11%">RUT</th>'+
+      '<th style="'+thS+'width:17%">CARGO</th>'+
+      '<th style="'+thS+'width:15%">FAENA</th>'+
+      '<th style="'+thS+'width:9%">CONTRATO</th>'+
+      '<th style="'+thS+'width:10%;text-align:center">F. INGRESO</th>'+
+      '<th style="'+thS+'width:8%;text-align:center">TURNO</th>'+
+      '</tr></thead><tbody>'+filas+'</tbody></table>';
+  }).join('');
+  var emp=d.empresa;
+  var logo=emp&&emp.logo_base64?'<img src="'+emp.logo_base64+'" style="max-height:58px;max-width:170px">':'<div style="font-weight:800;font-size:13pt;color:#1E3A2D">'+esc(emp?emp.razon_social:'Empresas Poo')+'</div>';
+  var estadoLbl=d.filtros.estado==='activos'?'Personal activo':d.filtros.estado==='inactivos'?'Personal inactivo':'Personal activo e inactivo';
+  var filtrosTxt=[estadoLbl];
+  if(d.filtros.faena)filtrosTxt.push('Faena: '+esc(d.filtros.faena));
+  if(d.filtros.cargo)filtrosTxt.push('Cargo: '+esc(d.filtros.cargo));
+  if(d.filtros.contrato)filtrosTxt.push('Contrato: '+esc(d.filtros.contrato));
+  if(d.filtros.turno)filtrosTxt.push('Turno: '+turnoLbl(d.filtros.turno==='normal'?'':d.filtros.turno));
+  if(d.filtros.buscar)filtrosTxt.push('Búsqueda: "'+esc(d.filtros.buscar)+'"');
+  var total=d.rows.length;
+  return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Nómina de Personal</title><style>'+
+    '@page{size:letter;margin:1.4cm 1.5cm}'+
+    'body{font-family:Arial,Helvetica,sans-serif;font-size:9pt;line-height:1.35;margin:0;color:#1E293B;-webkit-print-color-adjust:exact;print-color-adjust:exact}'+
+    'table{border-collapse:collapse}thead{display:table-header-group}tr{page-break-inside:avoid}'+
+    '</style></head><body>'+
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">'+
+    '<div>'+logo+'</div>'+
+    '<div style="text-align:right">'+
+    (emp?'<div style="font-weight:700;font-size:10.5pt;color:#1E3A2D">'+esc(emp.razon_social)+'</div><div style="font-size:8.5pt;color:#64748B">RUT '+esc(emp.rut||'')+'</div>':'<div style="font-weight:700;font-size:10.5pt;color:#1E3A2D">Nómina consolidada</div><div style="font-size:8.5pt;color:#64748B">Todas las empresas</div>')+
+    '<div style="font-size:8pt;color:#64748B;margin-top:2px">Emitido el '+emision+'</div>'+
+    '</div></div>'+
+    '<div style="background:#fff;color:#1E3A2D;border:2px solid #1E3A2D;border-radius:8px;padding:10px 16px;margin-bottom:12px">'+
+    '<div style="font-size:13pt;font-weight:800;letter-spacing:.4px">NÓMINA DE PERSONAL</div>'+
+    '<div style="font-size:8.5pt;color:#64748B;margin-top:2px">'+filtrosTxt.join(' · ')+' · '+total+' trabajador(es)</div>'+
+    '</div>'+
+    cuerpo+
+    '<div style="font-size:8pt;color:#64748B;margin-top:6px">Total: '+total+' trabajador(es).'+(multiEmpresa?' Empresas: '+gruposArr.length+'.':'')+' Documento generado por el Sistema de Gestión Empresas Poo.</div>'+
+    '<div style="display:flex;justify-content:space-around;gap:40px;margin-top:52px">'+
+    '<div style="text-align:center;flex:1"><div style="border-top:1px solid #1E3A2D;margin:0 30px;padding-top:5px;font-size:8.5pt;color:#1E3A2D;font-weight:600">Elaborado por</div></div>'+
+    '<div style="text-align:center;flex:1"><div style="border-top:1px solid #1E3A2D;margin:0 30px;padding-top:5px;font-size:8.5pt;color:#1E3A2D;font-weight:600">Representante Legal</div></div>'+
+    '</div>'+
+    '</body></html>';
+}
+
 function Personal(p){
   const[personas,setPersonas]=useState([]);
   const[showForm,setShowForm]=useState(false);
@@ -15512,6 +15597,19 @@ function Personal(p){
   var catLabel=function(c){var found=CATEGORIAS.find(function(x){return x.v===c;});return found?found.l:(c||'—');};
   var cargosUnicos=Array.from(new Set(personas.map(function(x){return (x.cargo||'').trim();}).filter(function(c){return c;}))).sort(function(a,b){return a.localeCompare(b);});
   var fmtD=function(d){if(!d)return '—';return (d+'').slice(8,10)+'/'+(d+'').slice(5,7)+'/'+(d+'').slice(0,4);};
+  // ── Impresión de nómina oficial (respeta los filtros aplicados) ──
+  function imprimirNomina(){
+    if(!rows.length){alert('No hay trabajadores para imprimir con los filtros actuales');return;}
+    var empSel=filtEmpresa?(p.m.empresas||[]).find(function(e){return String(e.empresa_id)===String(filtEmpresa);}):null;
+    var faenaSel=filtFaena?(p.m.faenas||[]).find(function(f){return String(f.faena_id)===String(filtFaena);}):null;
+    var html=buildNominaHTML({
+      rows:rows,
+      empresa:empSel||null,
+      empresas:p.m.empresas||[],
+      filtros:{faena:faenaSel?faenaSel.nombre:'',cargo:filtCargo,contrato:filtContrato,turno:filtTurno,estado:filtEstado,buscar:buscar}
+    });
+    imprimirHTMLViaIframe(html,'Nómina de Personal');
+  }
   // ── Editor de haberes por trabajador ──
   function abrirHaberes(x){
     setHaberesPersona(x);
@@ -15628,6 +15726,7 @@ function Personal(p){
         h('span',{style:{fontSize:11,color:'#64748B'}},rows.length+'/'+personas.length+' registros')
       ),
       h('div',{style:{display:'flex',gap:6}},
+        h('button',{onClick:imprimirNomina,style:{padding:'5px 10px',borderRadius:4,fontSize:11,cursor:'pointer',border:'1px solid #1E3A2D',background:'#E9F1EC',color:'#1E3A2D',fontWeight:600},title:'Imprime la nómina oficial del personal según los filtros aplicados'},'🖨 Imprimir nómina'),
         h('button',{onClick:revisarContratosVencidos,style:{padding:'5px 10px',borderRadius:4,fontSize:11,cursor:'pointer',border:'1px solid #DC2626',background:'#FEF2F2',color:'#991B1B',fontWeight:600},title:'Inactiva trabajadores cuya fecha de término ya pasó'},'⏰ Revisar contratos vencidos'),
         h(Btn,{onClick:openNew},'+ Nuevo')
       )
