@@ -3155,7 +3155,11 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
       SELECT a.oc_id AS oc_a, a.numero_oc AS num_a, a.fecha_emision AS fecha_a, a.total AS total_a,
              b.oc_id AS oc_b, b.numero_oc AS num_b, b.fecha_emision AS fecha_b, b.total AS total_b,
              pr.nombre AS proveedor_nombre, e.razon_social AS empresa_nombre,
-             ABS(a.fecha_emision - b.fecha_emision) AS dias_diferencia
+             ABS(a.fecha_emision - b.fecha_emision) AS dias_diferencia,
+             NULLIF(TRIM(a.numero_documento),'') AS doc_a,
+             NULLIF(TRIM(b.numero_documento),'') AS doc_b,
+             (SELECT STRING_AGG(DISTINCT dd.folio,', ') FROM dte_oc x JOIN dte_recibidos dd ON dd.dte_id=x.dte_id WHERE x.oc_id=a.oc_id) AS dte_a,
+             (SELECT STRING_AGG(DISTINCT dd.folio,', ') FROM dte_oc x JOIN dte_recibidos dd ON dd.dte_id=x.dte_id WHERE x.oc_id=b.oc_id) AS dte_b
       FROM ordenes_compra a
       JOIN ordenes_compra b ON a.proveedor_id=b.proveedor_id 
         AND a.empresa_id=b.empresa_id
@@ -3168,6 +3172,16 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
       WHERE a.estado!='ANULADA' AND b.estado!='ANULADA' ${fechaFiltro.replace(/oc\./g,'a.')}
       ORDER BY a.fecha_emision DESC
       LIMIT 100`, baseVals);
+
+    // Clasificar pares: si AMBAS OC tienen respaldo tributario (N° doc de la OC o DTE vinculado)
+    // y son DISTINTOS, es probable compra legítima recurrente → no cuenta como hallazgo.
+    const normResp=function(s){return String(s==null?'':s).trim().replace(/^0+/,'');};
+    const dupOC=dupMonto.rows.map(function(r){
+      const respA=normResp(r.doc_a||r.dte_a);
+      const respB=normResp(r.doc_b||r.dte_b);
+      r.docs_distintos=!!(respA&&respB&&respA!==respB);
+      return r;
+    }).sort(function(x,y){return (x.docs_distintos?1:0)-(y.docs_distintos?1:0);});
 
     // ─── CHECK 2: Mismo N° de documento tributario en OCs distintas ───
     const dupDoc = await pool.query(`
@@ -3330,7 +3344,11 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
              oca.numero_oc AS oc_a, ocb.numero_oc AS oc_b,
              oca.fecha_emision AS fecha_a, ocb.fecha_emision AS fecha_b,
              ABS(oca.fecha_emision-ocb.fecha_emision) AS dias_diferencia,
-             COALESCE(eqa.codigo,'—') AS equipo_a, COALESCE(eqb.codigo,'—') AS equipo_b
+             COALESCE(eqa.codigo,'—') AS equipo_a, COALESCE(eqb.codigo,'—') AS equipo_b,
+             NULLIF(TRIM(oca.numero_documento),'') AS doc_a,
+             NULLIF(TRIM(ocb.numero_documento),'') AS doc_b,
+             (SELECT STRING_AGG(DISTINCT dd.folio,', ') FROM dte_oc x JOIN dte_recibidos dd ON dd.dte_id=x.dte_id WHERE x.oc_id=oca.oc_id) AS dte_a,
+             (SELECT STRING_AGG(DISTINCT dd.folio,', ') FROM dte_oc x JOIN dte_recibidos dd ON dd.dte_id=x.dte_id WHERE x.oc_id=ocb.oc_id) AS dte_b
       FROM ordenes_compra_detalle da
       JOIN ordenes_compra oca ON da.oc_id=oca.oc_id
       JOIN ordenes_compra_detalle db ON da.producto_id=db.producto_id
@@ -3348,6 +3366,14 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
       ORDER BY monto_linea DESC
       LIMIT 100`, baseVals);
 
+    // Clasificar líneas duplicadas con el mismo criterio de respaldo tributario
+    const lineaRows=lineaDup.rows.map(function(r){
+      const respA=normResp(r.doc_a||r.dte_a);
+      const respB=normResp(r.doc_b||r.dte_b);
+      r.docs_distintos=!!(respA&&respB&&respA!==respB);
+      return r;
+    }).sort(function(x,y){return (x.docs_distintos?1:0)-(y.docs_distintos?1:0);});
+
     // ─── CHECK 9: OC pendientes antiguas (sin cierre hace más de N días) ───
     const ocAntiguas = await pool.query(`
       SELECT oc.oc_id, oc.numero_oc, oc.fecha_emision, oc.total, oc.solicitante,
@@ -3364,17 +3390,19 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
     res.json({
       parametros:{dias_duplicado:diasDup,dias_producto:diasProd,dias_fraccion:diasFracc,umbral_precio:umbralPrecio,umbral_similitud:simUmbral,umbral_vida:umbralVida,dias_pendiente:diasPendiente,desde,hasta},
       resumen:{
-        oc_duplicadas:dupMonto.rows.length,
+        oc_duplicadas:dupOC.filter(function(r){return !r.docs_distintos;}).length,
+        oc_duplicadas_dte_distinto:dupOC.filter(function(r){return r.docs_distintos;}).length,
         doc_duplicado:dupDoc.rows.length,
         producto_repetido:prodRepetido.rows.length,
         productos_similares:similares.rows.length,
         precio_variable:precioVar.rows.length,
         compra_fraccionada:fraccionada.rows.length,
         durabilidad_critica:durabilidad.rows.filter(function(r){return r.critico;}).length,
-        linea_duplicada:lineaDup.rows.length,
+        linea_duplicada:lineaRows.filter(function(r){return !r.docs_distintos;}).length,
+        linea_duplicada_dte_distinto:lineaRows.filter(function(r){return r.docs_distintos;}).length,
         oc_antiguas:ocAntiguas.rows.length
       },
-      oc_duplicadas:dupMonto.rows,
+      oc_duplicadas:dupOC,
       doc_duplicado:dupDoc.rows,
       producto_repetido:prodRepetido.rows,
       productos_similares:similares.rows,
@@ -3383,7 +3411,7 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
       compra_fraccionada:fraccionada.rows,
       durabilidad:durabilidad.rows,
       durabilidad_error:durabilidad.error||null,
-      linea_duplicada:lineaDup.rows,
+      linea_duplicada:lineaRows,
       oc_antiguas:ocAntiguas.rows
     });
   }catch(e){res.status(500).json({error:e.message});}
