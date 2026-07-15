@@ -10485,18 +10485,34 @@ function CombMovView(p){
   const[editing,setEditing]=useState(null);
   const[filtDesde,setFiltDesde]=useState('');const[filtHasta,setFiltHasta]=useState('');
   const[filtEmp,setFiltEmp]=useState('');const[filtTipo,setFiltTipo]=useState('');const[filtEstanque,setFiltEstanque]=useState('');
+  const[filtFaena,setFiltFaena]=useState('');const[filtEquipo,setFiltEquipo]=useState('');
   const empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   const tipos=(p.m.combTipos||[]).filter(function(t){return t.activo;});
   const estanques=(p.m.combEstanques||[]).filter(function(e){return e.activo!==false;});
+  // Filtros faena/equipo (cargo) — solo para vistas que lo pidan (distribuciones)
+  const conFaenaEquipo=!!p.filtFaenaEquipo;
+  const faenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
+  // Equipos filtrados por empresa y faena seleccionadas (para acotar el desplegable)
+  const equiposAll=(p.m.equipos||[]).filter(function(e){return e.activo;});
+  const equiposFilt=equiposAll.filter(function(e){
+    if(filtEmp&&String(e.empresa_id)!==String(filtEmp))return false;
+    if(filtFaena&&String(e.faena_id)!==String(filtFaena))return false;
+    return true;
+  });
   function load2(){
     setLoad(true);
     let qs='?tipo_mov='+p.tipoMov+'&';
     if(filtDesde)qs+='desde='+filtDesde+'&';if(filtHasta)qs+='hasta='+filtHasta+'&';
     if(filtEmp)qs+='empresa_id='+filtEmp+'&';if(filtTipo)qs+='tipo_id='+filtTipo+'&';
     if(filtEstanque)qs+='estanque_id='+filtEstanque+'&';
+    if(conFaenaEquipo){if(filtFaena)qs+='faena_id='+filtFaena+'&';if(filtEquipo)qs+='equipo_id='+filtEquipo+'&';}
     api('/comb/movimientos'+qs,'GET',null,p.tok).then(function(r){setMovs(Array.isArray(r)?r:[]);}).catch(function(){setMovs([]);}).finally(function(){setLoad(false);});
   }
-  useEffect(function(){load2();},[p.tok,filtDesde,filtHasta,filtEmp,filtTipo,filtEstanque]);
+  useEffect(function(){load2();},[p.tok,filtDesde,filtHasta,filtEmp,filtTipo,filtEstanque,filtFaena,filtEquipo]);
+  // Si el cargo seleccionado deja de pertenecer a la empresa/faena filtrada, limpiarlo
+  useEffect(function(){
+    if(conFaenaEquipo&&filtEquipo&&!equiposFilt.some(function(eq){return String(eq.equipo_id)===String(filtEquipo);}))setFiltEquipo('');
+  },[filtEmp,filtFaena]);
   function anular(id){setAnularId(id);setMotivo('');}
   function confirmAnular(){
     api('/comb/movimientos/'+anularId+'/anular','PATCH',{motivo:motivo||'Sin motivo'},p.tok).then(function(){setAnularId(null);load2();}).catch(function(ex){alert(ex.message);});
@@ -10528,6 +10544,8 @@ function CombMovView(p){
       h('select',{value:filtEmp,onChange:function(e){setFiltEmp(e.target.value);},style:{padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todas empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})),
       h('select',{value:filtTipo,onChange:function(e){setFiltTipo(e.target.value);},style:{padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},h('option',{value:''},'Todos combustibles'),tipos.map(function(t){return h('option',{key:t.tipo_id,value:t.tipo_id},t.nombre);})),
       h('select',{value:filtEstanque,onChange:function(e){setFiltEstanque(e.target.value);},style:{padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,fontWeight:filtEstanque?600:400,background:filtEstanque?'#EFF6FF':'#fff'}},h('option',{value:''},'Todos los estanques'),estanques.map(function(e){return h('option',{key:e.estanque_id,value:e.estanque_id},e.codigo+(e.nombre?' - '+e.nombre:''));})),
+      conFaenaEquipo&&h('select',{value:filtFaena,onChange:function(e){setFiltFaena(e.target.value);setFiltEquipo('');},style:{padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,fontWeight:filtFaena?600:400,background:filtFaena?'#EFF6FF':'#fff'}},h('option',{value:''},'Todas las faenas'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})),
+      conFaenaEquipo&&h('select',{value:filtEquipo,onChange:function(e){setFiltEquipo(e.target.value);},style:{padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,fontWeight:filtEquipo?600:400,background:filtEquipo?'#EFF6FF':'#fff'},title:'Cargo / centro de costo'},h('option',{value:''},'Todos los cargos'),equiposFilt.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);})),
       h('input',{type:'date',value:filtDesde,onChange:function(e){setFiltDesde(e.target.value);},style:{padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12},title:'Desde'}),
       h('input',{type:'date',value:filtHasta,onChange:function(e){setFiltHasta(e.target.value);},style:{padding:'6px 7px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12},title:'Hasta'}),
       h(Btn,{v:'teal',sm:true,onClick:exportar},'⬇ Excel'),
@@ -10603,7 +10621,7 @@ function CombTraspasos(p){
 }
 
 function CombDistribuciones(p){
-  return h(CombMovView,{m:p.m,tok:p.tok,tipoMov:'DISTRIBUCION',endpoint:'distribucion',btnLabel:'+ Distribución',modalTitle:'Registrar Carga/Distribución a Equipo',
+  return h(CombMovView,{m:p.m,tok:p.tok,tipoMov:'DISTRIBUCION',endpoint:'distribucion',btnLabel:'+ Distribución',modalTitle:'Registrar Carga/Distribución a Equipo',filtFaenaEquipo:true,
     campos:['empresa','tipo','estanque_origen','faena','equipo','litros','hora','horometro','kilometraje','responsable'],
     exFile:'distribuciones_combustible',
     cols:[{lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},{lbl:'Hora',render:function(r){return r.hora_carga?String(r.hora_carga).slice(0,5):'—';}},{lbl:'Combustible',k:'tipo_nombre'},{lbl:'Empresa',k:'empresa_nombre'},{lbl:'Estanque',k:'estanque_origen'},{lbl:'Equipo',k:'equipo_nombre'},{lbl:'Faena',render:function(r){return r.faena_nombre||'—';}},{lbl:'Litros',r:true,mono:true,render:function(r){return parseFloat(r.litros||0).toFixed(1);}},{lbl:'Costo',r:true,render:function(r){return CLP(Math.round(r.costo_total||0));}},{lbl:'Horóm.',render:function(r){return r.horometro||'—';}},{lbl:'Km',render:function(r){return r.kilometraje||'—';}},{lbl:'Responsable',render:function(r){return r.responsable||'—';}}]
