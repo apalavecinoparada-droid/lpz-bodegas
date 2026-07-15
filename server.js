@@ -8407,7 +8407,10 @@ app.post('/api/terreno/registros', auth, async(req,res)=>{
           operador_id,fundo_id,rodal_id,arboles_producidos}=req.body;
     if(!fecha||!faena_id||!equipo_id||horometro_inicial==null||horometro_final==null)throw new Error('Fecha, faena, equipo y horómetros son obligatorios');
     if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
-    if(parseFloat(horometro_final)-parseFloat(horometro_inicial)>24)throw new Error('Las horas trabajadas de un día no pueden superar 24: la diferencia de horómetros ingresada es '+(parseFloat(horometro_final)-parseFloat(horometro_inicial)).toFixed(1)+' horas. Revise los horómetros');
+    // El tope de 24 aplica SOLO a equipos con HORÓMETRO (horas). Los vehículos usan ODÓMETRO (km) y pueden superar 24.
+    const _tcTope=(await client.query('SELECT tipo_cargo FROM equipos WHERE equipo_id=$1',[equipo_id])).rows[0];
+    const _esVehTope=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf((_tcTope&&_tcTope.tipo_cargo||'maquinaria').toLowerCase())>=0;
+    if(!_esVehTope && parseFloat(horometro_final)-parseFloat(horometro_inicial)>24)throw new Error('Las horas trabajadas de un día no pueden superar 24: la diferencia de horómetros ingresada es '+(parseFloat(horometro_final)-parseFloat(horometro_inicial)).toFixed(1)+' horas. Revise los horómetros');
     // Validate TOB sum = horas_perdidas
     const hp=parseFloat(horas_perdidas||0);
     if(hp>24)throw new Error('Las horas perdidas de un día no pueden superar 24 (ingresado: '+hp.toFixed(1)+')');
@@ -8447,7 +8450,10 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
     const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle,
           operador_id,fundo_id,rodal_id,arboles_producidos}=req.body;
     if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
-    if(parseFloat(horometro_final)-parseFloat(horometro_inicial)>24)throw new Error('Las horas trabajadas de un día no pueden superar 24: la diferencia de horómetros ingresada es '+(parseFloat(horometro_final)-parseFloat(horometro_inicial)).toFixed(1)+' horas. Revise los horómetros');
+    // El tope de 24 aplica SOLO a equipos con HORÓMETRO (horas). Los vehículos usan ODÓMETRO (km) y pueden superar 24.
+    const _tcTope=(await client.query('SELECT tipo_cargo FROM equipos WHERE equipo_id=$1',[equipo_id])).rows[0];
+    const _esVehTope=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf((_tcTope&&_tcTope.tipo_cargo||'maquinaria').toLowerCase())>=0;
+    if(!_esVehTope && parseFloat(horometro_final)-parseFloat(horometro_inicial)>24)throw new Error('Las horas trabajadas de un día no pueden superar 24: la diferencia de horómetros ingresada es '+(parseFloat(horometro_final)-parseFloat(horometro_inicial)).toFixed(1)+' horas. Revise los horómetros');
     const hp=parseFloat(horas_perdidas||0);
     if(hp>24)throw new Error('Las horas perdidas de un día no pueden superar 24 (ingresado: '+hp.toFixed(1)+')');
     const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
