@@ -6072,7 +6072,8 @@ function SolicitudesView(p){
 }
 
 // ══ GENERADOR COMPROBANTE DE FERIADO (PDF) ══
-function generarComprobantePDF(reg, persona, empresas){
+function generarComprobantePDF(reg, persona, empresas, opts){
+  opts=opts||{};
   var jsPDF=window.jspdf.jsPDF;
   var doc=new jsPDF({unit:'mm',format:'letter'});
   var W=216; var H=279;
@@ -6211,8 +6212,11 @@ function generarComprobantePDF(reg, persona, empresas){
   // SEGUNDA COPIA (mitad inferior)
   renderCopia(H/2+5,'COPIA TRABAJADOR');
 
-  // ── DESCARGAR ──
+  // ── SALIDA: descarga directa o vista previa (blob URL) ──
   var nombreArchivo='Comprobante_Feriado_'+(persona.rut||'').replace(/\./g,'')+'_'+fmtFecha(reg.vacaciones_desde).replace(/\//g,'-')+'.pdf';
+  if(opts.preview){
+    return {url:doc.output('bloburl'),filename:nombreArchivo};
+  }
   doc.save(nombreArchivo);
 }
 
@@ -6227,6 +6231,22 @@ function VacacionesView(p){
   var[editReg,setEditReg]=useState(null);
   var[msg,setMsg]=useState('');
   var[busqueda,setBusqueda]=useState('');
+  var[pdfPreview,setPdfPreview]=useState(null); // {url,filename,reg} para la vista previa del comprobante
+  function abrirPreviewComprobante(r){
+    try{
+      var res=generarComprobantePDF(r,selPersona,p.m.empresas||[],{preview:true});
+      if(res&&res.url)setPdfPreview({url:res.url,filename:res.filename,reg:r});
+    }catch(e){alert('No se pudo generar la vista previa: '+e.message);}
+  }
+  function cerrarPreviewComprobante(){
+    if(pdfPreview&&pdfPreview.url){try{URL.revokeObjectURL(pdfPreview.url);}catch(e){}}
+    setPdfPreview(null);
+  }
+  function descargarDesdePreview(){
+    if(!pdfPreview)return;
+    var a=document.createElement('a');a.href=pdfPreview.url;a.download=pdfPreview.filename;
+    document.body.appendChild(a);a.click();document.body.removeChild(a);
+  }
   var emptyForm={periodo_desde:'',periodo_hasta:'',dias_correspondientes:15,dias_progresivos:0,vacaciones_desde:'',vacaciones_hasta:'',dias_habiles:0,dias_no_habiles:0,saldo_pendiente:0,observaciones:''};
   var[form,setForm]=useState(emptyForm);
   var[calcLoading,setCalcLoading]=useState(false);
@@ -6536,13 +6556,27 @@ function VacacionesView(p){
               h('td',{style:{padding:'5px 8px',textAlign:'right',fontWeight:700,color:r.saldo_pendiente<=0?'#DC2626':'#166534'}},r.saldo_pendiente),
               h('td',{style:{padding:'5px 8px',textAlign:'center'}},
                 h('div',{style:{display:'flex',gap:3,justifyContent:'center'}},
-                  h('button',{onClick:function(e){e.stopPropagation();generarComprobantePDF(r,selPersona,p.m.empresas||[]);},title:'Descargar comprobante PDF',style:{fontSize:10,padding:'2px 6px',background:'#1E3A2D',color:'#D4C5A9',border:'none',borderRadius:3,cursor:'pointer'}},'📄'),
+                  h('button',{onClick:function(e){e.stopPropagation();abrirPreviewComprobante(r);},title:'Ver comprobante PDF (vista previa)',style:{fontSize:10,padding:'2px 6px',background:'#1E3A2D',color:'#D4C5A9',border:'none',borderRadius:3,cursor:'pointer'}},'📄'),
                   h('button',{onClick:function(e){e.stopPropagation();eliminar(r.registro_id);},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'🗑')
                 )
               )
             );
           }))
         )
+      )
+    ),
+    // ── Modal de vista previa del comprobante de feriado ──
+    pdfPreview&&h('div',{onClick:cerrarPreviewComprobante,style:{position:'fixed',inset:0,background:'rgba(15,23,42,.6)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center',padding:16}},
+      h('div',{onClick:function(e){e.stopPropagation();},style:{background:'#fff',borderRadius:10,width:900,maxWidth:'96vw',height:'92vh',display:'flex',flexDirection:'column',overflow:'hidden',boxShadow:'0 10px 40px rgba(0,0,0,.3)'}},
+        h('div',{style:{padding:'12px 16px',borderBottom:'1px solid #E2E8F0',display:'flex',alignItems:'center',gap:12}},
+          h('div',{style:{flex:1}},
+            h('div',{style:{fontSize:15,fontWeight:700,color:'#1E3A2D'}},'Comprobante de feriado — vista previa'),
+            h('div',{style:{fontSize:11,color:'#64748B'}},(selPersona?nombresPrimero(selPersona.nombre_completo):'')+(pdfPreview.reg?' · '+fmtD(pdfPreview.reg.vacaciones_desde)+' al '+fmtD(pdfPreview.reg.vacaciones_hasta):''))
+          ),
+          h('button',{onClick:descargarDesdePreview,style:{padding:'8px 16px',background:'#1E3A2D',color:'#fff',border:'none',borderRadius:6,cursor:'pointer',fontSize:13,fontWeight:600}},'⬇ Descargar PDF'),
+          h('button',{onClick:cerrarPreviewComprobante,title:'Cerrar',style:{padding:'8px 12px',background:'#F1F5F9',color:'#475569',border:'1px solid #CBD5E1',borderRadius:6,cursor:'pointer',fontSize:13,fontWeight:600}},'✕ Cerrar')
+        ),
+        h('iframe',{src:pdfPreview.url,title:'Vista previa comprobante',style:{flex:1,width:'100%',border:'none'}})
       )
     )
   );
