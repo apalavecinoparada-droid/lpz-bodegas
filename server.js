@@ -8563,7 +8563,7 @@ app.get('/api/prod/oee/datasets', auth, async(req,res)=>{
   try{
     await pool.query(`CREATE TABLE IF NOT EXISTS prod_oee_datasets (clave VARCHAR(40) PRIMARY KEY, valor JSONB DEFAULT '{}'::jsonb, actualizado_en TIMESTAMP DEFAULT NOW())`);
     const r=await pool.query('SELECT clave, valor FROM prod_oee_datasets');
-    const out={best_daily:{},prod_rodal:{},oferta_rodal:[],faja_daily:{},informe_hrs:[],oper_data:[]};
+    const out={best_daily:{},prod_rodal:{},oferta_rodal:[],faja_daily:{},informe_hrs:[],oper_data:[],grafx:{},diesel:[],ofsnap:{}};
     r.rows.forEach(function(x){ out[x.clave]=x.valor; });
     res.json(out);
   }catch(e){res.status(500).json({error:e.message});}
@@ -8573,7 +8573,7 @@ app.post('/api/prod/oee/datasets', auth, async(req,res)=>{
   try{
     await client.query(`CREATE TABLE IF NOT EXISTS prod_oee_datasets (clave VARCHAR(40) PRIMARY KEY, valor JSONB DEFAULT '{}'::jsonb, actualizado_en TIMESTAMP DEFAULT NOW())`);
     const b=req.body||{};
-    const map={best_daily:b.best_daily, prod_rodal:b.prod_rodal, oferta_rodal:b.oferta_rodal, faja_daily:b.faja_daily, informe_hrs:b.informe_hrs, oper_data:b.oper_data};
+    const map={best_daily:b.best_daily, prod_rodal:b.prod_rodal, oferta_rodal:b.oferta_rodal, faja_daily:b.faja_daily, informe_hrs:b.informe_hrs, oper_data:b.oper_data, grafx:b.grafx, diesel:b.diesel, ofsnap:b.ofsnap};
     await client.query('BEGIN');
     let n=0, resumen={};
     for(const clave of Object.keys(map)){
