@@ -4196,11 +4196,14 @@ app.get('/api/comb/diagnostico-negativo/:estanque_id', auth, async(req,res)=>{
 // ═══════════════════════════════════════════════════════════════════════
 app.get('/api/comb/rendimientos', auth, async(req,res)=>{
   try{
-    const{desde,hasta,empresa_id}=req.query;
+    const{desde,hasta,empresa_id,faena_id,equipo_id}=req.query;
     if(!desde||!hasta) return res.status(400).json({error:'Rango de fechas requerido (desde, hasta)'});
     const vals=[desde,hasta];
-    let wEq='';
-    if(empresa_id){vals.push(empresa_id);wEq=' WHERE eq.empresa_id=$3';}
+    const wConds=[];
+    if(empresa_id){vals.push(empresa_id);wConds.push('eq.empresa_id=$'+vals.length);}
+    if(faena_id){vals.push(faena_id);wConds.push('eq.faena_id=$'+vals.length);}
+    if(equipo_id){vals.push(equipo_id);wConds.push('eq.equipo_id=$'+vals.length);}
+    const wEq=wConds.length?(' WHERE '+wConds.join(' AND ')):'';
     const r=await pool.query(`
       WITH litros AS (
         SELECT equipo_id,
