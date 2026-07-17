@@ -10828,15 +10828,25 @@ function CombRendimientosView(p){
   const[desde,setDesde]=useState(nowYM+'-01');
   const[hasta,setHasta]=useState(lastDay(nowYM));
   const[empresaId,setEmpresaId]=useState('');
+  const[faenaId,setFaenaId]=useState('');
+  const[equipoId,setEquipoId]=useState('');
   const[data,setData]=useState(null);
   const[loading,setLoading]=useState(false);
   const[err,setErr]=useState('');
   const[vkOpen,setVkOpen]=useState(false);
+  var faenasAll=(p.m.faenas||[]).filter(function(f){return f.activo;});
+  var faenasFilt=empresaId?faenasAll.filter(function(f){return String(f.empresa_id)===String(empresaId);}):faenasAll;
+  var equiposAll=(p.m.equipos||[]).filter(function(e){return e.activo;});
+  var equiposFilt=equiposAll.filter(function(e){
+    if(empresaId&&String(e.empresa_id)!==String(empresaId))return false;
+    if(faenaId&&String(e.faena_id)!==String(faenaId))return false;
+    return true;
+  });
 
   function setMesQuick(m){if(!m)return;setMes(m);setDesde(m+'-01');setHasta(lastDay(m));}
   function load(){
     setLoading(true);setErr('');
-    var qs='?desde='+desde+'&hasta='+hasta+(empresaId?'&empresa_id='+empresaId:'');
+    var qs='?desde='+desde+'&hasta='+hasta+(empresaId?'&empresa_id='+empresaId:'')+(faenaId?'&faena_id='+faenaId:'')+(equipoId?'&equipo_id='+equipoId:'');
     api('/comb/rendimientos'+qs,'GET',null,p.tok).then(function(r){setData(r);setLoading(false);}).catch(function(e){setErr(e.message);setLoading(false);});
   }
   useEffect(function(){load();},[]);
@@ -10939,8 +10949,14 @@ function CombRendimientosView(p){
         h('div',null,h('label',{style:{fontSize:10,fontWeight:600,color:'#64748B',display:'block',marginBottom:3}},'Hasta'),
           h('input',{type:'date',value:hasta,onChange:function(e){setHasta(e.target.value);},style:inpF})),
         h('div',null,h('label',{style:{fontSize:10,fontWeight:600,color:'#64748B',display:'block',marginBottom:3}},'Empresa'),
-          h('select',{value:empresaId,onChange:function(e){setEmpresaId(e.target.value);},style:inpF},
+          h('select',{value:empresaId,onChange:function(e){setEmpresaId(e.target.value);setFaenaId('');setEquipoId('');},style:inpF},
             h('option',{value:''},'Todas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+        h('div',null,h('label',{style:{fontSize:10,fontWeight:600,color:'#64748B',display:'block',marginBottom:3}},'Faena'),
+          h('select',{value:faenaId,onChange:function(e){setFaenaId(e.target.value);setEquipoId('');},style:inpF},
+            h('option',{value:''},'Todas'),faenasFilt.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+        h('div',null,h('label',{style:{fontSize:10,fontWeight:600,color:'#64748B',display:'block',marginBottom:3}},'Cargo'),
+          h('select',{value:equipoId,onChange:function(e){setEquipoId(e.target.value);},style:inpF,title:'Cargo / centro de costo'},
+            h('option',{value:''},'Todos'),equiposFilt.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);}))),
         h(Btn,{onClick:load},'Calcular'),
         rows.length>0&&h(Btn,{v:'g',onClick:exportar},'Exportar Excel')
       ),
