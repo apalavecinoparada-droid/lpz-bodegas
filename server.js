@@ -4201,7 +4201,7 @@ app.get('/api/comb/rendimientos', auth, async(req,res)=>{
     const vals=[desde,hasta];
     const wConds=[];
     if(empresa_id){vals.push(empresa_id);wConds.push('eq.empresa_id=$'+vals.length);}
-    if(faena_id){vals.push(faena_id);wConds.push('eq.faena_id=$'+vals.length);}
+    if(faena_id){vals.push(faena_id);wConds.push('(eq.faena_id=$'+vals.length+' OR eq.faena_id IS NULL)');} // cargo sin faena = común a todas las faenas de la empresa
     if(equipo_id){vals.push(equipo_id);wConds.push('eq.equipo_id=$'+vals.length);}
     const wEq=wConds.length?(' WHERE '+wConds.join(' AND ')):'';
     const r=await pool.query(`
@@ -11852,6 +11852,129 @@ app.delete('/api/fin/liquidaciones/:id', auth, async(req,res)=>{
     await finLiqEnsure();
     var r=await pool.query('DELETE FROM fin_liquidaciones WHERE liq_id=$1 RETURNING liq_id',[req.params.id]);
     if(!r.rows.length)return res.status(404).json({error:'Liquidación no encontrada'});
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ════════════════════════════════════════════════════════════════════
+// FINANZAS — HONORARIOS (BHE recibidas y BTE emitidas a terceros)
+// BHE: boleta de honorarios electrónica emitida por el prestador (informe mensual SII).
+// BTE: boleta de prestación de servicios de terceros emitida por la empresa a personas
+//      sin inicio de actividades (planilla SII bte_indiv_cons).
+// Importación desde las planillas HTML/.xls del SII + asignación de faena por boleta.
+// ════════════════════════════════════════════════════════════════════
+let _finHonOk=false;
+async function finHonEnsure(){
+  if(_finHonOk)return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS fin_honorarios (
+    hon_id SERIAL PRIMARY KEY,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    tipo VARCHAR(3) NOT NULL DEFAULT 'BHE',
+    periodo VARCHAR(7) NOT NULL,
+    numero VARCHAR(20) NOT NULL,
+    fecha DATE,
+    estado VARCHAR(12) NOT NULL DEFAULT 'VIGENTE',
+    fecha_anulacion DATE,
+    prestador_rut VARCHAR(15) NOT NULL DEFAULT '',
+    prestador_nombre VARCHAR(150),
+    soc_prof BOOLEAN DEFAULT false,
+    bruto NUMERIC(14,2) DEFAULT 0,
+    retencion NUMERIC(14,2) DEFAULT 0,
+    pagado NUMERIC(14,2) DEFAULT 0,
+    faena_id INT REFERENCES faenas(faena_id),
+    observaciones TEXT,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(empresa_id,tipo,numero,prestador_rut)
+  )`);
+  _finHonOk=true;
+}
+
+// GET: listado con filtros
+app.get('/api/fin/honorarios', auth, async(req,res)=>{
+  try{
+    await finHonEnsure();
+    var w=['1=1'],v=[];
+    if(req.query.empresa_id){v.push(req.query.empresa_id);w.push('h.empresa_id=$'+v.length);}
+    if(req.query.tipo){v.push(req.query.tipo);w.push('h.tipo=$'+v.length);}
+    if(req.query.periodo){v.push(req.query.periodo);w.push('h.periodo=$'+v.length);}
+    if(req.query.anio){v.push(req.query.anio+'-%');w.push('h.periodo LIKE $'+v.length);}
+    if(req.query.faena_id==='sin'){w.push('h.faena_id IS NULL');}
+    else if(req.query.faena_id){v.push(req.query.faena_id);w.push('h.faena_id=$'+v.length);}
+    if(req.query.estado){v.push(req.query.estado);w.push('h.estado=$'+v.length);}
+    var r=await pool.query(`
+      SELECT h.*, e.razon_social AS empresa_nombre, f.nombre AS faena_nombre
+      FROM fin_honorarios h
+      LEFT JOIN empresas e ON h.empresa_id=e.empresa_id
+      LEFT JOIN faenas f ON h.faena_id=f.faena_id
+      WHERE ${w.join(' AND ')}
+      ORDER BY h.periodo DESC, h.tipo, h.fecha DESC NULLS LAST, h.hon_id DESC LIMIT 1000`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// POST: importar boletas parseadas de la planilla SII (dedup por empresa+tipo+número+RUT prestador)
+app.post('/api/fin/honorarios/import', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await finHonEnsure();
+    var b=req.body||{};
+    if(!b.empresa_id)return res.status(400).json({error:'Empresa requerida'});
+    if(!b.periodo||!/^\d{4}-\d{2}$/.test(b.periodo))return res.status(400).json({error:'Período requerido (formato AAAA-MM)'});
+    var tipo=b.tipo==='BTE'?'BTE':'BHE';
+    var boletas=Array.isArray(b.boletas)?b.boletas:[];
+    if(!boletas.length)return res.status(400).json({error:'Sin boletas para importar'});
+    await client.query('BEGIN');
+    var importadas=0,duplicadas=0,errores=[];
+    for(var i=0;i<boletas.length;i++){
+      var x=boletas[i];
+      try{
+        var ins=await client.query(`INSERT INTO fin_honorarios(empresa_id,tipo,periodo,numero,fecha,estado,fecha_anulacion,prestador_rut,prestador_nombre,soc_prof,bruto,retencion,pagado,faena_id,usuario)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+          ON CONFLICT(empresa_id,tipo,numero,prestador_rut) DO NOTHING RETURNING hon_id`,
+          [b.empresa_id,tipo,b.periodo,String(x.numero||'').trim(),x.fecha||null,x.estado==='ANULADA'?'ANULADA':'VIGENTE',x.fecha_anulacion||null,
+           String(x.prestador_rut||'').trim(),x.prestador_nombre||null,!!x.soc_prof,
+           parseFloat(x.bruto)||0,parseFloat(x.retencion)||0,parseFloat(x.pagado)||0,x.faena_id||null,req.user.email]);
+        if(ins.rows.length)importadas++;else duplicadas++;
+      }catch(ex){errores.push('Boleta '+(x.numero||'?')+': '+ex.message);}
+    }
+    await client.query('COMMIT');
+    res.json({ok:true,importadas:importadas,duplicadas:duplicadas,errores:errores});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// PUT: asignar faena / observaciones de una boleta
+app.put('/api/fin/honorarios/:id', auth, async(req,res)=>{
+  try{
+    await finHonEnsure();
+    var b=req.body||{};
+    var r=await pool.query(`UPDATE fin_honorarios SET
+      faena_id=$1, observaciones=COALESCE($2,observaciones)
+      WHERE hon_id=$3 RETURNING *`,
+      [b.faena_id||null,b.observaciones!==undefined?b.observaciones:null,req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Boleta no encontrada'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// POST: asignación masiva de faena a varias boletas
+app.post('/api/fin/honorarios/asignar-faena', auth, async(req,res)=>{
+  try{
+    await finHonEnsure();
+    var b=req.body||{};
+    if(!Array.isArray(b.ids)||!b.ids.length)return res.status(400).json({error:'Seleccione al menos una boleta'});
+    var r=await pool.query('UPDATE fin_honorarios SET faena_id=$1 WHERE hon_id=ANY($2::int[]) RETURNING hon_id',[b.faena_id||null,b.ids]);
+    res.json({ok:true,actualizadas:r.rows.length});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// DELETE: eliminar boleta
+app.delete('/api/fin/honorarios/:id', auth, async(req,res)=>{
+  try{
+    await finHonEnsure();
+    var r=await pool.query('DELETE FROM fin_honorarios WHERE hon_id=$1 RETURNING hon_id',[req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Boleta no encontrada'});
     res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
 });
