@@ -4255,8 +4255,10 @@ app.get('/api/comb/rendimientos', auth, async(req,res)=>{
       const kmSpan=(x.km_max!=null&&x.km_min!=null&&x.km_max>x.km_min)?(parseFloat(x.km_max)-parseFloat(x.km_min)):null;
       var horas=0, horas_origen=null, km=null, rendimiento=null, unidad=null, l_100=null;
       if(cat.metric==='h'){
-        horas=horasTerreno>0?horasTerreno:(hSpan||0);
-        horas_origen=horasTerreno>0?'terreno':(hSpan?'horómetro distrib.':null);
+        // Prioridad: horómetros de las cargas de combustible (fuente más fidedigna, se reprocesa al editarlos);
+        // horas de Terreno solo como respaldo cuando no hay 2+ lecturas de horómetro en el período
+        horas=(hSpan&&hSpan>0)?hSpan:horasTerreno;
+        horas_origen=(hSpan&&hSpan>0)?'horómetro':(horasTerreno>0?'terreno':null);
         unidad='L/h';
         if(horas>0)rendimiento=litros/horas;
       }else if(cat.metric==='km'){
