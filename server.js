@@ -11984,6 +11984,151 @@ app.delete('/api/fin/honorarios/:id', auth, async(req,res)=>{
   }catch(e){res.status(400).json({error:e.message});}
 });
 
+// ════════════════════════════════════════════════════════════════════
+// FINANZAS — ESTADO DE RESULTADOS (consolidado / por empresa / por faena)
+// Ingresos: liquidaciones de producción. Costos: compras directas (OC sin bodega),
+// salidas de inventario, combustible (distribuciones), rendiciones, remuneraciones (fin-remu),
+// honorarios (BHE+BTE vigentes). Los costos cargados a cargos de ADMINISTRACIÓN/TALLER
+// forman un pool global que se distribuye por % configurable entre empresas y en partes
+// iguales entre las faenas activas de cada empresa.
+// ════════════════════════════════════════════════════════════════════
+const EERR_TIPOS_INDIRECTOS=['administracion','taller','equipos_taller'];
+let _finEerrOk=false;
+async function finEerrEnsure(){
+  if(_finEerrOk)return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS fin_eerr_config (clave VARCHAR(40) PRIMARY KEY, valor JSONB DEFAULT '{}'::jsonb, actualizado_en TIMESTAMP DEFAULT NOW())`);
+  _finEerrOk=true;
+}
+
+// GET: estado de resultados para un rango de meses (desde/hasta = AAAA-MM)
+app.get('/api/fin/eerr', auth, async(req,res)=>{
+  try{
+    await finEerrEnsure();
+    try{await finLiqEnsure();}catch(e){}
+    try{await finHonEnsure();}catch(e){}
+    const{desde,hasta}=req.query;
+    if(!desde||!/^\d{4}-\d{2}$/.test(desde)||!hasta||!/^\d{4}-\d{2}$/.test(hasta))
+      return res.status(400).json({error:'Rango de meses requerido (desde, hasta en formato AAAA-MM)'});
+    // Límites de fecha: [primer día desde, primer día del mes SIGUIENTE a hasta)
+    const d1=desde+'-01';
+    const hy=parseInt(hasta.slice(0,4)),hm=parseInt(hasta.slice(5,7));
+    const d2=(hm===12?(hy+1)+'-01':hy+'-'+('0'+(hm+1)).slice(-2))+'-01';
+    const pDesde=parseInt(desde.replace('-','')),pHasta=parseInt(hasta.replace('-',''));
+    const IND=`('${EERR_TIPOS_INDIRECTOS.join("','")}')`;
+    const warn=[];
+    async function q2(label,sql,vals){
+      try{const r=await pool.query(sql,vals);return r.rows;}
+      catch(e){warn.push(label+': '+e.message);return [];}
+    }
+    // ── Ingresos: liquidaciones de producción (incluye partidas especiales) ──
+    const ingresos=await q2('liquidaciones',`
+      SELECT l.empresa_id, d.faena_id, SUM(d.monto) AS monto
+      FROM fin_liquidacion_lineas d JOIN fin_liquidaciones l ON d.liq_id=l.liq_id
+      WHERE l.periodo>=$1 AND l.periodo<=$2
+      GROUP BY l.empresa_id, d.faena_id`,[desde,hasta]);
+    // ── Compras directas: líneas de OC que NO ingresan a bodega (neto) ──
+    const compras=await q2('compras directas',`
+      SELECT oc.empresa_id, d.faena_id,
+             COALESCE(eq.tipo_cargo,'') IN ${IND} AS indirecto,
+             SUM(d.cantidad*d.precio_unitario) AS monto
+      FROM ordenes_compra_detalle d
+      JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
+      LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
+      WHERE oc.estado!='ANULADA' AND NOT COALESCE(d.ingresa_bodega,false)
+        AND oc.fecha_emision>=$1::date AND oc.fecha_emision<$2::date
+      GROUP BY 1,2,3`,[d1,d2]);
+    // ── Salidas de inventario: valorizadas al costo unitario del movimiento ──
+    const inventario=await q2('salidas inventario',`
+      SELECT COALESCE(eq.empresa_id,f2.empresa_id) AS empresa_id, me.faena_id,
+             COALESCE(eq.tipo_cargo,'') IN ${IND} AS indirecto,
+             SUM(md.cantidad*COALESCE(md.costo_unitario,0)) AS monto
+      FROM movimiento_detalle md
+      JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
+      LEFT JOIN equipos eq ON me.equipo_id=eq.equipo_id
+      LEFT JOIN faenas f2 ON me.faena_id=f2.faena_id
+      WHERE me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'
+        AND me.fecha>=$1::date AND me.fecha<$2::date
+      GROUP BY 1,2,3`,[d1,d2]);
+    // ── Combustible: distribuciones a equipos (costo por CPP) ──
+    const combustible=await q2('combustible',`
+      SELECT COALESCE(m.empresa_id,eq.empresa_id) AS empresa_id, m.faena_id,
+             COALESCE(eq.tipo_cargo,'') IN ${IND} AS indirecto,
+             SUM(COALESCE(m.costo_total,0)) AS monto
+      FROM comb_movimientos m
+      LEFT JOIN equipos eq ON m.equipo_id=eq.equipo_id
+      WHERE m.tipo_mov='DISTRIBUCION' AND m.estado='ACTIVO'
+        AND m.fecha>=$1::date AND m.fecha<$2::date
+      GROUP BY 1,2,3`,[d1,d2]);
+    // ── Rendiciones de gasto (todas menos rechazadas) ──
+    const rendiciones=await q2('rendiciones',`
+      SELECT g.empresa_id, g.faena_id,
+             COALESCE(eq.tipo_cargo,'') IN ${IND} AS indirecto,
+             SUM(g.monto) AS monto
+      FROM rend_gastos g
+      LEFT JOIN equipos eq ON g.equipo_id=eq.equipo_id
+      WHERE g.fecha_gasto>=$1::date AND g.fecha_gasto<$2::date
+        AND COALESCE(g.estado,'pendiente')!='rechazado'
+      GROUP BY 1,2,3`,[d1,d2]);
+    // ── Remuneraciones (fin-remu): costo empresa; admin/taller por categoría del personal o texto del centro de costo ──
+    const remuneraciones=await q2('remuneraciones',`
+      SELECT p.empresa_id, d.faena_id,
+             (COALESCE(pe.categoria,'')='administracion'
+              OR COALESCE(d.faena_nombre,'') ILIKE '%ADMIN%' OR COALESCE(d.faena_nombre,'') ILIKE '%TALLER%'
+              OR COALESCE(d.centro_costo,'') ILIKE '%ADMIN%' OR COALESCE(d.centro_costo,'') ILIKE '%TALLER%') AS indirecto,
+             SUM(COALESCE(d.costo,0)) AS monto
+      FROM fin_remu_detalle d
+      JOIN fin_remu_periodo p ON d.periodo_id=p.periodo_id
+      LEFT JOIN personal pe ON d.persona_id=pe.persona_id
+      WHERE (p.anio*100+p.mes)>=$1 AND (p.anio*100+p.mes)<=$2
+      GROUP BY 1,2,3`,[pDesde,pHasta]);
+    // ── Honorarios (BHE + BTE vigentes, costo = bruto) ──
+    const honorarios=await q2('honorarios',`
+      SELECT h.empresa_id, h.faena_id, false AS indirecto, SUM(h.bruto) AS monto
+      FROM fin_honorarios h
+      WHERE h.estado='VIGENTE' AND h.periodo>=$1 AND h.periodo<=$2
+      GROUP BY 1,2`,[desde,hasta]);
+    // ── Config de distribución + catálogos ──
+    const cfgR=await pool.query("SELECT valor FROM fin_eerr_config WHERE clave='distribucion'");
+    const config=cfgR.rows.length?cfgR.rows[0].valor:{};
+    const empR=await pool.query('SELECT empresa_id, razon_social FROM empresas WHERE activo=true ORDER BY empresa_id');
+    const faeR=await pool.query('SELECT faena_id, nombre, empresa_id FROM faenas WHERE activo=true ORDER BY empresa_id, nombre');
+    // Empaquetar: costos directos e indirectos (pool) por categoría
+    function partir(rows,cat){
+      const dir=[],ind=[];
+      rows.forEach(function(r){
+        const fila={cat:cat,empresa_id:r.empresa_id,faena_id:r.faena_id,monto:parseFloat(r.monto)||0};
+        if(r.indirecto===true)ind.push(fila);else dir.push(fila);
+      });
+      return{dir:dir,ind:ind};
+    }
+    const pc=partir(compras,'compras'),pi=partir(inventario,'inventario'),pb=partir(combustible,'combustible'),
+          pr=partir(rendiciones,'rendiciones'),pm=partir(remuneraciones,'remuneraciones'),ph=partir(honorarios,'honorarios');
+    res.json({
+      desde:desde,hasta:hasta,
+      config:config,
+      empresas:empR.rows,faenas:faeR.rows,
+      ingresos:ingresos.map(function(r){return{empresa_id:r.empresa_id,faena_id:r.faena_id,monto:parseFloat(r.monto)||0};}),
+      costos:[].concat(pc.dir,pi.dir,pb.dir,pr.dir,pm.dir,ph.dir),
+      pool:[].concat(pc.ind,pi.ind,pb.ind,pr.ind,pm.ind,ph.ind),
+      advertencias:warn
+    });
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// POST: guardar configuración de distribución de gastos admin/taller
+app.post('/api/fin/eerr/config', auth, async(req,res)=>{
+  try{
+    await finEerrEnsure();
+    var b=req.body||{};
+    if(!b.empresa_pcts||typeof b.empresa_pcts!=='object')return res.status(400).json({error:'empresa_pcts requerido'});
+    var suma=Object.values(b.empresa_pcts).reduce(function(s,v){return s+(parseFloat(v)||0);},0);
+    if(Math.abs(suma-100)>0.5)return res.status(400).json({error:'Los porcentajes deben sumar 100 (actual: '+suma+')'});
+    await pool.query(`INSERT INTO fin_eerr_config(clave,valor,actualizado_en) VALUES('distribucion',$1,NOW())
+      ON CONFLICT(clave) DO UPDATE SET valor=EXCLUDED.valor, actualizado_en=NOW()`,[JSON.stringify({empresa_pcts:b.empresa_pcts})]);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Empresas Poo
 // ════════════════════════════════════════════════════════════════════════════
