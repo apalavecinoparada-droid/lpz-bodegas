@@ -7016,6 +7016,8 @@ async function setupRendiciones(q){
   try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS rodal_id INT REFERENCES rodales(rodal_id)');}catch(e){}
   try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS arboles_producidos INT');}catch(e){}
   try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS vma_aplicado NUMERIC(8,4)');}catch(e){}
+  try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS modificado_en TIMESTAMP');}catch(e){}
+  try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS modificado_por VARCHAR(100)');}catch(e){}
   try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS m3_producidos NUMERIC(10,3) GENERATED ALWAYS AS (COALESCE(arboles_producidos,0)*COALESCE(vma_aplicado,0)) STORED');}catch(e){}
 
   // ── PRODUCTIVIDAD / OEE (registros mensuales por faena) ──
@@ -8187,12 +8189,14 @@ app.get('/api/terreno/registros', auth, async(req,res)=>{
     if(mes){v.push(mes);w.push(`TO_CHAR(r.fecha,'YYYY-MM')=$${v.length}`);}
     const rs=await pool.query(`
       SELECT r.*, e.codigo AS equipo_codigo, e.nombre AS equipo_nombre, e.proceso_productivo,
-             f.nombre AS faena_nombre, 
+             f.nombre AS faena_nombre,
              es.codigo AS estanque_codigo, es.nombre AS estanque_nombre,
              op.nombre_completo AS operador_nombre,
              fu.nombre AS fundo_nombre,
-             rd.nombre AS rodal_nombre, rd.vma AS rodal_vma
-      FROM terreno_registros r 
+             rd.nombre AS rodal_nombre, rd.vma AS rodal_vma,
+             to_char(r.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Santiago','DD-MM-YYYY HH24:MI') AS ingresado_cl,
+             to_char(r.modificado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Santiago','DD-MM-YYYY HH24:MI') AS modificado_cl
+      FROM terreno_registros r
       JOIN equipos e ON r.equipo_id=e.equipo_id 
       JOIN faenas f ON r.faena_id=f.faena_id 
       LEFT JOIN comb_estanques es ON r.estanque_id=es.estanque_id 
@@ -8473,11 +8477,12 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
     }
     await client.query(
       `UPDATE terreno_registros SET fecha=$1,faena_id=$2,equipo_id=$3,horometro_inicial=$4,horometro_final=$5,horas_perdidas=$6,litros_combustible=$7,estanque_id=$8,observaciones=$9,
-        operador_id=$10,fundo_id=$11,rodal_id=$12,arboles_producidos=$13,vma_aplicado=$14
+        operador_id=$10,fundo_id=$11,rodal_id=$12,arboles_producidos=$13,vma_aplicado=$14,
+        modificado_en=NOW(),modificado_por=$16
        WHERE registro_id=$15`,
       [fecha,faena_id,equipo_id,parseFloat(horometro_inicial),parseFloat(horometro_final),hp,parseFloat(litros_combustible||0),estanque_id||null,observaciones||null,
        operador_id||null,fundo_id||null,rodal_id||null,arboles_producidos?parseInt(arboles_producidos):null,vmaSnapshot,
-       req.params.id]);
+       req.params.id,req.user.email]);
     await client.query('DELETE FROM terreno_tob_detalle WHERE registro_id=$1',[req.params.id]);
     for(const d of detalle){
       if(d.tob_cat_id&&parseFloat(d.horas)>0){
