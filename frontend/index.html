@@ -4635,6 +4635,27 @@ function RemuCostoView(p){
   var MESES=['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
   function cargarPeriodos(){ api('/fin/remuneraciones/periodos','GET',null,p.tok).then(setPeriodos).catch(function(){}); }
+  // Reasignar faena de un trabajador SOLO para este período (movimiento puntual; no toca el maestro)
+  var faenasSel=(p.m.faenas||[]).filter(function(f){return f.activo&&(!empresaId||String(f.empresa_id)===String(empresaId));});
+  function aplicarDetLocal(act,manual){
+    setResumen(function(rs){
+      if(!rs)return rs;
+      return Object.assign({},rs,{detalle:(rs.detalle||[]).map(function(x){
+        return x.detalle_id===act.detalle_id?Object.assign({},x,{faena_id:act.faena_id,faena_nombre:act.faena_nombre,faena_manual:manual}):x;
+      })});
+    });
+  }
+  function cambiarFaenaDet(r,fid){
+    api('/fin/remuneraciones/detalle/'+r.detalle_id,'PUT',{faena_id:fid||null},p.tok)
+      .then(function(act){aplicarDetLocal(act,true);})
+      .catch(function(ex){alert(ex.message);});
+  }
+  function restaurarFaenaDet(r){
+    if(!confirm('¿Volver a la faena del maestro de personal para '+(r.nombre||'este trabajador')+'?'))return;
+    api('/fin/remuneraciones/detalle/'+r.detalle_id,'PUT',{restaurar:true},p.tok)
+      .then(function(act){aplicarDetLocal(act,false);})
+      .catch(function(ex){alert(ex.message);});
+  }
   function eliminarPeriodo(r){
     if(!confirm('¿Eliminar el período '+MESES[r.mes]+' '+r.anio+(r.empresa?' de '+r.empresa:' (sin empresa)')+'? Se borrarán todos sus datos. Esta acción no se puede deshacer.'))return;
     api('/fin/remuneraciones/periodos/'+r.periodo_id,'DELETE',null,p.tok)
@@ -4857,7 +4878,12 @@ function RemuCostoView(p){
         verDet&&h('div',{className:'card',style:{padding:14,marginTop:8}},
           h(TBL,{cols:[
             {lbl:'Trabajador',render:function(r){return h('span',null,r.nombre,!r.persona_id&&h('span',{style:{color:'#B91C1C',fontSize:10}},' ⚠ sin cruce'));}},
-            {lbl:'Faena',render:function(r){return r.faena_nombre||'—';}},
+            {lbl:'Faena (este período)',render:function(r){return h('div',{style:{display:'flex',alignItems:'center',gap:5}},
+              h('select',{value:r.faena_id||'',onChange:function(e){cambiarFaenaDet(r,e.target.value);},title:r.faena_manual?'Faena reasignada manualmente solo para este período':'Faena según maestro de personal (cámbiala solo para este período)',style:{padding:'3px 6px',border:'1px solid '+(r.faena_manual?'#F59E0B':'#CBD5E1'),background:r.faena_manual?'#FFFBEB':'#fff',borderRadius:4,fontSize:11,maxWidth:170}},
+                h('option',{value:''},'— sin faena —'),
+                faenasSel.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})),
+              r.faena_manual&&h('span',{onClick:function(){restaurarFaenaDet(r);},title:'Reasignada manualmente este período — clic para volver a la faena del maestro',style:{cursor:'pointer',fontSize:11,color:'#B45309',fontWeight:700}},'✎↩')
+            );}},
             {lbl:'Cargo',render:function(r){return r.cargo||'—';}},
             {lbl:'T.Haberes',r:true,render:function(r){return CLP(Math.round(parseFloat(r.t_haberes)));}},
             {lbl:'Asig.Fam',r:true,render:function(r){return CLP(Math.round(parseFloat(r.c_familiar)));}},
