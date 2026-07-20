@@ -12117,14 +12117,18 @@ app.get('/api/fin/eerr', auth, async(req,res)=>{
         AND (oc.proveedor_id IS NULL OR NOT (oc.proveedor_id = ANY($3::int[])))
         AND EXISTS (SELECT 1 FROM comb_movimientos cm WHERE cm.tipo_mov='INGRESO_STOCK' AND cm.estado='ACTIVO' AND cm.oc_referencia=oc.numero_oc)`,[d1,d2,exclProv]);
     // Empaquetar: directos / pool Adm-Taller / pool Transporte (por tipo de cargo indirecto o por ROL de la faena)
+    // El pool TRANSPORTE se compone SOLO de compras directas, salidas de inventario y combustible de la faena
+    // Transporte (no se usa el costo valorizado del módulo de transporte — de ahí solo salen los km).
+    // Las demás categorías cargadas a esa faena (rendiciones, remuneraciones, honorarios) van al pool Adm/Taller.
     const rolFaena={};faeR.rows.forEach(function(f){if(f.rol)rolFaena[f.faena_id]=f.rol;});
+    const CATS_TRANS=['compras','inventario','combustible'];
     function partir(rows,cat){
       const dir=[],adm=[],trans=[];
       rows.forEach(function(r){
         const fila={cat:cat,empresa_id:r.empresa_id,faena_id:r.faena_id,monto:parseFloat(r.monto)||0};
         const rol=r.faena_id?rolFaena[r.faena_id]:null;
-        if(rol==='TRANS')trans.push(fila);
-        else if(r.indirecto===true||rol==='ADM')adm.push(fila);
+        if(rol==='TRANS'&&CATS_TRANS.indexOf(cat)>=0)trans.push(fila);
+        else if(r.indirecto===true||rol==='ADM'||rol==='TRANS')adm.push(fila);
         else dir.push(fila);
       });
       return{dir:dir,adm:adm,trans:trans};
@@ -12159,6 +12163,78 @@ app.post('/api/fin/eerr/config', auth, async(req,res)=>{
     await pool.query(`INSERT INTO fin_eerr_config(clave,valor,actualizado_en) VALUES('distribucion',$1,NOW())
       ON CONFLICT(clave) DO UPDATE SET valor=EXCLUDED.valor, actualizado_en=NOW()`,[JSON.stringify({empresa_pcts:b.empresa_pcts,proveedores_excluidos:provsEx})]);
     res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ════════════════════════════════════════════════════════════════════
+// MANTENCIÓN — VENCIMIENTOS DOCUMENTALES (revisión técnica y acreditación)
+// Vehículos/camiones: revisión técnica + acreditación. Maquinaria: SOLO acreditación.
+// ════════════════════════════════════════════════════════════════════
+const MANT_TIPOS_VEHICULO=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'];
+let _mantDocsOk=false;
+async function mantDocsEnsure(){
+  if(_mantDocsOk)return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS equipo_documentos (
+    doc_id SERIAL PRIMARY KEY,
+    equipo_id INT NOT NULL REFERENCES equipos(equipo_id) ON DELETE CASCADE,
+    tipo_doc VARCHAR(20) NOT NULL,
+    fecha_vencimiento DATE NOT NULL,
+    observaciones TEXT,
+    usuario VARCHAR(100),
+    actualizado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(equipo_id,tipo_doc)
+  )`);
+  _mantDocsOk=true;
+}
+
+// GET: equipos activos (vehículos y maquinaria) con sus vencimientos y días restantes
+app.get('/api/mant/doc-vencimientos', auth, async(req,res)=>{
+  try{
+    await mantDocsEnsure();
+    var w=['eq.activo=true'],v=[];
+    v.push(MANT_TIPOS_VEHICULO);
+    w.push("(eq.tipo_cargo = ANY($1::text[]) OR COALESCE(eq.tipo_cargo,'maquinaria')='maquinaria')");
+    if(req.query.empresa_id){v.push(req.query.empresa_id);w.push('eq.empresa_id=$'+v.length);}
+    if(req.query.faena_id){v.push(req.query.faena_id);w.push('(eq.faena_id=$'+v.length+' OR eq.faena_id IS NULL)');} // cargo sin faena = común
+    var r=await pool.query(`
+      SELECT eq.equipo_id, eq.codigo, eq.nombre, eq.tipo_cargo, eq.placa_patente, eq.empresa_id, eq.faena_id,
+             e.razon_social AS empresa_nombre, f.nombre AS faena_nombre,
+             rt.fecha_vencimiento AS rt_vence, rt.observaciones AS rt_obs,
+             ac.fecha_vencimiento AS acred_vence, ac.observaciones AS acred_obs,
+             (rt.fecha_vencimiento - CURRENT_DATE) AS rt_dias,
+             (ac.fecha_vencimiento - CURRENT_DATE) AS acred_dias
+      FROM equipos eq
+      LEFT JOIN empresas e ON eq.empresa_id=e.empresa_id
+      LEFT JOIN faenas f ON eq.faena_id=f.faena_id
+      LEFT JOIN equipo_documentos rt ON rt.equipo_id=eq.equipo_id AND rt.tipo_doc='REVISION_TECNICA'
+      LEFT JOIN equipo_documentos ac ON ac.equipo_id=eq.equipo_id AND ac.tipo_doc='ACREDITACION'
+      WHERE ${w.join(' AND ')}
+      ORDER BY LEAST(COALESCE(rt.fecha_vencimiento,'9999-12-31'::date),COALESCE(ac.fecha_vencimiento,'9999-12-31'::date)), eq.codigo`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// POST: guardar/actualizar un vencimiento (fecha vacía = borrar el registro de ese documento)
+app.post('/api/mant/doc-vencimientos', auth, async(req,res)=>{
+  try{
+    await mantDocsEnsure();
+    var b=req.body||{};
+    if(!b.equipo_id)return res.status(400).json({error:'equipo_id requerido'});
+    var tipo=b.tipo_doc==='REVISION_TECNICA'?'REVISION_TECNICA':(b.tipo_doc==='ACREDITACION'?'ACREDITACION':null);
+    if(!tipo)return res.status(400).json({error:'tipo_doc debe ser REVISION_TECNICA o ACREDITACION'});
+    var eq=await pool.query('SELECT tipo_cargo FROM equipos WHERE equipo_id=$1',[b.equipo_id]);
+    if(!eq.rows.length)return res.status(404).json({error:'Equipo no encontrado'});
+    var esVeh=MANT_TIPOS_VEHICULO.indexOf((eq.rows[0].tipo_cargo||'maquinaria').toLowerCase())>=0;
+    if(tipo==='REVISION_TECNICA'&&!esVeh)return res.status(400).json({error:'La revisión técnica solo aplica a vehículos y camiones (las máquinas solo llevan acreditación)'});
+    if(!b.fecha_vencimiento){
+      await pool.query('DELETE FROM equipo_documentos WHERE equipo_id=$1 AND tipo_doc=$2',[b.equipo_id,tipo]);
+      return res.json({ok:true,eliminado:true});
+    }
+    var r=await pool.query(`INSERT INTO equipo_documentos(equipo_id,tipo_doc,fecha_vencimiento,observaciones,usuario,actualizado_en)
+      VALUES($1,$2,$3,$4,$5,NOW())
+      ON CONFLICT(equipo_id,tipo_doc) DO UPDATE SET fecha_vencimiento=EXCLUDED.fecha_vencimiento, observaciones=EXCLUDED.observaciones, usuario=EXCLUDED.usuario, actualizado_en=NOW()
+      RETURNING *`,[b.equipo_id,tipo,b.fecha_vencimiento,b.observaciones||null,req.user.email]);
+    res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 
