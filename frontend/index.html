@@ -15582,6 +15582,133 @@ function ModelosAdmin(p){
   );
 }
 
+// ── Mantención: Vencimientos de Revisión Técnica y Acreditaciones ──
+// Vehículos/camiones: revisión técnica + acreditación. Maquinaria: solo acreditación.
+function MantDocVencimientosView(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var faenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
+  var[rows,setRows]=useState([]);var[load,setLoad]=useState(true);
+  var[fEmpresa,setFEmpresa]=useState('');var[fFaena,setFFaena]=useState('');var[fTipo,setFTipo]=useState('');var[fEstado,setFEstado]=useState('');
+  var[edit,setEdit]=useState(null);
+  var[saving,setSaving]=useState(false);var[msg,setMsg]=useState('');
+  var esVehTC=function(tc){return ['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf((tc||'maquinaria').toLowerCase())>=0;};
+  function load2(){
+    setLoad(true);
+    var qs=[];if(fEmpresa)qs.push('empresa_id='+fEmpresa);if(fFaena)qs.push('faena_id='+fFaena);
+    api('/mant/doc-vencimientos'+(qs.length?'?'+qs.join('&'):''),'GET',null,p.tok)
+      .then(function(r){setRows(Array.isArray(r)?r:[]);}).catch(function(){setRows([]);}).finally(function(){setLoad(false);});
+  }
+  useEffect(load2,[p.tok,fEmpresa,fFaena]);
+  function estadoDoc(fecha,dias){if(!fecha)return 'sin';var d=parseInt(dias);if(d<0)return 'vencido';if(d<=30)return 'porvencer';return 'vigente';}
+  function badge(fecha,dias){
+    var e2=estadoDoc(fecha,dias);
+    if(e2==='sin')return h('span',{style:{padding:'2px 8px',background:'#F1F5F9',color:'#94A3B8',borderRadius:10,fontSize:10,fontWeight:600}},'Sin registro');
+    var d=parseInt(dias);
+    if(e2==='vencido')return h('span',{style:{padding:'2px 8px',background:'#FEE2E2',color:'#991B1B',borderRadius:10,fontSize:10,fontWeight:700}},'⚠ VENCIDA '+fmtD(fecha)+' — hace '+Math.abs(d)+' día'+(Math.abs(d)===1?'':'s'));
+    if(e2==='porvencer')return h('span',{style:{padding:'2px 8px',background:'#FEF3C7',color:'#92400E',borderRadius:10,fontSize:10,fontWeight:700}},fmtD(fecha)+' — vence en '+d+' día'+(d===1?'':'s'));
+    return h('span',{style:{padding:'2px 8px',background:'#DCFCE7',color:'#15803D',borderRadius:10,fontSize:10,fontWeight:600}},'✓ '+fmtD(fecha));
+  }
+  var lista=rows.filter(function(r){
+    var esV=esVehTC(r.tipo_cargo);
+    if(fTipo==='veh'&&!esV)return false;
+    if(fTipo==='maq'&&esV)return false;
+    if(fEstado){
+      var ests=[];
+      if(esV)ests.push(estadoDoc(r.rt_vence,r.rt_dias));
+      ests.push(estadoDoc(r.acred_vence,r.acred_dias));
+      if(ests.indexOf(fEstado)<0)return false;
+    }
+    return true;
+  });
+  var kpi={vencido:0,porvencer:0,vigente:0,sin:0};
+  rows.forEach(function(r){
+    if(esVehTC(r.tipo_cargo))kpi[estadoDoc(r.rt_vence,r.rt_dias)]++;
+    kpi[estadoDoc(r.acred_vence,r.acred_dias)]++;
+  });
+  function abrirEdit(r){
+    setEdit({equipo:r,rt_fecha:r.rt_vence?(r.rt_vence+'').slice(0,10):'',rt_obs:r.rt_obs||'',ac_fecha:r.acred_vence?(r.acred_vence+'').slice(0,10):'',ac_obs:r.acred_obs||''});
+    setMsg('');
+  }
+  function guardar(){
+    var e2=edit;setSaving(true);setMsg('');
+    var reqs=[];
+    if(esVehTC(e2.equipo.tipo_cargo))reqs.push(api('/mant/doc-vencimientos','POST',{equipo_id:e2.equipo.equipo_id,tipo_doc:'REVISION_TECNICA',fecha_vencimiento:e2.rt_fecha||null,observaciones:e2.rt_obs||null},p.tok));
+    reqs.push(api('/mant/doc-vencimientos','POST',{equipo_id:e2.equipo.equipo_id,tipo_doc:'ACREDITACION',fecha_vencimiento:e2.ac_fecha||null,observaciones:e2.ac_obs||null},p.tok));
+    Promise.all(reqs).then(function(){setEdit(null);load2();}).catch(function(ex){setMsg(ex.message);}).finally(function(){setSaving(false);});
+  }
+  var inpS={padding:'6px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
+  var inpM={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:13,boxSizing:'border-box'};
+  var kpiCard=function(lbl,val,color){return h('div',{className:'card',style:{padding:10,borderLeft:'4px solid '+color}},
+    h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},lbl),
+    h('div',{style:{fontSize:20,fontWeight:700,color:val>0?color:'#94A3B8'}},val));};
+  return h('div',null,
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:8,marginBottom:10}},
+      kpiCard('⚠ VENCIDAS',kpi.vencido,'#DC2626'),
+      kpiCard('POR VENCER (≤30 DÍAS)',kpi.porvencer,'#F59E0B'),
+      kpiCard('VIGENTES',kpi.vigente,'#16A34A'),
+      kpiCard('SIN REGISTRO',kpi.sin,'#64748B')
+    ),
+    h('div',{className:'card',style:{padding:10,marginBottom:10,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}},
+      h('select',{value:fEmpresa,onChange:function(e){setFEmpresa(e.target.value);setFFaena('');},style:inpS},
+        h('option',{value:''},'Todas las empresas'),empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
+      h('select',{value:fFaena,onChange:function(e){setFFaena(e.target.value);},style:inpS},
+        h('option',{value:''},'Todas las faenas'),faenas.filter(function(f){return !fEmpresa||String(f.empresa_id)===String(fEmpresa);}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})),
+      h('select',{value:fTipo,onChange:function(e){setFTipo(e.target.value);},style:inpS},
+        h('option',{value:''},'Vehículos y máquinas'),h('option',{value:'veh'},'Solo vehículos/camiones'),h('option',{value:'maq'},'Solo maquinaria')),
+      h('select',{value:fEstado,onChange:function(e){setFEstado(e.target.value);},style:inpS},
+        h('option',{value:''},'Todos los estados'),h('option',{value:'vencido'},'⚠ Vencidas'),h('option',{value:'porvencer'},'Por vencer (≤30 días)'),h('option',{value:'vigente'},'Vigentes'),h('option',{value:'sin'},'Sin registro')),
+      h('div',{style:{marginLeft:'auto',fontSize:12,color:'#64748B'}},lista.length+' equipo(s)')
+    ),
+    load?h('div',{className:'spin'},'Cargando...'):
+    lista.length===0?h('div',{className:'card',style:{padding:30,textAlign:'center',color:'#94A3B8'}},'Sin equipos para los filtros seleccionados.'):
+    h('div',{className:'card',style:{padding:0,overflow:'auto'}},
+      h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
+        h('thead',null,h('tr',{style:{background:'#F1F5F9'}},
+          ['Equipo','Tipo','Patente','Empresa','Faena','Revisión Técnica','Acreditación',''].map(function(c,j){
+            return h('th',{key:j,style:{padding:8,fontSize:10,color:'#475569',textAlign:'left'}},c);
+          })
+        )),
+        h('tbody',null,lista.map(function(r){
+          var esV=esVehTC(r.tipo_cargo);
+          return h('tr',{key:r.equipo_id,style:{borderTop:'1px solid #E2E8F0'}},
+            h('td',{style:{padding:8}},h('strong',{style:{color:'#1E3A2D'}},r.codigo),h('div',{style:{fontSize:10,color:'#64748B'}},r.nombre)),
+            h('td',{style:{padding:8}},h('span',{style:{padding:'2px 8px',background:esV?'#DBEAFE':'#E9F1EC',color:esV?'#1E40AF':'#1E3A2D',borderRadius:10,fontSize:10,fontWeight:600}},esV?'🚐 Vehículo':'🚜 Máquina')),
+            h('td',{style:{padding:8,fontFamily:'monospace',fontSize:11}},r.placa_patente||'—'),
+            h('td',{style:{padding:8,fontSize:11,color:'#64748B'}},r.empresa_nombre||'—'),
+            h('td',{style:{padding:8,fontSize:11,color:'#64748B'}},r.faena_nombre||'común'),
+            h('td',{style:{padding:8}},esV?badge(r.rt_vence,r.rt_dias):h('span',{style:{fontSize:10,color:'#CBD5E1'}},'No aplica')),
+            h('td',{style:{padding:8}},badge(r.acred_vence,r.acred_dias)),
+            h('td',{style:{padding:8}},h('button',{onClick:function(){abrirEdit(r);},title:'Registrar / actualizar vencimientos',style:{padding:'4px 10px',fontSize:11,background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:4,cursor:'pointer',color:'#1E40AF'}},'✏ Editar'))
+          );
+        }))
+      )
+    ),
+    edit&&h(Modal,{title:'Vencimientos — '+edit.equipo.codigo+' '+(edit.equipo.nombre||''),onClose:function(){if(!saving)setEdit(null);}},
+      h('div',null,
+        esVehTC(edit.equipo.tipo_cargo)&&h('div',{style:{marginBottom:12,padding:'10px 12px',background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6}},
+          h('div',{style:{fontWeight:700,fontSize:12,color:'#1E40AF',marginBottom:6}},'Revisión Técnica'),
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha de vencimiento'),
+          h('input',{type:'date',value:edit.rt_fecha,onChange:function(e){setEdit(Object.assign({},edit,{rt_fecha:e.target.value}));},style:inpM}),
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',margin:'8px 0 3px'}},'Observaciones'),
+          h('input',{type:'text',value:edit.rt_obs,onChange:function(e){setEdit(Object.assign({},edit,{rt_obs:e.target.value}));},style:inpM,placeholder:'Ej: planta de revisión, N° certificado...'}),
+          h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:4}},'Dejar la fecha vacía elimina el registro.')
+        ),
+        h('div',{style:{marginBottom:12,padding:'10px 12px',background:'#E9F1EC',border:'1px solid #C5D6CD',borderRadius:6}},
+          h('div',{style:{fontWeight:700,fontSize:12,color:'#1E3A2D',marginBottom:6}},'Acreditación'),
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha de vencimiento'),
+          h('input',{type:'date',value:edit.ac_fecha,onChange:function(e){setEdit(Object.assign({},edit,{ac_fecha:e.target.value}));},style:inpM}),
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',margin:'8px 0 3px'}},'Observaciones'),
+          h('input',{type:'text',value:edit.ac_obs,onChange:function(e){setEdit(Object.assign({},edit,{ac_obs:e.target.value}));},style:inpM,placeholder:'Ej: mandante, N° credencial...'})
+        ),
+        msg&&h('div',{className:'al al-e',style:{marginBottom:8}},msg),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8}},
+          h(Btn,{v:'gray',onClick:function(){if(!saving)setEdit(null);}},'Cancelar'),
+          h(Btn,{onClick:guardar,disabled:saving},saving?'Guardando...':'Guardar'))
+      )
+    )
+  );
+}
+
 // ── Finanzas: Estado de Resultados (consolidado / por empresa / por faena) ──
 // Ingresos (liquidaciones) − costos directos (compras, inventario, combustible, rendiciones,
 // remuneraciones, honorarios) − gastos Adm/Taller distribuidos por % configurable entre
@@ -15742,7 +15869,7 @@ function FinEERRView(p){
           h('thead',null,h('tr',{style:{background:'#F1F5F9'}},
             ['Faena','Ingresos','Compras','Inventario','Combustible','Rendiciones','Remuneraciones','Honorarios','Adm/Taller','Transporte','Total costos','Resultado'].map(function(c,j){return h('th',{key:j,style:{padding:'7px 10px',fontSize:10,color:'#475569',textAlign:j===0?'left':'right'}},c);}))),
           h('tbody',null,filasFae))),
-      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Pool Adm/Taller: '+CLP(Math.round(poolTot))+' (faenas Administración/Taller + cargos de ese tipo + remuneraciones de administración) distribuido por % configurado. Pool Transporte: '+CLP(Math.round(poolTrans))+' (faena Transporte) distribuido por km del período ('+emps.map(function(e){return Math.round(kmEmp(e.empresa_id))+' km';}).join(' / ')+'). Cada pool se reparte en partes iguales entre las faenas productivas de su empresa. Compras: solo OC CERRADAS, montos netos (sin IVA); remuneraciones a costo empresa; honorarios brutos vigentes.')
+      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Pool Adm/Taller: '+CLP(Math.round(poolTot))+' (faenas Administración/Taller + cargos de ese tipo + remuneraciones de administración) distribuido por % configurado. Pool Transporte: '+CLP(Math.round(poolTrans))+' (faena Transporte: solo compras + inventario + combustible; sus demás costos van al pool Adm/Taller) distribuido por km del período ('+emps.map(function(e){return Math.round(kmEmp(e.empresa_id))+' km';}).join(' / ')+'). Cada pool se reparte en partes iguales entre las faenas productivas de su empresa. Compras: solo OC CERRADAS, montos netos (sin IVA); remuneraciones a costo empresa; honorarios brutos vigentes.')
     );
   }
   return h('div',null,
@@ -22577,7 +22704,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -23226,7 +23353,7 @@ function App(){
     'ordenes':'ordenes','oc-guias':'ordenes','dte-recibidos':'ordenes','bandeja-dte-oc':'ordenes','compra-auditoria':'ordenes',
     'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-auditoria':'combustibles','comb-rendimientos':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
     'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-auditoria':'inventario','inv-reportes':'inventario',
-    'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion','mant-planes':'mantencion','mant-vencimientos':'mantencion','mant-programacion':'mantencion','mant-avisos':'mantencion',
+    'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion','mant-planes':'mantencion','mant-vencimientos':'mantencion','mant-docs':'mantencion','mant-programacion':'mantencion','mant-avisos':'mantencion',
     'rendiciones':'rendiciones',
     'terreno':'terreno','terreno-tiempos':'terreno','terreno-equipos':'terreno','terreno-faena':'terreno','terreno-reportes':'terreno',
     'prod-oee':'productividad',
@@ -23406,6 +23533,7 @@ function App(){
           navI('mant-ot','📋','Órdenes de Trabajo',true),
           navI('mant-planes','📐','Plan Maestro',true),
           navI('mant-vencimientos','⏰','Próximos Vencimientos',true),
+          navI('mant-docs','🪪','Rev. Técnica / Acreditación',true),
           navI('mant-historial','📜','Historial Técnico',true),
           navI('mant-sistemas','⚙','Sistemas',true),
           navI('mant-tareas-std','🔩','Tareas Estándar',true),
@@ -23513,6 +23641,7 @@ function App(){
           view==='mant-ot'&&h(MantOT,{tok,m}),
           view==='mant-planes'&&h(MantPlanes,{tok,m}),
           view==='mant-vencimientos'&&h(MantVencimientos,{tok,m,user}),
+          view==='mant-docs'&&h(MantDocVencimientosView,{tok,m}),
           view==='mant-programacion'&&h(MantProgramacion,{tok,m}),
           view==='mant-historial'&&h(MantHistorial,{tok,m}),
           view==='mant-sistemas'&&h(MantSistemasAdmin,{tok,m}),
