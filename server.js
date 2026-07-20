@@ -10755,6 +10755,7 @@ async function finRemuEnsure(){
     t_haberes NUMERIC(14,2) DEFAULT 0, c_familiar NUMERIC(14,2) DEFAULT 0, aporte NUMERIC(14,2) DEFAULT 0, costo NUMERIC(14,2) DEFAULT 0)`);
   try{await pool.query('CREATE INDEX IF NOT EXISTS idx_finremu_det ON fin_remu_detalle(periodo_id)');}catch(e){}
   try{await pool.query('ALTER TABLE fin_remu_detalle ADD COLUMN IF NOT EXISTS cargo VARCHAR(120)');}catch(e){}
+  try{await pool.query('ALTER TABLE fin_remu_detalle ADD COLUMN IF NOT EXISTS faena_manual BOOLEAN DEFAULT false');}catch(e){}
   _finRemuOk=true;
 }
 function finRemuNormRut(r){ return String(r||'').toUpperCase().replace(/[^0-9K]/g,'').replace(/^0+/,''); }
@@ -10764,7 +10765,7 @@ async function finRemuResumen(periodo_id){
   const centro=await pool.query("SELECT COALESCE(NULLIF(centro_costo,''),'(Sin centro de costo)') AS centro, COUNT(*)::int n, SUM(costo) costo FROM fin_remu_detalle WHERE periodo_id=$1 GROUP BY COALESCE(NULLIF(centro_costo,''),'(Sin centro de costo)') ORDER BY SUM(costo) DESC",[periodo_id]);
   const cargo=await pool.query("SELECT COALESCE(NULLIF(cargo,''),'(Sin cargo)') AS cargo, COUNT(*)::int n, SUM(costo) costo FROM fin_remu_detalle WHERE periodo_id=$1 GROUP BY COALESCE(NULLIF(cargo,''),'(Sin cargo)') ORDER BY SUM(costo) DESC",[periodo_id]);
   const sin=await pool.query('SELECT rut,nombre,costo FROM fin_remu_detalle WHERE periodo_id=$1 AND persona_id IS NULL ORDER BY nombre',[periodo_id]);
-  const det=await pool.query('SELECT rut,nombre,faena_nombre,centro_costo,cargo,t_haberes,c_familiar,aporte,costo,persona_id FROM fin_remu_detalle WHERE periodo_id=$1 ORDER BY costo DESC',[periodo_id]);
+  const det=await pool.query('SELECT detalle_id,rut,nombre,faena_id,faena_nombre,faena_manual,centro_costo,cargo,t_haberes,c_familiar,aporte,costo,persona_id FROM fin_remu_detalle WHERE periodo_id=$1 ORDER BY costo DESC',[periodo_id]);
   return {periodo:tot.rows[0], por_faena:faena.rows, por_centro:centro.rows, por_cargo:cargo.rows, sin_match:sin.rows, detalle:det.rows};
 }
 app.post('/api/fin/remuneraciones/importar', auth, async(req,res)=>{
@@ -10787,14 +10788,20 @@ app.post('/api/fin/remuneraciones/importar', auth, async(req,res)=>{
       pe=await client.query('INSERT INTO fin_remu_periodo(empresa_id,anio,mes) VALUES($1,$2,$3) ON CONFLICT(empresa_id,anio,mes) DO UPDATE SET creado_en=NOW() RETURNING periodo_id',[eId,anio,mes]);
     }
     const periodo_id=pe.rows[0].periodo_id;
+    // Preservar reasignaciones MANUALES de faena del período: sobreviven a la recarga del libro
+    const ovrR=await client.query('SELECT rut, faena_id, faena_nombre FROM fin_remu_detalle WHERE periodo_id=$1 AND faena_manual=true',[periodo_id]);
+    const ovr={}; ovrR.rows.forEach(function(x){ ovr[finRemuNormRut(x.rut)]={faena_id:x.faena_id,faena_nombre:x.faena_nombre}; });
     await client.query('DELETE FROM fin_remu_detalle WHERE periodo_id=$1',[periodo_id]);
     let tH=0,tF=0,tA=0,tC=0,nT=0,nSin=0;
     for(const f of filas){
       const th=parseFloat(f.t_haberes)||0, cf=parseFloat(f.c_familiar)||0, ap=parseFloat(f.aporte)||0;
       const costo=th-cf+ap;
       const m=mapa[finRemuNormRut(f.rut)]||null;
-      await client.query('INSERT INTO fin_remu_detalle(periodo_id,rut,nombre,persona_id,faena_id,faena_nombre,centro_costo,cargo,t_haberes,c_familiar,aporte,costo) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',
-        [periodo_id,f.rut||null,(m?m.nombre_completo:f.nombre)||null,m?m.persona_id:null,m?m.faena_id:null,m?m.faena_nombre:null,m?m.centro_costo:null,m?m.cargo:null,th,cf,ap,costo]);
+      const o=ovr[finRemuNormRut(f.rut)]||null;
+      await client.query('INSERT INTO fin_remu_detalle(periodo_id,rut,nombre,persona_id,faena_id,faena_nombre,centro_costo,cargo,t_haberes,c_familiar,aporte,costo,faena_manual) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
+        [periodo_id,f.rut||null,(m?m.nombre_completo:f.nombre)||null,m?m.persona_id:null,
+         o?o.faena_id:(m?m.faena_id:null),o?o.faena_nombre:(m?m.faena_nombre:null),
+         m?m.centro_costo:null,m?m.cargo:null,th,cf,ap,costo,!!o]);
       tH+=th;tF+=cf;tA+=ap;tC+=costo;nT++; if(!m)nSin++;
     }
     await client.query('UPDATE fin_remu_periodo SET total_haberes=$1,total_asig_familiar=$2,total_aporte=$3,costo_total=$4,n_trabajadores=$5,n_sin_match=$6 WHERE periodo_id=$7',[tH,tF,tA,tC,nT,nSin,periodo_id]);
@@ -10803,6 +10810,32 @@ app.post('/api/fin/remuneraciones/importar', auth, async(req,res)=>{
   }catch(e){ try{await client.query('ROLLBACK');}catch(_){}; res.status(400).json({error:e.message}); }
   finally{ client.release(); }
 });
+// PUT: reasignar la faena de un trabajador SOLO para este período (no toca el maestro de personal)
+// body {faena_id} asigna manualmente; {restaurar:true} vuelve a la faena del maestro
+app.put('/api/fin/remuneraciones/detalle/:id', auth, async(req,res)=>{
+  try{
+    await finRemuEnsure();
+    var b=req.body||{};
+    if(b.restaurar){
+      var r0=await pool.query(`UPDATE fin_remu_detalle d SET faena_id=p.faena_id, faena_nombre=f.nombre, faena_manual=false
+        FROM personal p LEFT JOIN faenas f ON p.faena_id=f.faena_id
+        WHERE d.detalle_id=$1 AND d.persona_id=p.persona_id RETURNING d.*`,[req.params.id]);
+      if(!r0.rows.length)return res.status(404).json({error:'Detalle no encontrado o sin cruce con el maestro de personal'});
+      return res.json(r0.rows[0]);
+    }
+    var fid=b.faena_id?parseInt(b.faena_id):null;
+    var fnom=null;
+    if(fid){
+      var fr=await pool.query('SELECT nombre FROM faenas WHERE faena_id=$1',[fid]);
+      if(!fr.rows.length)return res.status(404).json({error:'Faena no encontrada'});
+      fnom=fr.rows[0].nombre;
+    }
+    var r=await pool.query('UPDATE fin_remu_detalle SET faena_id=$1, faena_nombre=$2, faena_manual=true WHERE detalle_id=$3 RETURNING *',[fid,fnom,req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Detalle no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
 app.get('/api/fin/remuneraciones', auth, async(req,res)=>{
   try{
     await finRemuEnsure();
