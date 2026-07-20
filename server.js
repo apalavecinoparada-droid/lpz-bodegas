@@ -12020,6 +12020,10 @@ app.get('/api/fin/eerr', auth, async(req,res)=>{
       try{const r=await pool.query(sql,vals);return r.rows;}
       catch(e){warn.push(label+': '+e.message);return [];}
     }
+    // Config primero: la lista de proveedores excluidos (financiamiento) afecta la consulta de compras
+    const cfgR=await pool.query("SELECT valor FROM fin_eerr_config WHERE clave='distribucion'");
+    const config=cfgR.rows.length?(cfgR.rows[0].valor||{}):{};
+    const exclProv=(Array.isArray(config.proveedores_excluidos)?config.proveedores_excluidos:[]).map(function(x){return parseInt(x);}).filter(function(x){return !isNaN(x);});
     // ── Ingresos: liquidaciones de producción (incluye partidas especiales) ──
     const ingresos=await q2('liquidaciones',`
       SELECT l.empresa_id, d.faena_id, SUM(d.monto) AS monto
@@ -12036,7 +12040,9 @@ app.get('/api/fin/eerr', auth, async(req,res)=>{
       LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
       WHERE oc.estado!='ANULADA' AND NOT COALESCE(d.ingresa_bodega,false)
         AND oc.fecha_emision>=$1::date AND oc.fecha_emision<$2::date
-      GROUP BY 1,2,3`,[d1,d2]);
+        AND (oc.proveedor_id IS NULL OR NOT (oc.proveedor_id = ANY($3::int[])))
+        AND NOT EXISTS (SELECT 1 FROM comb_movimientos cm WHERE cm.tipo_mov='INGRESO_STOCK' AND cm.estado='ACTIVO' AND cm.oc_referencia=oc.numero_oc)
+      GROUP BY 1,2,3`,[d1,d2,exclProv]);
     // ── Salidas de inventario: valorizadas al costo unitario del movimiento ──
     const inventario=await q2('salidas inventario',`
       SELECT COALESCE(eq.empresa_id,f2.empresa_id) AS empresa_id, me.faena_id,
@@ -12087,29 +12093,55 @@ app.get('/api/fin/eerr', auth, async(req,res)=>{
       FROM fin_honorarios h
       WHERE h.estado='VIGENTE' AND h.periodo>=$1 AND h.periodo<=$2
       GROUP BY 1,2`,[desde,hasta]);
-    // ── Config de distribución + catálogos ──
-    const cfgR=await pool.query("SELECT valor FROM fin_eerr_config WHERE clave='distribucion'");
-    const config=cfgR.rows.length?cfgR.rows[0].valor:{};
+    // ── Catálogos (faenas con ROL: ADM=Administración/Taller, TRANS=Transporte) + km + montos excluidos ──
     const empR=await pool.query('SELECT empresa_id, razon_social FROM empresas WHERE activo=true ORDER BY empresa_id');
-    const faeR=await pool.query('SELECT faena_id, nombre, empresa_id FROM faenas WHERE activo=true ORDER BY empresa_id, nombre');
-    // Empaquetar: costos directos e indirectos (pool) por categoría
+    const faeR=await pool.query(`SELECT faena_id, nombre, empresa_id,
+        CASE WHEN nombre ILIKE '%admin%' OR nombre ILIKE '%taller%' THEN 'ADM'
+             WHEN nombre ILIKE '%transport%' THEN 'TRANS' ELSE NULL END AS rol
+      FROM faenas WHERE activo=true ORDER BY empresa_id, nombre`);
+    const kmsRows=await q2('kms transporte',`
+      SELECT empresa_id, SUM(km_total) AS km FROM trans_traslados
+      WHERE fecha>=$1::date AND fecha<$2::date AND COALESCE(estado,'finalizado')!='anulado'
+      GROUP BY empresa_id`,[d1,d2]);
+    const exclFin=await q2('excluidos financiamiento',`
+      SELECT COALESCE(SUM(d.cantidad*d.precio_unitario),0) AS m
+      FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
+      WHERE oc.estado!='ANULADA' AND NOT COALESCE(d.ingresa_bodega,false)
+        AND oc.fecha_emision>=$1::date AND oc.fecha_emision<$2::date
+        AND oc.proveedor_id = ANY($3::int[])`,[d1,d2,exclProv]);
+    const exclComb=await q2('excluidos combustible estanque',`
+      SELECT COALESCE(SUM(d.cantidad*d.precio_unitario),0) AS m
+      FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
+      WHERE oc.estado!='ANULADA' AND NOT COALESCE(d.ingresa_bodega,false)
+        AND oc.fecha_emision>=$1::date AND oc.fecha_emision<$2::date
+        AND (oc.proveedor_id IS NULL OR NOT (oc.proveedor_id = ANY($3::int[])))
+        AND EXISTS (SELECT 1 FROM comb_movimientos cm WHERE cm.tipo_mov='INGRESO_STOCK' AND cm.estado='ACTIVO' AND cm.oc_referencia=oc.numero_oc)`,[d1,d2,exclProv]);
+    // Empaquetar: directos / pool Adm-Taller / pool Transporte (por tipo de cargo indirecto o por ROL de la faena)
+    const rolFaena={};faeR.rows.forEach(function(f){if(f.rol)rolFaena[f.faena_id]=f.rol;});
     function partir(rows,cat){
-      const dir=[],ind=[];
+      const dir=[],adm=[],trans=[];
       rows.forEach(function(r){
         const fila={cat:cat,empresa_id:r.empresa_id,faena_id:r.faena_id,monto:parseFloat(r.monto)||0};
-        if(r.indirecto===true)ind.push(fila);else dir.push(fila);
+        const rol=r.faena_id?rolFaena[r.faena_id]:null;
+        if(rol==='TRANS')trans.push(fila);
+        else if(r.indirecto===true||rol==='ADM')adm.push(fila);
+        else dir.push(fila);
       });
-      return{dir:dir,ind:ind};
+      return{dir:dir,adm:adm,trans:trans};
     }
     const pc=partir(compras,'compras'),pi=partir(inventario,'inventario'),pb=partir(combustible,'combustible'),
           pr=partir(rendiciones,'rendiciones'),pm=partir(remuneraciones,'remuneraciones'),ph=partir(honorarios,'honorarios');
+    const kms={};kmsRows.forEach(function(r){kms[r.empresa_id]=parseFloat(r.km)||0;});
     res.json({
       desde:desde,hasta:hasta,
       config:config,
       empresas:empR.rows,faenas:faeR.rows,
+      kms:kms,
       ingresos:ingresos.map(function(r){return{empresa_id:r.empresa_id,faena_id:r.faena_id,monto:parseFloat(r.monto)||0};}),
       costos:[].concat(pc.dir,pi.dir,pb.dir,pr.dir,pm.dir,ph.dir),
-      pool:[].concat(pc.ind,pi.ind,pb.ind,pr.ind,pm.ind,ph.ind),
+      pool:[].concat(pc.adm,pi.adm,pb.adm,pr.adm,pm.adm,ph.adm),
+      pool_trans:[].concat(pc.trans,pi.trans,pb.trans,pr.trans,pm.trans,ph.trans),
+      excluidos:{financiamiento:parseFloat(((exclFin[0]||{}).m))||0,combustible_estanque:parseFloat(((exclComb[0]||{}).m))||0},
       advertencias:warn
     });
   }catch(e){res.status(500).json({error:e.message});}
@@ -12123,8 +12155,9 @@ app.post('/api/fin/eerr/config', auth, async(req,res)=>{
     if(!b.empresa_pcts||typeof b.empresa_pcts!=='object')return res.status(400).json({error:'empresa_pcts requerido'});
     var suma=Object.values(b.empresa_pcts).reduce(function(s,v){return s+(parseFloat(v)||0);},0);
     if(Math.abs(suma-100)>0.5)return res.status(400).json({error:'Los porcentajes deben sumar 100 (actual: '+suma+')'});
+    var provsEx=Array.isArray(b.proveedores_excluidos)?b.proveedores_excluidos.map(function(x){return parseInt(x);}).filter(function(x){return !isNaN(x);}):[];
     await pool.query(`INSERT INTO fin_eerr_config(clave,valor,actualizado_en) VALUES('distribucion',$1,NOW())
-      ON CONFLICT(clave) DO UPDATE SET valor=EXCLUDED.valor, actualizado_en=NOW()`,[JSON.stringify({empresa_pcts:b.empresa_pcts})]);
+      ON CONFLICT(clave) DO UPDATE SET valor=EXCLUDED.valor, actualizado_en=NOW()`,[JSON.stringify({empresa_pcts:b.empresa_pcts,proveedores_excluidos:provsEx})]);
     res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
 });
