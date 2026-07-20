@@ -12034,15 +12034,17 @@ app.get('/api/fin/eerr', auth, async(req,res)=>{
     const compras=await q2('compras directas',`
       SELECT oc.empresa_id, d.faena_id,
              COALESCE(eq.tipo_cargo,'') IN ${IND} AS indirecto,
+             COALESCE(sc.nombre,'Sin subcategoría') AS sub,
              SUM(d.cantidad*d.precio_unitario) AS monto
       FROM ordenes_compra_detalle d
       JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
       LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
+      LEFT JOIN subcategorias sc ON d.subcategoria_id=sc.subcategoria_id
       WHERE oc.estado='CERRADA' AND NOT COALESCE(d.ingresa_bodega,false)
         AND oc.fecha_emision>=$1::date AND oc.fecha_emision<$2::date
         AND (oc.proveedor_id IS NULL OR NOT (oc.proveedor_id = ANY($3::int[])))
         AND NOT EXISTS (SELECT 1 FROM comb_movimientos cm WHERE cm.tipo_mov='INGRESO_STOCK' AND cm.estado='ACTIVO' AND cm.oc_referencia=oc.numero_oc)
-      GROUP BY 1,2,3`,[d1,d2,exclProv]);
+      GROUP BY 1,2,3,4`,[d1,d2,exclProv]);
     // ── Salidas de inventario: valorizadas al costo unitario del movimiento ──
     const inventario=await q2('salidas inventario',`
       SELECT COALESCE(eq.empresa_id,f2.empresa_id) AS empresa_id, me.faena_id,
@@ -12126,6 +12128,7 @@ app.get('/api/fin/eerr', auth, async(req,res)=>{
       const dir=[],adm=[],trans=[];
       rows.forEach(function(r){
         const fila={cat:cat,empresa_id:r.empresa_id,faena_id:r.faena_id,monto:parseFloat(r.monto)||0};
+        if(r.sub!==undefined)fila.sub=r.sub;
         const rol=r.faena_id?rolFaena[r.faena_id]:null;
         if(rol==='TRANS'&&CATS_TRANS.indexOf(cat)>=0)trans.push(fila);
         else if(r.indirecto===true||rol==='ADM'||rol==='TRANS')adm.push(fila);
