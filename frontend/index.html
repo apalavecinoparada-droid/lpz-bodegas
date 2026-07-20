@@ -15785,8 +15785,22 @@ function FinEERRView(p){
     // ── Tabla nivel consolidado + por empresa ──
     var filas=[];
     filas.push(h('tr',{key:'ing',style:{background:'#F0FDF4'}},lblTd('INGRESOS (liquidaciones de producción)',false,true),money(ingresoTot,true,'#166534'),emps.map(function(e){return money(ingresoEmp(e.empresa_id),true,'#166534');})));
+    // Subcategorías presentes en compras directas (ordenadas por monto consolidado desc)
+    var subsCompras=[];var subsSeen={};
+    (data.costos||[]).forEach(function(r){if(r.cat==='compras'){var s2=r.sub||'Sin subcategoría';if(!subsSeen[s2]){subsSeen[s2]=true;subsCompras.push(s2);}}});
+    var subTot=function(s2){return sumBy(data.costos,function(r){return r.cat==='compras'&&(r.sub||'Sin subcategoría')===s2;});};
+    var subEmp=function(s2,eid){return sumBy(data.costos,function(r){return r.cat==='compras'&&(r.sub||'Sin subcategoría')===s2&&String(r.empresa_id)===String(eid);});};
+    subsCompras.sort(function(a,b){return subTot(b)-subTot(a);});
     CATS.forEach(function(c){
       filas.push(h('tr',{key:c.k,style:{borderTop:'1px solid #F1F5F9'}},lblTd(c.l,true,false),money(catTot(c.k)),emps.map(function(e){return money(catEmp(c.k,e.empresa_id));})));
+      if(c.k==='compras'){
+        subsCompras.forEach(function(s2){
+          filas.push(h('tr',{key:'sub_'+s2,style:{background:'#FBFDFC'}},
+            h('td',{style:{padding:'4px 10px',paddingLeft:36,fontSize:11,color:'#64748B'}},'· '+s2),
+            money(subTot(s2),false,'#64748B'),
+            emps.map(function(e){return money(subEmp(s2,e.empresa_id),false,'#64748B');})));
+        });
+      }
     });
     filas.push(h('tr',{key:'ov',style:{borderTop:'1px solid #F1F5F9',background:'#FFFBEB'}},
       lblTd('Gastos Adm/Taller (distribuidos '+emps.map(function(e){return pctEmp(e.empresa_id)+'%';}).join(' / ')+')',true,false),
@@ -15826,7 +15840,14 @@ function FinEERRView(p){
       var wb=XLSX.utils.book_new();
       var a1=[['Estado de Resultados','Período: '+desde+' a '+hasta],[],['Concepto','Consolidado'].concat(emps.map(function(e){return e.razon_social;}))];
       a1.push(['INGRESOS (liquidaciones)',Math.round(ingresoTot)].concat(emps.map(function(e){return Math.round(ingresoEmp(e.empresa_id));})));
-      CATS.forEach(function(c){a1.push([c.l,Math.round(catTot(c.k))].concat(emps.map(function(e){return Math.round(catEmp(c.k,e.empresa_id));})));});
+      CATS.forEach(function(c){
+        a1.push([c.l,Math.round(catTot(c.k))].concat(emps.map(function(e){return Math.round(catEmp(c.k,e.empresa_id));})));
+        if(c.k==='compras'){
+          subsCompras.forEach(function(s2){
+            a1.push(['   · '+s2,Math.round(subTot(s2))].concat(emps.map(function(e){return Math.round(subEmp(s2,e.empresa_id));})));
+          });
+        }
+      });
       a1.push(['Gastos Adm/Taller (distribuidos)',Math.round(poolTot)].concat(emps.map(function(e){return Math.round(ovEmp(e.empresa_id));})));
       a1.push(['Transporte maquinaria (por km)',Math.round(poolTrans)].concat(emps.map(function(e){return Math.round(trEmp(e.empresa_id));})));
       a1.push(['TOTAL COSTOS',Math.round(costosTot)].concat(emps.map(function(e){return Math.round(costosEmp(e.empresa_id));})));
