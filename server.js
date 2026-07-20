@@ -12038,7 +12038,7 @@ app.get('/api/fin/eerr', auth, async(req,res)=>{
       FROM ordenes_compra_detalle d
       JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
       LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
-      WHERE oc.estado!='ANULADA' AND NOT COALESCE(d.ingresa_bodega,false)
+      WHERE oc.estado='CERRADA' AND NOT COALESCE(d.ingresa_bodega,false)
         AND oc.fecha_emision>=$1::date AND oc.fecha_emision<$2::date
         AND (oc.proveedor_id IS NULL OR NOT (oc.proveedor_id = ANY($3::int[])))
         AND NOT EXISTS (SELECT 1 FROM comb_movimientos cm WHERE cm.tipo_mov='INGRESO_STOCK' AND cm.estado='ACTIVO' AND cm.oc_referencia=oc.numero_oc)
@@ -12106,13 +12106,13 @@ app.get('/api/fin/eerr', auth, async(req,res)=>{
     const exclFin=await q2('excluidos financiamiento',`
       SELECT COALESCE(SUM(d.cantidad*d.precio_unitario),0) AS m
       FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
-      WHERE oc.estado!='ANULADA' AND NOT COALESCE(d.ingresa_bodega,false)
+      WHERE oc.estado='CERRADA' AND NOT COALESCE(d.ingresa_bodega,false)
         AND oc.fecha_emision>=$1::date AND oc.fecha_emision<$2::date
         AND oc.proveedor_id = ANY($3::int[])`,[d1,d2,exclProv]);
     const exclComb=await q2('excluidos combustible estanque',`
       SELECT COALESCE(SUM(d.cantidad*d.precio_unitario),0) AS m
       FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
-      WHERE oc.estado!='ANULADA' AND NOT COALESCE(d.ingresa_bodega,false)
+      WHERE oc.estado='CERRADA' AND NOT COALESCE(d.ingresa_bodega,false)
         AND oc.fecha_emision>=$1::date AND oc.fecha_emision<$2::date
         AND (oc.proveedor_id IS NULL OR NOT (oc.proveedor_id = ANY($3::int[])))
         AND EXISTS (SELECT 1 FROM comb_movimientos cm WHERE cm.tipo_mov='INGRESO_STOCK' AND cm.estado='ACTIVO' AND cm.oc_referencia=oc.numero_oc)`,[d1,d2,exclProv]);
