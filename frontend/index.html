@@ -2883,28 +2883,19 @@ function TerrenoInforme(p){
     var esVehTp=function(tc){return ['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf((tc||'maquinaria').toLowerCase())>=0;};
     var tpMap={},tpOrden=[];
     detalleOrd.forEach(function(r){
-      // Vehículos fuera: sus "horas trabajadas" son KM (odómetro) y no participan de procesos productivos.
-      // Quedan completos en las hojas Detalle y Detalle TOB. "Sin proceso" = solo máquinas sin clasificar.
+      // Vehículos fuera: sus "horas trabajadas" son KM (odómetro), no tiempos de proceso.
       if(esVehTp(r.tipo_cargo))return;
       var f=(r.fecha+'').slice(0,10);
-      var k=f+'|'+(r.proceso_productivo||'zz_sin');
-      if(!tpMap[k]){tpMap[k]={fecha:f,proceso:procLbl(r.proceso_productivo),equipos:{},registros:0,ht:0,hp:0,te:0,tf:0,lt:0,m3:0};tpOrden.push(k);}
-      var g=tpMap[k];
-      g.registros++;g.equipos[r.equipo_codigo]=1;
-      g.ht+=parseFloat(r.horas_trabajadas)||0;
-      g.hp+=parseFloat(r.horas_perdidas)||0;
-      g.te+=parseFloat(r.tob_horas_e)||0;
-      g.tf+=parseFloat(r.tob_horas_f)||0;
-      g.lt+=parseFloat(r.litros_combustible)||0;
-      g.m3+=(parseFloat(r.arboles_producidos)||0)*(parseFloat(r.vma_aplicado)||0);
+      // Grano simple: día × empresa × faena × proceso → total de horas trabajadas
+      var k=f+'|'+(r.empresa_nombre||'')+'|'+(r.faena_nombre||'')+'|'+(r.proceso_productivo||'zz_sin');
+      if(!tpMap[k]){tpMap[k]={fecha:f,empresa:r.empresa_nombre||'—',faena:r.faena_nombre||'—',proceso:procLbl(r.proceso_productivo),ht:0};tpOrden.push(k);}
+      tpMap[k].ht+=parseFloat(r.horas_trabajadas)||0;
     });
-    tpOrden.sort(); // fecha ASC y, dentro del día, proceso ASC (sin proceso al final)
-    var tpData=[['Fecha','Proceso','Equipos','Registros','Hrs trabajadas','Hrs perdidas','TOB Empresa (E)','TOB Mandante (F)','Litros','m³ producidos','Rend. m³/hr']];
+    tpOrden.sort(); // fecha ASC → empresa → faena → proceso
+    var tpData=[['Fecha','Empresa','Faena','Proceso','Horas trabajadas']];
     tpOrden.forEach(function(k2){
       var g=tpMap[k2];
-      tpData.push([g.fecha,g.proceso,Object.keys(g.equipos).length,g.registros,
-        Number(g.ht.toFixed(2)),Number(g.hp.toFixed(2)),Number(g.te.toFixed(2)),Number(g.tf.toFixed(2)),
-        Number(g.lt.toFixed(2)),Number(g.m3.toFixed(3)),g.ht>0?Number((g.m3/g.ht).toFixed(2)):'']);
+      tpData.push([g.fecha,g.empresa,g.faena,g.proceso,Number(g.ht.toFixed(2))]);
     });
     if(tpData.length>1) XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(tpData),'Tiempos Proceso Diario');
     // Hoja 3: TOB top
