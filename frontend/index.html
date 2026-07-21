@@ -2877,6 +2877,32 @@ function TerrenoInforme(p){
       });
     });
     if(tobRows.length>1) XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(tobRows),'Detalle TOB');
+
+    // Hoja: Tiempos por Proceso (diario) — horas, TOB, litros y m³ agregados por día × proceso productivo
+    var procLbl=function(pr){if(!pr)return 'Sin proceso';var s=(pr+'').replace(/_/g,' ');return s.charAt(0).toUpperCase()+s.slice(1);};
+    var tpMap={},tpOrden=[];
+    detalleOrd.forEach(function(r){
+      var f=(r.fecha+'').slice(0,10);
+      var k=f+'|'+(r.proceso_productivo||'zz_sin');
+      if(!tpMap[k]){tpMap[k]={fecha:f,proceso:procLbl(r.proceso_productivo),equipos:{},registros:0,ht:0,hp:0,te:0,tf:0,lt:0,m3:0};tpOrden.push(k);}
+      var g=tpMap[k];
+      g.registros++;g.equipos[r.equipo_codigo]=1;
+      g.ht+=parseFloat(r.horas_trabajadas)||0;
+      g.hp+=parseFloat(r.horas_perdidas)||0;
+      g.te+=parseFloat(r.tob_horas_e)||0;
+      g.tf+=parseFloat(r.tob_horas_f)||0;
+      g.lt+=parseFloat(r.litros_combustible)||0;
+      g.m3+=(parseFloat(r.arboles_producidos)||0)*(parseFloat(r.vma_aplicado)||0);
+    });
+    tpOrden.sort(); // fecha ASC y, dentro del día, proceso ASC (sin proceso al final)
+    var tpData=[['Fecha','Proceso','Equipos','Registros','Hrs trabajadas','Hrs perdidas','TOB Empresa (E)','TOB Mandante (F)','Litros','m³ producidos','Rend. m³/hr']];
+    tpOrden.forEach(function(k2){
+      var g=tpMap[k2];
+      tpData.push([g.fecha,g.proceso,Object.keys(g.equipos).length,g.registros,
+        Number(g.ht.toFixed(2)),Number(g.hp.toFixed(2)),Number(g.te.toFixed(2)),Number(g.tf.toFixed(2)),
+        Number(g.lt.toFixed(2)),Number(g.m3.toFixed(3)),g.ht>0?Number((g.m3/g.ht).toFixed(2)):'']);
+    });
+    if(tpData.length>1) XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(tpData),'Tiempos Proceso Diario');
     // Hoja 3: TOB top
     if((data.tob_top||[]).length){
       var tobData=[['Causa','Clasificación','Veces','Horas']];
