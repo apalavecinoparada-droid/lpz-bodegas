@@ -15963,22 +15963,24 @@ function FinResultadoView(p){
     }
     serie.forEach(function(s){s.incompleto=s.faltaImp||s.faltaRemu;});
     var tot=serie.reduce(function(a,s){['ventas','compras','compras_af','remu_liq','imposiciones','honorarios','egresos','resultado'].forEach(function(k){a[k]=(a[k]||0)+s[k];});return a;},{});
-    // ── Gráfico de barras SVG del resultado mensual ──
+    // ── Gráfico alineado con la matriz: el grid de barras usa los MISMOS anchos % que el colgroup de la tabla ──
     var conDatos=serie.filter(function(s){return s.hayDatos;});
+    var GRID_LBL='15%',GRID_MES='6.25%',GRID_TOT='10%'; // 15 + 12×6.25 + 10 = 100
     var maxAbs=Math.max.apply(null,serie.map(function(s){return Math.abs(s.resultado);}).concat([1]));
-    var W2=940,H2=230,pad=34,cero=H2/2+14,escala=(H2/2-30)/maxAbs,bw=58;
-    var barras=serie.map(function(s,i2){
-      var x=pad+i2*(bw+17);
-      var hB=Math.abs(s.resultado)*escala;
-      var y=s.resultado>=0?cero-hB:cero;
-      return h('g',{key:i2},
-        s.hayDatos&&h('rect',{x:x,y:y,width:bw,height:Math.max(hB,1),rx:3,
-          fill:s.resultado>=0?'#16A34A':'#DC2626',opacity:0.85},
-          h('title',null,s.lbl+' '+anio+': '+(s.resultado<0?'-':'')+'$'+nf(Math.abs(s.resultado)))),
-        s.hayDatos&&h('text',{x:x+bw/2,y:s.resultado>=0?y-5:y+hB+11,textAnchor:'middle',fontSize:9,fontWeight:700,
-          fill:s.resultado>=0?'#166534':'#B91C1C'},nfM(s.resultado)),
-        h('text',{x:x+bw/2,y:H2+12,textAnchor:'middle',fontSize:10,fill:s.hayDatos?'#334155':'#CBD5E1',fontWeight:s.hayDatos?600:400},s.lbl)
-      );
+    var escala=80/maxAbs;
+    var hayNeg=serie.some(function(s){return s.hayDatos&&s.resultado<0;});
+    var negH=hayNeg?96:10;
+    var ejeSup={height:96,borderBottom:'1px solid #CBD5E1'};
+    var celdas=serie.map(function(s,i2){
+      var hB=Math.max(2,Math.abs(s.resultado)*escala);
+      var pos=s.resultado>=0;
+      return h('div',{key:i2,title:s.hayDatos?(s.lbl+' '+anio+': '+(s.resultado<0?'-':'')+'$'+nf(Math.abs(s.resultado))):''},
+        h('div',{style:{height:96,borderBottom:'1px solid #CBD5E1',display:'flex',flexDirection:'column',justifyContent:'flex-end',alignItems:'center'}},
+          s.hayDatos&&pos&&h('div',{style:{fontSize:10,fontWeight:700,color:'#166534',marginBottom:2,whiteSpace:'nowrap'}},nfM(s.resultado)),
+          s.hayDatos&&pos&&h('div',{style:{height:hB,width:'60%',maxWidth:46,background:'#16A34A',borderRadius:'3px 3px 0 0',opacity:0.9}})),
+        h('div',{style:{height:negH,display:'flex',flexDirection:'column',justifyContent:'flex-start',alignItems:'center'}},
+          s.hayDatos&&!pos&&h('div',{style:{height:hB,width:'60%',maxWidth:46,background:'#DC2626',borderRadius:'0 0 3px 3px',opacity:0.9}}),
+          s.hayDatos&&!pos&&h('div',{style:{fontSize:10,fontWeight:700,color:'#B91C1C',marginTop:2,whiteSpace:'nowrap'}},nfM(s.resultado))));
     });
     // ── Matriz mensual ──
     // background explícito en cada th: el CSS global th{background:#F8FAFC} pisa el fondo del tr
@@ -15986,7 +15988,7 @@ function FinResultadoView(p){
     var tdM=function(v,color,bold){return h('td',{style:{padding:'5px 8px',textAlign:'right',fontFamily:'monospace',fontSize:10,whiteSpace:'nowrap',fontWeight:bold?700:400,color:color||'#1E293B'}},v===null?'—':((v<0?'-':'')+'$'+nf(Math.abs(v))));};
     var filaM=function(lbl,key,color,bold,bg){
       return h('tr',{style:{borderTop:'1px solid #F1F5F9',background:bg||'transparent'}},
-        h('td',{style:{padding:'5px 10px',fontSize:11,fontWeight:bold?700:600,color:color||'#334155',whiteSpace:'nowrap'}},lbl),
+        h('td',{style:{padding:'5px 10px',fontSize:11,fontWeight:bold?700:600,color:color||'#334155',lineHeight:1.25}},lbl),
         serie.map(function(s){return tdM(s.hayDatos?s[key]:null,key==='resultado'?(s.resultado>=0?'#166534':'#B91C1C'):color,bold);}),
         tdM(tot[key],key==='resultado'?(tot.resultado>=0?'#166534':'#B91C1C'):color,true));
     };
@@ -16005,28 +16007,32 @@ function FinResultadoView(p){
         tot.compras_af>0&&h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #1E40AF'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'INVERSIÓN ACTIVO FIJO'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF'}},CLP(tot.compras_af))),
         h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #0F766E'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'MEJOR / PEOR MES'),h('div',{style:{fontSize:13,fontWeight:700,color:'#0F766E'}},(function(){if(!conDatos.length)return '—';var mx=conDatos.reduce(function(a,b2){return b2.resultado>a.resultado?b2:a;});var mn=conDatos.reduce(function(a,b2){return b2.resultado<a.resultado?b2:a;});return mx.lbl+' '+nfM(mx.resultado)+' / '+mn.lbl+' '+nfM(mn.resultado);})()))
       ),
-      // Gráfico
-      h('div',{className:'card',style:{padding:'14px 10px 6px',marginBottom:12,overflowX:'auto'}},
-        h('div',{style:{fontWeight:700,fontSize:13,color:'#1E3A2D',marginBottom:4,paddingLeft:8}},'Resultado mes a mes — '+anio),
-        h('svg',{viewBox:'0 0 '+W2+' '+(H2+18),style:{width:'100%',minWidth:760,height:'auto'}},
-          h('line',{x1:pad-8,y1:cero,x2:W2-6,y2:cero,stroke:'#CBD5E1',strokeWidth:1}),
-          barras)),
-      // Matriz mensual
-      h('div',{className:'card',style:{padding:0,overflow:'auto'}},
-        h('table',{style:{width:'100%',borderCollapse:'collapse'}},
-          h('thead',null,h('tr',null,
-            h('th',{style:Object.assign({},thM,{textAlign:'left',padding:'7px 10px'})},'CONCEPTO'),
-            serie.map(function(s){return h('th',{key:s.mes,style:Object.assign({},thM,{opacity:s.hayDatos?1:0.45})},s.lbl.toUpperCase()+(s.incompleto?' ⚠':''));}),
-            h('th',{style:Object.assign({},thM,{color:'#FCD34D'})},'TOTAL AÑO'))),
-          h('tbody',null,
-            filaM('Ventas (neto)','ventas','#166534',false,'#F0FDF4'),
-            filaM('Compras (neto)','compras','#334155',false),
-            filaM('Remuneraciones líquidas','remu_liq','#334155',false),
-            filaM('Imposiciones (Previred)','imposiciones','#334155',false),
-            filaM('Honorarios (BHE+BTE)','honorarios','#334155',false),
-            filaM('TOTAL EGRESOS','egresos','#B91C1C',true,'#FEF2F2'),
-            filaM('RESULTADO DEL MES','resultado',null,true,'#E9F1EC'),
-            filaM('Compras activo fijo (inversión, no resta)','compras_af','#1E40AF',false,'#EFF6FF')))),
+      // Gráfico + matriz en UNA tarjeta: las barras quedan exactamente sobre su columna de mes
+      h('div',{className:'card',style:{padding:0,overflowX:'auto',marginBottom:12}},
+        h('div',{style:{minWidth:1350}},
+          h('div',{style:{fontWeight:700,fontSize:13,color:'#1E3A2D',padding:'12px 14px 2px'}},'Resultado mes a mes — '+anio),
+          h('div',{style:{display:'grid',gridTemplateColumns:GRID_LBL+' repeat(12,'+GRID_MES+') '+GRID_TOT,padding:'6px 0 8px'}},
+            h('div',null,h('div',{style:ejeSup}),h('div',{style:{height:negH}})),
+            celdas,
+            h('div',null,h('div',{style:ejeSup}),h('div',{style:{height:negH}}))),
+          h('table',{style:{width:'100%',borderCollapse:'collapse',tableLayout:'fixed'}},
+            h('colgroup',null,
+              h('col',{style:{width:GRID_LBL}}),
+              serie.map(function(s){return h('col',{key:s.mes,style:{width:GRID_MES}});}),
+              h('col',null)),
+            h('thead',null,h('tr',null,
+              h('th',{style:Object.assign({},thM,{textAlign:'left',padding:'7px 10px'})},'CONCEPTO'),
+              serie.map(function(s){return h('th',{key:s.mes,style:Object.assign({},thM,{opacity:s.hayDatos?1:0.45})},s.lbl.toUpperCase()+(s.incompleto?' ⚠':''));}),
+              h('th',{style:Object.assign({},thM,{color:'#FCD34D'})},'TOTAL AÑO'))),
+            h('tbody',null,
+              filaM('Ventas (neto)','ventas','#166534',false,'#F0FDF4'),
+              filaM('Compras (neto)','compras','#334155',false),
+              filaM('Remuneraciones líquidas','remu_liq','#334155',false),
+              filaM('Imposiciones (Previred)','imposiciones','#334155',false),
+              filaM('Honorarios (BHE+BTE)','honorarios','#334155',false),
+              filaM('TOTAL EGRESOS','egresos','#B91C1C',true,'#FEF2F2'),
+              filaM('RESULTADO DEL MES','resultado',null,true,'#E9F1EC'),
+              filaM('Compras activo fijo (no resta)','compras_af','#1E40AF',false,'#EFF6FF'))))),
       h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Mes a mes (no acumulado). Ventas y compras: netos del Libro de Compras y Ventas (RCV, notas de crédito restadas). Las compras marcadas como ACTIVO FIJO en el RCV del SII se excluyen del resultado (son inversión, no gasto del mes) y se muestran en la fila azul informativa. Remuneraciones líquidas = costo del libro de remuneraciones − imposiciones Previred − retención impuesto único (F29). Honorarios: boletas BHE+BTE brutas vigentes. Cada mes muestra datos solo si sus fuentes están cargadas.')
     );
   }
@@ -24314,7 +24320,7 @@ function App(){
         canSee('solicitudes')&&grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
         canSee('solicitudes')&&h('div',{className:'sb-sep'}),
         canSee('finanzas')&&grpHdr('fin','FINANZAS'),
-        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true),navI('fin-costos','📊','Informe de Costos',true),navI('fin-liquidaciones','🌲','Liquidaciones Producción',true),navI('fin-honorarios','📜','Honorarios',true),navI('fin-eerr','💹','Estado de Resultados',true),navI('fin-rcv','📚','Libro Compras y Ventas',true),navI('fin-resultado','🗓','Resultado del Año',true),navI('fin-f29','📄','Formulario 29',true),navI('fin-imposiciones','🏦','Imposiciones',true),navI('fin-remu','🧾','Costo Remuneraciones',true),navI('fin-activos','🏗','Activos Fijos',true)),
+        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true),navI('fin-costos','📊','Informe de Costos',true),navI('fin-liquidaciones','🌲','Liquidaciones Producción',true),navI('fin-honorarios','📜','Honorarios',true),/* oculto por ahora a pedido del usuario (2026-07): navI('fin-eerr','💹','Estado de Resultados',true), */navI('fin-rcv','📚','Libro Compras y Ventas',true),navI('fin-resultado','🗓','Resultado del Año',true),navI('fin-f29','📄','Formulario 29',true),navI('fin-imposiciones','🏦','Imposiciones',true),navI('fin-remu','🧾','Costo Remuneraciones',true),navI('fin-activos','🏗','Activos Fijos',true)),
         canSee('finanzas')&&h('div',{className:'sb-sep'}),
         canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
         canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
