@@ -12203,6 +12203,370 @@ app.post('/api/fin/eerr/config', auth, async(req,res)=>{
 });
 
 // ════════════════════════════════════════════════════════════════════
+// FINANZAS — FORMULARIO 29 (declaración mensual de IVA, PDF del SII)
+// Se sube el PDF, el servidor extrae con pdf-parse: folio [07], RUT [03], período [15]
+// y todas las líneas "código glosa valor". Valida RUT vs empresa y período vs selección.
+// ════════════════════════════════════════════════════════════════════
+let _finF29Ok=false;
+async function finF29Ensure(){
+  if(_finF29Ok)return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS fin_f29 (
+    f29_id SERIAL PRIMARY KEY,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    periodo VARCHAR(7) NOT NULL,
+    folio VARCHAR(20) NOT NULL,
+    tipo_declaracion VARCHAR(60),
+    total_debitos NUMERIC(14,2) DEFAULT 0,
+    total_creditos NUMERIC(14,2) DEFAULT 0,
+    iva_determinado NUMERIC(14,2) DEFAULT 0,
+    ppm NUMERIC(14,2) DEFAULT 0,
+    total_pagar NUMERIC(14,2) DEFAULT 0,
+    fecha_presentacion DATE,
+    codigos JSONB DEFAULT '[]'::jsonb,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(empresa_id,periodo,folio)
+  )`);
+  _finF29Ok=true;
+}
+function f29NormRut(s){return String(s||'').replace(/\./g,'').replace(/\s/g,'').toLowerCase();}
+function f29ParseTexto(txt){
+  const num=function(s){const n=parseFloat(String(s||'').replace(/\./g,'').replace(',','.'));return isNaN(n)?0:n;};
+  const folio=(txt.match(/FOLIO\s*\[07\]\s*(\d+)/)||[])[1]||'';
+  const rut=(txt.match(/RUT\s*\[03\]\s*([\d\.]+\-[\dkK])/)||[])[1]||'';
+  const perRaw=(txt.match(/PERIODO\s*\[15\]\s*(\d{6})/)||[])[1]||'';
+  const periodo=perRaw?(perRaw.slice(0,4)+'-'+perRaw.slice(4,6)):'';
+  // Líneas "código glosa valor": código 2-4 dígitos al inicio, valor numérico al final
+  const codigos=[];
+  txt.split(/\r?\n/).forEach(function(l){
+    const m=l.trim().match(/^(\d{2,4})\s+(.+?)\s+([\d\.,\/]+)$/);
+    if(m&&m[2].length>3)codigos.push({codigo:m[1],glosa:m[2].trim(),valor:m[3]});
+  });
+  const cod=function(c){const x=codigos.find(function(k){return k.codigo===c;});return x?num(x.valor):0;};
+  const totalPagar=num((txt.match(/TOTAL A PAGAR DENTRO DEL PLAZO LEGAL\s*91\s*([\d\.]+)/)||[])[1])||cod('91');
+  const fpRaw=(txt.match(/9906\s+FECHA PRESENTACION[^\d]*(\d{2})\/(\d{2})\/(\d{4})/)||null);
+  const fechaPres=fpRaw?(fpRaw[3]+'-'+fpRaw[2]+'-'+fpRaw[1]):null;
+  const tipoDecl=(txt.match(/(Modificatoria[^\n\d]*|Primitiva[^\n\d]*)/)||[])[1]||null;
+  return{folio:folio,rut:rut,periodo:periodo,codigos:codigos,
+    total_debitos:cod('538'),total_creditos:cod('537'),iva_determinado:cod('089'),
+    ppm:cod('062'),total_pagar:totalPagar,fecha_presentacion:fechaPres,tipo_declaracion:tipoDecl?tipoDecl.trim():null};
+}
+
+// POST: parsear el PDF del F29 (no guarda; devuelve extracción para preview)
+app.post('/api/fin/f29/parse', auth, async(req,res)=>{
+  try{
+    if(!pdfParse)return res.status(500).json({error:'Lector PDF no disponible en el servidor'});
+    var b64=(req.body&&req.body.pdf_base64)||'';
+    if(!b64)return res.status(400).json({error:'pdf_base64 requerido'});
+    const buf=Buffer.from(b64.replace(/^data:[^;]+;base64,/,''),'base64');
+    const parsed=await pdfParse(buf);
+    const out=f29ParseTexto(parsed.text||'');
+    if(!out.folio&&!out.periodo)return res.status(400).json({error:'El PDF no parece un Formulario 29 del SII (no se encontró folio ni período)'});
+    res.json(out);
+  }catch(e){res.status(400).json({error:'Error leyendo el PDF: '+e.message});}
+});
+
+// POST: guardar el F29 (con validación de RUT y período contra la selección)
+app.post('/api/fin/f29/import', auth, async(req,res)=>{
+  try{
+    await finF29Ensure();
+    var b=req.body||{};
+    if(!b.empresa_id)return res.status(400).json({error:'Selecciona primero la empresa'});
+    if(!b.periodo||!/^\d{4}-\d{2}$/.test(b.periodo))return res.status(400).json({error:'Selecciona el período (AAAA-MM)'});
+    var emp=await pool.query('SELECT rut FROM empresas WHERE empresa_id=$1',[b.empresa_id]);
+    if(!emp.rows.length)return res.status(404).json({error:'Empresa no encontrada'});
+    if(b.rut&&f29NormRut(emp.rows[0].rut)!==f29NormRut(b.rut))
+      return res.status(400).json({error:'El RUT del formulario ('+b.rut+') no corresponde a la empresa seleccionada ('+emp.rows[0].rut+')'});
+    if(b.periodo_pdf&&b.periodo_pdf!==b.periodo)
+      return res.status(400).json({error:'El período del formulario ('+b.periodo_pdf+') no coincide con el período seleccionado ('+b.periodo+')'});
+    var r=await pool.query(`INSERT INTO fin_f29(empresa_id,periodo,folio,tipo_declaracion,total_debitos,total_creditos,iva_determinado,ppm,total_pagar,fecha_presentacion,codigos,usuario)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      ON CONFLICT(empresa_id,periodo,folio) DO UPDATE SET tipo_declaracion=EXCLUDED.tipo_declaracion,total_debitos=EXCLUDED.total_debitos,total_creditos=EXCLUDED.total_creditos,iva_determinado=EXCLUDED.iva_determinado,ppm=EXCLUDED.ppm,total_pagar=EXCLUDED.total_pagar,fecha_presentacion=EXCLUDED.fecha_presentacion,codigos=EXCLUDED.codigos,usuario=EXCLUDED.usuario
+      RETURNING *`,
+      [b.empresa_id,b.periodo,String(b.folio||'').trim()||('SF-'+b.periodo),b.tipo_declaracion||null,
+       parseFloat(b.total_debitos)||0,parseFloat(b.total_creditos)||0,parseFloat(b.iva_determinado)||0,
+       parseFloat(b.ppm)||0,parseFloat(b.total_pagar)||0,b.fecha_presentacion||null,
+       JSON.stringify(b.codigos||[]),req.user.email]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// GET: F29 registrados
+app.get('/api/fin/f29', auth, async(req,res)=>{
+  try{
+    await finF29Ensure();
+    var w=['1=1'],v=[];
+    if(req.query.empresa_id){v.push(req.query.empresa_id);w.push('f.empresa_id=$'+v.length);}
+    if(req.query.anio){v.push(req.query.anio+'-%');w.push('f.periodo LIKE $'+v.length);}
+    var r=await pool.query(`SELECT f.*, e.razon_social AS empresa_nombre FROM fin_f29 f
+      LEFT JOIN empresas e ON f.empresa_id=e.empresa_id
+      WHERE ${w.join(' AND ')} ORDER BY f.periodo DESC, e.razon_social`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.delete('/api/fin/f29/:id', auth, async(req,res)=>{
+  try{
+    await finF29Ensure();
+    var r=await pool.query('DELETE FROM fin_f29 WHERE f29_id=$1 RETURNING f29_id',[req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'F29 no encontrado'});
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ════════════════════════════════════════════════════════════════════
+// FINANZAS — IMPOSICIONES (planillas de cotizaciones Previred, PDF)
+// El paquete PDF trae un comprobante por institución (AFPs, ISAPREs, CCAF, Mutual).
+// Se extraen institución, folio, período, fecha de pago, renta imponible, trabajadores
+// y los TOTAL A PAGAR (las AFP suman pensiones + cesantía).
+// ════════════════════════════════════════════════════════════════════
+let _finImpOk=false;
+async function finImpEnsure(){
+  if(_finImpOk)return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS fin_imposiciones (
+    imp_id SERIAL PRIMARY KEY,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    periodo VARCHAR(7) NOT NULL,
+    institucion VARCHAR(90) NOT NULL,
+    tipo VARCHAR(10) NOT NULL DEFAULT 'OTRA',
+    folio VARCHAR(30) NOT NULL DEFAULT '',
+    monto NUMERIC(14,2) DEFAULT 0,
+    renta_imponible NUMERIC(14,2) DEFAULT 0,
+    n_trabajadores INT DEFAULT 0,
+    fecha_pago DATE,
+    detalle JSONB DEFAULT '[]'::jsonb,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(empresa_id,periodo,institucion,folio)
+  )`);
+  _finImpOk=true;
+}
+const IMP_MESES={enero:1,febrero:2,marzo:3,abril:4,mayo:5,junio:6,julio:7,agosto:8,septiembre:9,octubre:10,noviembre:11,diciembre:12};
+function impParseTexto(txt){
+  const num=function(s){const n=parseFloat(String(s||'').replace(/\./g,'').replace(',','.'));return isNaN(n)?0:n;};
+  const rutEmp=(txt.match(/([\d]{1,2}\.\d{3}\.\d{3}\-[\dkK]|78\d{6}\-[\dkK]|\d{7,8}\-[\dkK])/)||[])[1]||'';
+  const bloques=txt.split(/(?=COMPROBANTE DE PAGO)/).filter(function(x){return x.indexOf('COMPROBANTE DE PAGO')===0;});
+  const comprobantes=[];
+  bloques.forEach(function(bl){
+    const inst=(bl.match(/^(AFP [^\n]+|ISAPRE [^\n]+|Caja de Compensaci[oó]n [^\n]+|Asociaci[oó]n Chilena de Seguridad[^\n]*|Mutual[^\n]*|Instituto de Seguridad[^\n]*|Instituto de Previsi[oó]n Social[^\n]*|IPS[^\n]*|Fonasa[^\n]*)$/mi)||[])[1];
+    if(!inst)return;
+    const nombre=inst.trim();
+    const tipo=/^AFP/i.test(nombre)?'AFP':(/^ISAPRE/i.test(nombre)?'ISAPRE':(/^Caja/i.test(nombre)?'CCAF':(/Seguridad|Mutual/i.test(nombre)?'MUTUAL':'OTRA')));
+    const folio=(bl.match(/N[uú]mero de Folio:\s*(\d+)/i)||[])[1]||'';
+    // Período: "Periodo 01/2026" (AFP) o "Enero 2026" (ISAPRE/CCAF)
+    var periodo='';
+    var m1=bl.match(/Periodo\s+(\d{1,2})\/(\d{4})/i);
+    if(m1)periodo=m1[2]+'-'+('0'+parseInt(m1[1])).slice(-2);
+    else{
+      var m2=bl.match(/(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Septiembre|Octubre|Noviembre|Diciembre)\s+(\d{4})/i);
+      if(m2)periodo=m2[2]+'-'+('0'+IMP_MESES[m2[1].toLowerCase()]).slice(-2);
+    }
+    var fp=bl.match(/Fecha Pago\s*:?\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i)||bl.match(/Pago Electr[oó]nico\s*\n?\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i);
+    const fechaPago=fp?(fp[3]+'-'+('0'+parseInt(fp[2])).slice(-2)+'-'+('0'+parseInt(fp[1])).slice(-2)):null;
+    // Totales "TOTAL A PAGAR ..." (AFP: pensiones + cesantía; otras: uno)
+    const detalle=[];var monto=0;
+    var reTot=/TOTAL A PAGAR([^\n\d]*)([\d\.]+)/g,mt;
+    while((mt=reTot.exec(bl))!==null){
+      const v2=num(mt[2]);
+      detalle.push({concepto:('TOTAL A PAGAR'+mt[1]).trim(),monto:v2});
+      monto+=v2;
+    }
+    const renta=num((bl.match(/Renta Imponible\s+([\d\.]+)/i)||[])[1]);
+    var nT=parseInt((bl.match(/FDO\.?\s*PENSIONES\s+(\d+)/i)||[])[1]||0)
+        ||parseInt((bl.match(/N[°º] de Afiliados Informados\s*\n?\s*(\d+)/i)||[])[1]||0);
+    comprobantes.push({institucion:nombre,tipo:tipo,folio:folio,periodo:periodo,fecha_pago:fechaPago,
+      monto:monto,renta_imponible:renta,n_trabajadores:nT,detalle:detalle});
+  });
+  return{rut_empresa:rutEmp,comprobantes:comprobantes};
+}
+
+// POST: parsear el PDF de imposiciones (no guarda)
+app.post('/api/fin/imposiciones/parse', auth, async(req,res)=>{
+  try{
+    if(!pdfParse)return res.status(500).json({error:'Lector PDF no disponible en el servidor'});
+    var b64=(req.body&&req.body.pdf_base64)||'';
+    if(!b64)return res.status(400).json({error:'pdf_base64 requerido'});
+    const buf=Buffer.from(b64.replace(/^data:[^;]+;base64,/,''),'base64');
+    const parsed=await pdfParse(buf);
+    const out=impParseTexto(parsed.text||'');
+    if(!out.comprobantes.length)return res.status(400).json({error:'No se encontraron comprobantes de cotizaciones en el PDF (¿es la planilla de Previred?)'});
+    res.json(out);
+  }catch(e){res.status(400).json({error:'Error leyendo el PDF: '+e.message});}
+});
+
+// POST: guardar imposiciones (valida RUT y período contra la selección)
+app.post('/api/fin/imposiciones/import', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await finImpEnsure();
+    var b=req.body||{};
+    if(!b.empresa_id)return res.status(400).json({error:'Selecciona primero la empresa'});
+    if(!b.periodo||!/^\d{4}-\d{2}$/.test(b.periodo))return res.status(400).json({error:'Selecciona el período (AAAA-MM)'});
+    var emp=await client.query('SELECT rut FROM empresas WHERE empresa_id=$1',[b.empresa_id]);
+    if(!emp.rows.length)return res.status(404).json({error:'Empresa no encontrada'});
+    if(b.rut&&f29NormRut(emp.rows[0].rut)!==f29NormRut(b.rut))
+      return res.status(400).json({error:'El RUT de la planilla ('+b.rut+') no corresponde a la empresa seleccionada ('+emp.rows[0].rut+')'});
+    var comps=Array.isArray(b.comprobantes)?b.comprobantes:[];
+    if(!comps.length)return res.status(400).json({error:'Sin comprobantes para importar'});
+    var malPeriodo=comps.filter(function(c){return c.periodo&&c.periodo!==b.periodo;});
+    if(malPeriodo.length&&!b.forzar_periodo)
+      return res.status(400).json({error:malPeriodo.length+' comprobante(s) tienen período distinto al seleccionado ('+b.periodo+'): '+malPeriodo.map(function(c){return c.institucion+'='+c.periodo;}).slice(0,3).join(', ')});
+    await client.query('BEGIN');
+    if(b.reemplazar)await client.query('DELETE FROM fin_imposiciones WHERE empresa_id=$1 AND periodo=$2',[b.empresa_id,b.periodo]);
+    var importados=0,duplicados=0;
+    for(var i=0;i<comps.length;i++){
+      var c=comps[i];
+      var ins=await client.query(`INSERT INTO fin_imposiciones(empresa_id,periodo,institucion,tipo,folio,monto,renta_imponible,n_trabajadores,fecha_pago,detalle,usuario)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        ON CONFLICT(empresa_id,periodo,institucion,folio) DO NOTHING RETURNING imp_id`,
+        [b.empresa_id,b.periodo,String(c.institucion||'').slice(0,90),c.tipo||'OTRA',String(c.folio||''),
+         parseFloat(c.monto)||0,parseFloat(c.renta_imponible)||0,parseInt(c.n_trabajadores)||0,c.fecha_pago||null,
+         JSON.stringify(c.detalle||[]),req.user.email]);
+      if(ins.rows.length)importados++;else duplicados++;
+    }
+    await client.query('COMMIT');
+    res.json({ok:true,importados:importados,duplicados:duplicados});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// GET: imposiciones registradas
+app.get('/api/fin/imposiciones', auth, async(req,res)=>{
+  try{
+    await finImpEnsure();
+    var w=['1=1'],v=[];
+    if(req.query.empresa_id){v.push(req.query.empresa_id);w.push('i.empresa_id=$'+v.length);}
+    if(req.query.periodo){v.push(req.query.periodo);w.push('i.periodo=$'+v.length);}
+    if(req.query.anio){v.push(req.query.anio+'-%');w.push('i.periodo LIKE $'+v.length);}
+    var r=await pool.query(`SELECT i.*, e.razon_social AS empresa_nombre FROM fin_imposiciones i
+      LEFT JOIN empresas e ON i.empresa_id=e.empresa_id
+      WHERE ${w.join(' AND ')} ORDER BY i.periodo DESC, e.razon_social, i.tipo, i.institucion`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.delete('/api/fin/imposiciones/:id', auth, async(req,res)=>{
+  try{
+    await finImpEnsure();
+    var r=await pool.query('DELETE FROM fin_imposiciones WHERE imp_id=$1 RETURNING imp_id',[req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Registro no encontrado'});
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ════════════════════════════════════════════════════════════════════
+// FINANZAS — LIBRO DE COMPRAS Y VENTAS (RCV del SII)
+// Importa los CSV oficiales del Registro de Compras y Ventas (RCV_COMPRA_REGISTRO_* y
+// RCV_VENTA_*). Las notas de crédito (61) restan en los totales; las filas de
+// continuación del CSV (sin Nro, con otro código de impuesto) se fusionan al documento.
+// ════════════════════════════════════════════════════════════════════
+let _finRcvOk=false;
+async function finRcvEnsure(){
+  if(_finRcvOk)return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS fin_rcv (
+    rcv_id SERIAL PRIMARY KEY,
+    empresa_id INT REFERENCES empresas(empresa_id),
+    libro VARCHAR(6) NOT NULL,
+    periodo VARCHAR(7) NOT NULL,
+    tipo_dte VARCHAR(4),
+    tipo_operacion VARCHAR(30),
+    rut_contraparte VARCHAR(15) NOT NULL DEFAULT '',
+    razon_social VARCHAR(160),
+    folio VARCHAR(20) NOT NULL,
+    fecha_docto DATE,
+    exento NUMERIC(14,2) DEFAULT 0,
+    neto NUMERIC(14,2) DEFAULT 0,
+    iva NUMERIC(14,2) DEFAULT 0,
+    iva_no_rec NUMERIC(14,2) DEFAULT 0,
+    total NUMERIC(14,2) DEFAULT 0,
+    neto_activo_fijo NUMERIC(14,2) DEFAULT 0,
+    iva_activo_fijo NUMERIC(14,2) DEFAULT 0,
+    otros_imp NUMERIC(14,2) DEFAULT 0,
+    usuario VARCHAR(100),
+    creado_en TIMESTAMP DEFAULT NOW(),
+    UNIQUE(empresa_id,libro,periodo,tipo_dte,folio,rut_contraparte)
+  )`);
+  _finRcvOk=true;
+}
+
+// GET: documentos del libro con filtros
+app.get('/api/fin/rcv', auth, async(req,res)=>{
+  try{
+    await finRcvEnsure();
+    var w=['1=1'],v=[];
+    if(req.query.empresa_id){v.push(req.query.empresa_id);w.push('r.empresa_id=$'+v.length);}
+    if(req.query.libro){v.push(req.query.libro);w.push('r.libro=$'+v.length);}
+    if(req.query.periodo){v.push(req.query.periodo);w.push('r.periodo=$'+v.length);}
+    if(req.query.anio){v.push(req.query.anio+'-%');w.push('r.periodo LIKE $'+v.length);}
+    var r=await pool.query(`
+      SELECT r.*, e.razon_social AS empresa_nombre
+      FROM fin_rcv r LEFT JOIN empresas e ON r.empresa_id=e.empresa_id
+      WHERE ${w.join(' AND ')}
+      ORDER BY r.periodo, r.libro, r.fecha_docto ASC NULLS LAST, r.rcv_id ASC LIMIT 3000`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// GET: períodos cargados (resumen por empresa+libro+período, con signo NC)
+app.get('/api/fin/rcv/periodos', auth, async(req,res)=>{
+  try{
+    await finRcvEnsure();
+    var r=await pool.query(`
+      SELECT r.empresa_id, e.razon_social AS empresa_nombre, r.libro, r.periodo,
+             COUNT(*)::int AS docs,
+             SUM(CASE WHEN r.tipo_dte='61' THEN -r.neto ELSE r.neto END) AS neto,
+             SUM(CASE WHEN r.tipo_dte='61' THEN -r.iva ELSE r.iva END) AS iva,
+             SUM(CASE WHEN r.tipo_dte='61' THEN -r.total ELSE r.total END) AS total
+      FROM fin_rcv r LEFT JOIN empresas e ON r.empresa_id=e.empresa_id
+      GROUP BY r.empresa_id, e.razon_social, r.libro, r.periodo
+      ORDER BY r.periodo DESC, e.razon_social, r.libro`);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// POST: importar documentos parseados del CSV RCV (dedup por UNIQUE; reemplazar=true borra el período antes)
+app.post('/api/fin/rcv/import', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await finRcvEnsure();
+    var b=req.body||{};
+    if(!b.empresa_id)return res.status(400).json({error:'Empresa requerida'});
+    if(!b.periodo||!/^\d{4}-\d{2}$/.test(b.periodo))return res.status(400).json({error:'Período requerido (AAAA-MM)'});
+    var libro=b.libro==='VENTA'?'VENTA':'COMPRA';
+    var docs=Array.isArray(b.docs)?b.docs:[];
+    if(!docs.length)return res.status(400).json({error:'Sin documentos para importar'});
+    await client.query('BEGIN');
+    if(b.reemplazar){
+      await client.query('DELETE FROM fin_rcv WHERE empresa_id=$1 AND libro=$2 AND periodo=$3',[b.empresa_id,libro,b.periodo]);
+    }
+    var importados=0,duplicados=0,errores=[];
+    for(var i=0;i<docs.length;i++){
+      var d=docs[i];
+      try{
+        var ins=await client.query(`INSERT INTO fin_rcv(empresa_id,libro,periodo,tipo_dte,tipo_operacion,rut_contraparte,razon_social,folio,fecha_docto,exento,neto,iva,iva_no_rec,total,neto_activo_fijo,iva_activo_fijo,otros_imp,usuario)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+          ON CONFLICT(empresa_id,libro,periodo,tipo_dte,folio,rut_contraparte) DO NOTHING RETURNING rcv_id`,
+          [b.empresa_id,libro,b.periodo,String(d.tipo_dte||'').trim(),d.tipo_operacion||null,String(d.rut||'').trim(),d.razon_social||null,String(d.folio||'').trim(),d.fecha_docto||null,
+           parseFloat(d.exento)||0,parseFloat(d.neto)||0,parseFloat(d.iva)||0,parseFloat(d.iva_no_rec)||0,parseFloat(d.total)||0,
+           parseFloat(d.neto_activo_fijo)||0,parseFloat(d.iva_activo_fijo)||0,parseFloat(d.otros_imp)||0,req.user.email]);
+        if(ins.rows.length)importados++;else duplicados++;
+      }catch(ex){errores.push('Folio '+(d.folio||'?')+': '+ex.message);}
+    }
+    await client.query('COMMIT');
+    res.json({ok:true,importados:importados,duplicados:duplicados,errores:errores});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// DELETE: eliminar un documento
+app.delete('/api/fin/rcv/:id', auth, async(req,res)=>{
+  try{
+    await finRcvEnsure();
+    var r=await pool.query('DELETE FROM fin_rcv WHERE rcv_id=$1 RETURNING rcv_id',[req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Documento no encontrado'});
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ════════════════════════════════════════════════════════════════════
 // MANTENCIÓN — VENCIMIENTOS DOCUMENTALES (revisión técnica y acreditación)
 // Vehículos/camiones: revisión técnica + acreditación. Maquinaria: SOLO acreditación.
 // ════════════════════════════════════════════════════════════════════
