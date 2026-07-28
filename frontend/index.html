@@ -15633,6 +15633,541 @@ function ModelosAdmin(p){
   );
 }
 
+// ── Finanzas: Formulario 29 (declaración mensual de IVA — PDF del SII) ──
+// Flujo: seleccionar empresa y período PRIMERO → subir el PDF → el backend lo lee (pdf-parse)
+// → preview con validación de RUT y período → guardar.
+function FinF29View(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var[lista,setLista]=useState([]);var[load,setLoad]=useState(true);
+  var[selEmpresa,setSelEmpresa]=useState('');var[selPeriodo,setSelPeriodo]=useState('');
+  var[fAnio,setFAnio]=useState('');
+  var[imp,setImp]=useState(null);var[verCod,setVerCod]=useState(null);
+  var[saving,setSaving]=useState(false);var[msg,setMsg]=useState('');var[leyendo,setLeyendo]=useState(false);
+  function nf(n){return new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+  var normRut=function(s){return String(s||'').replace(/\./g,'').replace(/\s/g,'').toLowerCase();};
+  function load2(){
+    setLoad(true);
+    var qs=[];if(fAnio)qs.push('anio='+fAnio);
+    api('/fin/f29'+(qs.length?'?'+qs.join('&'):''),'GET',null,p.tok)
+      .then(function(r){setLista(Array.isArray(r)?r:[]);}).catch(function(){setLista([]);}).finally(function(){setLoad(false);});
+  }
+  useEffect(load2,[p.tok,fAnio]);
+  function onFile(e){
+    var file=e.target.files[0];if(!file)return;
+    if(!selEmpresa||!selPeriodo){alert('Primero selecciona la EMPRESA y el PERÍODO, luego sube el PDF del F29.');e.target.value='';return;}
+    var empSel=empresas.find(function(em){return String(em.empresa_id)===String(selEmpresa);});
+    setLeyendo(true);setMsg('');
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      api('/fin/f29/parse','POST',{pdf_base64:ev.target.result},p.tok).then(function(r){
+        var errores=[];
+        if(r.rut&&empSel&&normRut(r.rut)!==normRut(empSel.rut))errores.push('El RUT del formulario ('+r.rut+') NO corresponde a '+empSel.razon_social+' ('+empSel.rut+')');
+        if(r.periodo&&r.periodo!==selPeriodo)errores.push('El período del formulario ('+r.periodo+') NO coincide con el seleccionado ('+selPeriodo+')');
+        setImp({parsed:r,errores:errores,empresa_nombre:empSel?empSel.razon_social:'',filename:file.name});
+      }).catch(function(ex){alert('Error: '+ex.message);}).finally(function(){setLeyendo(false);});
+    };
+    reader.readAsDataURL(file);
+    e.target.value='';
+  }
+  function guardar(){
+    var r=imp.parsed;setSaving(true);setMsg('');
+    api('/fin/f29/import','POST',{empresa_id:selEmpresa,periodo:selPeriodo,rut:r.rut,periodo_pdf:r.periodo,
+      folio:r.folio,tipo_declaracion:r.tipo_declaracion,total_debitos:r.total_debitos,total_creditos:r.total_creditos,
+      iva_determinado:r.iva_determinado,ppm:r.ppm,total_pagar:r.total_pagar,fecha_presentacion:r.fecha_presentacion,codigos:r.codigos},p.tok)
+      .then(function(){setImp(null);load2();alert('✓ Formulario 29 del período '+selPeriodo+' guardado');})
+      .catch(function(ex){setMsg(ex.message);}).finally(function(){setSaving(false);});
+  }
+  function eliminar(f){
+    if(!confirm('¿Eliminar el F29 folio '+f.folio+' del período '+f.periodo+'?'))return;
+    api('/fin/f29/'+f.f29_id,'DELETE',null,p.tok).then(load2).catch(function(ex){alert(ex.message);});
+  }
+  var inpS={padding:'6px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
+  var listo=!!(selEmpresa&&selPeriodo);
+  return h('div',null,
+    h('div',{className:'card',style:{padding:12,marginBottom:10}},
+      h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D',marginBottom:8}},'📄 Subir Formulario 29 — selecciona primero empresa y período'),
+      h('div',{style:{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap'}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa *'),
+          h('select',{value:selEmpresa,onChange:function(e){setSelEmpresa(e.target.value);},style:Object.assign({},inpS,{borderColor:selEmpresa?'#CBD5E1':'#F59E0B'})},
+            h('option',{value:''},'— Selecciona empresa —'),empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Período *'),
+          h('input',{type:'month',value:selPeriodo,onChange:function(e){setSelPeriodo(e.target.value);},style:Object.assign({},inpS,{borderColor:selPeriodo?'#CBD5E1':'#F59E0B'})})),
+        h('label',{title:listo?'Subir el PDF del F29':'Selecciona empresa y período primero',style:{padding:'8px 14px',borderRadius:6,fontSize:13,fontWeight:600,cursor:listo?'pointer':'not-allowed',border:'1px solid '+(listo?'#16A34A':'#CBD5E1'),background:listo?'#F0FDF4':'#F1F5F9',color:listo?'#15803D':'#94A3B8'}},
+          leyendo?'⏳ Leyendo PDF...':'⬆ Subir PDF del F29',
+          h('input',{type:'file',accept:'.pdf',onChange:onFile,disabled:!listo||leyendo,style:{display:'none'}}))
+      )
+    ),
+    h('div',{className:'card',style:{padding:10,marginBottom:10,display:'flex',gap:8,alignItems:'center'}},
+      h('input',{type:'number',value:fAnio,onChange:function(e){setFAnio(e.target.value);},placeholder:'Año (todos)',style:Object.assign({},inpS,{width:110})}),
+      h('div',{style:{marginLeft:'auto',fontSize:12,color:'#64748B'}},lista.length+' declaración(es)')),
+    load?h('div',{className:'spin'},'Cargando...'):
+    lista.length===0?h('div',{className:'card',style:{padding:30,textAlign:'center',color:'#94A3B8'}},'Sin formularios 29 registrados. Sube el PDF de la declaración del SII.'):
+    h('div',{className:'card',style:{padding:0,overflow:'auto'}},
+      h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
+        h('thead',null,h('tr',{style:{background:'#F1F5F9'}},
+          ['Período','Empresa','Folio','Débitos','Créditos','IVA determ.','PPM','TOTAL A PAGAR','Presentado','Tipo','',''].map(function(c,j){
+            return h('th',{key:j,style:{padding:8,fontSize:10,color:'#475569',textAlign:j>=3&&j<=7?'right':'left'}},c);})
+        )),
+        h('tbody',null,lista.map(function(f){
+          var money2=function(v){return h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace'}},'$'+nf(v));};
+          return h('tr',{key:f.f29_id,style:{borderTop:'1px solid #E2E8F0'}},
+            h('td',{style:{padding:8,fontWeight:700,color:'#1E3A2D'}},f.periodo),
+            h('td',{style:{padding:8,fontSize:11}},f.empresa_nombre||'—'),
+            h('td',{style:{padding:8,fontFamily:'monospace',fontSize:11}},f.folio),
+            money2(f.total_debitos),money2(f.total_creditos),money2(f.iva_determinado),money2(f.ppm),
+            h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'#1E3A2D'}},'$'+nf(f.total_pagar)),
+            h('td',{style:{padding:8,fontSize:11}},f.fecha_presentacion?fmtD(f.fecha_presentacion):'—'),
+            h('td',{style:{padding:8,fontSize:10,color:'#64748B'}},f.tipo_declaracion||'—'),
+            h('td',{style:{padding:8}},h('button',{onClick:function(){setVerCod(f);},title:'Ver todos los códigos',style:{padding:'3px 8px',fontSize:11,background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:4,cursor:'pointer',color:'#1E40AF'}},'👁')),
+            h('td',{style:{padding:8}},h('button',{onClick:function(){eliminar(f);},title:'Eliminar',style:{padding:'3px 8px',fontSize:11,background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:4,cursor:'pointer',color:'#DC2626'}},'🗑'))
+          );
+        }))
+      )
+    ),
+    // Modal preview de importación
+    imp&&h(Modal,{title:'📄 Revisar F29 — '+imp.filename,onClose:function(){if(!saving)setImp(null);}},
+      h('div',null,
+        imp.errores.length>0?h('div',{className:'al al-e',style:{marginBottom:10}},imp.errores.map(function(e2,i){return h('div',{key:i},'⚠ '+e2);})):
+          h('div',{style:{padding:'8px 12px',background:'#F0FDF4',border:'1px solid #86EFAC',borderRadius:6,fontSize:12,color:'#15803D',marginBottom:10}},'✓ RUT y período validados: '+imp.empresa_nombre+' · '+selPeriodo),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,fontSize:12}},
+          h('div',null,'Folio: ',h('strong',null,imp.parsed.folio)),
+          h('div',null,'Período PDF: ',h('strong',null,imp.parsed.periodo||'—')),
+          h('div',null,'Total débitos: ',h('strong',null,'$'+nf(imp.parsed.total_debitos))),
+          h('div',null,'Total créditos: ',h('strong',null,'$'+nf(imp.parsed.total_creditos))),
+          h('div',null,'IVA determinado: ',h('strong',null,'$'+nf(imp.parsed.iva_determinado))),
+          h('div',null,'PPM: ',h('strong',null,'$'+nf(imp.parsed.ppm))),
+          h('div',{style:{gridColumn:'1/-1',padding:'8px 12px',background:'#E9F1EC',borderRadius:6}},'TOTAL A PAGAR: ',h('strong',{style:{fontSize:15,color:'#1E3A2D'}},'$'+nf(imp.parsed.total_pagar))),
+          h('div',null,'Códigos extraídos: ',h('strong',null,imp.parsed.codigos.length)),
+          h('div',null,'Tipo: ',h('strong',null,imp.parsed.tipo_declaracion||'—'))
+        ),
+        msg&&h('div',{className:'al al-e',style:{marginTop:8}},msg),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8,marginTop:12}},
+          h(Btn,{v:'gray',onClick:function(){if(!saving)setImp(null);}},'Cancelar'),
+          h(Btn,{onClick:guardar,disabled:saving||imp.errores.length>0},saving?'Guardando...':'Guardar F29'))
+      )
+    ),
+    // Modal de códigos
+    verCod&&h(Modal,{title:'Códigos F29 — '+verCod.periodo+' folio '+verCod.folio,onClose:function(){setVerCod(null);}},
+      h('div',{style:{maxHeight:'60vh',overflowY:'auto'}},
+        h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
+          h('thead',null,h('tr',{style:{background:'#F1F5F9'}},h('th',{style:{padding:6,textAlign:'left'}},'Código'),h('th',{style:{padding:6,textAlign:'left'}},'Glosa'),h('th',{style:{padding:6,textAlign:'right'}},'Valor'))),
+          h('tbody',null,(verCod.codigos||[]).map(function(c,i){
+            return h('tr',{key:i,style:{borderTop:'1px solid #F1F5F9'}},
+              h('td',{style:{padding:6,fontFamily:'monospace',fontWeight:700}},c.codigo),
+              h('td',{style:{padding:6,fontSize:11}},c.glosa),
+              h('td',{style:{padding:6,textAlign:'right',fontFamily:'monospace'}},c.valor));
+          }))
+        )
+      )
+    )
+  );
+}
+
+// ── Finanzas: Imposiciones (planillas de cotizaciones Previred — PDF) ──
+function FinImposicionesView(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var[lista,setLista]=useState([]);var[load,setLoad]=useState(true);
+  var[selEmpresa,setSelEmpresa]=useState('');var[selPeriodo,setSelPeriodo]=useState('');
+  var[fPeriodo,setFPeriodo]=useState('');var[fEmpresa,setFEmpresa]=useState('');
+  var[imp,setImp]=useState(null);
+  var[saving,setSaving]=useState(false);var[msg,setMsg]=useState('');var[leyendo,setLeyendo]=useState(false);
+  function nf(n){return new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+  var normRut=function(s){return String(s||'').replace(/\./g,'').replace(/\s/g,'').toLowerCase();};
+  function load2(){
+    setLoad(true);
+    var qs=[];if(fEmpresa)qs.push('empresa_id='+fEmpresa);if(fPeriodo)qs.push('periodo='+fPeriodo);
+    api('/fin/imposiciones'+(qs.length?'?'+qs.join('&'):''),'GET',null,p.tok)
+      .then(function(r){setLista(Array.isArray(r)?r:[]);}).catch(function(){setLista([]);}).finally(function(){setLoad(false);});
+  }
+  useEffect(load2,[p.tok,fEmpresa,fPeriodo]);
+  function onFile(e){
+    var file=e.target.files[0];if(!file)return;
+    if(!selEmpresa||!selPeriodo){alert('Primero selecciona la EMPRESA y el PERÍODO, luego sube el PDF de la planilla Previred.');e.target.value='';return;}
+    var empSel=empresas.find(function(em){return String(em.empresa_id)===String(selEmpresa);});
+    setLeyendo(true);setMsg('');
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      api('/fin/imposiciones/parse','POST',{pdf_base64:ev.target.result},p.tok).then(function(r){
+        var errores=[];
+        if(r.rut_empresa&&empSel&&normRut(r.rut_empresa)!==normRut(empSel.rut))errores.push('El RUT de la planilla ('+r.rut_empresa+') NO corresponde a '+empSel.razon_social+' ('+empSel.rut+')');
+        var malPer=r.comprobantes.filter(function(c){return c.periodo&&c.periodo!==selPeriodo;});
+        if(malPer.length)errores.push(malPer.length+' comprobante(s) con período distinto a '+selPeriodo+': '+malPer.map(function(c){return c.institucion+' ('+c.periodo+')';}).slice(0,3).join(', '));
+        setImp({parsed:r,errores:errores,empresa_nombre:empSel?empSel.razon_social:'',reemplazar:false,filename:file.name});
+      }).catch(function(ex){alert('Error: '+ex.message);}).finally(function(){setLeyendo(false);});
+    };
+    reader.readAsDataURL(file);
+    e.target.value='';
+  }
+  function guardar(){
+    setSaving(true);setMsg('');
+    api('/fin/imposiciones/import','POST',{empresa_id:selEmpresa,periodo:selPeriodo,rut:imp.parsed.rut_empresa,comprobantes:imp.parsed.comprobantes,reemplazar:imp.reemplazar},p.tok)
+      .then(function(r){setImp(null);setFEmpresa(String(selEmpresa));setFPeriodo(selPeriodo);load2();alert('✓ Imposiciones '+selPeriodo+' guardadas\n\nInstituciones: '+r.importados+'\nDuplicadas: '+r.duplicados);})
+      .catch(function(ex){setMsg(ex.message);}).finally(function(){setSaving(false);});
+  }
+  function eliminar(x){
+    if(!confirm('¿Eliminar el pago a '+x.institucion+' del período '+x.periodo+' ('+CLP(x.monto)+')?'))return;
+    api('/fin/imposiciones/'+x.imp_id,'DELETE',null,p.tok).then(load2).catch(function(ex){alert(ex.message);});
+  }
+  var inpS={padding:'6px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
+  var listo=!!(selEmpresa&&selPeriodo);
+  var totMonto=lista.reduce(function(s,x){return s+(parseFloat(x.monto)||0);},0);
+  var porTipo={};lista.forEach(function(x){porTipo[x.tipo]=(porTipo[x.tipo]||0)+(parseFloat(x.monto)||0);});
+  var tipoBadge=function(t){
+    var m2={AFP:['#DBEAFE','#1E40AF'],ISAPRE:['#FCE7F3','#9D174D'],CCAF:['#FEF3C7','#92400E'],MUTUAL:['#DCFCE7','#15803D'],OTRA:['#F1F5F9','#475569']};
+    var x=m2[t]||m2.OTRA;
+    return h('span',{style:{padding:'2px 8px',background:x[0],color:x[1],borderRadius:10,fontSize:10,fontWeight:700}},t);
+  };
+  var kpi=function(lbl,val,color,sub){return h('div',{className:'card',style:{padding:10,borderLeft:'4px solid '+color}},
+    h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},lbl),
+    h('div',{style:{fontSize:16,fontWeight:700,color:color}},val),
+    sub&&h('div',{style:{fontSize:10,color:'#94A3B8'}},sub));};
+  return h('div',null,
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:8,marginBottom:10}},
+      kpi('TOTAL PAGADO',CLP(totMonto),'#1E3A2D',(fPeriodo||'todos los períodos')),
+      kpi('AFP',CLP(porTipo.AFP||0),'#1E40AF',null),
+      kpi('ISAPRE',CLP(porTipo.ISAPRE||0),'#9D174D',null),
+      kpi('CAJA COMPENSACIÓN',CLP(porTipo.CCAF||0),'#92400E',null),
+      kpi('MUTUAL',CLP(porTipo.MUTUAL||0),'#15803D',null)
+    ),
+    h('div',{className:'card',style:{padding:12,marginBottom:10}},
+      h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D',marginBottom:8}},'🏦 Subir planilla de imposiciones (Previred) — selecciona primero empresa y período'),
+      h('div',{style:{display:'flex',gap:10,alignItems:'flex-end',flexWrap:'wrap'}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa *'),
+          h('select',{value:selEmpresa,onChange:function(e){setSelEmpresa(e.target.value);},style:Object.assign({},inpS,{borderColor:selEmpresa?'#CBD5E1':'#F59E0B'})},
+            h('option',{value:''},'— Selecciona empresa —'),empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Período *'),
+          h('input',{type:'month',value:selPeriodo,onChange:function(e){setSelPeriodo(e.target.value);},style:Object.assign({},inpS,{borderColor:selPeriodo?'#CBD5E1':'#F59E0B'})})),
+        h('label',{title:listo?'Subir el PDF de Previred':'Selecciona empresa y período primero',style:{padding:'8px 14px',borderRadius:6,fontSize:13,fontWeight:600,cursor:listo?'pointer':'not-allowed',border:'1px solid '+(listo?'#16A34A':'#CBD5E1'),background:listo?'#F0FDF4':'#F1F5F9',color:listo?'#15803D':'#94A3B8'}},
+          leyendo?'⏳ Leyendo PDF...':'⬆ Subir PDF Previred',
+          h('input',{type:'file',accept:'.pdf',onChange:onFile,disabled:!listo||leyendo,style:{display:'none'}}))
+      )
+    ),
+    h('div',{className:'card',style:{padding:10,marginBottom:10,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}},
+      h('select',{value:fEmpresa,onChange:function(e){setFEmpresa(e.target.value);},style:inpS},
+        h('option',{value:''},'Todas las empresas'),empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
+      h('input',{type:'month',value:fPeriodo,onChange:function(e){setFPeriodo(e.target.value);},style:inpS,title:'Período'}),
+      h('div',{style:{marginLeft:'auto',fontSize:12,color:'#64748B'}},lista.length+' pago(s)')),
+    load?h('div',{className:'spin'},'Cargando...'):
+    lista.length===0?h('div',{className:'card',style:{padding:30,textAlign:'center',color:'#94A3B8'}},'Sin imposiciones registradas. Sube el PDF de la planilla de Previred.'):
+    h('div',{className:'card',style:{padding:0,overflow:'auto'}},
+      h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
+        h('thead',null,h('tr',{style:{background:'#F1F5F9'}},
+          ['Período','Empresa','Tipo','Institución','Folio','Renta imponible','Trab.','Monto pagado','Fecha pago',''].map(function(c,j){
+            return h('th',{key:j,style:{padding:8,fontSize:10,color:'#475569',textAlign:(j===5||j===7)?'right':'left'}},c);})
+        )),
+        h('tbody',null,lista.map(function(x){
+          return h('tr',{key:x.imp_id,style:{borderTop:'1px solid #E2E8F0'}},
+            h('td',{style:{padding:8,fontWeight:700,color:'#1E3A2D'}},x.periodo),
+            h('td',{style:{padding:8,fontSize:11}},x.empresa_nombre||'—'),
+            h('td',{style:{padding:8}},tipoBadge(x.tipo)),
+            h('td',{style:{padding:8,fontWeight:600,fontSize:11}},x.institucion),
+            h('td',{style:{padding:8,fontFamily:'monospace',fontSize:10}},x.folio||'—'),
+            h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace'}},x.renta_imponible>0?('$'+nf(x.renta_imponible)):'—'),
+            h('td',{style:{padding:8,textAlign:'center'}},x.n_trabajadores||'—'),
+            h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'#1E3A2D'},title:(function(){try{var d2=typeof x.detalle==='string'?JSON.parse(x.detalle):(x.detalle||[]);return d2.map(function(dd){return dd.concepto+': $'+nf(dd.monto);}).join('\n');}catch(e2){return '';}})()},'$'+nf(x.monto)),
+            h('td',{style:{padding:8,fontSize:11}},x.fecha_pago?fmtD(x.fecha_pago):'—'),
+            h('td',{style:{padding:8}},h('button',{onClick:function(){eliminar(x);},title:'Eliminar',style:{padding:'3px 8px',fontSize:11,background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:4,cursor:'pointer',color:'#DC2626'}},'🗑'))
+          );
+        }))
+      )
+    ),
+    // Modal preview de importación
+    imp&&h(Modal,{title:'🏦 Revisar imposiciones — '+imp.filename,onClose:function(){if(!saving)setImp(null);},lg:true},
+      h('div',null,
+        imp.errores.length>0?h('div',{className:'al al-e',style:{marginBottom:10}},imp.errores.map(function(e2,i){return h('div',{key:i},'⚠ '+e2);})):
+          h('div',{style:{padding:'8px 12px',background:'#F0FDF4',border:'1px solid #86EFAC',borderRadius:6,fontSize:12,color:'#15803D',marginBottom:10}},'✓ RUT y período validados: '+imp.empresa_nombre+' · '+selPeriodo),
+        h('div',{style:{maxHeight:'46vh',overflowY:'auto',border:'1px solid #E2E8F0',borderRadius:6}},
+          h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
+            h('thead',null,h('tr',{style:{background:'#F1F5F9',position:'sticky',top:0}},
+              ['Tipo','Institución','Período','Renta imp.','Trab.','Monto','Fecha pago'].map(function(c,j){return h('th',{key:j,style:{padding:'6px',fontSize:9,color:'#475569',textAlign:(j===3||j===5)?'right':'left'}},c);}))),
+            h('tbody',null,imp.parsed.comprobantes.map(function(c,i){
+              var malP=c.periodo&&c.periodo!==selPeriodo;
+              return h('tr',{key:i,style:{borderTop:'1px solid #F1F5F9',background:malP?'#FEF2F2':'transparent'}},
+                h('td',{style:{padding:5}},tipoBadge(c.tipo)),
+                h('td',{style:{padding:5,fontWeight:600}},c.institucion),
+                h('td',{style:{padding:5,color:malP?'#DC2626':'#1E293B',fontWeight:malP?700:400}},c.periodo||'—'),
+                h('td',{style:{padding:5,textAlign:'right',fontFamily:'monospace'}},c.renta_imponible>0?('$'+nf(c.renta_imponible)):'—'),
+                h('td',{style:{padding:5,textAlign:'center'}},c.n_trabajadores||'—'),
+                h('td',{style:{padding:5,textAlign:'right',fontFamily:'monospace',fontWeight:700}},'$'+nf(c.monto)),
+                h('td',{style:{padding:5}},c.fecha_pago?fmtD(c.fecha_pago):'—'));
+            }))
+          )
+        ),
+        (function(){
+          var t2=imp.parsed.comprobantes.reduce(function(s,c){return s+c.monto;},0);
+          return h('div',{style:{marginTop:10,padding:'10px 14px',background:'#E9F1EC',border:'1px solid #1E3A2D',borderRadius:6,display:'flex',gap:20,fontSize:12,color:'#1E3A2D'}},
+            h('span',null,'Instituciones: ',h('strong',null,imp.parsed.comprobantes.length)),
+            h('span',null,'TOTAL PAGADO: ',h('strong',{style:{fontSize:14}},CLP(t2))));
+        })(),
+        h('label',{style:{display:'flex',alignItems:'center',gap:6,marginTop:8,fontSize:11,color:'#64748B',cursor:'pointer'}},
+          h('input',{type:'checkbox',checked:!!imp.reemplazar,onChange:function(e){setImp(Object.assign({},imp,{reemplazar:e.target.checked}));},style:{width:'auto',flex:'none',margin:0}}),
+          'Reemplazar el período (borra lo cargado de esta empresa/período antes de importar)'),
+        msg&&h('div',{className:'al al-e',style:{marginTop:8}},msg),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8,marginTop:12}},
+          h(Btn,{v:'gray',onClick:function(){if(!saving)setImp(null);}},'Cancelar'),
+          h(Btn,{onClick:guardar,disabled:saving||imp.errores.length>0},saving?'Guardando...':'Guardar '+imp.parsed.comprobantes.length+' pago(s)'))
+      )
+    )
+  );
+}
+
+// ── Finanzas: Libro de Compras y Ventas (RCV del SII) ──
+// Parser de los CSV oficiales RCV_COMPRA_REGISTRO_* y RCV_VENTA_* (separador ;, latin-1).
+// Filas sin Nro = continuación con otro código de impuesto → se fusionan al documento anterior.
+function parseRcvSII(txt,filename){
+  var lines=txt.split(/\r?\n/).filter(function(l){return l.trim()!=='';});
+  if(lines.length<2)return null;
+  var hdr=lines[0].split(';').map(function(x){return x.trim();});
+  var libro=hdr.indexOf('Tipo Compra')>=0?'COMPRA':(hdr.indexOf('Tipo Venta')>=0?'VENTA':null);
+  if(!libro)return null;
+  var idx=function(n){return hdr.indexOf(n);};
+  var num=function(v){var n=parseFloat(String(v==null?'':v).trim());return isNaN(n)?0:n;};
+  var fec=function(s){var m=(s||'').trim().match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);return m?(m[3]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[1]).slice(-2)):null;};
+  var C=libro==='COMPRA'
+    ?{tipo:idx('Tipo Doc'),oper:idx('Tipo Compra'),rut:idx('RUT Proveedor'),rz:idx('Razon Social'),folio:idx('Folio'),fdoc:idx('Fecha Docto'),ex:idx('Monto Exento'),neto:idx('Monto Neto'),iva:idx('Monto IVA Recuperable'),ivanr:idx('Monto Iva No Recuperable'),total:idx('Monto Total'),nfijo:idx('Monto Neto Activo Fijo'),ifijo:idx('IVA Activo Fijo'),otroV:idx('Valor Otro Impuesto')}
+    :{tipo:idx('Tipo Doc'),oper:idx('Tipo Venta'),rut:idx('Rut cliente'),rz:idx('Razon Social'),folio:idx('Folio'),fdoc:idx('Fecha Docto'),ex:idx('Monto Exento'),neto:idx('Monto Neto'),iva:idx('Monto IVA'),ivanr:-1,total:idx('Monto total'),nfijo:-1,ifijo:-1,otroV:idx('Valor Otro Imp.')};
+  if(C.folio<0||C.total<0)return null;
+  var docs=[];
+  for(var i=1;i<lines.length;i++){
+    var v=lines[i].split(';');
+    if(v.length<8)continue;
+    if(!(v[0]||'').trim()){
+      // fila de continuación: suma el otro impuesto al documento anterior
+      if(docs.length&&C.otroV>=0)docs[docs.length-1].otros_imp+=num(v[C.otroV]);
+      continue;
+    }
+    docs.push({
+      tipo_dte:(v[C.tipo]||'').trim(),
+      tipo_operacion:(v[C.oper]||'').trim(),
+      rut:(v[C.rut]||'').trim(),
+      razon_social:(v[C.rz]||'').trim(),
+      folio:(v[C.folio]||'').trim(),
+      fecha_docto:fec(v[C.fdoc]),
+      exento:num(v[C.ex]),neto:num(v[C.neto]),
+      iva:num(v[C.iva]),iva_no_rec:C.ivanr>=0?num(v[C.ivanr]):0,
+      total:num(v[C.total]),
+      neto_activo_fijo:C.nfijo>=0?num(v[C.nfijo]):0,
+      iva_activo_fijo:C.ifijo>=0?num(v[C.ifijo]):0,
+      otros_imp:C.otroV>=0?num(v[C.otroV]):0
+    });
+  }
+  if(!docs.length)return null;
+  var m=(filename||'').match(/RCV_(COMPRA|VENTA)[A-Z_]*_([\d\-kK]+)_(\d{6})/i);
+  var periodo=m?(m[3].slice(0,4)+'-'+m[3].slice(4,6)):'';
+  var rutEmp=m?m[2]:'';
+  return{libro:libro,periodo:periodo,rut_empresa:rutEmp,docs:docs};
+}
+
+function FinRcvView(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var[lista,setLista]=useState([]);var[load,setLoad]=useState(true);
+  var[periodosRes,setPeriodosRes]=useState([]);
+  var[fEmpresa,setFEmpresa]=useState('');var[fLibro,setFLibro]=useState('');var[fPeriodo,setFPeriodo]=useState('');
+  var[imp,setImp]=useState(null);
+  var[saving,setSaving]=useState(false);var[msg,setMsg]=useState('');
+  function nf(n){return new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+  var normRut=function(s){return String(s||'').replace(/\./g,'').replace(/\s/g,'').toLowerCase();};
+  var sg=function(d){return d.tipo_dte==='61'?-1:1;};
+  function load2(){
+    setLoad(true);
+    var qs=[];
+    if(fEmpresa)qs.push('empresa_id='+fEmpresa);
+    if(fLibro)qs.push('libro='+fLibro);
+    if(fPeriodo)qs.push('periodo='+fPeriodo);
+    api('/fin/rcv'+(qs.length?'?'+qs.join('&'):''),'GET',null,p.tok)
+      .then(function(r){setLista(Array.isArray(r)?r:[]);}).catch(function(){setLista([]);}).finally(function(){setLoad(false);});
+    api('/fin/rcv/periodos','GET',null,p.tok).then(function(r){setPeriodosRes(Array.isArray(r)?r:[]);}).catch(function(){});
+  }
+  useEffect(load2,[p.tok,fEmpresa,fLibro,fPeriodo]);
+  function onFileImport(e){
+    var file=e.target.files[0];if(!file)return;
+    if(!fEmpresa||!fPeriodo){alert('Primero selecciona la EMPRESA y el PERÍODO en los filtros, y luego importa el archivo.');e.target.value='';return;}
+    var empSel=empresas.find(function(em){return String(em.empresa_id)===String(fEmpresa);});
+    var reader=new FileReader();
+    reader.onload=function(ev){
+      var r=parseRcvSII(ev.target.result,file.name);
+      if(!r){alert('No se reconoció el archivo. Debe ser el CSV del Registro de Compras y Ventas del SII (RCV_COMPRA_REGISTRO_... o RCV_VENTA_...).');return;}
+      // Validación 1: el RUT del archivo debe corresponder a la empresa seleccionada
+      if(r.rut_empresa&&empSel&&normRut(r.rut_empresa)!==normRut(empSel.rut)){
+        alert('⚠ El archivo pertenece al RUT '+r.rut_empresa+', pero la empresa seleccionada es '+empSel.razon_social+' ('+empSel.rut+').\n\nSelecciona la empresa correcta e importa de nuevo.');return;
+      }
+      // Validación 2: el período del archivo debe coincidir con el seleccionado
+      if(r.periodo&&r.periodo!==fPeriodo){
+        alert('⚠ El archivo es del período '+r.periodo+', pero seleccionaste '+fPeriodo+'.\n\nAjusta el período e importa de nuevo.');return;
+      }
+      // Validación 3 (respaldo si el nombre del archivo no trae el período): las fechas de los documentos
+      if(!r.periodo){
+        var py=parseInt(fPeriodo.slice(0,4)),pm=parseInt(fPeriodo.slice(5,7));
+        var prevPer=(pm===1?(py-1)+'-12':py+'-'+('0'+(pm-1)).slice(-2));
+        var enRango=r.docs.filter(function(d){var f2=(d.fecha_docto||'').slice(0,7);return f2===fPeriodo||f2===prevPer;}).length;
+        if(r.docs.length&&enRango/r.docs.length<0.6){
+          alert('⚠ Las fechas de los documentos no calzan con el período seleccionado ('+fPeriodo+'): solo '+enRango+' de '+r.docs.length+' están en '+fPeriodo+' o el mes anterior.\n\nVerifica el período.');return;
+        }
+      }
+      setImp({libro:r.libro,periodo:fPeriodo,empresa_id:fEmpresa,empresa_nombre:empSel?empSel.razon_social:'',rut_empresa:r.rut_empresa,docs:r.docs,reemplazar:false,filename:file.name});
+      setMsg('');
+    };
+    reader.readAsText(file,'ISO-8859-1');
+    e.target.value='';
+  }
+  function guardarImport(){
+    if(!imp.empresa_id){setMsg('Selecciona la empresa');return;}
+    if(!/^\d{4}-\d{2}$/.test(imp.periodo)){setMsg('Indica el período (mes)');return;}
+    setSaving(true);setMsg('');
+    api('/fin/rcv/import','POST',{empresa_id:imp.empresa_id,libro:imp.libro,periodo:imp.periodo,docs:imp.docs,reemplazar:imp.reemplazar},p.tok)
+      .then(function(r){
+        setImp(null);setFPeriodo(imp.periodo);setFEmpresa(String(imp.empresa_id));load2();
+        alert('✓ Libro de '+(imp.libro==='VENTA'?'Ventas':'Compras')+' '+imp.periodo+' importado\n\nDocumentos: '+r.importados+'\nDuplicados (ya existían): '+r.duplicados+(r.errores&&r.errores.length?('\nErrores: '+r.errores.length):''));
+      })
+      .catch(function(e2){setMsg(e2.message);}).finally(function(){setSaving(false);});
+  }
+  function eliminar(d){
+    if(!confirm('¿Eliminar el documento tipo '+d.tipo_dte+' folio '+d.folio+' de '+(d.razon_social||'')+'?'))return;
+    api('/fin/rcv/'+d.rcv_id,'DELETE',null,p.tok).then(load2).catch(function(e2){alert(e2.message);});
+  }
+  // Totales del listado filtrado (NC restan)
+  var totLibro=function(libro){
+    var ds=lista.filter(function(d){return d.libro===libro;});
+    return ds.reduce(function(a,d){var s=sg(d);a.docs++;a.exento+=s*(parseFloat(d.exento)||0);a.neto+=s*(parseFloat(d.neto)||0);a.iva+=s*(parseFloat(d.iva)||0);a.otros+=s*(parseFloat(d.otros_imp)||0);a.total+=s*(parseFloat(d.total)||0);return a;},{docs:0,exento:0,neto:0,iva:0,otros:0,total:0});
+  };
+  var tC=totLibro('COMPRA'),tV=totLibro('VENTA');
+  var ivaDet=tV.iva-tC.iva;
+  var inpS={padding:'6px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
+  var kpi=function(lbl,val,color,sub){return h('div',{className:'card',style:{padding:10,borderLeft:'4px solid '+color}},
+    h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},lbl),
+    h('div',{style:{fontSize:16,fontWeight:700,color:color}},val),
+    sub&&h('div',{style:{fontSize:10,color:'#94A3B8'}},sub));};
+  var tipoBadge=function(t){
+    var m2={'33':['Factura','#DBEAFE','#1E40AF'],'34':['F.Exenta','#E0E7FF','#3730A3'],'61':['N.Crédito','#FEE2E2','#991B1B'],'56':['N.Débito','#FEF3C7','#92400E'],'46':['F.Compra','#F1F5F9','#475569']};
+    var x=m2[t]||['Tipo '+t,'#F1F5F9','#475569'];
+    return h('span',{style:{padding:'2px 8px',background:x[1],color:x[2],borderRadius:10,fontSize:10,fontWeight:700}},x[0]);
+  };
+  // Export Excel del período filtrado
+  function exportar(){
+    if(typeof XLSX==='undefined'){alert('Librería Excel no disponible');return;}
+    var wb=XLSX.utils.book_new();
+    ['COMPRA','VENTA'].forEach(function(lb){
+      var ds=lista.filter(function(d){return d.libro===lb;});
+      if(!ds.length)return;
+      var aoa=[['Período','Tipo DTE','Operación','RUT','Razón Social','Folio','Fecha','Exento','Neto','IVA','IVA no rec.','Otros imp.','Total']];
+      ds.forEach(function(d){
+        var s=sg(d);
+        aoa.push([d.periodo,d.tipo_dte,d.tipo_operacion||'',d.rut_contraparte,d.razon_social||'',d.folio,d.fecha_docto?(d.fecha_docto+'').slice(0,10):'',
+          s*(parseFloat(d.exento)||0),s*(parseFloat(d.neto)||0),s*(parseFloat(d.iva)||0),s*(parseFloat(d.iva_no_rec)||0),s*(parseFloat(d.otros_imp)||0),s*(parseFloat(d.total)||0)]);
+      });
+      var t2=totLibro(lb);
+      aoa.push([]);
+      aoa.push(['TOTALES','','','','','','',Math.round(t2.exento),Math.round(t2.neto),Math.round(t2.iva),'',Math.round(t2.otros),Math.round(t2.total)]);
+      XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(aoa),lb==='COMPRA'?'Libro Compras':'Libro Ventas');
+    });
+    XLSX.writeFile(wb,'libro_compra_venta'+(fPeriodo?('_'+fPeriodo):'')+'.xlsx');
+  }
+  return h('div',null,
+    // KPIs + determinación de IVA
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:8,marginBottom:10}},
+      kpi('COMPRAS — DOCS',tC.docs,'#1E40AF',fPeriodo||'todos los períodos'),
+      kpi('NETO COMPRAS','$'+nf(tC.neto),'#1E40AF','IVA crédito: $'+nf(tC.iva)),
+      kpi('VENTAS — DOCS',tV.docs,'#16A34A',fPeriodo||'todos los períodos'),
+      kpi('NETO VENTAS','$'+nf(tV.neto),'#16A34A','IVA débito: $'+nf(tV.iva)),
+      kpi(ivaDet>=0?'IVA A PAGAR (débito − crédito)':'REMANENTE CRÉDITO FISCAL','$'+nf(Math.abs(ivaDet)),ivaDet>=0?'#DC2626':'#0F766E',fPeriodo?('período '+fPeriodo):'según filtro')
+    ),
+    // Filtros y acciones
+    h('div',{className:'card',style:{padding:10,marginBottom:10,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}},
+      h('select',{value:fEmpresa,onChange:function(e){setFEmpresa(e.target.value);},style:inpS},
+        h('option',{value:''},'Todas las empresas'),empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
+      h('select',{value:fLibro,onChange:function(e){setFLibro(e.target.value);},style:inpS},
+        h('option',{value:''},'Compras y Ventas'),h('option',{value:'COMPRA'},'Libro de Compras'),h('option',{value:'VENTA'},'Libro de Ventas')),
+      h('input',{type:'month',value:fPeriodo,onChange:function(e){setFPeriodo(e.target.value);},style:inpS,title:'Período'}),
+      lista.length>0&&h(Btn,{v:'g',sm:true,onClick:exportar},'⬇ Excel'),
+      h('div',{style:{marginLeft:'auto'}},
+        h('label',{title:(fEmpresa&&fPeriodo)?'Importar el CSV del RCV del SII':'Selecciona primero EMPRESA y PERÍODO en los filtros',style:{padding:'7px 12px',background:(fEmpresa&&fPeriodo)?'#EFF6FF':'#F1F5F9',border:'1px solid '+((fEmpresa&&fPeriodo)?'#BFDBFE':'#CBD5E1'),borderRadius:5,fontSize:12,fontWeight:600,color:(fEmpresa&&fPeriodo)?'#1E40AF':'#94A3B8',cursor:(fEmpresa&&fPeriodo)?'pointer':'not-allowed'}},
+          '📥 Importar CSV del SII'+((fEmpresa&&fPeriodo)?'':' (elige empresa y período)'),
+          h('input',{type:'file',accept:'.csv,.txt',onChange:onFileImport,disabled:!(fEmpresa&&fPeriodo),style:{display:'none'}})))
+    ),
+    // Períodos cargados (si no hay filtro de período)
+    !fPeriodo&&periodosRes.length>0&&h('div',{className:'card',style:{padding:10,marginBottom:10}},
+      h('div',{style:{fontWeight:600,fontSize:12,marginBottom:6,color:'#1E3A2D'}},'Períodos cargados (pincha para filtrar)'),
+      h('div',{style:{display:'flex',gap:6,flexWrap:'wrap'}},
+        periodosRes.map(function(pr,i){
+          return h('button',{key:i,onClick:function(){setFPeriodo(pr.periodo);setFEmpresa(String(pr.empresa_id||''));},
+            style:{padding:'4px 10px',border:'1px solid #CBD5E1',borderRadius:12,background:pr.libro==='VENTA'?'#F0FDF4':'#EFF6FF',fontSize:11,cursor:'pointer'}},
+            pr.periodo+' · '+(pr.libro==='VENTA'?'Ventas':'Compras')+' · '+(pr.empresa_nombre||'')+' ('+pr.docs+' docs, $'+nf(pr.total)+')');
+        }))
+    ),
+    // Listado
+    load?h('div',{className:'spin'},'Cargando...'):
+    lista.length===0?h('div',{className:'card',style:{padding:30,textAlign:'center',color:'#94A3B8'}},'Sin documentos. Importa los CSV del Registro de Compras y Ventas del SII.'):
+    h('div',{className:'card',style:{padding:0,overflow:'auto'}},
+      h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
+        h('thead',null,h('tr',{style:{background:'#F1F5F9'}},
+          ['Libro','Tipo','Folio','Fecha','RUT','Razón Social','Exento','Neto','IVA','Otros imp.','Total',''].map(function(c,j){
+            return h('th',{key:j,style:{padding:8,fontSize:10,color:'#475569',textAlign:j>=6&&j<=10?'right':'left'}},c);
+          })
+        )),
+        h('tbody',null,lista.map(function(d){
+          var s=sg(d),nc=d.tipo_dte==='61';
+          var cell=function(v2){return h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',color:nc?'#DC2626':'#1E293B'}},(nc?'-':'')+'$'+nf(v2));};
+          return h('tr',{key:d.rcv_id,style:{borderTop:'1px solid #E2E8F0',opacity:nc?0.85:1}},
+            h('td',{style:{padding:8}},h('span',{style:{padding:'2px 8px',background:d.libro==='VENTA'?'#DCFCE7':'#DBEAFE',color:d.libro==='VENTA'?'#15803D':'#1E40AF',borderRadius:10,fontSize:10,fontWeight:700}},d.libro==='VENTA'?'VENTA':'COMPRA')),
+            h('td',{style:{padding:8}},tipoBadge(d.tipo_dte)),
+            h('td',{style:{padding:8,fontWeight:700,color:'#1E3A2D'}},d.folio),
+            h('td',{style:{padding:8,fontSize:11}},d.fecha_docto?fmtD(d.fecha_docto):'—'),
+            h('td',{style:{padding:8,fontSize:11,fontFamily:'monospace'}},d.rut_contraparte),
+            h('td',{style:{padding:8,fontSize:11}},d.razon_social||'—'),
+            cell(d.exento),cell(d.neto),cell(d.iva),cell(d.otros_imp),
+            h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',fontWeight:700,color:nc?'#DC2626':'#1E3A2D'}},(nc?'-':'')+'$'+nf(d.total)),
+            h('td',{style:{padding:8}},h('button',{onClick:function(){eliminar(d);},title:'Eliminar',style:{padding:'3px 8px',fontSize:11,background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:4,cursor:'pointer',color:'#DC2626'}},'🗑'))
+          );
+        }))
+      )
+    ),
+    // Modal preview de importación
+    imp&&h(Modal,{title:'📥 Revisar importación — Libro de '+(imp.libro==='VENTA'?'Ventas':'Compras'),onClose:function(){if(!saving)setImp(null);},lg:true},
+      h('div',null,
+        h('div',{style:{display:'flex',gap:10,flexWrap:'wrap',alignItems:'center',marginBottom:10}},
+          h('div',{style:{padding:'6px 12px',background:'#E9F1EC',border:'1px solid #C5D6CD',borderRadius:6,fontSize:12,color:'#1E3A2D'}},
+            h('strong',null,imp.empresa_nombre||''),' · Período ',h('strong',null,imp.periodo),' · RUT archivo: '+(imp.rut_empresa||'—')+' ✓ validado'),
+          h('label',{style:{display:'flex',alignItems:'center',gap:6,fontSize:11,color:'#64748B',cursor:'pointer'}},
+            h('input',{type:'checkbox',checked:!!imp.reemplazar,onChange:function(e){setImp(Object.assign({},imp,{reemplazar:e.target.checked}));},style:{width:'auto',flex:'none',margin:0}}),
+            'Reemplazar el período (borra lo cargado antes de importar)')
+        ),
+        (function(){
+          var t2=imp.docs.reduce(function(a,d){var s=d.tipo_dte==='61'?-1:1;a.n++;a.neto+=s*d.neto;a.iva+=s*d.iva;a.total+=s*d.total;return a;},{n:0,neto:0,iva:0,total:0});
+          return h('div',{style:{padding:'10px 14px',background:'#E9F1EC',border:'1px solid #1E3A2D',borderRadius:6,display:'flex',gap:20,flexWrap:'wrap',fontSize:12,color:'#1E3A2D',marginBottom:8}},
+            h('span',null,'Documentos: ',h('strong',null,t2.n)),
+            h('span',null,'Neto: ',h('strong',null,'$'+nf(t2.neto))),
+            h('span',null,'IVA: ',h('strong',null,'$'+nf(t2.iva))),
+            h('span',null,'Total: ',h('strong',null,'$'+nf(t2.total))),
+            h('span',{style:{color:'#64748B'}},'(notas de crédito restadas)'));
+        })(),
+        h('div',{style:{maxHeight:'44vh',overflowY:'auto',border:'1px solid #E2E8F0',borderRadius:6}},
+          h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
+            h('thead',null,h('tr',{style:{background:'#F1F5F9',position:'sticky',top:0}},
+              ['Tipo','Folio','Fecha','RUT','Razón Social','Neto','IVA','Total'].map(function(c,j){return h('th',{key:j,style:{padding:'6px',fontSize:9,color:'#475569',textAlign:j>=5?'right':'left'}},c);}))),
+            h('tbody',null,imp.docs.map(function(d,i){
+              var nc=d.tipo_dte==='61';
+              return h('tr',{key:i,style:{borderTop:'1px solid #F1F5F9',color:nc?'#DC2626':'#1E293B'}},
+                h('td',{style:{padding:5}},tipoBadge(d.tipo_dte)),
+                h('td',{style:{padding:5,fontWeight:700}},d.folio),
+                h('td',{style:{padding:5}},d.fecha_docto?fmtD(d.fecha_docto):'—'),
+                h('td',{style:{padding:5,fontFamily:'monospace'}},d.rut),
+                h('td',{style:{padding:5}},(d.razon_social||'').slice(0,40)),
+                h('td',{style:{padding:5,textAlign:'right',fontFamily:'monospace'}},(nc?'-':'')+'$'+nf(d.neto)),
+                h('td',{style:{padding:5,textAlign:'right',fontFamily:'monospace'}},(nc?'-':'')+'$'+nf(d.iva)),
+                h('td',{style:{padding:5,textAlign:'right',fontFamily:'monospace',fontWeight:700}},(nc?'-':'')+'$'+nf(d.total))
+              );
+            }))
+          )
+        ),
+        msg&&h('div',{className:'al al-e',style:{marginTop:8}},msg),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8,marginTop:12}},
+          h(Btn,{v:'gray',onClick:function(){if(!saving)setImp(null);}},'Cancelar'),
+          h(Btn,{onClick:guardarImport,disabled:saving},saving?'Guardando...':'Guardar '+imp.docs.length+' documento(s)'))
+      )
+    )
+  );
+}
+
 // ── Mantención: Vencimientos de Revisión Técnica y Acreditaciones ──
 // Vehículos/camiones: revisión técnica + acreditación. Maquinaria: solo acreditación.
 function MantDocVencimientosView(p){
@@ -22780,7 +23315,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -23438,7 +23973,7 @@ function App(){
     'transporte':'transporte',
     'personal':'contratos','contratos':'contratos','vacaciones':'contratos','turnos-faena':'contratos','prevencion':'contratos','finiquitos':'contratos','cartas':'contratos',
     'mantenedores':'mantenedores',
-    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas','fin-remu':'finanzas','fin-activos':'finanzas','fin-liquidaciones':'finanzas','fin-honorarios':'finanzas','fin-eerr':'finanzas',
+    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas','fin-remu':'finanzas','fin-activos':'finanzas','fin-liquidaciones':'finanzas','fin-honorarios':'finanzas','fin-eerr':'finanzas','fin-rcv':'finanzas','fin-f29':'finanzas','fin-imposiciones':'finanzas',
     'rem-parametros':'remuneraciones','rem-periodos':'remuneraciones','rem-movimientos':'remuneraciones','rem-liquidaciones':'remuneraciones','rem-prestamos':'remuneraciones','rem-previred':'remuneraciones','rem-prevision':'remuneraciones'
   };
   function viewAllowed(v){
@@ -23633,7 +24168,7 @@ function App(){
         canSee('solicitudes')&&grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
         canSee('solicitudes')&&h('div',{className:'sb-sep'}),
         canSee('finanzas')&&grpHdr('fin','FINANZAS'),
-        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true),navI('fin-costos','📊','Informe de Costos',true),navI('fin-liquidaciones','🌲','Liquidaciones Producción',true),navI('fin-honorarios','📜','Honorarios',true),navI('fin-eerr','💹','Estado de Resultados',true),navI('fin-remu','🧾','Costo Remuneraciones',true),navI('fin-activos','🏗','Activos Fijos',true)),
+        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true),navI('fin-costos','📊','Informe de Costos',true),navI('fin-liquidaciones','🌲','Liquidaciones Producción',true),navI('fin-honorarios','📜','Honorarios',true),navI('fin-eerr','💹','Estado de Resultados',true),navI('fin-rcv','📚','Libro Compras y Ventas',true),navI('fin-f29','📄','Formulario 29',true),navI('fin-imposiciones','🏦','Imposiciones',true),navI('fin-remu','🧾','Costo Remuneraciones',true),navI('fin-activos','🏗','Activos Fijos',true)),
         canSee('finanzas')&&h('div',{className:'sb-sep'}),
         canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
         canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
@@ -23750,6 +24285,9 @@ function App(){
           view==='fin-liquidaciones'&&h(FinLiquidacionesView,{tok,m}),
           view==='fin-honorarios'&&h(FinHonorariosView,{tok,m}),
           view==='fin-eerr'&&h(FinEERRView,{tok,m}),
+          view==='fin-rcv'&&h(FinRcvView,{tok,m}),
+          view==='fin-f29'&&h(FinF29View,{tok,m}),
+          view==='fin-imposiciones'&&h(FinImposicionesView,{tok,m}),
           view==='fin-costos'&&h(InformeCostosView,{tok,m}),
           view==='fin-remu'&&h(RemuCostoView,{tok,m,user}),
           view==='fin-activos'&&h(ActivosFijosView,{tok,m}),
