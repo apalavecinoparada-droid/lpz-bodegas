@@ -12230,6 +12230,16 @@ async function finF29Ensure(){
   // Retenciones declaradas en el F29 (se pagan junto con el IVA/PPM)
   try{await pool.query('ALTER TABLE fin_f29 ADD COLUMN IF NOT EXISTS ret_imp_unico NUMERIC(14,2) DEFAULT 0');}catch(e){}
   try{await pool.query('ALTER TABLE fin_f29 ADD COLUMN IF NOT EXISTS ret_honorarios NUMERIC(14,2) DEFAULT 0');}catch(e){}
+  // Backfill: los F29 importados antes de agregar las columnas quedaron en 0, pero el JSONB
+  // codigos guarda TODOS los códigos extraídos del PDF → recalcular 048/151 desde ahí.
+  // Idempotente: solo toca filas con ambas retenciones en 0 (si el mes no tenía, recalcula 0 de nuevo).
+  try{await pool.query(`UPDATE fin_f29 SET
+    ret_imp_unico=COALESCE((SELECT REPLACE(REPLACE(c->>'valor','.',''),',','.')::numeric
+      FROM jsonb_array_elements(codigos) c WHERE c->>'codigo'='048' AND (c->>'valor') NOT LIKE '%/%' LIMIT 1),0),
+    ret_honorarios=COALESCE((SELECT REPLACE(REPLACE(c->>'valor','.',''),',','.')::numeric
+      FROM jsonb_array_elements(codigos) c WHERE c->>'codigo'='151' AND (c->>'valor') NOT LIKE '%/%' LIMIT 1),0)
+    WHERE COALESCE(ret_imp_unico,0)=0 AND COALESCE(ret_honorarios,0)=0
+      AND jsonb_typeof(codigos)='array'`);}catch(e){console.error('backfill ret F29:',e.message);}
   _finF29Ok=true;
 }
 function f29NormRut(s){return String(s||'').replace(/\./g,'').replace(/\s/g,'').toLowerCase();}
