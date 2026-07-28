@@ -15924,6 +15924,129 @@ function FinImposicionesView(p){
   );
 }
 
+// ── Finanzas: Resultado del Año (consolidado mensual, mes a mes) ──
+// Ventas − Compras − Remuneraciones líquidas − Imposiciones − Honorarios, por mes.
+// Remun. líquidas = costo remu (fin-remu) − imposiciones (Previred) − ret. imp. único (F29).
+function FinResultadoView(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var[anio,setAnio]=useState(2026);
+  var[empresaId,setEmpresaId]=useState('');
+  var[data,setData]=useState(null);
+  var[loading,setLoading]=useState(false);
+  var[err,setErr]=useState('');
+  var MESES_L=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+  function calc(){
+    setLoading(true);setErr('');
+    api('/fin/resultado-anual?anio='+anio+(empresaId?'&empresa_id='+empresaId:''),'GET',null,p.tok)
+      .then(function(r){setData(r);}).catch(function(e2){setErr(e2.message);}).finally(function(){setLoading(false);});
+  }
+  useEffect(calc,[p.tok,anio,empresaId]);
+  function nf(n){return new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
+  function nfM(n){var v=parseFloat(n)||0;return (v<0?'-':'')+'$'+(Math.abs(v)>=1e6?(Math.abs(v)/1e6).toFixed(1)+'M':nf(Math.abs(v)));}
+  var cuerpo=null;
+  if(data){
+    // Serie mensual (mes a mes, NO acumulado)
+    var serie=[];
+    for(var mi=1;mi<=12;mi++){
+      var per=anio+'-'+('0'+mi).slice(-2);
+      var d=data.meses[per]||{ventas:0,compras:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};
+      var remuLiq=d.remu_costo-d.imposiciones-d.ret_imp_unico;
+      if(remuLiq<0)remuLiq=0; // sin datos de remu suficientes: no restar de más
+      var egresos=d.compras+remuLiq+d.imposiciones+d.honorarios;
+      var hayDatos=(d.ventas||d.compras||d.remu_costo||d.imposiciones||d.honorarios)?true:false;
+      serie.push({mes:mi,per:per,lbl:MESES_L[mi-1],ventas:d.ventas,compras:d.compras,
+        remu_liq:remuLiq,imposiciones:d.imposiciones,honorarios:d.honorarios,
+        egresos:egresos,resultado:d.ventas-egresos,hayDatos:hayDatos,
+        incompleto:d.remu_costo>0&&d.imposiciones===0});
+    }
+    var tot=serie.reduce(function(a,s){['ventas','compras','remu_liq','imposiciones','honorarios','egresos','resultado'].forEach(function(k){a[k]=(a[k]||0)+s[k];});return a;},{});
+    // ── Gráfico de barras SVG del resultado mensual ──
+    var conDatos=serie.filter(function(s){return s.hayDatos;});
+    var maxAbs=Math.max.apply(null,serie.map(function(s){return Math.abs(s.resultado);}).concat([1]));
+    var W2=940,H2=230,pad=34,cero=H2/2+14,escala=(H2/2-30)/maxAbs,bw=58;
+    var barras=serie.map(function(s,i2){
+      var x=pad+i2*(bw+17);
+      var hB=Math.abs(s.resultado)*escala;
+      var y=s.resultado>=0?cero-hB:cero;
+      return h('g',{key:i2},
+        s.hayDatos&&h('rect',{x:x,y:y,width:bw,height:Math.max(hB,1),rx:3,
+          fill:s.resultado>=0?'#16A34A':'#DC2626',opacity:0.85},
+          h('title',null,s.lbl+' '+anio+': '+(s.resultado<0?'-':'')+'$'+nf(Math.abs(s.resultado)))),
+        s.hayDatos&&h('text',{x:x+bw/2,y:s.resultado>=0?y-5:y+hB+11,textAnchor:'middle',fontSize:9,fontWeight:700,
+          fill:s.resultado>=0?'#166534':'#B91C1C'},nfM(s.resultado)),
+        h('text',{x:x+bw/2,y:H2+12,textAnchor:'middle',fontSize:10,fill:s.hayDatos?'#334155':'#CBD5E1',fontWeight:s.hayDatos?600:400},s.lbl)
+      );
+    });
+    // ── Matriz mensual ──
+    var thM={padding:'6px 8px',fontSize:10,color:'#475569',textAlign:'right',whiteSpace:'nowrap'};
+    var tdM=function(v,color,bold){return h('td',{style:{padding:'5px 8px',textAlign:'right',fontFamily:'monospace',fontSize:10,whiteSpace:'nowrap',fontWeight:bold?700:400,color:color||'#1E293B'}},v===null?'—':((v<0?'-':'')+'$'+nf(Math.abs(v))));};
+    var filaM=function(lbl,key,color,bold,bg){
+      return h('tr',{style:{borderTop:'1px solid #F1F5F9',background:bg||'transparent'}},
+        h('td',{style:{padding:'5px 10px',fontSize:11,fontWeight:bold?700:600,color:color||'#334155',whiteSpace:'nowrap'}},lbl),
+        serie.map(function(s){return tdM(s.hayDatos?s[key]:null,key==='resultado'?(s.resultado>=0?'#166534':'#B91C1C'):color,bold);}),
+        tdM(tot[key],key==='resultado'?(tot.resultado>=0?'#166534':'#B91C1C'):color,true));
+    };
+    var mesesIncompletos=serie.filter(function(s){return s.incompleto;}).map(function(s){return s.lbl;});
+    cuerpo=h('div',null,
+      (data.advertencias||[]).length>0&&h('div',{style:{padding:'8px 12px',background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:6,fontSize:11,color:'#991B1B',marginBottom:10}},'Fuentes con error: '+data.advertencias.join(' · ')),
+      mesesIncompletos.length>0&&h('div',{style:{padding:'8px 12px',background:'#FEF3C7',border:'1px solid #FCD34D',borderRadius:6,fontSize:11,color:'#92400E',marginBottom:10}},'⚠ Meses con remuneraciones cargadas pero SIN imposiciones: '+mesesIncompletos.join(', ')+' — las remuneraciones líquidas de esos meses pueden estar sobreestimadas. Sube la planilla Previred del período.'),
+      // KPIs del año
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:8,marginBottom:12}},
+        h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #16A34A'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'VENTAS DEL AÑO'),h('div',{style:{fontSize:16,fontWeight:700,color:'#16A34A'}},CLP(tot.ventas))),
+        h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #DC2626'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'EGRESOS DEL AÑO'),h('div',{style:{fontSize:16,fontWeight:700,color:'#DC2626'}},CLP(tot.egresos))),
+        h('div',{className:'card',style:{padding:10,borderLeft:'4px solid '+(tot.resultado>=0?'#1E3A2D':'#DC2626')}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'RESULTADO DEL AÑO'),h('div',{style:{fontSize:16,fontWeight:700,color:tot.resultado>=0?'#1E3A2D':'#DC2626'}},CLP(tot.resultado))),
+        h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #7C3AED'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'MARGEN'),h('div',{style:{fontSize:16,fontWeight:700,color:'#7C3AED'}},tot.ventas>0?((tot.resultado/tot.ventas*100).toFixed(1)+'%'):'—')),
+        h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #0F766E'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'MEJOR / PEOR MES'),h('div',{style:{fontSize:13,fontWeight:700,color:'#0F766E'}},(function(){if(!conDatos.length)return '—';var mx=conDatos.reduce(function(a,b2){return b2.resultado>a.resultado?b2:a;});var mn=conDatos.reduce(function(a,b2){return b2.resultado<a.resultado?b2:a;});return mx.lbl+' '+nfM(mx.resultado)+' / '+mn.lbl+' '+nfM(mn.resultado);})()))
+      ),
+      // Gráfico
+      h('div',{className:'card',style:{padding:'14px 10px 6px',marginBottom:12,overflowX:'auto'}},
+        h('div',{style:{fontWeight:700,fontSize:13,color:'#1E3A2D',marginBottom:4,paddingLeft:8}},'Resultado mes a mes — '+anio),
+        h('svg',{viewBox:'0 0 '+W2+' '+(H2+18),style:{width:'100%',minWidth:760,height:'auto'}},
+          h('line',{x1:pad-8,y1:cero,x2:W2-6,y2:cero,stroke:'#CBD5E1',strokeWidth:1}),
+          barras)),
+      // Matriz mensual
+      h('div',{className:'card',style:{padding:0,overflow:'auto'}},
+        h('table',{style:{width:'100%',borderCollapse:'collapse'}},
+          h('thead',null,h('tr',{style:{background:'#1E3A2D'}},
+            h('th',{style:{padding:'7px 10px',fontSize:10,color:'#fff',textAlign:'left'}},'CONCEPTO'),
+            serie.map(function(s){return h('th',{key:s.mes,style:Object.assign({},thM,{color:'#fff'})},s.lbl.toUpperCase()+(s.incompleto?' ⚠':''));}),
+            h('th',{style:Object.assign({},thM,{color:'#FCD34D'})},'TOTAL AÑO'))),
+          h('tbody',null,
+            filaM('Ventas (neto)','ventas','#166534',false,'#F0FDF4'),
+            filaM('Compras (neto)','compras','#334155',false),
+            filaM('Remuneraciones líquidas','remu_liq','#334155',false),
+            filaM('Imposiciones (Previred)','imposiciones','#334155',false),
+            filaM('Honorarios (BHE+BTE)','honorarios','#334155',false),
+            filaM('TOTAL EGRESOS','egresos','#B91C1C',true,'#FEF2F2'),
+            filaM('RESULTADO DEL MES','resultado',null,true,'#E9F1EC')))),
+      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Mes a mes (no acumulado). Ventas y compras: netos del Libro de Compras y Ventas (RCV, notas de crédito restadas). Remuneraciones líquidas = costo del libro de remuneraciones − imposiciones Previred − retención impuesto único (F29). Honorarios: boletas BHE+BTE brutas vigentes. Cada mes muestra datos solo si sus fuentes están cargadas.')
+    );
+  }
+  var inpS={padding:'6px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
+  return h('div',null,
+    h('div',{className:'card',style:{padding:10,marginBottom:10,display:'flex',gap:8,alignItems:'flex-end',flexWrap:'wrap'}},
+      h('div',null,h('label',{style:{fontSize:10,fontWeight:600,color:'#64748B',display:'block',marginBottom:3}},'Año'),
+        h('input',{type:'number',value:anio,onChange:function(e){setAnio(parseInt(e.target.value)||anio);},style:Object.assign({},inpS,{width:90})})),
+      h('div',null,h('label',{style:{fontSize:10,fontWeight:600,color:'#64748B',display:'block',marginBottom:3}},'Empresa'),
+        h('select',{value:empresaId,onChange:function(e){setEmpresaId(e.target.value);},style:inpS},
+          h('option',{value:''},'Ambas empresas (consolidado)'),
+          empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
+      data&&h(Btn,{v:'g',sm:true,onClick:calc},'↻ Recalcular'),
+      data&&h(Btn,{v:'teal',sm:true,onClick:function(){if(typeof XLSX==='undefined'){alert('Librería Excel no disponible');return;}var wb=XLSX.utils.book_new();var MESES_L2=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];var serie2=[];for(var mi2=1;mi2<=12;mi2++){var per2=anio+'-'+('0'+mi2).slice(-2);var d2=data.meses[per2]||{ventas:0,compras:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};var rl2=Math.max(0,d2.remu_costo-d2.imposiciones-d2.ret_imp_unico);serie2.push({l:MESES_L2[mi2-1],v:d2.ventas,c:d2.compras,r:rl2,i:d2.imposiciones,h:d2.honorarios});}
+        var aoa=[['Resultado del Año '+anio],['Concepto'].concat(MESES_L2).concat(['TOTAL'])];
+        [['Ventas (neto)','v'],['Compras (neto)','c'],['Remuneraciones líquidas','r'],['Imposiciones','i'],['Honorarios','h']].forEach(function(rw){
+          var vals=serie2.map(function(s){return Math.round(s[rw[1]]);});
+          aoa.push([rw[0]].concat(vals).concat([vals.reduce(function(a,b2){return a+b2;},0)]));});
+        var res2=serie2.map(function(s){return Math.round(s.v-s.c-s.r-s.i-s.h);});
+        aoa.push(['RESULTADO DEL MES'].concat(res2).concat([res2.reduce(function(a,b2){return a+b2;},0)]));
+        XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(aoa),'Resultado '+anio);
+        XLSX.writeFile(wb,'resultado_anual_'+anio+'.xlsx');}},'⬇ Excel')
+    ),
+    err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+    loading&&!data?h('div',{className:'spin'},'Calculando resultado del año...'):cuerpo
+  );
+}
+
 // ── Finanzas: Libro de Compras y Ventas (RCV del SII) ──
 // Parser de los CSV oficiales RCV_COMPRA_REGISTRO_* y RCV_VENTA_* (separador ;, latin-1).
 // Filas sin Nro = continuación con otro código de impuesto → se fusionan al documento anterior.
@@ -23328,7 +23451,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -23986,7 +24109,7 @@ function App(){
     'transporte':'transporte',
     'personal':'contratos','contratos':'contratos','vacaciones':'contratos','turnos-faena':'contratos','prevencion':'contratos','finiquitos':'contratos','cartas':'contratos',
     'mantenedores':'mantenedores',
-    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas','fin-remu':'finanzas','fin-activos':'finanzas','fin-liquidaciones':'finanzas','fin-honorarios':'finanzas','fin-eerr':'finanzas','fin-rcv':'finanzas','fin-f29':'finanzas','fin-imposiciones':'finanzas',
+    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas','fin-remu':'finanzas','fin-activos':'finanzas','fin-liquidaciones':'finanzas','fin-honorarios':'finanzas','fin-eerr':'finanzas','fin-rcv':'finanzas','fin-resultado':'finanzas','fin-f29':'finanzas','fin-imposiciones':'finanzas',
     'rem-parametros':'remuneraciones','rem-periodos':'remuneraciones','rem-movimientos':'remuneraciones','rem-liquidaciones':'remuneraciones','rem-prestamos':'remuneraciones','rem-previred':'remuneraciones','rem-prevision':'remuneraciones'
   };
   function viewAllowed(v){
@@ -24181,7 +24304,7 @@ function App(){
         canSee('solicitudes')&&grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
         canSee('solicitudes')&&h('div',{className:'sb-sep'}),
         canSee('finanzas')&&grpHdr('fin','FINANZAS'),
-        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true),navI('fin-costos','📊','Informe de Costos',true),navI('fin-liquidaciones','🌲','Liquidaciones Producción',true),navI('fin-honorarios','📜','Honorarios',true),navI('fin-eerr','💹','Estado de Resultados',true),navI('fin-rcv','📚','Libro Compras y Ventas',true),navI('fin-f29','📄','Formulario 29',true),navI('fin-imposiciones','🏦','Imposiciones',true),navI('fin-remu','🧾','Costo Remuneraciones',true),navI('fin-activos','🏗','Activos Fijos',true)),
+        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true),navI('fin-costos','📊','Informe de Costos',true),navI('fin-liquidaciones','🌲','Liquidaciones Producción',true),navI('fin-honorarios','📜','Honorarios',true),navI('fin-eerr','💹','Estado de Resultados',true),navI('fin-rcv','📚','Libro Compras y Ventas',true),navI('fin-resultado','🗓','Resultado del Año',true),navI('fin-f29','📄','Formulario 29',true),navI('fin-imposiciones','🏦','Imposiciones',true),navI('fin-remu','🧾','Costo Remuneraciones',true),navI('fin-activos','🏗','Activos Fijos',true)),
         canSee('finanzas')&&h('div',{className:'sb-sep'}),
         canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
         canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
@@ -24299,6 +24422,7 @@ function App(){
           view==='fin-honorarios'&&h(FinHonorariosView,{tok,m}),
           view==='fin-eerr'&&h(FinEERRView,{tok,m}),
           view==='fin-rcv'&&h(FinRcvView,{tok,m}),
+          view==='fin-resultado'&&h(FinResultadoView,{tok,m}),
           view==='fin-f29'&&h(FinF29View,{tok,m}),
           view==='fin-imposiciones'&&h(FinImposicionesView,{tok,m}),
           view==='fin-costos'&&h(InformeCostosView,{tok,m}),
