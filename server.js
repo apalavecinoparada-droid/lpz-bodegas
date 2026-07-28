@@ -12227,6 +12227,9 @@ async function finF29Ensure(){
     creado_en TIMESTAMP DEFAULT NOW(),
     UNIQUE(empresa_id,periodo,folio)
   )`);
+  // Retenciones declaradas en el F29 (se pagan junto con el IVA/PPM)
+  try{await pool.query('ALTER TABLE fin_f29 ADD COLUMN IF NOT EXISTS ret_imp_unico NUMERIC(14,2) DEFAULT 0');}catch(e){}
+  try{await pool.query('ALTER TABLE fin_f29 ADD COLUMN IF NOT EXISTS ret_honorarios NUMERIC(14,2) DEFAULT 0');}catch(e){}
   _finF29Ok=true;
 }
 function f29NormRut(s){return String(s||'').replace(/\./g,'').replace(/\s/g,'').toLowerCase();}
@@ -12251,7 +12254,10 @@ function f29ParseTexto(txt){
   const tipoDecl=(txt.match(/(Modificatoria[^\n\d]*|Primitiva[^\n\d]*)/)||[])[1]||null;
   return{folio:folio,rut:rut,periodo:periodo,codigos:codigos,
     total_debitos:cod('538'),total_creditos:cod('537'),iva_determinado:cod('089'),
-    ppm:cod('062'),total_pagar:totalPagar,fecha_presentacion:fechaPres,tipo_declaracion:tipoDecl?tipoDecl.trim():null};
+    ppm:cod('062'),
+    ret_imp_unico:cod('048'),   // RET. IMP. ÚNICO TRAB. ART. 74 N°1 LIR
+    ret_honorarios:cod('151'),  // RETENCIÓN TASA LEY 21.133 SOBRE RENTAS (honorarios)
+    total_pagar:totalPagar,fecha_presentacion:fechaPres,tipo_declaracion:tipoDecl?tipoDecl.trim():null};
 }
 
 // POST: parsear el PDF del F29 (no guarda; devuelve extracción para preview)
@@ -12281,13 +12287,14 @@ app.post('/api/fin/f29/import', auth, async(req,res)=>{
       return res.status(400).json({error:'El RUT del formulario ('+b.rut+') no corresponde a la empresa seleccionada ('+emp.rows[0].rut+')'});
     if(b.periodo_pdf&&b.periodo_pdf!==b.periodo)
       return res.status(400).json({error:'El período del formulario ('+b.periodo_pdf+') no coincide con el período seleccionado ('+b.periodo+')'});
-    var r=await pool.query(`INSERT INTO fin_f29(empresa_id,periodo,folio,tipo_declaracion,total_debitos,total_creditos,iva_determinado,ppm,total_pagar,fecha_presentacion,codigos,usuario)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
-      ON CONFLICT(empresa_id,periodo,folio) DO UPDATE SET tipo_declaracion=EXCLUDED.tipo_declaracion,total_debitos=EXCLUDED.total_debitos,total_creditos=EXCLUDED.total_creditos,iva_determinado=EXCLUDED.iva_determinado,ppm=EXCLUDED.ppm,total_pagar=EXCLUDED.total_pagar,fecha_presentacion=EXCLUDED.fecha_presentacion,codigos=EXCLUDED.codigos,usuario=EXCLUDED.usuario
+    var r=await pool.query(`INSERT INTO fin_f29(empresa_id,periodo,folio,tipo_declaracion,total_debitos,total_creditos,iva_determinado,ppm,ret_imp_unico,ret_honorarios,total_pagar,fecha_presentacion,codigos,usuario)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+      ON CONFLICT(empresa_id,periodo,folio) DO UPDATE SET tipo_declaracion=EXCLUDED.tipo_declaracion,total_debitos=EXCLUDED.total_debitos,total_creditos=EXCLUDED.total_creditos,iva_determinado=EXCLUDED.iva_determinado,ppm=EXCLUDED.ppm,ret_imp_unico=EXCLUDED.ret_imp_unico,ret_honorarios=EXCLUDED.ret_honorarios,total_pagar=EXCLUDED.total_pagar,fecha_presentacion=EXCLUDED.fecha_presentacion,codigos=EXCLUDED.codigos,usuario=EXCLUDED.usuario
       RETURNING *`,
       [b.empresa_id,b.periodo,String(b.folio||'').trim()||('SF-'+b.periodo),b.tipo_declaracion||null,
        parseFloat(b.total_debitos)||0,parseFloat(b.total_creditos)||0,parseFloat(b.iva_determinado)||0,
-       parseFloat(b.ppm)||0,parseFloat(b.total_pagar)||0,b.fecha_presentacion||null,
+       parseFloat(b.ppm)||0,parseFloat(b.ret_imp_unico)||0,parseFloat(b.ret_honorarios)||0,
+       parseFloat(b.total_pagar)||0,b.fecha_presentacion||null,
        JSON.stringify(b.codigos||[]),req.user.email]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
@@ -12340,19 +12347,32 @@ async function finImpEnsure(){
     creado_en TIMESTAMP DEFAULT NOW(),
     UNIQUE(empresa_id,periodo,institucion,folio)
   )`);
+  // Desglose del comprobante AFP: fondo de pensiones y seguro de cesantía (AFC) se pagan juntos
+  try{await pool.query('ALTER TABLE fin_imposiciones ADD COLUMN IF NOT EXISTS monto_pensiones NUMERIC(14,2) DEFAULT 0');}catch(e){}
+  try{await pool.query('ALTER TABLE fin_imposiciones ADD COLUMN IF NOT EXISTS monto_cesantia NUMERIC(14,2) DEFAULT 0');}catch(e){}
   _finImpOk=true;
 }
 const IMP_MESES={enero:1,febrero:2,marzo:3,abril:4,mayo:5,junio:6,julio:7,agosto:8,septiembre:9,octubre:10,noviembre:11,diciembre:12};
 function impParseTexto(txt){
   const num=function(s){const n=parseFloat(String(s||'').replace(/\./g,'').replace(',','.'));return isNaN(n)?0:n;};
   const rutEmp=(txt.match(/([\d]{1,2}\.\d{3}\.\d{3}\-[\dkK]|78\d{6}\-[\dkK]|\d{7,8}\-[\dkK])/)||[])[1]||'';
-  const bloques=txt.split(/(?=COMPROBANTE DE PAGO)/).filter(function(x){return x.indexOf('COMPROBANTE DE PAGO')===0;});
+  // Además del comprobante estándar, Previred emite dos planillas con encabezado propio y
+  // rótulo "MONTO PAGADO" (no "TOTAL A PAGAR"): Seguro Social (ISL) y FONASA/IPS.
+  const bloques=txt.split(/(?=COMPROBANTE DE PAGO|FORMULARIO DE COTIZACIONES PREVISIONALES|PLANILLA DE DECLARACION Y PAGO SIMULTANEO)/)
+    .filter(function(x){return /^(COMPROBANTE DE PAGO|FORMULARIO DE COTIZACIONES PREVISIONALES|PLANILLA DE DECLARACION Y PAGO SIMULTANEO)/.test(x);});
   const comprobantes=[];
   bloques.forEach(function(bl){
-    const inst=(bl.match(/^(AFP [^\n]+|ISAPRE [^\n]+|Caja de Compensaci[oó]n [^\n]+|Asociaci[oó]n Chilena de Seguridad[^\n]*|Mutual[^\n]*|Instituto de Seguridad[^\n]*|Instituto de Previsi[oó]n Social[^\n]*|IPS[^\n]*|Fonasa[^\n]*)$/mi)||[])[1];
-    if(!inst)return;
-    const nombre=inst.trim();
-    const tipo=/^AFP/i.test(nombre)?'AFP':(/^ISAPRE/i.test(nombre)?'ISAPRE':(/^Caja/i.test(nombre)?'CCAF':(/Seguridad|Mutual/i.test(nombre)?'MUTUAL':'OTRA')));
+    var nombre=null,tipo=null;
+    if(/^FORMULARIO DE COTIZACIONES PREVISIONALES/.test(bl)&&/SEGURO SOCIAL/i.test(bl)){
+      nombre='Seguro Social Previsional (ISL)';tipo='ISL';
+    }else if(/^PLANILLA DE DECLARACION Y PAGO SIMULTANEO/.test(bl)&&/FONASA/i.test(bl)){
+      nombre='FONASA';tipo='FONASA';
+    }else{
+      const inst=(bl.match(/^(AFP [^\n]+|ISAPRE [^\n]+|Caja de Compensaci[oó]n [^\n]+|Asociaci[oó]n Chilena de Seguridad[^\n]*|Mutual[^\n]*|Instituto de Seguridad[^\n]*|Instituto de Previsi[oó]n Social[^\n]*|IPS[^\n]*|Fonasa[^\n]*)$/mi)||[])[1];
+      if(!inst)return;
+      nombre=inst.trim();
+      tipo=/^AFP/i.test(nombre)?'AFP':(/^ISAPRE/i.test(nombre)?'ISAPRE':(/^Caja/i.test(nombre)?'CCAF':(/Seguridad|Mutual/i.test(nombre)?'MUTUAL':'OTRA')));
+    }
     const folio=(bl.match(/N[uú]mero de Folio:\s*(\d+)/i)||[])[1]||'';
     // Período: "Periodo 01/2026" (AFP) o "Enero 2026" (ISAPRE/CCAF)
     var periodo='';
@@ -12383,11 +12403,30 @@ function impParseTexto(txt){
       detalle.push({concepto:label,monto:v2});
       monto+=v2;
     }
+    // Planillas ISL/FONASA: no traen "TOTAL A PAGAR" sino "MONTO PAGADO" (a veces con "=" antes del valor)
+    if(monto===0){
+      for(var lj=0;lj<lineasBl.length;lj++){
+        if(!/MONTO PAGADO/i.test(lineasBl[lj]))continue;
+        var mSame=lineasBl[lj].match(/MONTO PAGADO\s*=?\s*([\d][\d\.]*)\s*$/i);
+        if(mSame&&num(mSame[1])>0){detalle.push({concepto:'MONTO PAGADO',monto:num(mSame[1])});monto=num(mSame[1]);break;}
+        for(var lk=lj+1;lk<Math.min(lj+5,lineasBl.length);lk++){
+          var cand=(lineasBl[lk]||'').trim();
+          if(cand===''||cand==='=')continue;
+          var mNum=cand.match(/^([\d][\d\.]*)$/);
+          if(mNum&&num(mNum[1])>0){detalle.push({concepto:'MONTO PAGADO',monto:num(mNum[1])});monto=num(mNum[1]);}
+          break;
+        }
+        if(monto>0)break;
+      }
+    }
     const renta=num((bl.match(/Renta Imponible\s*\n?\s*([\d\.]+)/i)||[])[1]);
     var nT=parseInt((bl.match(/FDO\.?\s*PENSIONES\s+(\d+)/i)||[])[1]||0)
         ||parseInt((bl.match(/N[°º] de Afiliados Informados\s*\n?\s*(\d+)/i)||[])[1]||0);
+    // Desglose: el comprobante AFP trae fondo de pensiones + seguro de cesantía (AFC) en un mismo pago
+    var mCes=detalle.reduce(function(s,d){return s+(/CESANT/i.test(d.concepto)?d.monto:0);},0);
     comprobantes.push({institucion:nombre,tipo:tipo,folio:folio,periodo:periodo,fecha_pago:fechaPago,
-      monto:monto,renta_imponible:renta,n_trabajadores:nT,detalle:detalle});
+      monto:monto,monto_cesantia:mCes,monto_pensiones:monto-mCes,
+      renta_imponible:renta,n_trabajadores:nT,detalle:detalle});
   });
   return{rut_empresa:rutEmp,comprobantes:comprobantes};
 }
@@ -12428,11 +12467,12 @@ app.post('/api/fin/imposiciones/import', auth, async(req,res)=>{
     var importados=0,duplicados=0;
     for(var i=0;i<comps.length;i++){
       var c=comps[i];
-      var ins=await client.query(`INSERT INTO fin_imposiciones(empresa_id,periodo,institucion,tipo,folio,monto,renta_imponible,n_trabajadores,fecha_pago,detalle,usuario)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+      var ins=await client.query(`INSERT INTO fin_imposiciones(empresa_id,periodo,institucion,tipo,folio,monto,monto_pensiones,monto_cesantia,renta_imponible,n_trabajadores,fecha_pago,detalle,usuario)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
         ON CONFLICT(empresa_id,periodo,institucion,folio) DO NOTHING RETURNING imp_id`,
         [b.empresa_id,b.periodo,String(c.institucion||'').slice(0,90),c.tipo||'OTRA',String(c.folio||''),
-         parseFloat(c.monto)||0,parseFloat(c.renta_imponible)||0,parseInt(c.n_trabajadores)||0,c.fecha_pago||null,
+         parseFloat(c.monto)||0,parseFloat(c.monto_pensiones)||0,parseFloat(c.monto_cesantia)||0,
+         parseFloat(c.renta_imponible)||0,parseInt(c.n_trabajadores)||0,c.fecha_pago||null,
          JSON.stringify(c.detalle||[]),req.user.email]);
       if(ins.rows.length)importados++;else duplicados++;
     }
