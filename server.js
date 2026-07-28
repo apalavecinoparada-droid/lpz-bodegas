@@ -12637,10 +12637,13 @@ app.get('/api/fin/resultado-anual', auth, async(req,res)=>{
     const like=anio+'-%';
     const warn=[];
     async function q2(label,sql,vals){try{const r=await pool.query(sql,vals);return r.rows;}catch(e){warn.push(label+': '+e.message);return[];}}
+    // Compras separadas: del giro (gasto del mes) vs activo fijo (inversión, NO resta del resultado)
     const rcv=await q2('libro compra/venta',`
-      SELECT periodo, libro, SUM(CASE WHEN tipo_dte='61' THEN -neto ELSE neto END) AS neto
+      SELECT periodo, libro,
+             (COALESCE(tipo_operacion,'') ILIKE '%activo%') AS af,
+             SUM(CASE WHEN tipo_dte='61' THEN -neto ELSE neto END) AS neto
       FROM fin_rcv WHERE periodo LIKE $1 ${emp?'AND empresa_id=$2':''}
-      GROUP BY periodo, libro`,emp?[like,emp]:[like]);
+      GROUP BY periodo, libro, 3`,emp?[like,emp]:[like]);
     const remu=await q2('remuneraciones',`
       SELECT (p.anio||'-'||LPAD(p.mes::text,2,'0')) AS periodo, SUM(p.costo_total) AS monto
       FROM fin_remu_periodo p WHERE p.anio=$1 ${emp?'AND p.empresa_id=$2':''}
@@ -12655,8 +12658,8 @@ app.get('/api/fin/resultado-anual', auth, async(req,res)=>{
       SELECT periodo, SUM(bruto) AS monto FROM fin_honorarios
       WHERE estado='VIGENTE' AND periodo LIKE $1 ${emp?'AND empresa_id=$2':''} GROUP BY periodo`,emp?[like,emp]:[like]);
     const meses={};
-    const M=function(p){if(!meses[p])meses[p]={ventas:0,compras:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};return meses[p];};
-    rcv.forEach(function(r){const m=M(r.periodo);if(r.libro==='VENTA')m.ventas+=parseFloat(r.neto)||0;else m.compras+=parseFloat(r.neto)||0;});
+    const M=function(p){if(!meses[p])meses[p]={ventas:0,compras:0,compras_af:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};return meses[p];};
+    rcv.forEach(function(r){const m=M(r.periodo);if(r.libro==='VENTA')m.ventas+=parseFloat(r.neto)||0;else if(r.af===true)m.compras_af+=parseFloat(r.neto)||0;else m.compras+=parseFloat(r.neto)||0;});
     remu.forEach(function(r){M(r.periodo).remu_costo+=parseFloat(r.monto)||0;});
     impos.forEach(function(r){M(r.periodo).imposiciones+=parseFloat(r.monto)||0;});
     f29r.forEach(function(r){M(r.periodo).ret_imp_unico+=parseFloat(r.ret)||0;});
