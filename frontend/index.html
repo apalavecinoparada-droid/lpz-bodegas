@@ -15673,7 +15673,8 @@ function FinF29View(p){
     var r=imp.parsed;setSaving(true);setMsg('');
     api('/fin/f29/import','POST',{empresa_id:selEmpresa,periodo:selPeriodo,rut:r.rut,periodo_pdf:r.periodo,
       folio:r.folio,tipo_declaracion:r.tipo_declaracion,total_debitos:r.total_debitos,total_creditos:r.total_creditos,
-      iva_determinado:r.iva_determinado,ppm:r.ppm,total_pagar:r.total_pagar,fecha_presentacion:r.fecha_presentacion,codigos:r.codigos},p.tok)
+      iva_determinado:r.iva_determinado,ppm:r.ppm,ret_imp_unico:r.ret_imp_unico,ret_honorarios:r.ret_honorarios,
+      total_pagar:r.total_pagar,fecha_presentacion:r.fecha_presentacion,codigos:r.codigos},p.tok)
       .then(function(){setImp(null);load2();alert('✓ Formulario 29 del período '+selPeriodo+' guardado');})
       .catch(function(ex){setMsg(ex.message);}).finally(function(){setSaving(false);});
   }
@@ -15705,8 +15706,8 @@ function FinF29View(p){
     h('div',{className:'card',style:{padding:0,overflow:'auto'}},
       h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
         h('thead',null,h('tr',{style:{background:'#F1F5F9'}},
-          ['Período','Empresa','Folio','Débitos','Créditos','IVA determ.','PPM','TOTAL A PAGAR','Presentado','Tipo','',''].map(function(c,j){
-            return h('th',{key:j,style:{padding:8,fontSize:10,color:'#475569',textAlign:j>=3&&j<=7?'right':'left'}},c);})
+          ['Período','Empresa','Folio','Débitos','Créditos','IVA determ.','PPM','Ret. imp. único (048)','Ret. honorarios (151)','TOTAL A PAGAR','Presentado','Tipo','',''].map(function(c,j){
+            return h('th',{key:j,style:{padding:8,fontSize:10,color:'#475569',textAlign:j>=3&&j<=9?'right':'left'}},c);})
         )),
         h('tbody',null,lista.map(function(f){
           var money2=function(v){return h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace'}},'$'+nf(v));};
@@ -15715,6 +15716,8 @@ function FinF29View(p){
             h('td',{style:{padding:8,fontSize:11}},f.empresa_nombre||'—'),
             h('td',{style:{padding:8,fontFamily:'monospace',fontSize:11}},f.folio),
             money2(f.total_debitos),money2(f.total_creditos),money2(f.iva_determinado),money2(f.ppm),
+            h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',color:(parseFloat(f.ret_imp_unico)||0)>0?'#7C3AED':'#94A3B8'}},'$'+nf(f.ret_imp_unico)),
+            h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',color:(parseFloat(f.ret_honorarios)||0)>0?'#7C3AED':'#94A3B8'}},'$'+nf(f.ret_honorarios)),
             h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'#1E3A2D'}},'$'+nf(f.total_pagar)),
             h('td',{style:{padding:8,fontSize:11}},f.fecha_presentacion?fmtD(f.fecha_presentacion):'—'),
             h('td',{style:{padding:8,fontSize:10,color:'#64748B'}},f.tipo_declaracion||'—'),
@@ -15736,6 +15739,8 @@ function FinF29View(p){
           h('div',null,'Total créditos: ',h('strong',null,'$'+nf(imp.parsed.total_creditos))),
           h('div',null,'IVA determinado: ',h('strong',null,'$'+nf(imp.parsed.iva_determinado))),
           h('div',null,'PPM: ',h('strong',null,'$'+nf(imp.parsed.ppm))),
+          h('div',null,'Ret. imp. único (048): ',h('strong',{style:{color:'#7C3AED'}},'$'+nf(imp.parsed.ret_imp_unico))),
+          h('div',null,'Ret. honorarios (151): ',h('strong',{style:{color:'#7C3AED'}},'$'+nf(imp.parsed.ret_honorarios))),
           h('div',{style:{gridColumn:'1/-1',padding:'8px 12px',background:'#E9F1EC',borderRadius:6}},'TOTAL A PAGAR: ',h('strong',{style:{fontSize:15,color:'#1E3A2D'}},'$'+nf(imp.parsed.total_pagar))),
           h('div',null,'Códigos extraídos: ',h('strong',null,imp.parsed.codigos.length)),
           h('div',null,'Tipo: ',h('strong',null,imp.parsed.tipo_declaracion||'—'))
@@ -15811,9 +15816,10 @@ function FinImposicionesView(p){
   var inpS={padding:'6px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
   var listo=!!(selEmpresa&&selPeriodo);
   var totMonto=lista.reduce(function(s,x){return s+(parseFloat(x.monto)||0);},0);
+  var totCesantia=lista.reduce(function(s,x){return s+(parseFloat(x.monto_cesantia)||0);},0);
   var porTipo={};lista.forEach(function(x){porTipo[x.tipo]=(porTipo[x.tipo]||0)+(parseFloat(x.monto)||0);});
   var tipoBadge=function(t){
-    var m2={AFP:['#DBEAFE','#1E40AF'],ISAPRE:['#FCE7F3','#9D174D'],CCAF:['#FEF3C7','#92400E'],MUTUAL:['#DCFCE7','#15803D'],OTRA:['#F1F5F9','#475569']};
+    var m2={AFP:['#DBEAFE','#1E40AF'],ISAPRE:['#FCE7F3','#9D174D'],CCAF:['#FEF3C7','#92400E'],MUTUAL:['#DCFCE7','#15803D'],ISL:['#EDE9FE','#5B21B6'],FONASA:['#CFFAFE','#0E7490'],OTRA:['#F1F5F9','#475569']};
     var x=m2[t]||m2.OTRA;
     return h('span',{style:{padding:'2px 8px',background:x[0],color:x[1],borderRadius:10,fontSize:10,fontWeight:700}},t);
   };
@@ -15824,10 +15830,13 @@ function FinImposicionesView(p){
   return h('div',null,
     h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:8,marginBottom:10}},
       kpi('TOTAL PAGADO',CLP(totMonto),'#1E3A2D',(fPeriodo||'todos los períodos')),
-      kpi('AFP',CLP(porTipo.AFP||0),'#1E40AF',null),
+      kpi('AFP',CLP(porTipo.AFP||0),'#1E40AF','incluye seguro cesantía'),
+      kpi('— del cual, CESANTÍA (AFC)',CLP(totCesantia),'#0F766E','pagado junto con las AFP'),
       kpi('ISAPRE',CLP(porTipo.ISAPRE||0),'#9D174D',null),
       kpi('CAJA COMPENSACIÓN',CLP(porTipo.CCAF||0),'#92400E',null),
-      kpi('MUTUAL',CLP(porTipo.MUTUAL||0),'#15803D',null)
+      kpi('MUTUAL',CLP(porTipo.MUTUAL||0),'#15803D',null),
+      kpi('SEGURO SOCIAL (ISL)',CLP(porTipo.ISL||0),'#5B21B6',null),
+      kpi('IPS / FONASA',CLP(porTipo.FONASA||0),'#0E7490',null)
     ),
     h('div',{className:'card',style:{padding:12,marginBottom:10}},
       h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D',marginBottom:8}},'🏦 Subir planilla de imposiciones (Previred) — selecciona primero empresa y período'),
@@ -15852,8 +15861,8 @@ function FinImposicionesView(p){
     h('div',{className:'card',style:{padding:0,overflow:'auto'}},
       h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
         h('thead',null,h('tr',{style:{background:'#F1F5F9'}},
-          ['Período','Empresa','Tipo','Institución','Folio','Renta imponible','Trab.','Monto pagado','Fecha pago',''].map(function(c,j){
-            return h('th',{key:j,style:{padding:8,fontSize:10,color:'#475569',textAlign:(j===5||j===7)?'right':'left'}},c);})
+          ['Período','Empresa','Tipo','Institución','Folio','Renta imponible','Trab.','Pensiones / Institución','Seguro cesantía (AFC)','Monto pagado','Fecha pago',''].map(function(c,j){
+            return h('th',{key:j,style:{padding:8,fontSize:10,color:'#475569',textAlign:(j===5||j>=7&&j<=9)?'right':'left'}},c);})
         )),
         h('tbody',null,lista.map(function(x){
           return h('tr',{key:x.imp_id,style:{borderTop:'1px solid #E2E8F0'}},
@@ -15864,6 +15873,8 @@ function FinImposicionesView(p){
             h('td',{style:{padding:8,fontFamily:'monospace',fontSize:10}},x.folio||'—'),
             h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace'}},x.renta_imponible>0?('$'+nf(x.renta_imponible)):'—'),
             h('td',{style:{padding:8,textAlign:'center'}},x.n_trabajadores||'—'),
+            h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',color:'#475569'}},'$'+nf(x.monto_pensiones||x.monto)),
+            h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',color:(parseFloat(x.monto_cesantia)||0)>0?'#0F766E':'#CBD5E1'}},(parseFloat(x.monto_cesantia)||0)>0?('$'+nf(x.monto_cesantia)):'—'),
             h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'#1E3A2D'},title:(function(){try{var d2=typeof x.detalle==='string'?JSON.parse(x.detalle):(x.detalle||[]);return d2.map(function(dd){return dd.concepto+': $'+nf(dd.monto);}).join('\n');}catch(e2){return '';}})()},'$'+nf(x.monto)),
             h('td',{style:{padding:8,fontSize:11}},x.fecha_pago?fmtD(x.fecha_pago):'—'),
             h('td',{style:{padding:8}},h('button',{onClick:function(){eliminar(x);},title:'Eliminar',style:{padding:'3px 8px',fontSize:11,background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:4,cursor:'pointer',color:'#DC2626'}},'🗑'))
@@ -15879,7 +15890,7 @@ function FinImposicionesView(p){
         h('div',{style:{maxHeight:'46vh',overflowY:'auto',border:'1px solid #E2E8F0',borderRadius:6}},
           h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
             h('thead',null,h('tr',{style:{background:'#F1F5F9',position:'sticky',top:0}},
-              ['Tipo','Institución','Período','Renta imp.','Trab.','Monto','Fecha pago'].map(function(c,j){return h('th',{key:j,style:{padding:'6px',fontSize:9,color:'#475569',textAlign:(j===3||j===5)?'right':'left'}},c);}))),
+              ['Tipo','Institución','Período','Renta imp.','Trab.','Pensiones','Cesantía (AFC)','Monto','Fecha pago'].map(function(c,j){return h('th',{key:j,style:{padding:'6px',fontSize:9,color:'#475569',textAlign:(j===3||j>=5&&j<=7)?'right':'left'}},c);}))),
             h('tbody',null,imp.parsed.comprobantes.map(function(c,i){
               var malP=c.periodo&&c.periodo!==selPeriodo;
               return h('tr',{key:i,style:{borderTop:'1px solid #F1F5F9',background:malP?'#FEF2F2':'transparent'}},
@@ -15888,6 +15899,8 @@ function FinImposicionesView(p){
                 h('td',{style:{padding:5,color:malP?'#DC2626':'#1E293B',fontWeight:malP?700:400}},c.periodo||'—'),
                 h('td',{style:{padding:5,textAlign:'right',fontFamily:'monospace'}},c.renta_imponible>0?('$'+nf(c.renta_imponible)):'—'),
                 h('td',{style:{padding:5,textAlign:'center'}},c.n_trabajadores||'—'),
+                h('td',{style:{padding:5,textAlign:'right',fontFamily:'monospace',color:'#475569'}},'$'+nf(c.monto_pensiones!=null?c.monto_pensiones:c.monto)),
+                h('td',{style:{padding:5,textAlign:'right',fontFamily:'monospace',color:(c.monto_cesantia||0)>0?'#0F766E':'#CBD5E1'}},(c.monto_cesantia||0)>0?('$'+nf(c.monto_cesantia)):'—'),
                 h('td',{style:{padding:5,textAlign:'right',fontFamily:'monospace',fontWeight:700}},'$'+nf(c.monto)),
                 h('td',{style:{padding:5}},c.fecha_pago?fmtD(c.fecha_pago):'—'));
             }))
