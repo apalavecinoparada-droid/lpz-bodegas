@@ -12236,15 +12236,17 @@ function f29ParseTexto(txt){
   const rut=(txt.match(/RUT\s*\[03\]\s*([\d\.]+\-[\dkK])/)||[])[1]||'';
   const perRaw=(txt.match(/PERIODO\s*\[15\]\s*(\d{6})/)||[])[1]||'';
   const periodo=perRaw?(perRaw.slice(0,4)+'-'+perRaw.slice(4,6)):'';
-  // Líneas "código glosa valor": código 2-4 dígitos al inicio, valor numérico al final
+  // Líneas "código glosa valor". pdf-parse suele pegar todo SIN espacios
+  // (ej: "538TOTAL DÉBITOS71.451.776"), así que la glosa debe partir con letra
+  // y el valor es el último token numérico (o fecha dd/mm/aaaa) de la línea.
   const codigos=[];
   txt.split(/\r?\n/).forEach(function(l){
-    const m=l.trim().match(/^(\d{2,4})\s+(.+?)\s+([\d\.,\/]+)$/);
+    const m=l.trim().match(/^(\d{2,4})\s*([A-ZÁÉÍÓÚÜÑ(].*?)\s*((?:\d{1,2}\/\d{1,2}\/\d{4})|(?:\d{1,3}(?:\.\d{3})+(?:,\d+)?)|(?:\d+(?:[\.,]\d+)?))$/);
     if(m&&m[2].length>3)codigos.push({codigo:m[1],glosa:m[2].trim(),valor:m[3]});
   });
   const cod=function(c){const x=codigos.find(function(k){return k.codigo===c;});return x?num(x.valor):0;};
   const totalPagar=num((txt.match(/TOTAL A PAGAR DENTRO DEL PLAZO LEGAL\s*91\s*([\d\.]+)/)||[])[1])||cod('91');
-  const fpRaw=(txt.match(/9906\s+FECHA PRESENTACION[^\d]*(\d{2})\/(\d{2})\/(\d{4})/)||null);
+  const fpRaw=(txt.match(/9906\s*FECHA PRESENTACION[^\d]*(\d{2})\/(\d{2})\/(\d{4})/)||null);
   const fechaPres=fpRaw?(fpRaw[3]+'-'+fpRaw[2]+'-'+fpRaw[1]):null;
   const tipoDecl=(txt.match(/(Modificatoria[^\n\d]*|Primitiva[^\n\d]*)/)||[])[1]||null;
   return{folio:folio,rut:rut,periodo:periodo,codigos:codigos,
@@ -12362,15 +12364,26 @@ function impParseTexto(txt){
     }
     var fp=bl.match(/Fecha Pago\s*:?\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i)||bl.match(/Pago Electr[oó]nico\s*\n?\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i);
     const fechaPago=fp?(fp[3]+'-'+('0'+parseInt(fp[2])).slice(-2)+'-'+('0'+parseInt(fp[1])).slice(-2)):null;
-    // Totales "TOTAL A PAGAR ..." (AFP: pensiones + cesantía; otras: uno)
+    // Totales "TOTAL A PAGAR ..." (AFP: pensiones + cesantía; otras: uno).
+    // pdf-parse deja el monto en la LÍNEA SIGUIENTE al rótulo; también se soporta en la misma línea.
     const detalle=[];var monto=0;
-    var reTot=/TOTAL A PAGAR([^\n\d]*)([\d\.]+)/g,mt;
-    while((mt=reTot.exec(bl))!==null){
-      const v2=num(mt[2]);
-      detalle.push({concepto:('TOTAL A PAGAR'+mt[1]).trim(),monto:v2});
+    const lineasBl=bl.split(/\r?\n/);
+    for(var li=0;li<lineasBl.length;li++){
+      var lnT=lineasBl[li];
+      if(!/TOTAL A PAGAR/i.test(lnT))continue;
+      var mismo=lnT.match(/TOTAL A PAGAR(.*?)([\d][\d\.]*)\s*$/i);
+      var label,v2;
+      if(mismo&&num(mismo[2])>0){label=('TOTAL A PAGAR'+mismo[1]).trim();v2=num(mismo[2]);}
+      else{
+        var nx=(lineasBl[li+1]||'').trim();
+        var mSig=nx.match(/^([\d][\d\.]*)$/);
+        if(!mSig)continue;
+        label=lnT.trim();v2=num(mSig[1]);
+      }
+      detalle.push({concepto:label,monto:v2});
       monto+=v2;
     }
-    const renta=num((bl.match(/Renta Imponible\s+([\d\.]+)/i)||[])[1]);
+    const renta=num((bl.match(/Renta Imponible\s*\n?\s*([\d\.]+)/i)||[])[1]);
     var nT=parseInt((bl.match(/FDO\.?\s*PENSIONES\s+(\d+)/i)||[])[1]||0)
         ||parseInt((bl.match(/N[°º] de Afiliados Informados\s*\n?\s*(\d+)/i)||[])[1]||0);
     comprobantes.push({institucion:nombre,tipo:tipo,folio:folio,periodo:periodo,fecha_pago:fechaPago,
