@@ -12679,6 +12679,74 @@ app.get('/api/fin/resultado-anual', auth, async(req,res)=>{
 });
 
 // ════════════════════════════════════════════════════════════════════
+// LIBRO MAYOR DE PRODUCTOS — consumo por subcategoría/producto, 2° nivel cargo
+// Une compras directas (líneas de OC con equipo) y salidas de bodega valorizadas.
+// Filtros: período, empresa, faena, cargo, subcategoría. Ruta plana (sin /api/oc/:id).
+// ════════════════════════════════════════════════════════════════════
+app.get('/api/oc-libro-productos', auth, async(req,res)=>{
+  try{
+    const{desde,hasta,empresa_id,faena_id,equipo_id,subcategoria_id,solo_cerradas}=req.query;
+    const soloCerr=solo_cerradas!=='0';
+    const warn=[];
+    async function q2(label,sql,vals){try{const r=await pool.query(sql,vals);return r.rows;}catch(e){warn.push(label+': '+e.message);return[];}}
+    // ── Compras directas: líneas de OC ──
+    let wc=["oc.anulado_en IS NULL","oc.estado<>'ANULADA'"],vc=[];
+    if(soloCerr)wc.push("oc.estado='CERRADA'");
+    if(desde){vc.push(desde);wc.push('oc.fecha_emision>=$'+vc.length+'::date');}
+    if(hasta){vc.push(hasta);wc.push('oc.fecha_emision<=$'+vc.length+'::date');}
+    if(empresa_id){vc.push(parseInt(empresa_id));wc.push('oc.empresa_id=$'+vc.length);}
+    if(faena_id){vc.push(parseInt(faena_id));wc.push('d.faena_id=$'+vc.length);}
+    if(equipo_id){vc.push(parseInt(equipo_id));wc.push('d.equipo_id=$'+vc.length);}
+    if(subcategoria_id){vc.push(parseInt(subcategoria_id));wc.push('d.subcategoria_id=$'+vc.length);}
+    const compras=await q2('compras',`
+      SELECT to_char(oc.fecha_emision,'YYYY-MM-DD') AS fecha, 'COMPRA' AS origen,
+             'OC '||oc.numero_oc AS ref, oc.estado AS detalle_origen,
+             pr.nombre AS tercero,
+             d.subcategoria_id, COALESCE(sc.nombre,'Sin subcategoría') AS subcat,
+             COALESCE(NULLIF(TRIM(d.descripcion),''),'(sin detalle)') AS producto,
+             d.equipo_id, COALESCE(eq.codigo||' — '||eq.nombre,'Sin cargo') AS cargo,
+             f.nombre AS faena, oc.empresa_id,
+             d.cantidad, d.precio_unitario AS costo_unit,
+             d.cantidad*d.precio_unitario AS total
+      FROM ordenes_compra_detalle d
+      JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
+      LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
+      LEFT JOIN subcategorias sc ON d.subcategoria_id=sc.subcategoria_id
+      LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
+      LEFT JOIN faenas f ON d.faena_id=f.faena_id
+      WHERE ${wc.join(' AND ')}`,vc);
+    // ── Salidas de bodega: valorizadas al costo del movimiento (CPP) ──
+    let ws=["me.tipo_movimiento='SALIDA'","me.estado='ACTIVO'"],vs=[];
+    if(desde){vs.push(desde);ws.push('me.fecha>=$'+vs.length+'::date');}
+    if(hasta){vs.push(hasta);ws.push('me.fecha<=$'+vs.length+'::date');}
+    if(empresa_id){vs.push(parseInt(empresa_id));ws.push('COALESCE(eq.empresa_id,f.empresa_id)=$'+vs.length);}
+    if(faena_id){vs.push(parseInt(faena_id));ws.push('me.faena_id=$'+vs.length);}
+    if(equipo_id){vs.push(parseInt(equipo_id));ws.push('me.equipo_id=$'+vs.length);}
+    if(subcategoria_id){vs.push(parseInt(subcategoria_id));ws.push('p.subcategoria_id=$'+vs.length);}
+    const salidas=await q2('salidas bodega',`
+      SELECT to_char(me.fecha,'YYYY-MM-DD') AS fecha, 'BODEGA' AS origen,
+             'MOV '||me.movimiento_id AS ref, COALESCE(mot.nombre,'Salida') AS detalle_origen,
+             b.nombre AS tercero,
+             p.subcategoria_id, COALESCE(sc.nombre,'Sin subcategoría') AS subcat,
+             p.codigo||' — '||p.nombre AS producto,
+             me.equipo_id, COALESCE(eq.codigo||' — '||eq.nombre,'Sin cargo') AS cargo,
+             f.nombre AS faena, COALESCE(eq.empresa_id,f.empresa_id) AS empresa_id,
+             md.cantidad, COALESCE(md.costo_unitario,0) AS costo_unit,
+             md.cantidad*COALESCE(md.costo_unitario,0) AS total
+      FROM movimiento_detalle md
+      JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
+      JOIN productos p ON md.producto_id=p.producto_id
+      LEFT JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id
+      LEFT JOIN equipos eq ON me.equipo_id=eq.equipo_id
+      LEFT JOIN bodegas b ON me.bodega_id=b.bodega_id
+      LEFT JOIN faenas f ON me.faena_id=f.faena_id
+      LEFT JOIN motivos_movimiento mot ON me.motivo_id=mot.motivo_id
+      WHERE ${ws.join(' AND ')}`,vs);
+    res.json({rows:compras.concat(salidas),advertencias:warn});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ════════════════════════════════════════════════════════════════════
 // MANTENCIÓN — VENCIMIENTOS DOCUMENTALES (revisión técnica y acreditación)
 // Vehículos/camiones: revisión técnica + acreditación. Maquinaria: SOLO acreditación.
 // ════════════════════════════════════════════════════════════════════
