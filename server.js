@@ -7019,6 +7019,14 @@ async function setupRendiciones(q){
   try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS modificado_en TIMESTAMP');}catch(e){}
   try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS modificado_por VARCHAR(100)');}catch(e){}
   try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS m3_producidos NUMERIC(10,3) GENERATED ALWAYS AS (COALESCE(arboles_producidos,0)*COALESCE(vma_aplicado,0)) STORED');}catch(e){}
+  // ── Jornada Día/Noche + m³ manual (2026-07) ──
+  try{await q("ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS jornada VARCHAR(6) NOT NULL DEFAULT 'DIA'");}catch(e){}
+  // m3_producidos pasa de columna GENERADA (árboles×VMA) a ingreso MANUAL. DROP EXPRESSION conserva
+  // los valores ya calculados de los registros antiguos. Idempotente: 2ª corrida falla y se ignora.
+  try{await q('ALTER TABLE terreno_registros ALTER COLUMN m3_producidos DROP EXPRESSION');}catch(e){}
+  // Único por fecha+equipo+JORNADA (antes fecha+equipo): permite un registro Día y uno Noche por máquina
+  try{await q('ALTER TABLE terreno_registros DROP CONSTRAINT IF EXISTS terreno_registros_fecha_equipo_id_key');}catch(e){}
+  try{await q("CREATE UNIQUE INDEX IF NOT EXISTS terreno_reg_fecha_eq_jor_uq ON terreno_registros(fecha,equipo_id,jornada)");}catch(e){}
 
   // ── PRODUCTIVIDAD / OEE (registros mensuales por faena) ──
   await q(`CREATE TABLE IF NOT EXISTS prod_oee_registros (
@@ -8408,18 +8416,60 @@ app.patch('/api/terreno/tob-clasificar-masivo', auth, async(req,res)=>{
   }catch(e){res.status(400).json({error:e.message});}
 });
 
+// ── Helpers de validación Terreno (jornada Día/Noche + scoping por faena del usuario) ──
+// Usuario con faena asignada en el maestro (y rol NO admin) solo opera sobre esa faena.
+async function terrenoUserScope(client,userId){
+  try{
+    const r=await client.query('SELECT u.faena_id, COALESCE(ro.es_admin,false) AS es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',[userId]);
+    if(!r.rows.length)return null;
+    return r.rows[0].es_admin?null:(r.rows[0].faena_id||null);
+  }catch(e){return null;}
+}
+// Validaciones comunes de POST/PUT: scoping, integridad equipo/operador con la faena,
+// duplicado por fecha+equipo+jornada y tope 24 h sumando ambas jornadas (solo horómetro).
+async function terrenoValidar(client,b,userId,excluirId){
+  const jor=(String(b.jornada||'DIA').toUpperCase()==='NOCHE')?'NOCHE':'DIA';
+  const userFaena=await terrenoUserScope(client,userId);
+  if(userFaena&&String(b.faena_id)!==String(userFaena))
+    throw new Error('Su usuario está restringido a su faena asignada: solo puede crear o editar registros de esa faena');
+  const eqChk=(await client.query('SELECT faena_id,tipo_cargo FROM equipos WHERE equipo_id=$1',[b.equipo_id])).rows[0];
+  if(!eqChk)throw new Error('El equipo seleccionado no existe');
+  // Equipo debe pertenecer a la faena del registro (equipo sin faena = común a todas)
+  if(eqChk.faena_id&&String(eqChk.faena_id)!==String(b.faena_id))
+    throw new Error('El equipo seleccionado pertenece a otra faena: no se puede registrar en esta faena');
+  const esVeh=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf((eqChk.tipo_cargo||'maquinaria').toLowerCase())>=0;
+  // Operador debe pertenecer a la faena (personal sin faena = común)
+  if(b.operador_id){
+    const op=(await client.query('SELECT faena_id FROM personal WHERE persona_id=$1',[b.operador_id])).rows[0];
+    if(op&&op.faena_id&&String(op.faena_id)!==String(b.faena_id))
+      throw new Error('El operador seleccionado no pertenece a la faena del registro');
+  }
+  // Máximo un registro por máquina + fecha + jornada
+  const dupV=[b.fecha,b.equipo_id,jor];
+  if(excluirId)dupV.push(excluirId);
+  const dup=await client.query("SELECT registro_id FROM terreno_registros WHERE fecha=$1 AND equipo_id=$2 AND COALESCE(jornada,'DIA')=$3"+(excluirId?' AND registro_id<>$4':''),dupV);
+  if(dup.rows.length)throw new Error('Ya existe un registro de este equipo para esa fecha en jornada '+(jor==='DIA'?'Día':'Noche')+'. Máximo un registro por jornada');
+  // Tope 24 h del día completo: este registro + la otra jornada (solo equipos con horómetro)
+  const horas=parseFloat(b.horometro_final)-parseFloat(b.horometro_inicial);
+  if(!esVeh){
+    if(horas>24)throw new Error('Las horas trabajadas de una jornada no pueden superar 24: la diferencia de horómetros ingresada es '+horas.toFixed(1)+' horas. Revise los horómetros');
+    const otraV=[b.fecha,b.equipo_id];
+    if(excluirId)otraV.push(excluirId);
+    const otra=await client.query('SELECT COALESCE(SUM(horometro_final-horometro_inicial),0) AS h FROM terreno_registros WHERE fecha=$1 AND equipo_id=$2'+(excluirId?' AND registro_id<>$3':''),otraV);
+    const hOtra=parseFloat(otra.rows[0].h)||0;
+    if(horas+hOtra>24.001)throw new Error('La suma de horas de las jornadas Día + Noche no puede superar 24: este registro aporta '+horas.toFixed(1)+' h y la otra jornada ya tiene '+hOtra.toFixed(1)+' h (total '+(horas+hOtra).toFixed(1)+' h)');
+  }
+  return{jor:jor,esVeh:esVeh};
+}
 app.post('/api/terreno/registros', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
     const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle,
-          operador_id,fundo_id,rodal_id,arboles_producidos}=req.body;
+          operador_id,fundo_id,rodal_id,m3_producidos,jornada}=req.body;
     if(!fecha||!faena_id||!equipo_id||horometro_inicial==null||horometro_final==null)throw new Error('Fecha, faena, equipo y horómetros son obligatorios');
     if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
-    // El tope de 24 aplica SOLO a equipos con HORÓMETRO (horas). Los vehículos usan ODÓMETRO (km) y pueden superar 24.
-    const _tcTope=(await client.query('SELECT tipo_cargo FROM equipos WHERE equipo_id=$1',[equipo_id])).rows[0];
-    const _esVehTope=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf((_tcTope&&_tcTope.tipo_cargo||'maquinaria').toLowerCase())>=0;
-    if(!_esVehTope && parseFloat(horometro_final)-parseFloat(horometro_inicial)>24)throw new Error('Las horas trabajadas de un día no pueden superar 24: la diferencia de horómetros ingresada es '+(parseFloat(horometro_final)-parseFloat(horometro_inicial)).toFixed(1)+' horas. Revise los horómetros');
+    const val=await terrenoValidar(client,req.body,req.user.id,null);
     // Validate TOB sum = horas_perdidas
     const hp=parseFloat(horas_perdidas||0);
     if(hp>24)throw new Error('Las horas perdidas de un día no pueden superar 24 (ingresado: '+hp.toFixed(1)+')');
@@ -8427,18 +8477,12 @@ app.post('/api/terreno/registros', auth, async(req,res)=>{
     for(const dtx of detalle){ if((dtx.tob_cat_id||parseFloat(dtx.horas)>0)&&dtx.clasificacion!=='E'&&dtx.clasificacion!=='F') throw new Error('Cada tiempo perdido debe tener clasificación E (Empresa) o F (Mandante)'); }
     const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
     if(hp>0&&Math.abs(hp-sumTob)>0.01)throw new Error(`La suma del desglose de tiempos obvios (${sumTob}) no coincide con las horas perdidas (${hp})`);
-    // Producción: obtener VMA del rodal (snapshot)
-    let vmaSnapshot=null;
-    if(rodal_id){
-      const rd=await client.query('SELECT vma FROM rodales WHERE rodal_id=$1',[rodal_id]);
-      if(rd.rows.length) vmaSnapshot=parseFloat(rd.rows[0].vma)||0;
-    }
     const r=await client.query(
       `INSERT INTO terreno_registros(fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,usuario,
-        operador_id,fundo_id,rodal_id,arboles_producidos,vma_aplicado) 
+        operador_id,fundo_id,rodal_id,m3_producidos,jornada)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
       [fecha,faena_id,equipo_id,parseFloat(horometro_inicial),parseFloat(horometro_final),hp,parseFloat(litros_combustible||0),estanque_id||null,observaciones||null,req.user.email,
-       operador_id||null,fundo_id||null,rodal_id||null,arboles_producidos?parseInt(arboles_producidos):null,vmaSnapshot]);
+       operador_id||null,fundo_id||null,rodal_id||null,m3_producidos!=null&&m3_producidos!==''?parseFloat(m3_producidos):null,val.jor]);
     const regId=r.rows[0].registro_id;
     for(const d of detalle){
       if(d.tob_cat_id&&parseFloat(d.horas)>0){
@@ -8457,31 +8501,28 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
   try{
     await client.query('BEGIN');
     const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle,
-          operador_id,fundo_id,rodal_id,arboles_producidos}=req.body;
+          operador_id,fundo_id,rodal_id,m3_producidos,jornada}=req.body;
     if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
-    // El tope de 24 aplica SOLO a equipos con HORÓMETRO (horas). Los vehículos usan ODÓMETRO (km) y pueden superar 24.
-    const _tcTope=(await client.query('SELECT tipo_cargo FROM equipos WHERE equipo_id=$1',[equipo_id])).rows[0];
-    const _esVehTope=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf((_tcTope&&_tcTope.tipo_cargo||'maquinaria').toLowerCase())>=0;
-    if(!_esVehTope && parseFloat(horometro_final)-parseFloat(horometro_inicial)>24)throw new Error('Las horas trabajadas de un día no pueden superar 24: la diferencia de horómetros ingresada es '+(parseFloat(horometro_final)-parseFloat(horometro_inicial)).toFixed(1)+' horas. Revise los horómetros');
+    // Scoping: el registro EXISTENTE también debe ser de la faena del usuario (no puede "traerse" registros de otra faena)
+    const regAct=(await client.query('SELECT faena_id FROM terreno_registros WHERE registro_id=$1',[req.params.id])).rows[0];
+    if(!regAct)throw new Error('Registro no existe');
+    const userFaenaPut=await terrenoUserScope(client,req.user.id);
+    if(userFaenaPut&&String(regAct.faena_id)!==String(userFaenaPut))
+      throw new Error('Su usuario está restringido a su faena asignada: no puede editar registros de otra faena');
+    const val=await terrenoValidar(client,req.body,req.user.id,req.params.id);
     const hp=parseFloat(horas_perdidas||0);
     if(hp>24)throw new Error('Las horas perdidas de un día no pueden superar 24 (ingresado: '+hp.toFixed(1)+')');
     const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
     for(const dtx of detalle){ if((dtx.tob_cat_id||parseFloat(dtx.horas)>0)&&dtx.clasificacion!=='E'&&dtx.clasificacion!=='F') throw new Error('Cada tiempo perdido debe tener clasificación E (Empresa) o F (Mandante)'); }
     const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
     if(hp>0&&Math.abs(hp-sumTob)>0.01)throw new Error(`La suma del desglose (${sumTob}) no coincide con las horas perdidas (${hp})`);
-    // Producción: VMA snapshot del rodal
-    let vmaSnapshot=null;
-    if(rodal_id){
-      const rd=await client.query('SELECT vma FROM rodales WHERE rodal_id=$1',[rodal_id]);
-      if(rd.rows.length) vmaSnapshot=parseFloat(rd.rows[0].vma)||0;
-    }
     await client.query(
       `UPDATE terreno_registros SET fecha=$1,faena_id=$2,equipo_id=$3,horometro_inicial=$4,horometro_final=$5,horas_perdidas=$6,litros_combustible=$7,estanque_id=$8,observaciones=$9,
-        operador_id=$10,fundo_id=$11,rodal_id=$12,arboles_producidos=$13,vma_aplicado=$14,
+        operador_id=$10,fundo_id=$11,rodal_id=$12,m3_producidos=$13,jornada=$14,
         modificado_en=NOW(),modificado_por=$16
        WHERE registro_id=$15`,
       [fecha,faena_id,equipo_id,parseFloat(horometro_inicial),parseFloat(horometro_final),hp,parseFloat(litros_combustible||0),estanque_id||null,observaciones||null,
-       operador_id||null,fundo_id||null,rodal_id||null,arboles_producidos?parseInt(arboles_producidos):null,vmaSnapshot,
+       operador_id||null,fundo_id||null,rodal_id||null,m3_producidos!=null&&m3_producidos!==''?parseFloat(m3_producidos):null,val.jor,
        req.params.id,req.user.email]);
     await client.query('DELETE FROM terreno_tob_detalle WHERE registro_id=$1',[req.params.id]);
     for(const d of detalle){
@@ -8495,7 +8536,14 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
   finally{client.release();}
 });
 app.delete('/api/terreno/registros/:id', auth, async(req,res)=>{
-  try{await pool.query('DELETE FROM terreno_registros WHERE registro_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+  try{
+    const userFaena=await terrenoUserScope(pool,req.user.id);
+    if(userFaena){
+      const reg=(await pool.query('SELECT faena_id FROM terreno_registros WHERE registro_id=$1',[req.params.id])).rows[0];
+      if(reg&&String(reg.faena_id)!==String(userFaena))return res.status(403).json({error:'Su usuario está restringido a su faena asignada: no puede eliminar registros de otra faena'});
+    }
+    await pool.query('DELETE FROM terreno_registros WHERE registro_id=$1',[req.params.id]);res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
 });
 app.get('/api/terreno/rendimiento-mensual', auth, async(req,res)=>{
   try{
@@ -8505,6 +8553,71 @@ app.get('/api/terreno/rendimiento-mensual', auth, async(req,res)=>{
     const h=parseFloat(r.rows[0].horas)||0;const l=parseFloat(r.rows[0].litros)||0;
     res.json({horas:h,litros:l,rendimiento:h>0?l/h:null});
   }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ── Fundos y rodales para Terreno: fuente = dataset oferta_rodal del OEE ──
+// (Productividad → Asertividad Oferta → Control Programa vs Avance por Rodal).
+// La oferta cambia MES a MES: con ?mes=AAAA-MM se devuelven solo los fundos/rodales
+// del programa de ese mes (el mes de la fecha del registro). Sincroniza (upsert) a las
+// tablas maestras para conservar los FK de registros antiguos.
+// Fallback: si el dataset no está cargado, devuelve los mantenedores completos.
+app.get('/api/terreno/fundos-rodales', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    await client.query('BEGIN');
+    const mes=/^\d{4}-\d{2}$/.test(req.query.mes||'')?req.query.mes:null;
+    let oferta=[];
+    try{
+      const ds=await client.query("SELECT valor FROM prod_oee_datasets WHERE clave='oferta_rodal'");
+      if(ds.rows.length&&Array.isArray(ds.rows[0].valor))oferta=ds.rows[0].valor;
+    }catch(e){}
+    if(!oferta.length){
+      const f=await client.query('SELECT fundo_id,nombre FROM fundos WHERE activo=true ORDER BY nombre');
+      const r2=await client.query('SELECT rodal_id,fundo_id,nombre,vma FROM rodales WHERE activo=true ORDER BY nombre');
+      await client.query('COMMIT');
+      return res.json({origen:'mantenedor',fundos:f.rows,rodales:r2.rows});
+    }
+    // Filtrar la oferta al mes solicitado (cada fila trae o.mes = 'AAAA-MM')
+    let sinOfertaMes=false;
+    if(mes){
+      const delMes=oferta.filter(function(o){return String(o.mes||'').slice(0,7)===mes;});
+      if(delMes.length)oferta=delMes;
+      else{sinOfertaMes=true;oferta=[];}
+    }
+    if(!oferta.length){
+      await client.query('COMMIT');
+      return res.json({origen:'oferta_rodal',mes:mes,sin_oferta_mes:sinOfertaMes,fundos:[],rodales:[]});
+    }
+    const fundoIds={},rodalKeys={},outF=[],outR=[];
+    for(const o of oferta){
+      const fN=String(o.fundo||'').trim(),rN=String(o.rodal||'').trim();
+      if(!fN)continue;
+      if(!(fN in fundoIds)){
+        let fr=await client.query('SELECT fundo_id,nombre FROM fundos WHERE LOWER(TRIM(nombre))=LOWER($1) LIMIT 1',[fN]);
+        if(!fr.rows.length)fr=await client.query('INSERT INTO fundos(nombre,activo) VALUES($1,true) RETURNING fundo_id,nombre',[fN]);
+        fundoIds[fN]=fr.rows[0].fundo_id;
+        outF.push({fundo_id:fr.rows[0].fundo_id,nombre:fr.rows[0].nombre});
+      }
+      if(!rN)continue;
+      const rk=fN+'||'+rN;
+      if(!(rk in rodalKeys)){
+        const vma=parseFloat(o.vma)||0;
+        let rr=await client.query('SELECT rodal_id,fundo_id,nombre,vma FROM rodales WHERE fundo_id=$1 AND LOWER(TRIM(nombre))=LOWER($2) LIMIT 1',[fundoIds[fN],rN]);
+        if(!rr.rows.length)rr=await client.query('INSERT INTO rodales(fundo_id,nombre,vma,activo) VALUES($1,$2,$3,true) RETURNING rodal_id,fundo_id,nombre,vma',[fundoIds[fN],rN,vma]);
+        else if(vma>0&&Math.abs((parseFloat(rr.rows[0].vma)||0)-vma)>0.0001){
+          await client.query('UPDATE rodales SET vma=$1 WHERE rodal_id=$2',[vma,rr.rows[0].rodal_id]);
+          rr.rows[0].vma=vma;
+        }
+        rodalKeys[rk]=1;
+        outR.push(rr.rows[0]);
+      }
+    }
+    await client.query('COMMIT');
+    outF.sort(function(a,b){return (a.nombre||'').localeCompare(b.nombre||'');});
+    outR.sort(function(a,b){return (a.nombre||'').localeCompare(b.nombre||'');});
+    res.json({origen:'oferta_rodal',mes:mes,fundos:outF,rodales:outR});
+  }catch(e){await client.query('ROLLBACK');res.status(500).json({error:e.message});}
+  finally{client.release();}
 });
 
 app.get('/api/terreno/ultimo-horometro/:equipo_id', auth, async(req,res)=>{
