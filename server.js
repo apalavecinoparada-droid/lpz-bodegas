@@ -790,6 +790,8 @@ async function autoSetup() {
   try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS username VARCHAR(50) UNIQUE');}catch(e){}
   try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)');}catch(e){}
   try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS faena_id INT REFERENCES faenas(faena_id)');}catch(e){}
+  // Turno del usuario (A/B, mismo esquema 7x7 del personal): en Terreno el usuario ve solo el personal de su turno
+  try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS turno VARCHAR(2)');}catch(e){}
   await q(`CREATE TABLE IF NOT EXISTS roles (rol_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, descripcion VARCHAR(200), modulos JSONB DEFAULT '[]', es_admin BOOLEAN DEFAULT false, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
   try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS rol_id INT REFERENCES roles(rol_id)');}catch(e){}
   // ── Extensión pg_trgm para similitud de texto (auditoría de compras) ──
@@ -1323,7 +1325,7 @@ app.post('/api/auth/login', async(req,res)=>{
     const modulos=u.modulos||[];
     const esAdmin=u.es_admin||u.rol==='ADMINISTRADOR';
     const token=jwt.sign({id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos},JWT_SECRET,{expiresIn:'8h'});
-    res.json({token,usuario:{id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos,empresa_id:u.empresa_id||null,faena_id:u.faena_id||null}});
+    res.json({token,usuario:{id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos,empresa_id:u.empresa_id||null,faena_id:u.faena_id||null,turno:u.turno||null}});
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.get('/api/auth/me', auth, (req,res)=>res.json(req.user));
@@ -3552,19 +3554,19 @@ app.post('/api/import/bulk-oc', auth, async(req,res)=>{
 });
 
 // USUARIOS
-app.get('/api/usuarios', auth, async(req,res)=>{try{res.json((await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.empresa_id,u.faena_id,u.activo,u.creado_en,r.nombre AS rol_nombre,r.es_admin,e.razon_social AS empresa_nombre,f.nombre AS faena_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id LEFT JOIN empresas e ON u.empresa_id=e.empresa_id LEFT JOIN faenas f ON u.faena_id=f.faena_id ORDER BY u.nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
+app.get('/api/usuarios', auth, async(req,res)=>{try{res.json((await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.empresa_id,u.faena_id,u.turno,u.activo,u.creado_en,r.nombre AS rol_nombre,r.es_admin,e.razon_social AS empresa_nombre,f.nombre AS faena_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id LEFT JOIN empresas e ON u.empresa_id=e.empresa_id LEFT JOIN faenas f ON u.faena_id=f.faena_id ORDER BY u.nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
 app.post('/api/usuarios', auth, async(req,res)=>{
-  try{const{email,username,nombre,password,rol_id,empresa_id,faena_id}=req.body;if(!email||!nombre||!password)return res.status(400).json({error:'Email, nombre y contraseña requeridos'});const hash=await bcrypt.hash(password,10);const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'BODEGUERO';const eid=empresa_id&&empresa_id!==''?parseInt(empresa_id):null;const fid=faena_id&&faena_id!==''?parseInt(faena_id):null;const r=await pool.query('INSERT INTO usuarios(email,username,nombre,password_hash,rol,rol_id,empresa_id,faena_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[email,username||null,nombre,hash,rolNombre,rid,eid,fid]);res.status(201).json(r.rows[0]);}catch(e){if(e.code==='23505'){var msg=e.detail&&e.detail.indexOf('username')>=0?'El nombre de usuario ya existe':'El email ya está registrado';return res.status(400).json({error:msg});}res.status(400).json({error:e.message});}
+  try{const{email,username,nombre,password,rol_id,empresa_id,faena_id,turno}=req.body;const tno=(turno==='A'||turno==='B')?turno:null;if(!email||!nombre||!password)return res.status(400).json({error:'Email, nombre y contraseña requeridos'});const hash=await bcrypt.hash(password,10);const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'BODEGUERO';const eid=empresa_id&&empresa_id!==''?parseInt(empresa_id):null;const fid=faena_id&&faena_id!==''?parseInt(faena_id):null;const r=await pool.query('INSERT INTO usuarios(email,username,nombre,password_hash,rol,rol_id,empresa_id,faena_id,turno) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',[email,username||null,nombre,hash,rolNombre,rid,eid,fid,tno]);res.status(201).json(r.rows[0]);}catch(e){if(e.code==='23505'){var msg=e.detail&&e.detail.indexOf('username')>=0?'El nombre de usuario ya existe':'El email ya está registrado';return res.status(400).json({error:msg});}res.status(400).json({error:e.message});}
 });
 app.put('/api/usuarios/:id', auth, async(req,res)=>{
-  try{const{email,username,nombre,rol_id,password,empresa_id,faena_id}=req.body;
+  try{const{email,username,nombre,rol_id,password,empresa_id,faena_id,turno}=req.body;const tno=(turno==='A'||turno==='B')?turno:null;
   const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;
   const eid=empresa_id&&empresa_id!==''?parseInt(empresa_id):null;
   const fid=faena_id&&faena_id!==''?parseInt(faena_id):null;
   const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'ADMINISTRADOR';
-  if(password&&password.length>=4){const hash=await bcrypt.hash(password,10);await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5,password_hash=$6,empresa_id=$7,faena_id=$8 WHERE usuario_id=$9',[email,username||null,nombre,rolNombre,rid,hash,eid,fid,req.params.id]);}
-  else{await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5,empresa_id=$6,faena_id=$7 WHERE usuario_id=$8',[email,username||null,nombre,rolNombre,rid,eid,fid,req.params.id]);}
-  const r=await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.empresa_id,u.faena_id,u.activo,r.nombre AS rol_nombre,e.razon_social AS empresa_nombre,f.nombre AS faena_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id LEFT JOIN empresas e ON u.empresa_id=e.empresa_id LEFT JOIN faenas f ON u.faena_id=f.faena_id WHERE u.usuario_id=$1',[req.params.id]);
+  if(password&&password.length>=4){const hash=await bcrypt.hash(password,10);await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5,password_hash=$6,empresa_id=$7,faena_id=$8,turno=$9 WHERE usuario_id=$10',[email,username||null,nombre,rolNombre,rid,hash,eid,fid,tno,req.params.id]);}
+  else{await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5,empresa_id=$6,faena_id=$7,turno=$8 WHERE usuario_id=$9',[email,username||null,nombre,rolNombre,rid,eid,fid,tno,req.params.id]);}
+  const r=await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.empresa_id,u.faena_id,u.turno,u.activo,r.nombre AS rol_nombre,e.razon_social AS empresa_nombre,f.nombre AS faena_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id LEFT JOIN empresas e ON u.empresa_id=e.empresa_id LEFT JOIN faenas f ON u.faena_id=f.faena_id WHERE u.usuario_id=$1',[req.params.id]);
   res.json(r.rows[0]);}catch(e){if(e.code==='23505'){var msg=e.detail&&e.detail.indexOf('username')>=0?'El nombre de usuario ya existe':'El email ya está registrado';return res.status(400).json({error:msg});}res.status(400).json({error:e.message});}
 });
 app.patch('/api/usuarios/:id/activo', auth, async(req,res)=>{try{res.json((await pool.query('UPDATE usuarios SET activo=NOT activo WHERE usuario_id=$1 RETURNING *',[req.params.id])).rows[0]);}catch(e){res.status(400).json({error:e.message});}});
@@ -8444,11 +8446,15 @@ async function terrenoValidar(client,b,userId,excluirId){
   if(eqChk.faena_id&&String(eqChk.faena_id)!==String(b.faena_id))
     throw new Error('El equipo seleccionado pertenece a otra faena: no se puede registrar en esta faena');
   const esVeh=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf((eqChk.tipo_cargo||'maquinaria').toLowerCase())>=0;
-  // Operador debe pertenecer a la faena (personal sin faena = común)
+  // Operador debe pertenecer a la faena (personal sin faena = común) y al turno del usuario
   if(b.operador_id){
-    const op=(await client.query('SELECT faena_id FROM personal WHERE persona_id=$1',[b.operador_id])).rows[0];
+    const op=(await client.query('SELECT faena_id,turno FROM personal WHERE persona_id=$1',[b.operador_id])).rows[0];
     if(op&&op.faena_id&&String(op.faena_id)!==String(b.faena_id))
       throw new Error('El operador seleccionado no pertenece a la faena del registro');
+    // Usuario asociado a un turno (A/B) → el operador debe ser de ese turno (personal sin turno = jornada normal, siempre permitido)
+    const ut=(await client.query('SELECT u.turno, COALESCE(ro.es_admin,false) AS es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',[userId])).rows[0];
+    if(ut&&!ut.es_admin&&ut.turno&&op&&op.turno&&op.turno!==ut.turno)
+      throw new Error('El operador pertenece al turno '+op.turno+' y su usuario está asociado al turno '+ut.turno);
   }
   // Máximo un registro por máquina + fecha + jornada
   const dupV=[b.fecha,b.equipo_id,jor];
