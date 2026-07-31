@@ -4000,8 +4000,10 @@ function TerrenoView(p){
   }
   // Equipos de la faena seleccionada (equipo sin faena = común a todas). Sin faena elegida → lista vacía.
   function equiposDeFaena(fid){return fid?allEquipos.filter(function(e){return !e.faena_id||String(e.faena_id)===String(fid);}):[];}
-  // Operadores: SOLO personal de la faena seleccionada, desde el Maestro de Personal (sin faena = común)
-  function operadoresDeFaena(fid){return fid?(p.m.personal||[]).filter(function(x){return x.activo&&(!x.faena_id||String(x.faena_id)===String(fid));}):[];}
+  // Operadores: SOLO personal de la faena seleccionada (Maestro de Personal; sin faena = común).
+  // Si el usuario tiene TURNO asociado (no admin), ve solo el personal de su turno (sin turno = jornada normal, siempre visible).
+  var userTurno=p.user&&!p.user.es_admin&&p.user.turno?p.user.turno:null;
+  function operadoresDeFaena(fid){return fid?(p.m.personal||[]).filter(function(x){return x.activo&&(!x.faena_id||String(x.faena_id)===String(fid))&&(!userTurno||!x.turno||x.turno===userTurno);}):[];}
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
   var totHorasMes=registros.reduce(function(s,r){return s+(parseFloat(r.horas_trabajadas)||0);},0);
   var totLitrosMes=registros.reduce(function(s,r){return s+(parseFloat(r.litros_combustible)||0);},0);
@@ -15528,11 +15530,11 @@ function UsuariosView(p){
     var body=Object.assign({},form);
     // En edición, solo enviar contraseña si el admin escribió una nueva válida (evita re-hash accidental por autocompletado)
     if(editUser&&(!body.password||body.password.length<4)){delete body.password;}
-    api(url,method,body,p.tok).then(function(){loadUsers();setShowForm(false);setEditUser(null);setForm({email:'',username:'',nombre:'',password:'',rol_id:'',empresa_id:'',faena_id:''});setMsg(editUser?'Usuario actualizado':'Usuario creado');}).catch(function(e){setMsg('Error: '+e.message);});
+    api(url,method,body,p.tok).then(function(){loadUsers();setShowForm(false);setEditUser(null);setForm({email:'',username:'',nombre:'',password:'',rol_id:'',empresa_id:'',faena_id:'',turno:''});setMsg(editUser?'Usuario actualizado':'Usuario creado');}).catch(function(e){setMsg('Error: '+e.message);});
   }
   function toggleActivo(id){api('/usuarios/'+id+'/activo','PATCH',null,p.tok).then(function(){loadUsers();}).catch(function(e){alert(e.message);});}
   function eliminarUser(id){if(!confirm('Eliminar este usuario permanentemente?'))return;api('/usuarios/'+id,'DELETE',null,p.tok).then(function(){loadUsers();setMsg('Usuario eliminado');}).catch(function(e){alert(e.message);});}
-  function openEditUser(u){setEditUser(u);setForm({email:u.email,username:u.username||'',nombre:u.nombre,password:'',rol_id:u.rol_id||'',empresa_id:u.empresa_id||'',faena_id:u.faena_id||''});setShowForm(true);}
+  function openEditUser(u){setEditUser(u);setForm({email:u.email,username:u.username||'',nombre:u.nombre,password:'',rol_id:u.rol_id||'',empresa_id:u.empresa_id||'',faena_id:u.faena_id||'',turno:u.turno||''});setShowForm(true);}
   function guardarRol(){
     if(!rolForm.nombre){setMsg('Nombre del rol requerido');return;}
     var method=editRol?'PUT':'POST';var url='/roles'+(editRol?'/'+editRol.rol_id:'');
@@ -15567,7 +15569,7 @@ function UsuariosView(p){
             };reader.readAsText(f);
           }})
         ),
-        h(Btn,{onClick:function(){setEditUser(null);setForm({email:'',username:'',nombre:'',password:'',rol_id:'',empresa_id:'',faena_id:''});setShowForm(!showForm);}},showForm?'Cancelar':'+ Nuevo Usuario')
+        h(Btn,{onClick:function(){setEditUser(null);setForm({email:'',username:'',nombre:'',password:'',rol_id:'',empresa_id:'',faena_id:'',turno:''});setShowForm(!showForm);}},showForm?'Cancelar':'+ Nuevo Usuario')
       ),
       tab==='roles'&&h(Btn,{onClick:function(){setEditRol(null);setRolForm({nombre:'',descripcion:'',modulos:[],es_admin:false});setShowRolForm(!showRolForm);}},showRolForm?'Cancelar':'+ Nuevo Rol')
     ),
@@ -15583,7 +15585,8 @@ function UsuariosView(p){
           h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},editUser?'Nueva contraseña (dejar vacío para mantener)':'Contraseña *'),h('input',{type:'password',autoComplete:'new-password',name:'lpz-pass-'+(editUser?editUser.usuario_id:'new'),value:form.password,onChange:function(e){setForm(Object.assign({},form,{password:e.target.value}));},style:inpS,placeholder:editUser?'Solo si desea cambiarla':'Mínimo 4 caracteres'})),
           h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Rol'),h('select',{value:form.rol_id,onChange:function(e){setForm(Object.assign({},form,{rol_id:e.target.value}));},style:inpS},h('option',{value:''},'Seleccione rol...'),rolesLocal.filter(function(r){return r.activo!==false;}).map(function(r){return h('option',{key:r.rol_id,value:r.rol_id},r.nombre+(r.es_admin?' (Admin)':''));}))),
           h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Empresa asignada'),h('select',{value:form.empresa_id,onChange:function(e){setForm(Object.assign({},form,{empresa_id:e.target.value,faena_id:''}));},style:inpS},h('option',{value:''},'Todas las empresas'),(p.m.empresas||[]).filter(function(e){return e.activo;}).map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
-          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena asignada'),h('select',{value:form.faena_id,onChange:function(e){setForm(Object.assign({},form,{faena_id:e.target.value}));},style:inpS},h('option',{value:''},'Todas las faenas'),(p.m.faenas||[]).filter(function(f){return f.activo&&(!form.empresa_id||String(f.empresa_id)===String(form.empresa_id));}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})))
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena asignada'),h('select',{value:form.faena_id,onChange:function(e){setForm(Object.assign({},form,{faena_id:e.target.value}));},style:inpS},h('option',{value:''},'Todas las faenas'),(p.m.faenas||[]).filter(function(f){return f.activo&&(!form.empresa_id||String(f.empresa_id)===String(form.empresa_id));}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+          h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Turno asociado',h('span',{style:{fontSize:9,color:'#64748B',marginLeft:6}},'(en Terreno verá solo el personal de su turno)')),h('select',{value:form.turno||'',onChange:function(e){setForm(Object.assign({},form,{turno:e.target.value}));},style:inpS},h('option',{value:''},'Sin turno (ve todo el personal de la faena)'),h('option',{value:'A'},'Turno A'),h('option',{value:'B'},'Turno B')))
         ),
         h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},h(Btn,{onClick:guardarUser},editUser?'Guardar cambios':'Crear usuario'))
       ),
@@ -15594,6 +15597,7 @@ function UsuariosView(p){
         {lbl:'Rol',render:function(r){var isAdmin=r.es_admin||r.rol==='ADMINISTRADOR';return h(Bg,{c:isAdmin?'p':'b'},r.rol_nombre||r.rol);}},
         {lbl:'Empresa',render:function(r){return r.empresa_nombre?h('span',{style:{fontSize:11}},r.empresa_nombre):h('span',{style:{fontSize:10,color:'#94A3B8'}},'Todas');}},
         {lbl:'Faena',render:function(r){return r.faena_nombre?h('span',{style:{fontSize:11}},r.faena_nombre):h('span',{style:{fontSize:10,color:'#94A3B8'}},'Todas');}},
+        {lbl:'Turno',render:function(r){return r.turno?h(Bg,{c:r.turno==='A'?'b':'p'},'Turno '+r.turno):h('span',{style:{fontSize:10,color:'#94A3B8'}},'—');}},
         {lbl:'Estado',render:function(r){return h('span',{onClick:function(){toggleActivo(r.usuario_id);},style:{cursor:'pointer'}},r.activo?h(Bg,{c:'g'},'Activo'):h(Bg,{c:'r'},'Inactivo'));}},
         {lbl:'Creado',render:function(r){return fmtD(r.creado_en);}},
         {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:3}},
@@ -22310,8 +22314,10 @@ function MobileTerreno(p){
   var equipos=(p.m.equipos||[]).filter(function(e){return e.activo&&!e.es_transporte&&(TIPOS_TERRENO.indexOf(e.tipo_cargo||'maquinaria')>=0);});
   // Equipos de una faena (equipo sin faena = común a todas)
   function equiposDeFaenaM(fid){return fid?equipos.filter(function(e){return !e.faena_id||String(e.faena_id)===String(fid);}):[];}
-  // Operadores de una faena, desde el Maestro de Personal (sin faena = común)
-  function operadoresDeFaenaM(fid){return fid?(p.m.personal||[]).filter(function(x){return x.activo&&(!x.faena_id||String(x.faena_id)===String(fid));}):[];}
+  // Operadores de una faena, desde el Maestro de Personal (sin faena = común).
+  // Usuario con turno asociado: solo personal de su turno (sin turno = jornada normal, siempre visible).
+  var userTurnoM=p.user&&!p.user.es_admin&&p.user.turno?p.user.turno:null;
+  function operadoresDeFaenaM(fid){return fid?(p.m.personal||[]).filter(function(x){return x.activo&&(!x.faena_id||String(x.faena_id)===String(fid))&&(!userTurnoM||!x.turno||x.turno===userTurnoM);}):[];}
   var estanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
   var[msg,setMsg]=useState('');
   var[saved,setSaved]=useState(false);
