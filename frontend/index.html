@@ -3946,26 +3946,22 @@ function TerrenoView(p){
     if(sortBy===col){setSortDir(sortDir==='asc'?'desc':'asc');}
     else{setSortBy(col);setSortDir('asc');}
   }
-  var emptyForm={fecha:new Date().toISOString().slice(0,10),faena_id:'',equipo_id:'',horometro_inicial:'',horometro_final:'',horas_perdidas:0,litros_combustible:0,estanque_id:'',observaciones:'',tob_detalle:[],operador_id:'',fundo_id:'',rodal_id:'',arboles_producidos:''};
+  var emptyForm={fecha:new Date().toISOString().slice(0,10),faena_id:userFaenaId||'',equipo_id:'',jornada:'DIA',horometro_inicial:'',horometro_final:'',horas_perdidas:0,litros_combustible:0,estanque_id:'',observaciones:'',tob_detalle:[],operador_id:'',fundo_id:'',rodal_id:'',m3_producidos:''};
   var[form,setForm]=useState(emptyForm);
-  // Catálogos para producción forestal
+  // Catálogos para producción forestal — fundos/rodales vienen del dataset oferta_rodal del OEE
+  // (Control Programa vs Avance por Rodal); fallback a los mantenedores si no hay oferta cargada.
   var[fundos,setFundos]=useState([]);
   var[rodales,setRodales]=useState([]);
-  var[mecanicos,setMecanicos]=useState([]);
   // Tab principal: 'registros' = vista normal, 'informe' = informe consolidado
   var[vista,setVista]=useState('registros');
+  var[sinOfertaMes,setSinOfertaMes]=useState(false);
   function loadCats(){api('/terreno/tob-categorias','GET',null,p.tok).then(function(r){setTobCats(Array.isArray(r)?r:[]);}).catch(function(){});}
-  function loadFundos(){api('/fundos?activo=true','GET',null,p.tok).then(function(r){setFundos(Array.isArray(r)?r:[]);}).catch(function(){});}
-  function loadRodales(){api('/rodales?activo=true','GET',null,p.tok).then(function(r){setRodales(Array.isArray(r)?r:[]);}).catch(function(){});}
-  function loadOperadores(){
-    api('/mant/mecanicos','GET',null,p.tok).then(function(r){
-      var sis=(r&&r.sistema)||[];
-      setMecanicos(sis);
-    }).catch(function(){setMecanicos([]);});
-  }
+  function loadFundosRodales(mes){api('/terreno/fundos-rodales'+(mes?'?mes='+mes:''),'GET',null,p.tok).then(function(r){setFundos(r&&r.fundos||[]);setRodales(r&&r.rodales||[]);setSinOfertaMes(!!(r&&r.sin_oferta_mes));}).catch(function(){});}
   function loadReg(){var q='?';if(filtEquipo)q+='equipo_id='+filtEquipo+'&';if(filtMes)q+='mes='+filtMes+'&';api('/terreno/registros'+q,'GET',null,p.tok).then(function(r){setRegistros(Array.isArray(r)?r:[]);}).catch(function(){});}
   function loadRend(){if(filtEquipo&&filtMes)api('/terreno/rendimiento-mensual?equipo_id='+filtEquipo+'&mes='+filtMes,'GET',null,p.tok).then(function(r){setRendimiento(r);}).catch(function(){setRendimiento(null);});else setRendimiento(null);}
-  useEffect(function(){loadCats();loadFundos();loadRodales();loadOperadores();},[p.tok]);
+  useEffect(function(){loadCats();},[p.tok]);
+  // La oferta de fundos/rodales cambia MES a MES → recargar según el mes de la fecha del registro
+  useEffect(function(){loadFundosRodales((form.fecha||'').slice(0,7));},[p.tok,(form.fecha||'').slice(0,7)]);
   useEffect(function(){loadReg();loadRend();},[p.tok,filtEquipo,filtMes]);
   function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
   var hTrab=(parseFloat(form.horometro_final)||0)-(parseFloat(form.horometro_inicial)||0);
@@ -3976,7 +3972,8 @@ function TerrenoView(p){
   function removeLineaTOB(idx){setForm(function(f){var nl=(f.tob_detalle||[]).filter(function(_,i){return i!==idx;});return Object.assign({},f,{tob_detalle:nl});});}
   function updLineaTOB(idx,k,v){setForm(function(f){var nl=(f.tob_detalle||[]).map(function(l,i){if(i!==idx)return l;var u=Object.assign({},l);u[k]=v;return u;});return Object.assign({},f,{tob_detalle:nl});});}
   function guardar(){
-    if(!form.fecha||!form.equipo_id||!form.faena_id){setMsg('Error: Fecha, equipo y faena son obligatorios');return;}
+    if(!form.fecha||!form.equipo_id||!form.faena_id){setMsg('Error: Fecha, faena y equipo son obligatorios');return;}
+    if(form.jornada!=='DIA'&&form.jornada!=='NOCHE'){setMsg('Error: Seleccione la jornada (Día o Noche)');return;}
     if(form.horometro_inicial===''||form.horometro_final===''){setMsg('Error: Horómetros son obligatorios');return;}
     if(parseFloat(form.horometro_final)<parseFloat(form.horometro_inicial)){setMsg('Error: Horómetro final debe ser mayor o igual al inicial');return;}
     var _eqSelTope=allEquipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
@@ -3992,16 +3989,19 @@ function TerrenoView(p){
   function openEdit(r){
     api('/terreno/registros/'+r.registro_id+'/tob','GET',null,p.tok).then(function(tob){
       setEditReg(r);
-      setForm({fecha:r.fecha.slice(0,10),faena_id:r.faena_id,equipo_id:r.equipo_id,horometro_inicial:r.horometro_inicial,horometro_final:r.horometro_final,horas_perdidas:r.horas_perdidas||0,litros_combustible:r.litros_combustible||0,estanque_id:r.estanque_id||'',observaciones:r.observaciones||'',tob_detalle:(tob||[]).map(function(t){return{tob_cat_id:t.tob_cat_id,clasificacion:t.clasificacion||'E',horas:t.horas,observacion:t.observacion||''};}),operador_id:r.operador_id||'',fundo_id:r.fundo_id||'',rodal_id:r.rodal_id||'',arboles_producidos:r.arboles_producidos||''});
+      setForm({fecha:r.fecha.slice(0,10),faena_id:r.faena_id,equipo_id:r.equipo_id,jornada:r.jornada==='NOCHE'?'NOCHE':'DIA',horometro_inicial:r.horometro_inicial,horometro_final:r.horometro_final,horas_perdidas:r.horas_perdidas||0,litros_combustible:r.litros_combustible||0,estanque_id:r.estanque_id||'',observaciones:r.observaciones||'',tob_detalle:(tob||[]).map(function(t){return{tob_cat_id:t.tob_cat_id,clasificacion:t.clasificacion||'E',horas:t.horas,observacion:t.observacion||''};}),operador_id:r.operador_id||'',fundo_id:r.fundo_id||'',rodal_id:r.rodal_id||'',m3_producidos:r.m3_producidos!=null?r.m3_producidos:''});
       setShowForm(true);setShowTOB((tob||[]).length>0);
     }).catch(function(e){alert(e.message);});
   }
   function onEquipoChange(eqId){
+    // La faena manda sobre el equipo (orden Fecha → Faena → Máquina): ya no se auto-asigna faena desde el equipo
     upd('equipo_id',eqId);
-    var eq=allEquipos.find(function(e){return String(e.equipo_id)===String(eqId);});
-    if(eq)upd('faena_id',eq.faena_id);
     if(eqId&&!editReg){api('/terreno/ultimo-horometro/'+eqId,'GET',null,p.tok).then(function(r){if(r.horometro_final!=null){setForm(function(f){return Object.assign({},f,{horometro_inicial:r.horometro_final});});}}).catch(function(){});}
   }
+  // Equipos de la faena seleccionada (equipo sin faena = común a todas). Sin faena elegida → lista vacía.
+  function equiposDeFaena(fid){return fid?allEquipos.filter(function(e){return !e.faena_id||String(e.faena_id)===String(fid);}):[];}
+  // Operadores: SOLO personal de la faena seleccionada, desde el Maestro de Personal (sin faena = común)
+  function operadoresDeFaena(fid){return fid?(p.m.personal||[]).filter(function(x){return x.activo&&(!x.faena_id||String(x.faena_id)===String(fid));}):[];}
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
   var totHorasMes=registros.reduce(function(s,r){return s+(parseFloat(r.horas_trabajadas)||0);},0);
   var totLitrosMes=registros.reduce(function(s,r){return s+(parseFloat(r.litros_combustible)||0);},0);
@@ -4029,7 +4029,13 @@ function TerrenoView(p){
         filtEquipo&&rendimiento&&h('div',{style:{fontSize:11,padding:'6px 10px',background:'#F0FDF4',border:'1px solid #86EFAC',borderRadius:5}},
           h('strong',{style:{color:'#166534'}},'Rend: '),rendimiento.rendimiento?rendimiento.rendimiento.toFixed(2)+' L/h':'\u2014',' (',rendimiento.horas.toFixed(1)+'h / ',rendimiento.litros.toFixed(1)+'L)')
       ),
-      h(Btn,{onClick:function(){setEditReg(null);var f=Object.assign({},emptyForm);if(filtEquipo){f.equipo_id=filtEquipo;var eq=allEquipos.find(function(e){return String(e.equipo_id)===String(filtEquipo);});if(eq)f.faena_id=eq.faena_id;api('/terreno/ultimo-horometro/'+filtEquipo,'GET',null,p.tok).then(function(r){if(r.horometro_final!=null){setForm(function(ff){return Object.assign({},ff,{horometro_inicial:r.horometro_final});});}}).catch(function(){});}setForm(f);setShowForm(!showForm);setShowTOB(false);}},showForm?'Cancelar':'+ Nuevo Registro')
+      h(Btn,{onClick:function(){setEditReg(null);var f=Object.assign({},emptyForm);if(filtEquipo){var eq=allEquipos.find(function(e){return String(e.equipo_id)===String(filtEquipo);});
+        // Prefill del equipo filtrado solo si es compatible con la faena permitida (usuario restringido)
+        if(eq&&(!userFaenaId||!eq.faena_id||String(eq.faena_id)===userFaenaId)){
+          f.equipo_id=filtEquipo;
+          if(!userFaenaId&&eq.faena_id)f.faena_id=eq.faena_id;
+          api('/terreno/ultimo-horometro/'+filtEquipo,'GET',null,p.tok).then(function(r){if(r.horometro_final!=null){setForm(function(ff){return Object.assign({},ff,{horometro_inicial:r.horometro_final});});}}).catch(function(){});
+        }}setForm(f);setShowForm(!showForm);setShowTOB(false);}},showForm?'Cancelar':'+ Nuevo Registro')
     ),
     msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
     showForm&&h('div',{className:'card',style:{marginBottom:12}},
@@ -4046,29 +4052,44 @@ function TerrenoView(p){
         var unidadCorta=esVehiculo?'km':'h';
         return h(React.Fragment,null,
           h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
-            h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Equipo *'),
-              h('select',{value:form.equipo_id,onChange:function(e){onEquipoChange(e.target.value);},style:inpS},
-                h('option',{value:''},'Seleccione equipo...'),
-                allEquipos.map(function(eq){
+            // Orden: 1) Fecha  2) Faena  3) M\u00e1quina/Veh\u00edculo  4) Jornada
+            h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha *'),h('input',{type:'date',value:form.fecha,onChange:function(e){upd('fecha',e.target.value);},style:inpS})),
+            h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena *',userFaenaId&&h('span',{style:{fontSize:9,color:'#92400E',marginLeft:6}},'(asignada a su usuario)')),
+              h('select',{value:form.faena_id||'',disabled:!!userFaenaId,onChange:function(e){var fid=e.target.value;setForm(function(f){return Object.assign({},f,{faena_id:fid,equipo_id:'',operador_id:''});});},style:Object.assign({},inpS,userFaenaId?{background:'#F1F5F9',color:'#475569'}:{})},
+                h('option',{value:''},'Seleccione faena...'),
+                allFaenas.filter(function(f){return !userFaenaId||String(f.faena_id)===userFaenaId;}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+            h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'M\u00e1quina / Veh\u00edculo *'),
+              h('select',{value:form.equipo_id,disabled:!form.faena_id,onChange:function(e){onEquipoChange(e.target.value);},style:Object.assign({},inpS,!form.faena_id?{background:'#F8FAFC',color:'#94A3B8'}:{})},
+                h('option',{value:''},form.faena_id?'Seleccione equipo...':'Primero seleccione la faena'),
+                equiposDeFaena(form.faena_id).map(function(eq){
                   return h('option',{key:eq.equipo_id,value:eq.equipo_id},getEquipoIcon(eq)+' '+eq.codigo+' \u2014 '+eq.nombre);
                 })
               )
             ),
-            h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fecha *'),h('input',{type:'date',value:form.fecha,onChange:function(e){upd('fecha',e.target.value);},style:inpS})),
-            h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Faena *'),h('select',{value:form.faena_id||'',onChange:function(e){upd('faena_id',e.target.value);},style:inpS},h('option',{value:''},'Seleccione faena...'),allFaenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+            h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Jornada *'),
+              h('select',{value:form.jornada||'DIA',onChange:function(e){upd('jornada',e.target.value);},style:Object.assign({},inpS,{fontWeight:600,background:form.jornada==='NOCHE'?'#EEF2FF':'#FFFBEB'})},
+                h('option',{value:'DIA'},'\u2600 D\u00eda'),
+                h('option',{value:'NOCHE'},'\ud83c\udf19 Noche'))),
             h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},lblIni),h('input',{type:'number',step:'0.1',value:form.horometro_inicial,onChange:function(e){upd('horometro_inicial',e.target.value);},style:inpS,placeholder:esVehiculo?'Ej: 125430':'Ej: 5046.5'})),
             h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},lblFin),h('input',{type:'number',step:'0.1',value:form.horometro_final,onChange:function(e){upd('horometro_final',e.target.value);},style:inpS,placeholder:esVehiculo?'Ej: 125678':'Ej: 5054.5'})),
             h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},lblTrab),h('input',{value:hTrab.toFixed(2)+' '+unidadCorta,style:Object.assign({},inpS,{background:'#F0FDF4',fontWeight:700,color:'#166534'}),readOnly:true})),
             !esVehiculo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},lblPerd),h('input',{type:'number',step:'0.1',value:form.horas_perdidas,onChange:function(e){upd('horas_perdidas',e.target.value);},style:Object.assign({},inpS,{background:hp>0?'#FEF3C7':'#fff',borderColor:tobDesc&&hp>0?'#EF4444':'#CBD5E1'})})),
             h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Litros combustible'),h('input',{type:'number',step:'0.1',value:form.litros_combustible,onChange:function(e){upd('litros_combustible',e.target.value);},style:inpS})),
             h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Estanque combustible'),h('select',{value:form.estanque_id,onChange:function(e){upd('estanque_id',e.target.value);},style:inpS},h('option',{value:''},'\u2014'),estanques.map(function(es){return h('option',{key:es.estanque_id,value:es.estanque_id},es.codigo+' - '+es.nombre);}))),
-            // ── Operador (todas las máquinas y vehículos) ──
-            h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Operador'),h('select',{value:form.operador_id||'',onChange:function(e){upd('operador_id',e.target.value);},style:inpS},h('option',{value:''},'— Sin asignar —'),mecanicos.map(function(o){return h('option',{key:o.persona_id,value:o.persona_id},o.nombre_completo);}))),
+            // ── Operador: SOLO personal de la faena seleccionada (Maestro de Personal) ──
+            h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Operador'),h('select',{value:form.operador_id||'',disabled:!form.faena_id,onChange:function(e){upd('operador_id',e.target.value);},style:inpS},h('option',{value:''},form.faena_id?'— Sin asignar —':'Primero seleccione la faena'),operadoresDeFaena(form.faena_id).map(function(o){return h('option',{key:o.persona_id,value:o.persona_id},nombresPrimero(o.nombre_completo||''));}))),
             // ── Producción forestal (solo si NO es vehículo y el equipo tiene proceso productivo asignado) ──
-            !esVehiculo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fundo'),h('select',{value:form.fundo_id||'',onChange:function(e){upd('fundo_id',e.target.value);upd('rodal_id','');},style:inpS},h('option',{value:''},'— Sin asignar —'),fundos.map(function(fu){return h('option',{key:fu.fundo_id,value:fu.fundo_id},fu.nombre);}))),
-            !esVehiculo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Rodal',form.rodal_id&&(function(){var rd=rodales.find(function(r){return String(r.rodal_id)===String(form.rodal_id);});return rd?h('span',{style:{fontSize:10,color:'#0F766E',fontWeight:600,marginLeft:6}},'VMA: '+parseFloat(rd.vma).toFixed(4)):'';})()),h('select',{value:form.rodal_id||'',onChange:function(e){upd('rodal_id',e.target.value);},style:inpS,disabled:!form.fundo_id},h('option',{value:''},form.fundo_id?'— Sin asignar —':'Primero elige fundo'),rodales.filter(function(rd){return String(rd.fundo_id)===String(form.fundo_id);}).map(function(rd){return h('option',{key:rd.rodal_id,value:rd.rodal_id},rd.nombre+' (VMA '+parseFloat(rd.vma).toFixed(3)+')');}))),
-            !esVehiculo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Árboles producidos'),h('input',{type:'number',min:'0',step:'1',value:form.arboles_producidos,onChange:function(e){upd('arboles_producidos',e.target.value);},placeholder:'Cantidad de árboles del día',style:inpS})),
-            !esVehiculo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'m³ producidos'),(function(){var rd=rodales.find(function(r){return String(r.rodal_id)===String(form.rodal_id);});var vma=rd?parseFloat(rd.vma)||0:0;var ar=parseFloat(form.arboles_producidos)||0;var m3=vma*ar;return h('input',{value:m3>0?m3.toFixed(3)+' m³':'—',style:Object.assign({},inpS,{background:'#F0FDF4',fontWeight:700,color:'#166534'}),readOnly:true});})()),
+            !esVehiculo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Fundo',
+              h('span',{style:{fontSize:9,color:sinOfertaMes?'#B45309':'#0F766E',marginLeft:6}},sinOfertaMes?'(sin oferta OEE para este mes)':'(oferta del mes '+(form.fecha||'').slice(0,7)+')')),
+              h('select',{value:form.fundo_id||'',onChange:function(e){upd('fundo_id',e.target.value);upd('rodal_id','');},style:inpS},h('option',{value:''},'— Sin asignar —'),
+                fundos.map(function(fu){return h('option',{key:fu.fundo_id,value:fu.fundo_id},fu.nombre);}),
+                // Al editar un registro antiguo cuyo fundo ya no está en la oferta del mes: conservarlo como opción histórica
+                form.fundo_id&&editReg&&!fundos.some(function(fu){return String(fu.fundo_id)===String(form.fundo_id);})&&h('option',{value:form.fundo_id},(editReg.fundo_nombre||'Fundo del registro')+' (histórico)'))),
+            !esVehiculo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Rodal',form.rodal_id&&(function(){var rd=rodales.find(function(r){return String(r.rodal_id)===String(form.rodal_id);});return rd?h('span',{style:{fontSize:10,color:'#0F766E',fontWeight:600,marginLeft:6}},'VMA: '+parseFloat(rd.vma).toFixed(4)):'';})()),h('select',{value:form.rodal_id||'',onChange:function(e){upd('rodal_id',e.target.value);},style:inpS,disabled:!form.fundo_id},h('option',{value:''},form.fundo_id?'— Sin asignar —':'Primero elige fundo'),
+              rodales.filter(function(rd){return String(rd.fundo_id)===String(form.fundo_id);}).map(function(rd){return h('option',{key:rd.rodal_id,value:rd.rodal_id},rd.nombre+' (VMA '+parseFloat(rd.vma).toFixed(3)+')');}),
+              // Rodal histórico: al editar un registro cuyo rodal ya no está en la oferta del mes
+              form.rodal_id&&editReg&&!rodales.some(function(rd){return String(rd.rodal_id)===String(form.rodal_id);})&&h('option',{value:form.rodal_id},(editReg.rodal_nombre||'Rodal del registro')+' (histórico)'))),
+            !esVehiculo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'m³ producidos'),h('input',{type:'number',min:'0',step:'0.001',value:form.m3_producidos,onChange:function(e){upd('m3_producidos',e.target.value);},placeholder:'Metros cúbicos del día (manual)',style:Object.assign({},inpS,{background:'#F0FDF4',fontWeight:700,color:'#166534'})})),
             h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observaciones'),h('input',{value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},style:inpS}))
           ),
           // Indicador de tipo de equipo seleccionado
@@ -4162,8 +4183,10 @@ function TerrenoView(p){
               var esVeh=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf(tcRow)>=0;
               var hT=parseFloat(r.horas_trabajadas)||0;
               var lt=parseFloat(r.litros_combustible)||0;
+              var puedeEditarRow=!userFaenaId||String(r.faena_id)===userFaenaId;
               return h('tr',{key:r.registro_id||i,style:{background:i%2===0?'#fff':'#FAFBFC'}},
-                h('td',{style:tdS},fmtD(r.fecha)),
+                h('td',{style:tdS},h('div',null,fmtD(r.fecha),
+                  h('div',{style:{fontSize:9,fontWeight:700,marginTop:2,display:'inline-block',padding:'1px 6px',borderRadius:8,background:r.jornada==='NOCHE'?'#EEF2FF':'#FFFBEB',color:r.jornada==='NOCHE'?'#3730A3':'#92400E'}},r.jornada==='NOCHE'?'🌙 Noche':'☀ Día'))),
                 h('td',{style:tdS},h('div',null,
                   h('div',{style:{display:'flex',alignItems:'center',gap:6}},
                     h(EquipoIcon,{eq:eqRow,size:22}),
@@ -4188,10 +4211,10 @@ function TerrenoView(p){
                   r.usuario&&h('div',{style:{fontSize:9,color:'#94A3B8'}},(r.usuario+'').split('@')[0]),
                   r.modificado_cl&&h('div',{style:{fontSize:9,color:'#B45309',whiteSpace:'nowrap'},title:'Editado el '+r.modificado_cl+(r.modificado_por?' por '+r.modificado_por:'')},'\u270e editado '+r.modificado_cl)
                 ):'\u2014'),
-                h('td',{style:tdS},h('div',{style:{display:'flex',gap:3}},
+                h('td',{style:tdS},puedeEditarRow?h('div',{style:{display:'flex',gap:3}},
                   h('button',{onClick:function(){openEdit(r);},style:{fontSize:10,padding:'2px 6px',background:'#3B82F6',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'\u270f'),
                   h('button',{onClick:function(){eliminar(r.registro_id);},style:{fontSize:10,padding:'2px 6px',background:'#EF4444',color:'#fff',border:'none',borderRadius:3,cursor:'pointer'}},'\ud83d\uddd1')
-                ))
+                ):h('span',{style:{fontSize:9,color:'#94A3B8'},title:'Registro de otra faena: su usuario solo puede editar los de su faena asignada'},'\ud83d\udd12'))
               );
             })
           )
@@ -22279,10 +22302,16 @@ function MobileRendiciones(p){
 
 // ── Formulario de TERRENO móvil — para operadores de maquinaria ──
 function MobileTerreno(p){
-  var faenas=p.m.faenas||[];
+  // Usuario con faena asignada (no admin): faena fija + solo equipos/personal de esa faena
+  var userFaenaId=p.user&&!p.user.es_admin&&p.user.faena_id?String(p.user.faena_id):null;
+  var faenas=(p.m.faenas||[]).filter(function(f){return f.activo&&(!userFaenaId||String(f.faena_id)===userFaenaId);});
   // Incluir maquinaria Y vehículos (los que usan odómetro/km)
   var TIPOS_TERRENO=['maquinaria','camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'];
   var equipos=(p.m.equipos||[]).filter(function(e){return e.activo&&!e.es_transporte&&(TIPOS_TERRENO.indexOf(e.tipo_cargo||'maquinaria')>=0);});
+  // Equipos de una faena (equipo sin faena = común a todas)
+  function equiposDeFaenaM(fid){return fid?equipos.filter(function(e){return !e.faena_id||String(e.faena_id)===String(fid);}):[];}
+  // Operadores de una faena, desde el Maestro de Personal (sin faena = común)
+  function operadoresDeFaenaM(fid){return fid?(p.m.personal||[]).filter(function(x){return x.activo&&(!x.faena_id||String(x.faena_id)===String(fid));}):[];}
   var estanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
   var[msg,setMsg]=useState('');
   var[saved,setSaved]=useState(false);
@@ -22306,21 +22335,30 @@ function MobileTerreno(p){
     }).catch(function(){setHistorial([]);}).finally(function(){setLoadHist(false);});
   }
   useEffect(function(){if(modo==='historial')cargarHistorial();},[modo,filtroMesHist,filtroEquipoHist,p.tok]);
-  var[form,setForm]=useState({fecha:new Date().toISOString().slice(0,10),equipo_id:'',faena_id:'',horometro_inicial:'',horometro_final:'',horas_perdidas:'0',litros_combustible:'',estanque_id:'',observaciones:''});
+  var[form,setForm]=useState({fecha:new Date().toISOString().slice(0,10),equipo_id:'',faena_id:userFaenaId||'',jornada:'DIA',horometro_inicial:'',horometro_final:'',horas_perdidas:'0',litros_combustible:'',estanque_id:'',observaciones:'',operador_id:'',fundo_id:'',rodal_id:'',m3_producidos:''});
+  // Fundos/rodales desde la oferta del OEE (Control Programa vs Avance por Rodal).
+  // La oferta cambia MES a MES → se recargan según el mes de la fecha del registro.
+  var[fundosM,setFundosM]=useState([]);
+  var[rodalesM,setRodalesM]=useState([]);
+  var[sinOfertaMesM,setSinOfertaMesM]=useState(false);
+  var[editNombres,setEditNombres]=useState(null); // {fundo_nombre,rodal_nombre} del registro en edición
   useEffect(function(){
     api('/terreno/tob-categorias','GET',null,p.tok).then(function(r){setTobCats(Array.isArray(r)?r:[]);}).catch(function(){});
   },[p.tok]);
+  useEffect(function(){
+    var mesF=(form.fecha||'').slice(0,7);
+    api('/terreno/fundos-rodales'+(mesF?'?mes='+mesF:''),'GET',null,p.tok).then(function(r){setFundosM(r&&r.fundos||[]);setRodalesM(r&&r.rodales||[]);setSinOfertaMesM(!!(r&&r.sin_oferta_mes));}).catch(function(){});
+  },[p.tok,(form.fecha||'').slice(0,7)]);
   useEffect(function(){
     if(!form.equipo_id){setUltimoHoro(null);return;}
     // En modo edición, no auto-cargar el último horómetro (mantener el del registro original)
     if(editingId)return;
     var eq=equipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
-    var faenaAuto=eq&&eq.faena_id?eq.faena_id:'';
     setLoadingHoro(true);
     api('/terreno/ultimo-horometro/'+form.equipo_id,'GET',null,p.tok).then(function(r){
       var h=r&&r.horometro_final!=null?r.horometro_final:(eq&&eq.horometro_actual?parseFloat(eq.horometro_actual):0);
       setUltimoHoro(h);
-      setForm(function(f){return Object.assign({},f,{horometro_inicial:h,faena_id:f.faena_id||faenaAuto});});
+      setForm(function(f){return Object.assign({},f,{horometro_inicial:h});});
       setLoadingHoro(false);
     }).catch(function(){setLoadingHoro(false);});
   },[form.equipo_id,editingId]);
@@ -22335,8 +22373,9 @@ function MobileTerreno(p){
   function updTobLinea(i,k,v){setTobLineas(function(l){var n=l.slice();n[i]=Object.assign({},n[i],{[k]:v});return n;});}
   function delTobLinea(i){setTobLineas(function(l){return l.filter(function(_,idx){return idx!==i;});});}
   function guardar(){
-    if(!form.equipo_id){setMsg('Seleccione equipo');return;}
     if(!form.faena_id){setMsg('Seleccione faena');return;}
+    if(!form.equipo_id){setMsg('Seleccione equipo');return;}
+    if(form.jornada!=='DIA'&&form.jornada!=='NOCHE'){setMsg('Seleccione la jornada (Día o Noche)');return;}
     if(form.horometro_final===''||form.horometro_final==null){setMsg('Ingrese horómetro final');return;}
     if(hf<hi){setMsg('Horómetro final debe ser mayor o igual al inicial');return;}
     var _eqSelTope=equipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
@@ -22359,7 +22398,7 @@ function MobileTerreno(p){
         .catch(function(e){setMsg(e.message);});
     }
   }
-  function nuevo(){setSaved(false);setEditingId(null);setTobLineas([]);setForm(Object.assign({},form,{fecha:new Date().toISOString().slice(0,10),horometro_inicial:'',horometro_final:'',horas_perdidas:'0',litros_combustible:'',estanque_id:'',observaciones:''}));setUltimoHoro(null);}
+  function nuevo(){setSaved(false);setEditingId(null);setEditNombres(null);setTobLineas([]);setForm(Object.assign({},form,{fecha:new Date().toISOString().slice(0,10),jornada:'DIA',horometro_inicial:'',horometro_final:'',horas_perdidas:'0',litros_combustible:'',estanque_id:'',observaciones:'',m3_producidos:''}));setUltimoHoro(null);}
   function abrirEdicion(reg){
     // Cargar el registro al formulario, cargar también su desglose TOB y entrar en modo edición
     setEditingId(reg.registro_id);
@@ -22367,13 +22406,19 @@ function MobileTerreno(p){
       fecha:(reg.fecha+'').slice(0,10),
       equipo_id:reg.equipo_id,
       faena_id:reg.faena_id||'',
+      jornada:reg.jornada==='NOCHE'?'NOCHE':'DIA',
       horometro_inicial:reg.horometro_inicial||'',
       horometro_final:reg.horometro_final||'',
       horas_perdidas:reg.horas_perdidas||'0',
       litros_combustible:reg.litros_combustible||'',
       estanque_id:reg.estanque_id||'',
-      observaciones:reg.observaciones||''
+      observaciones:reg.observaciones||'',
+      operador_id:reg.operador_id||'',
+      fundo_id:reg.fundo_id||'',
+      rodal_id:reg.rodal_id||'',
+      m3_producidos:reg.m3_producidos!=null?reg.m3_producidos:''
     });
+    setEditNombres({fundo_nombre:reg.fundo_nombre||'',rodal_nombre:reg.rodal_nombre||''});
     // Cargar el desglose TOB existente del backend
     api('/terreno/registros/'+reg.registro_id+'/tob','GET',null,p.tok).then(function(tobRes){
       var lineas=Array.isArray(tobRes)?tobRes:(tobRes&&tobRes.lineas?tobRes.lineas:[]);
@@ -22465,7 +22510,10 @@ function MobileTerreno(p){
               ),
               h('div',{style:{fontSize:11,color:'#64748B'}},r.equipo_nombre||'')
             ),
-            h('div',{style:{fontSize:11,fontWeight:600,color:'#1E40AF',background:'#EFF6FF',padding:'3px 8px',borderRadius:10,whiteSpace:'nowrap'}},fmtD(r.fecha))
+            h('div',{style:{textAlign:'right'}},
+              h('div',{style:{fontSize:11,fontWeight:600,color:'#1E40AF',background:'#EFF6FF',padding:'3px 8px',borderRadius:10,whiteSpace:'nowrap'}},fmtD(r.fecha)),
+              h('div',{style:{fontSize:9,fontWeight:700,marginTop:3,display:'inline-block',padding:'1px 6px',borderRadius:8,background:r.jornada==='NOCHE'?'#EEF2FF':'#FFFBEB',color:r.jornada==='NOCHE'?'#3730A3':'#92400E'}},r.jornada==='NOCHE'?'🌙 Noche':'☀ Día')
+            )
           ),
           // Faena
           r.faena_nombre&&h('div',{style:{fontSize:11,color:'#64748B',marginBottom:6}},'📍 '+r.faena_nombre),
@@ -22480,11 +22528,11 @@ function MobileTerreno(p){
           ),
           // Observaciones
           r.observaciones&&h('div',{style:{fontSize:11,color:'#475569',marginTop:6,padding:6,background:'#FFFBEB',borderRadius:4,fontStyle:'italic'}},'💬 '+r.observaciones),
-          // Botones de acción: editar y eliminar
-          h('div',{style:{display:'flex',gap:6,marginTop:8}},
+          // Botones de acción: editar y eliminar (solo registros de la faena del usuario restringido)
+          (!userFaenaId||String(r.faena_id)===userFaenaId)?h('div',{style:{display:'flex',gap:6,marginTop:8}},
             h('button',{onClick:function(){abrirEdicion(r);},style:{flex:1,padding:'9px 12px',background:'#EFF6FF',color:'#1E40AF',border:'1px solid #BFDBFE',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer'}},'✏ Editar'),
             h('button',{onClick:function(){eliminarRegistro(r);},style:{padding:'9px 14px',background:'#FEF2F2',color:'#991B1B',border:'1px solid #FCA5A5',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer'}},'🗑')
-          )
+          ):h('div',{style:{marginTop:8,fontSize:10,color:'#94A3B8',textAlign:'center'}},'🔒 Registro de otra faena (solo lectura)')
         );
       })
     ),
@@ -22507,12 +22555,22 @@ function MobileTerreno(p){
         var unidad=esVehiculo?'km':'h';
         var labelTrab=esVehiculo?'KILÓMETROS RECORRIDOS':'HORAS TRABAJADAS';
         return h(React.Fragment,null,
-          F('Equipo *',h('select',{value:form.equipo_id,onChange:function(e){upd('equipo_id',e.target.value);}},
-            h('option',{value:''},'Seleccione su equipo...'),
-            equipos.map(function(e){
+          // Orden: 1) Fecha  2) Faena  3) Máquina/Vehículo  4) Jornada
+          F('Fecha',h('input',{type:'date',value:form.fecha,onChange:function(e){upd('fecha',e.target.value);}})),
+          F('Faena *'+(userFaenaId?' (asignada a su usuario)':''),h('select',{value:form.faena_id,disabled:!!userFaenaId,onChange:function(e){var fid=e.target.value;setForm(function(f){return Object.assign({},f,{faena_id:fid,equipo_id:'',operador_id:''});});},style:userFaenaId?{background:'#F1F5F9',color:'#475569'}:{}},h('option',{value:''},'Seleccione...'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+          F('Máquina / Vehículo *',h('select',{value:form.equipo_id,disabled:!form.faena_id,onChange:function(e){upd('equipo_id',e.target.value);}},
+            h('option',{value:''},form.faena_id?'Seleccione su equipo...':'Primero seleccione la faena'),
+            equiposDeFaenaM(form.faena_id).map(function(e){
               return h('option',{key:e.equipo_id,value:e.equipo_id},getEquipoIcon(e)+' '+e.codigo+' — '+e.nombre);
             })
           )),
+          // Jornada Día/Noche: botones grandes para uso en terreno
+          h('div',{className:'mob-field'},h('label',null,'Jornada *'),
+            h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}},
+              h('button',{onClick:function(){upd('jornada','DIA');},style:{padding:'12px 8px',borderRadius:8,fontSize:14,fontWeight:700,cursor:'pointer',border:'2px solid '+(form.jornada!=='NOCHE'?'#F59E0B':'#E2E8F0'),background:form.jornada!=='NOCHE'?'#FFFBEB':'#fff',color:form.jornada!=='NOCHE'?'#92400E':'#94A3B8'}},'☀ Día'),
+              h('button',{onClick:function(){upd('jornada','NOCHE');},style:{padding:'12px 8px',borderRadius:8,fontSize:14,fontWeight:700,cursor:'pointer',border:'2px solid '+(form.jornada==='NOCHE'?'#6366F1':'#E2E8F0'),background:form.jornada==='NOCHE'?'#EEF2FF':'#fff',color:form.jornada==='NOCHE'?'#3730A3':'#94A3B8'}},'🌙 Noche')
+            )
+          ),
           // Caja con icono distintivo según tipo
           form.equipo_id&&h('div',{style:{background:esVehiculo?'#EFF6FF':'#FEF3C7',border:'2px solid '+(esVehiculo?'#BFDBFE':'#FCD34D'),borderRadius:8,padding:'10px 12px',marginBottom:12,display:'flex',alignItems:'center',gap:10}},
             h('div',{style:{display:'flex',alignItems:'center',justifyContent:'center'}},h(EquipoIcon,{eq:eqSel,size:38})),
@@ -22521,8 +22579,6 @@ function MobileTerreno(p){
               h('div',{style:{fontSize:11,color:esVehiculo?'#1E40AF':'#92400E'}},esVehiculo?'Mide kilometraje (odómetro)':'Mide horas de trabajo (horómetro)')
             )
           ),
-          F('Fecha',h('input',{type:'date',value:form.fecha,onChange:function(e){upd('fecha',e.target.value);}})),
-          F('Faena *',h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);}},h('option',{value:''},'Seleccione...'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
           form.equipo_id&&h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:8,padding:10,marginBottom:12,fontSize:13}},
             loadingHoro?h('div',{style:{color:'#3B82F6'}},'Buscando último registro...'):
             ultimoHoro!=null?h('div',null,
@@ -22539,6 +22595,20 @@ function MobileTerreno(p){
             h('div',{style:{fontSize:12,color:hf>=hi?'#166534':'#991B1B',fontWeight:600,marginBottom:4}},hf>=hi?labelTrab:'ERROR'),
             h('div',{style:{fontSize:28,fontWeight:700,color:hf>=hi?'#166534':'#991B1B'}},hf>=hi?hTrab+' '+unidad:'Final < Inicial')
           ),
+          // Operador: SOLO personal de la faena seleccionada (Maestro de Personal)
+          F('Operador',h('select',{value:form.operador_id||'',disabled:!form.faena_id,onChange:function(e){upd('operador_id',e.target.value);}},
+            h('option',{value:''},form.faena_id?'— Sin asignar —':'Primero seleccione la faena'),
+            operadoresDeFaenaM(form.faena_id).map(function(o){return h('option',{key:o.persona_id,value:o.persona_id},nombresPrimero(o.nombre_completo||''));}))),
+          // Producción forestal (solo maquinaria): fundo/rodal de la oferta del OEE del MES de la fecha + m³ manual
+          !esVehiculo&&F('Fundo'+(sinOfertaMesM?' (sin oferta OEE este mes)':' (oferta '+(form.fecha||'').slice(0,7)+')'),h('select',{value:form.fundo_id||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{fundo_id:e.target.value,rodal_id:''});});}},
+            h('option',{value:''},'— Sin asignar —'),
+            fundosM.map(function(fu){return h('option',{key:fu.fundo_id,value:fu.fundo_id},fu.nombre);}),
+            form.fundo_id&&editingId&&!fundosM.some(function(fu){return String(fu.fundo_id)===String(form.fundo_id);})&&h('option',{value:form.fundo_id},((editNombres&&editNombres.fundo_nombre)||'Fundo del registro')+' (histórico)'))),
+          !esVehiculo&&F('Rodal',h('select',{value:form.rodal_id||'',disabled:!form.fundo_id,onChange:function(e){upd('rodal_id',e.target.value);}},
+            h('option',{value:''},form.fundo_id?'— Sin asignar —':'Primero elija fundo'),
+            rodalesM.filter(function(rd){return String(rd.fundo_id)===String(form.fundo_id);}).map(function(rd){return h('option',{key:rd.rodal_id,value:rd.rodal_id},rd.nombre);}),
+            form.rodal_id&&editingId&&!rodalesM.some(function(rd){return String(rd.rodal_id)===String(form.rodal_id);})&&h('option',{value:form.rodal_id},((editNombres&&editNombres.rodal_nombre)||'Rodal del registro')+' (histórico)'))),
+          !esVehiculo&&F('m³ producidos',h('input',{type:'number',value:form.m3_producidos,onChange:function(e){upd('m3_producidos',e.target.value);},step:0.001,min:0,inputMode:'decimal',placeholder:'Metros cúbicos del día'})),
           // Horas perdidas + TOB solo para maquinaria (vehículos no aplican)
           !esVehiculo&&F('Horas perdidas (detenciones)',h('input',{type:'number',value:form.horas_perdidas,onChange:function(e){upd('horas_perdidas',e.target.value);},step:0.1,min:0,inputMode:'decimal',placeholder:'0'}))
         );
