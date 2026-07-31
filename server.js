@@ -8190,8 +8190,11 @@ app.get('/api/terreno/registros', auth, async(req,res)=>{
   try{
     const{equipo_id,faena_id,desde,hasta,mes}=req.query;
     let w=['1=1'],v=[];
+    // Scoping: usuario no-admin con faena asignada SOLO ve los registros de su faena
+    const userFaenaLst=await terrenoUserScope(pool,req.user.id);
+    if(userFaenaLst){v.push(userFaenaLst);w.push(`r.faena_id=$${v.length}`);}
     if(equipo_id){v.push(equipo_id);w.push(`r.equipo_id=$${v.length}`);}
-    if(faena_id){v.push(faena_id);w.push(`r.faena_id=$${v.length}`);}
+    if(faena_id&&!userFaenaLst){v.push(faena_id);w.push(`r.faena_id=$${v.length}`);}
     if(desde){v.push(desde);w.push(`r.fecha>=$${v.length}`);}
     if(hasta){v.push(hasta);w.push(`r.fecha<=$${v.length}`);}
     if(mes){v.push(mes);w.push(`TO_CHAR(r.fecha,'YYYY-MM')=$${v.length}`);}
@@ -8225,8 +8228,11 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
   try{
     const{empresa_id,faena_id,equipo_id,desde,hasta}=req.query;
     let w=['1=1'],v=[];
+    // Scoping: usuario no-admin con faena asignada SOLO ve el informe de su faena
+    const userFaenaInf=await terrenoUserScope(pool,req.user.id);
+    if(userFaenaInf){v.push(userFaenaInf);w.push(`r.faena_id=$${v.length}`);}
     if(empresa_id){v.push(empresa_id);w.push(`e.empresa_id=$${v.length}`);}
-    if(faena_id){v.push(faena_id);w.push(`r.faena_id=$${v.length}`);}
+    if(faena_id&&!userFaenaInf){v.push(faena_id);w.push(`r.faena_id=$${v.length}`);}
     if(equipo_id){v.push(equipo_id);w.push(`r.equipo_id=$${v.length}`);}
     if(desde){v.push(desde);w.push(`r.fecha>=$${v.length}`);}
     if(hasta){v.push(hasta);w.push(`r.fecha<=$${v.length}`);}
