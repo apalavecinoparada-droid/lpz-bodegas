@@ -5907,9 +5907,10 @@ app.post('/api/mant/ot', auth, async(req,res)=>{
   try{
     const{empresa_id,equipo_id,faena_id,plan_id,aviso_id,tipo_mantencion,origen,fecha_apertura,fecha_programada,horometro_servicio,kilometraje_servicio,estado,prioridad,sistema,sintoma_reportado,responsable,mecanico_asignado,taller_tipo,taller_nombre,observaciones}=req.body;
     if(!equipo_id||!tipo_mantencion) return res.status(400).json({error:'Equipo y tipo de mantención requeridos'});
-    // Generate OT number
+    // Generate OT number: MAX del sufijo numérico existente + 1 (NO COUNT+1 — si se
+    // eliminó una OT, el conteo queda corrido y choca con la constraint UNIQUE)
     const yr=new Date().getFullYear();
-    const cnt=await pool.query("SELECT COUNT(*)+1 AS n FROM mant_ot WHERE EXTRACT(YEAR FROM creado_en)=$1",[yr]);
+    const cnt=await pool.query("SELECT COALESCE(MAX(NULLIF(regexp_replace(numero_ot,'^OT-\\d{4}-',''),'')::int),0)+1 AS n FROM mant_ot WHERE numero_ot LIKE $1 AND regexp_replace(numero_ot,'^OT-\\d{4}-','') ~ '^\\d+$'",['OT-'+yr+'-%']);
     const num=`OT-${yr}-${String(cnt.rows[0].n).padStart(4,'0')}`;
     const r=await pool.query(`INSERT INTO mant_ot(numero_ot,empresa_id,equipo_id,faena_id,plan_id,aviso_id,tipo_mantencion,origen,fecha_apertura,fecha_programada,horometro_servicio,kilometraje_servicio,estado,prioridad,sistema,sintoma_reportado,responsable,mecanico_asignado,taller_tipo,taller_nombre,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
       [num,empresa_id||null,equipo_id,faena_id||null,plan_id||null,aviso_id||null,tipo_mantencion,origen||'manual',fecha_apertura||new Date().toISOString().split('T')[0],fecha_programada||null,horometro_servicio||null,kilometraje_servicio||null,estado||'abierta',prioridad||'normal',sistema||null,sintoma_reportado||null,responsable||null,mecanico_asignado||null,taller_tipo||'interno',taller_nombre||null,observaciones||null,req.user.email]);
@@ -5970,9 +5971,9 @@ app.post('/api/mant/ot/desde-plan', auth, async(req,res)=>{
     const eqQ=await client.query('SELECT faena_id,horometro_actual,kilometraje_actual FROM equipos WHERE equipo_id=$1',[equipoId]);
     const faenaId=eqQ.rows[0]?.faena_id||null;
 
-    // Número OT
+    // Número OT: MAX del sufijo existente + 1 (mismo fix que POST /api/mant/ot)
     const yr=new Date().getFullYear();
-    const cnt=await client.query("SELECT COUNT(*)+1 AS n FROM mant_ot WHERE EXTRACT(YEAR FROM creado_en)=$1",[yr]);
+    const cnt=await client.query("SELECT COALESCE(MAX(NULLIF(regexp_replace(numero_ot,'^OT-\\d{4}-',''),'')::int),0)+1 AS n FROM mant_ot WHERE numero_ot LIKE $1 AND regexp_replace(numero_ot,'^OT-\\d{4}-','') ~ '^\\d+$'",['OT-'+yr+'-%']);
     const num=`OT-${yr}-${String(cnt.rows[0].n).padStart(4,'0')}`;
 
     // Nota de consolidación
