@@ -4191,6 +4191,21 @@ app.get('/api/comb/diagnostico-negativo/:estanque_id', auth, async(req,res)=>{
 });
 
 // ═══════════════════════════════════════════════════════════════════════
+// Último horómetro registrado en una CARGA de combustible del equipo (para alertar
+// errores de tipeo en la distribución: delta de horómetro > 24 h/día es imposible).
+// ?excluir=mov_id omite el propio movimiento al editar.
+app.get('/api/comb/ultimo-horometro/:equipo_id', auth, async(req,res)=>{
+  try{
+    const vals=[req.params.equipo_id];
+    let wx='';
+    if(req.query.excluir&&!isNaN(parseInt(req.query.excluir))){vals.push(parseInt(req.query.excluir));wx=' AND mov_id<>$2';}
+    const r=await pool.query(`SELECT horometro, fecha FROM comb_movimientos
+      WHERE tipo_mov='DISTRIBUCION' AND estado='ACTIVO' AND equipo_id=$1 AND horometro IS NOT NULL AND horometro>0${wx}
+      ORDER BY fecha DESC, mov_id DESC LIMIT 1`,vals);
+    res.json(r.rows.length?r.rows[0]:{horometro:null,fecha:null});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 // RENDIMIENTOS DE COMBUSTIBLE por equipo, agrupados por faena.
 // Máquinas: L/h (litros consumidos / horas trabajadas en terreno).
 // Vehículos: km/L (km recorridos / litros), km desde el span de kilometraje
@@ -4260,10 +4275,11 @@ app.get('/api/comb/rendimientos', auth, async(req,res)=>{
       const kmSpan=(x.km_max!=null&&x.km_min!=null&&x.km_max>x.km_min)?(parseFloat(x.km_max)-parseFloat(x.km_min)):null;
       var horas=0, horas_origen=null, km=null, rendimiento=null, unidad=null, l_100=null;
       if(cat.metric==='h'){
-        // Prioridad: horómetros de las cargas de combustible (fuente más fidedigna, se reprocesa al editarlos);
-        // horas de Terreno solo como respaldo cuando no hay 2+ lecturas de horómetro en el período
-        horas=(hSpan&&hSpan>0)?hSpan:horasTerreno;
-        horas_origen=(hSpan&&hSpan>0)?'horómetro':(horasTerreno>0?'terreno':null);
+        // Prioridad (2026-08, a pedido del usuario): horas INFORMADAS DESDE TERRENO como fuente
+        // principal; el span de horómetros de las cargas queda solo como respaldo cuando el
+        // equipo no tiene registros de terreno en el período
+        horas=(horasTerreno>0)?horasTerreno:((hSpan&&hSpan>0)?hSpan:0);
+        horas_origen=horasTerreno>0?'terreno':((hSpan&&hSpan>0)?'horómetro':null);
         unidad='L/h';
         if(horas>0)rendimiento=litros/horas;
       }else if(cat.metric==='km'){
@@ -9087,6 +9103,36 @@ app.get('/api/terreno/tiempos-perdidos-detalle', auth, async(req,res)=>{
 // Identifica equipos sin reporte de terreno, y discrepancias entre
 // litros distribuidos en comb_movimientos y litros informados en terreno
 // ═══════════════════════════════════════════════════════════════════
+// MÁQUINAS SIN REGISTRO DIARIO (solo maquinaria, NO vehículos): días del rango en que
+// una máquina activa no tiene ningún registro de terreno. Alimenta la alerta del módulo.
+app.get('/api/terreno/sin-registro', auth, async(req,res)=>{
+  try{
+    const hoy=new Date();
+    const ayer=new Date(hoy.getTime()-86400000).toISOString().slice(0,10);
+    const hace7=new Date(hoy.getTime()-7*86400000).toISOString().slice(0,10);
+    const desde=/^\d{4}-\d{2}-\d{2}$/.test(req.query.desde||'')?req.query.desde:hace7;
+    const hasta=/^\d{4}-\d{2}-\d{2}$/.test(req.query.hasta||'')?req.query.hasta:ayer;
+    const vals=[desde,hasta];
+    const wM=["e.activo=true","COALESCE(e.tipo_cargo,'maquinaria')='maquinaria'"];
+    // Scoping por faena del usuario (misma regla que registros/informe); admin puede filtrar por query
+    const userFaena=await terrenoUserScope(pool,req.user.id);
+    const fFaena=userFaena||(req.query.faena_id&&!isNaN(parseInt(req.query.faena_id))?parseInt(req.query.faena_id):null);
+    if(fFaena){vals.push(fFaena);wM.push('(e.faena_id=$'+vals.length+' OR e.faena_id IS NULL)');}
+    if(req.query.empresa_id&&!isNaN(parseInt(req.query.empresa_id))){vals.push(parseInt(req.query.empresa_id));wM.push('e.empresa_id=$'+vals.length);}
+    const r=await pool.query(`
+      WITH dias AS (SELECT generate_series($1::date,$2::date,'1 day')::date AS fecha),
+      maqs AS (SELECT equipo_id,codigo,nombre,faena_id FROM equipos e WHERE ${wM.join(' AND ')})
+      SELECT m.equipo_id, m.codigo, m.nombre, m.faena_id, f.nombre AS faena_nombre,
+             to_char(d.fecha,'YYYY-MM-DD') AS fecha
+      FROM maqs m CROSS JOIN dias d
+      LEFT JOIN terreno_registros tr ON tr.equipo_id=m.equipo_id AND tr.fecha=d.fecha
+      LEFT JOIN faenas f ON m.faena_id=f.faena_id
+      WHERE tr.registro_id IS NULL
+      ORDER BY m.codigo, d.fecha`,vals);
+    res.json({desde:desde,hasta:hasta,rows:r.rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 app.get('/api/terreno/auditoria-diaria', auth, async(req,res)=>{
   try{
     // Acepta `desde` y `hasta` (rango). Compatibilidad: si viene solo `fecha`, se trata como día único.
