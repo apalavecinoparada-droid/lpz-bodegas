@@ -8468,9 +8468,10 @@ async function terrenoValidar(client,b,userId,excluirId){
     const op=(await client.query('SELECT faena_id,turno FROM personal WHERE persona_id=$1',[b.operador_id])).rows[0];
     if(op&&op.faena_id&&String(op.faena_id)!==String(b.faena_id))
       throw new Error('El operador seleccionado no pertenece a la faena del registro');
-    // Usuario asociado a un turno (A/B) → el operador debe ser de ese turno (personal sin turno = jornada normal, siempre permitido)
+    // Usuario asociado a un turno (A/B) → el operador debe ser de ese turno.
+    // SIEMPRE permitidos: sin turno (jornada normal), 'AB' (ambos turnos) y 'P' (ciclo 7x7 propio)
     const ut=(await client.query('SELECT u.turno, COALESCE(ro.es_admin,false) AS es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',[userId])).rows[0];
-    if(ut&&!ut.es_admin&&ut.turno&&op&&op.turno&&op.turno!==ut.turno)
+    if(ut&&!ut.es_admin&&ut.turno&&op&&op.turno&&op.turno!=='AB'&&op.turno!=='P'&&op.turno!==ut.turno)
       throw new Error('El operador pertenece al turno '+op.turno+' y su usuario está asociado al turno '+ut.turno);
   }
   // Control interno (2026-08): cantidad de árboles OBLIGATORIA, pero SOLO para
