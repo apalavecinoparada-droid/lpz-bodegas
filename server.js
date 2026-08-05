@@ -8441,10 +8441,10 @@ async function terrenoValidar(client,b,userId,excluirId){
   const userFaena=await terrenoUserScope(client,userId);
   if(userFaena&&String(b.faena_id)!==String(userFaena))
     throw new Error('Su usuario está restringido a su faena asignada: solo puede crear o editar registros de esa faena');
-  const eqChk=(await client.query('SELECT faena_id,tipo_cargo FROM equipos WHERE equipo_id=$1',[b.equipo_id])).rows[0];
+  const eqChk=(await client.query('SELECT e.faena_id,e.tipo_cargo,(SELECT COUNT(*)::int FROM equipos_empresas ee WHERE ee.equipo_id=e.equipo_id) AS n_emp FROM equipos e WHERE e.equipo_id=$1',[b.equipo_id])).rows[0];
   if(!eqChk)throw new Error('El equipo seleccionado no existe');
-  // Equipo debe pertenecer a la faena del registro (equipo sin faena = común a todas)
-  if(eqChk.faena_id&&String(eqChk.faena_id)!==String(b.faena_id))
+  // Equipo debe pertenecer a la faena del registro (sin faena = común; MULTIEMPRESA = todas las faenas)
+  if(eqChk.faena_id&&eqChk.n_emp<2&&String(eqChk.faena_id)!==String(b.faena_id))
     throw new Error('El equipo seleccionado pertenece a otra faena: no se puede registrar en esta faena');
   const esVeh=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf((eqChk.tipo_cargo||'maquinaria').toLowerCase())>=0;
   // Operador debe pertenecer a la faena (personal sin faena = común) y al turno del usuario
