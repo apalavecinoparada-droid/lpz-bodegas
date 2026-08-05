@@ -8473,6 +8473,14 @@ async function terrenoValidar(client,b,userId,excluirId){
     if(ut&&!ut.es_admin&&ut.turno&&op&&op.turno&&op.turno!==ut.turno)
       throw new Error('El operador pertenece al turno '+op.turno+' y su usuario está asociado al turno '+ut.turno);
   }
+  // Control interno (2026-08): cantidad de árboles OBLIGATORIA, pero SOLO para
+  // registros de MAQUINARIA en faenas de la empresa Leonidas Poo (por razón social)
+  if(!esVeh){
+    const fEmp=(await client.query('SELECT emp.razon_social FROM faenas f JOIN empresas emp ON f.empresa_id=emp.empresa_id WHERE f.faena_id=$1',[b.faena_id])).rows[0];
+    const esLpoo=!!(fEmp&&/leonidas/i.test(fEmp.razon_social||'')&&/poo/i.test(fEmp.razon_social||''));
+    if(esLpoo&&(b.arboles_producidos==null||b.arboles_producidos===''))
+      throw new Error('La cantidad de árboles es obligatoria para registros de maquinaria de Leonidas Poo');
+  }
   // Máximo un registro por máquina + fecha + jornada
   const dupV=[b.fecha,b.equipo_id,jor];
   if(excluirId)dupV.push(excluirId);
@@ -8495,10 +8503,13 @@ app.post('/api/terreno/registros', auth, async(req,res)=>{
   try{
     await client.query('BEGIN');
     const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle,
-          operador_id,fundo_id,rodal_id,m3_producidos,jornada}=req.body;
+          operador_id,fundo_id,rodal_id,m3_producidos,jornada,arboles_producidos}=req.body;
     if(!fecha||!faena_id||!equipo_id||horometro_inicial==null||horometro_final==null)throw new Error('Fecha, faena, equipo y horómetros son obligatorios');
     if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
     const val=await terrenoValidar(client,req.body,req.user.id,null);
+    // VMA automático: snapshot del rodal seleccionado (registro informativo, sin multiplicación)
+    let vmaSnap=null;
+    if(rodal_id){const rdV=await client.query('SELECT vma FROM rodales WHERE rodal_id=$1',[rodal_id]);if(rdV.rows.length)vmaSnap=parseFloat(rdV.rows[0].vma)||null;}
     // Validate TOB sum = horas_perdidas
     const hp=parseFloat(horas_perdidas||0);
     if(hp>24)throw new Error('Las horas perdidas de un día no pueden superar 24 (ingresado: '+hp.toFixed(1)+')');
@@ -8508,10 +8519,11 @@ app.post('/api/terreno/registros', auth, async(req,res)=>{
     if(hp>0&&Math.abs(hp-sumTob)>0.01)throw new Error(`La suma del desglose de tiempos obvios (${sumTob}) no coincide con las horas perdidas (${hp})`);
     const r=await client.query(
       `INSERT INTO terreno_registros(fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,usuario,
-        operador_id,fundo_id,rodal_id,m3_producidos,jornada)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
+        operador_id,fundo_id,rodal_id,m3_producidos,jornada,arboles_producidos,vma_aplicado)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
       [fecha,faena_id,equipo_id,parseFloat(horometro_inicial),parseFloat(horometro_final),hp,parseFloat(litros_combustible||0),estanque_id||null,observaciones||null,req.user.email,
-       operador_id||null,fundo_id||null,rodal_id||null,m3_producidos!=null&&m3_producidos!==''?parseFloat(m3_producidos):null,val.jor]);
+       operador_id||null,fundo_id||null,rodal_id||null,m3_producidos!=null&&m3_producidos!==''?parseFloat(m3_producidos):null,val.jor,
+       arboles_producidos!=null&&arboles_producidos!==''?parseInt(arboles_producidos):null,vmaSnap]);
     const regId=r.rows[0].registro_id;
     for(const d of detalle){
       if(d.tob_cat_id&&parseFloat(d.horas)>0){
@@ -8530,7 +8542,7 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
   try{
     await client.query('BEGIN');
     const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle,
-          operador_id,fundo_id,rodal_id,m3_producidos,jornada}=req.body;
+          operador_id,fundo_id,rodal_id,m3_producidos,jornada,arboles_producidos}=req.body;
     if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
     // Scoping: el registro EXISTENTE también debe ser de la faena del usuario (no puede "traerse" registros de otra faena)
     const regAct=(await client.query('SELECT faena_id FROM terreno_registros WHERE registro_id=$1',[req.params.id])).rows[0];
@@ -8545,14 +8557,18 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
     for(const dtx of detalle){ if((dtx.tob_cat_id||parseFloat(dtx.horas)>0)&&dtx.clasificacion!=='E'&&dtx.clasificacion!=='F') throw new Error('Cada tiempo perdido debe tener clasificación E (Empresa) o F (Mandante)'); }
     const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
     if(hp>0&&Math.abs(hp-sumTob)>0.01)throw new Error(`La suma del desglose (${sumTob}) no coincide con las horas perdidas (${hp})`);
+    // VMA automático: snapshot del rodal seleccionado
+    let vmaSnap=null;
+    if(rodal_id){const rdV=await client.query('SELECT vma FROM rodales WHERE rodal_id=$1',[rodal_id]);if(rdV.rows.length)vmaSnap=parseFloat(rdV.rows[0].vma)||null;}
     await client.query(
       `UPDATE terreno_registros SET fecha=$1,faena_id=$2,equipo_id=$3,horometro_inicial=$4,horometro_final=$5,horas_perdidas=$6,litros_combustible=$7,estanque_id=$8,observaciones=$9,
-        operador_id=$10,fundo_id=$11,rodal_id=$12,m3_producidos=$13,jornada=$14,
+        operador_id=$10,fundo_id=$11,rodal_id=$12,m3_producidos=$13,jornada=$14,arboles_producidos=$17,vma_aplicado=$18,
         modificado_en=NOW(),modificado_por=$16
        WHERE registro_id=$15`,
       [fecha,faena_id,equipo_id,parseFloat(horometro_inicial),parseFloat(horometro_final),hp,parseFloat(litros_combustible||0),estanque_id||null,observaciones||null,
        operador_id||null,fundo_id||null,rodal_id||null,m3_producidos!=null&&m3_producidos!==''?parseFloat(m3_producidos):null,val.jor,
-       req.params.id,req.user.email]);
+       req.params.id,req.user.email,
+       arboles_producidos!=null&&arboles_producidos!==''?parseInt(arboles_producidos):null,vmaSnap]);
     await client.query('DELETE FROM terreno_tob_detalle WHERE registro_id=$1',[req.params.id]);
     for(const d of detalle){
       if(d.tob_cat_id&&parseFloat(d.horas)>0){
