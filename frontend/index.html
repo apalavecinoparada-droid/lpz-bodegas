@@ -184,6 +184,10 @@ function equipoEnEmpresa(equipo,empresaId){
   }
   return false;
 }
+// Cargo MULTIEMPRESA: asignado a 2+ empresas en la tabla N:N (equipos_empresas).
+// REGLA (2026-08): un cargo multiempresa está disponible en TODAS las empresas y
+// TODAS las faenas (camionetas de mecánicos, equipos de apoyo que rotan).
+function esMultiEmpresaEq(e){return !!e&&Array.isArray(e.empresas)&&e.empresas.length>1;}
 // Convierte "APELLIDO_P APELLIDO_M NOMBRES" (formato maestro) → "NOMBRES APELLIDO_P APELLIDO_M" (formato legal/documentos)
 // Heurística: los primeros 2 tokens son los apellidos. Si hay menos de 3 tokens, devuelve igual.
 function nombresPrimero(nc){
@@ -1565,7 +1569,7 @@ function MovEditModal(p){
       p.onSave&&p.onSave();
     }).catch(function(e){setErr(e.message);}).finally(function(){setSaving(false);});
   }
-  var equiposFilt=form.faena_id?equipos.filter(function(e){return !e.faena_id||String(e.faena_id)===String(form.faena_id);}):equipos; // cargo sin faena = común a todas las faenas
+  var equiposFilt=form.faena_id?equipos.filter(function(e){return !e.faena_id||esMultiEmpresaEq(e)||String(e.faena_id)===String(form.faena_id);}):equipos; // cargo sin faena o multiempresa = común a todas las faenas
   var titulo=esIngreso?'Ingreso':esTraspaso?'Traspaso':'Salida';
   return h(Modal,{title:'✏ Editar '+titulo+' #'+mov.movimiento_id,onClose:p.onClose,lg:true},
     h('div',{style:{padding:14}},
@@ -1703,7 +1707,7 @@ function SalidaView(p){
   function getCpp(pid,bid){if(!pid||!bid)return 0;var e=stock[pid+'_'+bid];return e?e.cpp:0;}
   const esMultiSal=form.empresa_id==='__MULTI__';
   const faenasFiltSal=(form.empresa_id&&!esMultiSal)?faenas.filter(function(f){return f.activo&&String(f.empresa_id)===String(form.empresa_id);}):faenas.filter(function(f){return f.activo;});
-  const eqFlt=form.faena_id?equipos.filter(function(e){return (!e.faena_id||String(e.faena_id)===String(form.faena_id))&&e.activo;}):((form.empresa_id&&!esMultiSal)?equipos.filter(function(e){return e.activo&&equipoEnEmpresa(e,form.empresa_id);}):equipos.filter(function(e){return e.activo;})); // cargo sin faena = común a todas las faenas
+  const eqFlt=form.faena_id?equipos.filter(function(e){return (!e.faena_id||esMultiEmpresaEq(e)||String(e.faena_id)===String(form.faena_id))&&e.activo;}):((form.empresa_id&&!esMultiSal)?equipos.filter(function(e){return e.activo&&equipoEnEmpresa(e,form.empresa_id);}):equipos.filter(function(e){return e.activo;})); // cargo sin faena = común a todas las faenas
   function save(){
     setErr('');
     if(!form.bodega_id||!form.fecha){setErr('Bodega y fecha son obligatorios');return;}
@@ -3931,7 +3935,7 @@ function TerrenoView(p){
   // Mostrar todos los equipos activos de la empresa del usuario (no filtrar por faena del usuario,
   // ya que las máquinas rotan entre faenas según necesidades operativas).
   // El admin sigue viendo todo. La separación por empresa se mantiene.
-  var allEquipos=(p.m.equipos||[]).filter(function(e){return e.activo&&(!userEmpresaId||String(e.empresa_id)===userEmpresaId);});
+  var allEquipos=(p.m.equipos||[]).filter(function(e){return e.activo&&(!userEmpresaId||equipoEnEmpresa(e,userEmpresaId));});
   var allFaenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
   var estanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
   var[registros,setRegistros]=useState([]);var[tobCats,setTobCats]=useState([]);
@@ -3999,7 +4003,7 @@ function TerrenoView(p){
     if(eqId&&!editReg){api('/terreno/ultimo-horometro/'+eqId,'GET',null,p.tok).then(function(r){if(r.horometro_final!=null){setForm(function(f){return Object.assign({},f,{horometro_inicial:r.horometro_final});});}}).catch(function(){});}
   }
   // Equipos de la faena seleccionada (equipo sin faena = común a todas). Sin faena elegida → lista vacía.
-  function equiposDeFaena(fid){return fid?allEquipos.filter(function(e){return !e.faena_id||String(e.faena_id)===String(fid);}):[];}
+  function equiposDeFaena(fid){return fid?allEquipos.filter(function(e){return !e.faena_id||esMultiEmpresaEq(e)||String(e.faena_id)===String(fid);}):[];}
   // Operadores: SOLO personal de la faena seleccionada (Maestro de Personal; sin faena = común).
   // Si el usuario tiene TURNO asociado (no admin), ve solo el personal de su turno (sin turno = jornada normal, siempre visible).
   var userTurno=p.user&&!p.user.es_admin&&p.user.turno?p.user.turno:null;
@@ -10186,8 +10190,29 @@ var PROCESOS_PRODUCTIVOS=[{v:'volteo',l:'Volteo'},{v:'madereo',l:'Madereo'},{v:'
 const EquipoForm=p=>{
   var modelos=(p.extra&&p.extra.modelos||[]);
   var selModelo=modelos.find(function(m){return String(m.modelo_id)===String(p.item.modelo_id);});
+  var empActivas=(p.extra&&p.extra.empresas||[]).filter(function(e){return e.activo;});
+  // Al abrir la edición: poblar empresas_ids desde el arreglo N:N que trae el GET.
+  // Sin esto, cualquier edición normal reseteaba el equipo a una sola empresa (el
+  // backend cae a [empresa_id] cuando empresas_ids no viene en el body).
+  useEffect(function(){
+    if(p.item&&p.item.equipo_id&&p.item.empresas_ids===undefined&&Array.isArray(p.item.empresas)&&p.item.empresas.length){
+      p.onChange(Object.assign({},p.item,{empresas_ids:p.item.empresas.map(function(x){return x.empresa_id;}),empresa_principal_id:p.item.empresa_id||null}));
+    }
+  },[p.item&&p.item.equipo_id]);
+  var esMulti=Array.isArray(p.item.empresas_ids)?p.item.empresas_ids.length>1:(Array.isArray(p.item.empresas)&&p.item.empresas.length>1);
   return h('div',{className:'g2'},
-    h(FS,{k:'empresa_id',l:'Empresa',req:true,item:p.item,onChange:p.onChange,opts:(p.extra&&p.extra.empresas||[]).filter(function(e){return e.activo;}).map(function(e){return{v:e.empresa_id,l:e.razon_social};})}),
+    h(FS,{k:'empresa_id',l:esMulti?'Empresa principal (imputación)':'Empresa',req:true,item:p.item,onChange:p.onChange,opts:empActivas.map(function(e){return{v:e.empresa_id,l:e.razon_social};})}),
+    h('div',{style:{gridColumn:'1/-1',background:esMulti?'#F5F3FF':'#F8FAFC',border:'1px solid '+(esMulti?'#C4B5FD':'#E2E8F0'),borderRadius:6,padding:'8px 10px'}},
+      h('label',{style:{display:'flex',alignItems:'center',gap:8,fontSize:12,fontWeight:600,color:esMulti?'#5B21B6':'#475569',cursor:'pointer'}},
+        h('input',{type:'checkbox',checked:esMulti,onChange:function(e){
+          var on=e.target.checked;
+          p.onChange(Object.assign({},p.item,{
+            empresas_ids:on?empActivas.map(function(x){return x.empresa_id;}):(p.item.empresa_id?[parseInt(p.item.empresa_id)]:[]),
+            empresa_principal_id:p.item.empresa_id||null
+          }));
+        },style:{width:15,height:15,cursor:'pointer'}}),
+        '🏢 Multiempresa — disponible en TODAS las empresas y TODAS las faenas'),
+      h('div',{style:{fontSize:10,color:'#64748B',marginTop:3,paddingLeft:23}},'Para camionetas de mecánicos y equipos de apoyo que rotan. Aparecerá en los selectores de terreno, combustible y salidas sin importar la faena. La empresa seleccionada arriba queda como principal para imputación de costos.')),
     h(FS,{k:'tipo_cargo',l:'Tipo cargo',req:true,item:p.item,onChange:p.onChange,opts:TIPOS_CARGO}),
     h(FI,{k:'codigo',l:'Código interno',req:true,item:p.item,onChange:p.onChange,ph:'EG-05, SK-12...'}),
     h(FI,{k:'nombre',l:'Nombre / Descripción',req:true,item:p.item,onChange:p.onChange}),
@@ -10745,7 +10770,7 @@ function CombMovView(p){
   const equiposAll=(p.m.equipos||[]).filter(function(e){return e.activo;});
   const equiposFilt=equiposAll.filter(function(e){
     if(filtEmp&&String(e.empresa_id)!==String(filtEmp))return false;
-    if(filtFaena&&e.faena_id&&String(e.faena_id)!==String(filtFaena))return false; // cargo sin faena = común a todas las faenas de la empresa
+    if(filtFaena&&e.faena_id&&!esMultiEmpresaEq(e)&&String(e.faena_id)!==String(filtFaena))return false; // cargo sin faena o multiempresa = común a todas las faenas
     return true;
   });
   function load2(){
@@ -11051,7 +11076,7 @@ function CombRendimientosView(p){
   var equiposAll=(p.m.equipos||[]).filter(function(e){return e.activo;});
   var equiposFilt=equiposAll.filter(function(e){
     if(empresaId&&String(e.empresa_id)!==String(empresaId))return false;
-    if(faenaId&&e.faena_id&&String(e.faena_id)!==String(faenaId))return false; // cargo sin faena = común a todas las faenas de la empresa
+    if(faenaId&&e.faena_id&&!esMultiEmpresaEq(e)&&String(e.faena_id)!==String(faenaId))return false; // cargo sin faena o multiempresa = común a todas las faenas
     return true;
   });
 
@@ -14974,7 +14999,7 @@ function ProgTaskModal(p){
 
   // Filtrar faenas por empresa seleccionada
   const faenasFilt=form.empresa_id?faenas.filter(function(f){return f.empresa_id==form.empresa_id;}):faenas;
-  const equiposFilt=form.faena_id?equipos.filter(function(e){return e.faena_id==form.faena_id||(!e.faena_id&&(!form.empresa_id||e.empresa_id==form.empresa_id));}):(form.empresa_id?equipos.filter(function(e){return e.empresa_id==form.empresa_id;}):equipos); // cargo sin faena = común a todas las faenas
+  const equiposFilt=form.faena_id?equipos.filter(function(e){return e.faena_id==form.faena_id||esMultiEmpresaEq(e)||(!e.faena_id&&(!form.empresa_id||equipoEnEmpresa(e,form.empresa_id)));}):(form.empresa_id?equipos.filter(function(e){return equipoEnEmpresa(e,form.empresa_id);}):equipos); // cargo sin faena o multiempresa = común a todas las faenas
 
   function save(){
     if(!form.detalle){setErr('Detalle requerido');return;}
@@ -21428,7 +21453,7 @@ function MobileOC(p){
                 h('option',{value:''},'— Sin equipo —'),
                 equipos.filter(function(eq){
                   // cargo sin faena = común a todas las faenas (pero debe pertenecer a la empresa)
-                  if(l.faena_id&&eq.faena_id&&String(eq.faena_id)!==String(l.faena_id))return false;
+                  if(l.faena_id&&eq.faena_id&&!esMultiEmpresaEq(eq)&&String(eq.faena_id)!==String(l.faena_id))return false;
                   if((!l.faena_id||!eq.faena_id)&&form.empresa_id&&!equipoEnEmpresa(eq,form.empresa_id))return false;
                   return true;
                 }).sort(function(a,b){return (a.codigo||'').localeCompare(b.codigo||'');}).map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);})
@@ -22313,7 +22338,7 @@ function MobileTerreno(p){
   var TIPOS_TERRENO=['maquinaria','camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'];
   var equipos=(p.m.equipos||[]).filter(function(e){return e.activo&&!e.es_transporte&&(TIPOS_TERRENO.indexOf(e.tipo_cargo||'maquinaria')>=0);});
   // Equipos de una faena (equipo sin faena = común a todas)
-  function equiposDeFaenaM(fid){return fid?equipos.filter(function(e){return !e.faena_id||String(e.faena_id)===String(fid);}):[];}
+  function equiposDeFaenaM(fid){return fid?equipos.filter(function(e){return !e.faena_id||esMultiEmpresaEq(e)||String(e.faena_id)===String(fid);}):[];}
   // Operadores de una faena, desde el Maestro de Personal (sin faena = común).
   // Usuario con turno asociado: solo personal de su turno (sin turno = jornada normal, siempre visible).
   var userTurnoM=p.user&&!p.user.es_admin&&p.user.turno?p.user.turno:null;
