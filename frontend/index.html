@@ -3961,7 +3961,11 @@ function TerrenoView(p){
   var[sinOfertaMes,setSinOfertaMes]=useState(false);
   function loadCats(){api('/terreno/tob-categorias','GET',null,p.tok).then(function(r){setTobCats(Array.isArray(r)?r:[]);}).catch(function(){});}
   function loadFundosRodales(mes){api('/terreno/fundos-rodales'+(mes?'?mes='+mes:''),'GET',null,p.tok).then(function(r){setFundos(r&&r.fundos||[]);setRodales(r&&r.rodales||[]);setSinOfertaMes(!!(r&&r.sin_oferta_mes));}).catch(function(){});}
-  function loadReg(){var q='?';if(filtEquipo)q+='equipo_id='+filtEquipo+'&';if(filtMes)q+='mes='+filtMes+'&';api('/terreno/registros'+q,'GET',null,p.tok).then(function(r){setRegistros(Array.isArray(r)?r:[]);}).catch(function(){});}
+  // Alerta: máquinas (no vehículos) con días SIN registro en los últimos 7 días (hasta ayer)
+  var[sinReg,setSinReg]=useState([]);
+  var[showSinReg,setShowSinReg]=useState(false);
+  function loadSinReg(){api('/terreno/sin-registro','GET',null,p.tok).then(function(r){setSinReg(r&&r.rows||[]);}).catch(function(){setSinReg([]);});}
+  function loadReg(){var q='?';if(filtEquipo)q+='equipo_id='+filtEquipo+'&';if(filtMes)q+='mes='+filtMes+'&';api('/terreno/registros'+q,'GET',null,p.tok).then(function(r){setRegistros(Array.isArray(r)?r:[]);}).catch(function(){});loadSinReg();}
   function loadRend(){if(filtEquipo&&filtMes)api('/terreno/rendimiento-mensual?equipo_id='+filtEquipo+'&mes='+filtMes,'GET',null,p.tok).then(function(r){setRendimiento(r);}).catch(function(){setRendimiento(null);});else setRendimiento(null);}
   useEffect(function(){loadCats();},[p.tok]);
   // La oferta de fundos/rodales cambia MES a MES → recargar según el mes de la fecha del registro
@@ -4022,6 +4026,22 @@ function TerrenoView(p){
       })
     ),
     vista==='informe'?h(TerrenoInforme,{tok:p.tok,m:p.m,user:p.user}):h('div',null,
+    // ── Alerta de máquinas sin registro diario ──
+    sinReg.length>0&&(function(){
+      var g={};
+      sinReg.forEach(function(r){if(!g[r.equipo_id])g[r.equipo_id]={codigo:r.codigo,nombre:r.nombre,faena:r.faena_nombre,fechas:[]};g[r.equipo_id].fechas.push(r.fecha);});
+      var lista=Object.keys(g).map(function(k){return g[k];}).sort(function(a,b){return b.fechas.length-a.fechas.length||(a.codigo||'').localeCompare(b.codigo||'');});
+      return h('div',{style:{marginBottom:12}},
+        h('div',{onClick:function(){setShowSinReg(!showSinReg);},style:{cursor:'pointer',padding:'9px 12px',background:'#FEF3C7',border:'1px solid #FCD34D',borderRadius:showSinReg?'6px 6px 0 0':6,fontSize:12,color:'#92400E',fontWeight:700,display:'flex',justifyContent:'space-between',alignItems:'center'}},
+          h('span',null,'⚠ '+lista.length+' máquina(s) con días SIN registro de terreno en los últimos 7 días'),
+          h('span',{style:{fontSize:11,fontWeight:600}},showSinReg?'▲ ocultar detalle':'▼ ver detalle')),
+        showSinReg&&h('div',{style:{border:'1px solid #FCD34D',borderTop:'none',borderRadius:'0 0 6px 6px',background:'#FFFBEB',padding:'8px 12px'}},
+          lista.map(function(m2,i2){return h('div',{key:i2,style:{fontSize:11,padding:'4px 0',borderBottom:i2<lista.length-1?'1px dashed #FDE68A':'none',display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}},
+            h('strong',{style:{color:'#92400E',minWidth:170}},m2.codigo+' — '+m2.nombre),
+            h('span',{style:{color:'#B45309',fontSize:10}},m2.faena||'Sin faena'),
+            h('span',{style:{color:'#78350F'}},'Faltan: '+m2.fechas.map(function(f2){return fmtD(f2);}).join(', ')));}),
+          h('div',{style:{fontSize:10,color:'#B45309',marginTop:6}},'Solo maquinaria (los vehículos no requieren registro diario). Rango: últimos 7 días hasta ayer.')));
+    })(),
     h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:14}},
       h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #1E3A2D'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#1E3A2D'}},totHorasMes.toFixed(1)+' h'),h('div',{style:{fontSize:11,color:'#64748B'}},'Horas trabajadas')),
       h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #F59E0B'}},h('div',{style:{fontSize:20,fontWeight:700,color:'#F59E0B'}},totPerdMes.toFixed(1)+' h'),h('div',{style:{fontSize:11,color:'#64748B'}},'Horas perdidas')),
@@ -10679,7 +10699,27 @@ function CombMovForm(p){
   const[err,setErr]=useState('');const[saving,setSaving]=useState(false);
   function sf(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
   function total(){return (parseFloat(form.litros)||0)*(parseFloat(form.precio_unitario)||0);}
+  // Alerta de tipeo en horómetro: comparar contra el de la ÚLTIMA carga del equipo
+  const[ultHoroC,setUltHoroC]=useState(null);
+  useEffect(function(){
+    if(!p.campos.includes('horometro')||!form.equipo_id){setUltHoroC(null);return;}
+    api('/comb/ultimo-horometro/'+form.equipo_id+(p.editId?('?excluir='+p.editId):''),'GET',null,p.tok)
+      .then(function(r){setUltHoroC(r&&r.horometro!=null?r:null);}).catch(function(){setUltHoroC(null);});
+  },[form.equipo_id,p.editId]);
+  var horoAlert=null;
+  (function(){
+    if(!p.campos.includes('horometro')||!ultHoroC||!form.horometro)return;
+    var eqA=(p.m.equipos||[]).find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
+    if(eqA&&esVehiculoEq(eqA))return; // vehículos: su campo relevante es kilometraje
+    var hNew=parseFloat(form.horometro),hOld=parseFloat(ultHoroC.horometro);
+    if(isNaN(hNew)||hNew<=0)return;
+    var dH=hNew-hOld;
+    var dias=Math.max(1,Math.round((new Date((form.fecha+'').slice(0,10))-new Date((ultHoroC.fecha+'').slice(0,10)))/86400000));
+    if(dH<0)horoAlert='⚠ El horómetro ingresado ('+hNew.toFixed(1)+') es MENOR que el de la última carga: '+hOld.toFixed(1)+' el '+fmtD(ultHoroC.fecha)+'. Revise el tipeo.';
+    else if(dH>24*dias)horoAlert='⚠ Posible error de tipeo: desde la última carga ('+hOld.toFixed(1)+' el '+fmtD(ultHoroC.fecha)+') este horómetro implica '+dH.toFixed(1)+' horas trabajadas en '+dias+' día(s) — el máximo físico es '+(24*dias)+' h ('+dias+' × 24).';
+  })();
   function save(){
+    if(horoAlert&&!confirm(horoAlert+'\n\n¿Guardar de todos modos?'))return;
     setErr('');setSaving(true);
     var url=p.editId?('/comb/movimientos/'+p.editId):('/comb/'+p.endpoint);
     var method=p.editId?'PUT':'POST';
@@ -10736,7 +10776,11 @@ function CombMovForm(p){
           }).map(function(e){return{v:e.equipo_id,l:esMulti?((e.empresa_nombre||'Sin empresa')+' — '+e.nombre):e.nombre};})}),
           esMulti&&eqSel&&h('div',{style:{fontSize:11,color:'#7C3AED',marginTop:2,fontWeight:600,background:'#F5F3FF',padding:'4px 8px',borderRadius:4}},'🏢 Imputación: '+(eqSel.empresa_nombre||'Sin empresa'))
         ),
-        p.campos.includes('horometro')&&h(FI,{k:'horometro',l:'Horometro (hrs)',type:'number',item:form,onChange:setForm,ph:'ej: 1250.5'}),
+        p.campos.includes('horometro')&&h('div',null,
+          h(FI,{k:'horometro',l:'Horometro (hrs)',type:'number',item:form,onChange:setForm,ph:'ej: 1250.5'}),
+          ultHoroC&&h('div',{style:{fontSize:10,color:'#64748B',marginTop:2}},'Última carga: '+parseFloat(ultHoroC.horometro).toFixed(1)+' h el '+fmtD(ultHoroC.fecha)),
+          horoAlert&&h('div',{style:{fontSize:11,fontWeight:600,color:'#991B1B',background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:5,padding:'6px 8px',marginTop:4}},horoAlert)
+        ),
         p.campos.includes('kilometraje')&&h(FI,{k:'kilometraje',l:'Kilometraje (km)',type:'number',item:form,onChange:setForm,ph:'ej: 45230'}),
         p.campos.includes('responsable')&&h(FI,{k:'responsable',l:'Responsable entrega',item:form,onChange:setForm}),
         p.campos.includes('ndoc')&&h(FI,{k:'numero_documento',l:'N° Documento',item:form,onChange:setForm}),
