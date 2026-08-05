@@ -3510,10 +3510,19 @@ app.post('/api/import/bulk-oc', auth, async(req,res)=>{
         const emp=await client.query("SELECT empresa_id FROM empresas WHERE REPLACE(REPLACE(rut,'.',''),'-','')=$1 LIMIT 1",[eNorm]);
         if(emp.rows.length) emp_id=emp.rows[0].empresa_id;
       }
-      // Check duplicate by numero_documento
+      // Check duplicate by numero_documento (normalizando ceros a la izquierda: '03957868' == '3957868')
       if(item.folio){
-        const dup=await client.query("SELECT oc_id,numero_oc FROM ordenes_compra WHERE numero_documento=$1 AND proveedor_id=$2 LIMIT 1",[String(item.folio),prov_id]);
+        const dup=await client.query("SELECT oc_id,numero_oc FROM ordenes_compra WHERE proveedor_id=$2 AND numero_documento IS NOT NULL AND regexp_replace(numero_documento,'^0+','')=regexp_replace($1,'^0+','') AND estado<>'ANULADA' LIMIT 1",[String(item.folio),prov_id]);
         if(dup.rows.length){results.push({folio:item.folio,error:'Ya existe como '+dup.rows[0].numero_oc,oc_id:dup.rows[0].oc_id});continue;}
+        // La factura pudo entrar como CIERRE DE GUÍAS: su folio queda en oc_factura_guias.numero_factura
+        // (no en numero_documento de la OC, que guarda el n° de la guía) → sin este chequeo se duplicaba la compra
+        const dupF=await client.query(`SELECT f.factura_id, f.numero_factura,
+            (SELECT string_agg(oc2.numero_oc,', ') FROM ordenes_compra oc2 WHERE oc2.factura_guia_id=f.factura_id) AS ocs
+          FROM oc_factura_guias f
+          WHERE f.proveedor_id=$2 AND f.numero_factura IS NOT NULL AND f.numero_factura<>''
+            AND regexp_replace(f.numero_factura,'^0+','')=regexp_replace($1,'^0+','')
+          LIMIT 1`,[String(item.folio),prov_id]);
+        if(dupF.rows.length){results.push({folio:item.folio,error:'Ya existe: factura '+dupF.rows[0].numero_factura+' aplicada como cierre de guía(s) de despacho'+(dupF.rows[0].ocs?(' — OC '+dupF.rows[0].ocs):'')});continue;}
       }
       // Match tipo doc — first by DTE code, then by name
       let tdoc_id=null;
