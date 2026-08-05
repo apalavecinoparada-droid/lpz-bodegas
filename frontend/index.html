@@ -3950,7 +3950,14 @@ function TerrenoView(p){
     if(sortBy===col){setSortDir(sortDir==='asc'?'desc':'asc');}
     else{setSortBy(col);setSortDir('asc');}
   }
-  var emptyForm={fecha:new Date().toISOString().slice(0,10),faena_id:userFaenaId||'',equipo_id:'',jornada:'DIA',horometro_inicial:'',horometro_final:'',horas_perdidas:0,litros_combustible:0,estanque_id:'',observaciones:'',tob_detalle:[],operador_id:'',fundo_id:'',rodal_id:'',m3_producidos:''};
+  var emptyForm={fecha:new Date().toISOString().slice(0,10),faena_id:userFaenaId||'',equipo_id:'',jornada:'DIA',horometro_inicial:'',horometro_final:'',horas_perdidas:0,litros_combustible:0,estanque_id:'',observaciones:'',tob_detalle:[],operador_id:'',fundo_id:'',rodal_id:'',m3_producidos:'',arboles_producidos:''};
+  // Control interno: árboles obligatorio SOLO para maquinaria en faenas de Leonidas Poo
+  function esFaenaLpoo(fid){
+    var f=(p.m.faenas||[]).find(function(x){return String(x.faena_id)===String(fid);});
+    if(!f)return false;
+    var emp=(p.m.empresas||[]).find(function(e){return String(e.empresa_id)===String(f.empresa_id);});
+    return !!emp&&/leonidas/i.test(emp.razon_social||'')&&/poo/i.test(emp.razon_social||'');
+  }
   var[form,setForm]=useState(emptyForm);
   // Catálogos para producción forestal — fundos/rodales vienen del dataset oferta_rodal del OEE
   // (Control Programa vs Avance por Rodal); fallback a los mantenedores si no hay oferta cargada.
@@ -3986,6 +3993,7 @@ function TerrenoView(p){
     if(parseFloat(form.horometro_final)<parseFloat(form.horometro_inicial)){setMsg('Error: Horómetro final debe ser mayor o igual al inicial');return;}
     var _eqSelTope=allEquipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
     if(!esVehiculoEq(_eqSelTope)&&parseFloat(form.horometro_final)-parseFloat(form.horometro_inicial)>24){setMsg('Error: Las horas trabajadas de un día no pueden superar 24. La diferencia de horómetros ingresada es '+(parseFloat(form.horometro_final)-parseFloat(form.horometro_inicial)).toFixed(1)+' horas — revise los horómetros');return;}
+    if(!esVehiculoEq(_eqSelTope)&&esFaenaLpoo(form.faena_id)&&(form.arboles_producidos===''||form.arboles_producidos==null)){setMsg('Error: La cantidad de árboles es obligatoria para registros de maquinaria de Leonidas Poo');return;}
     if(hp>0&&tobDesc){setMsg('Error: La suma del desglose TOB ('+sumTob.toFixed(2)+') no coincide con horas perdidas ('+hp.toFixed(2)+')');return;}
     var tobSinClas=(form.tob_detalle||[]).filter(function(l){return (l.tob_cat_id||parseFloat(l.horas)>0)&&l.clasificacion!=='E'&&l.clasificacion!=='F';});
     if(tobSinClas.length){setMsg('Error: Selecciona la clasificaci\u00f3n (E = Empresa o F = Mandante) en cada tiempo perdido; falta en '+tobSinClas.length+' l\u00ednea(s)');return;}
@@ -3997,7 +4005,7 @@ function TerrenoView(p){
   function openEdit(r){
     api('/terreno/registros/'+r.registro_id+'/tob','GET',null,p.tok).then(function(tob){
       setEditReg(r);
-      setForm({fecha:r.fecha.slice(0,10),faena_id:r.faena_id,equipo_id:r.equipo_id,jornada:r.jornada==='NOCHE'?'NOCHE':'DIA',horometro_inicial:r.horometro_inicial,horometro_final:r.horometro_final,horas_perdidas:r.horas_perdidas||0,litros_combustible:r.litros_combustible||0,estanque_id:r.estanque_id||'',observaciones:r.observaciones||'',tob_detalle:(tob||[]).map(function(t){return{tob_cat_id:t.tob_cat_id,clasificacion:t.clasificacion||'E',horas:t.horas,observacion:t.observacion||''};}),operador_id:r.operador_id||'',fundo_id:r.fundo_id||'',rodal_id:r.rodal_id||'',m3_producidos:r.m3_producidos!=null?r.m3_producidos:''});
+      setForm({fecha:r.fecha.slice(0,10),faena_id:r.faena_id,equipo_id:r.equipo_id,jornada:r.jornada==='NOCHE'?'NOCHE':'DIA',horometro_inicial:r.horometro_inicial,horometro_final:r.horometro_final,horas_perdidas:r.horas_perdidas||0,litros_combustible:r.litros_combustible||0,estanque_id:r.estanque_id||'',observaciones:r.observaciones||'',tob_detalle:(tob||[]).map(function(t){return{tob_cat_id:t.tob_cat_id,clasificacion:t.clasificacion||'E',horas:t.horas,observacion:t.observacion||''};}),operador_id:r.operador_id||'',fundo_id:r.fundo_id||'',rodal_id:r.rodal_id||'',m3_producidos:r.m3_producidos!=null?r.m3_producidos:'',arboles_producidos:r.arboles_producidos!=null?r.arboles_producidos:''});
       setShowForm(true);setShowTOB((tob||[]).length>0);
     }).catch(function(e){alert(e.message);});
   }
@@ -4115,6 +4123,9 @@ function TerrenoView(p){
               rodales.filter(function(rd){return String(rd.fundo_id)===String(form.fundo_id);}).map(function(rd){return h('option',{key:rd.rodal_id,value:rd.rodal_id},rd.nombre+' (VMA '+parseFloat(rd.vma).toFixed(3)+')');}),
               // Rodal histórico: al editar un registro cuyo rodal ya no está en la oferta del mes
               form.rodal_id&&editReg&&!rodales.some(function(rd){return String(rd.rodal_id)===String(form.rodal_id);})&&h('option',{value:form.rodal_id},(editReg.rodal_nombre||'Rodal del registro')+' (histórico)'))),
+            // VMA automático del rodal (informativo, se guarda como snapshot; sin multiplicación)
+            !esVehiculo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'VMA (automático del rodal)'),(function(){var rd=rodales.find(function(r){return String(r.rodal_id)===String(form.rodal_id);});return h('input',{value:rd&&parseFloat(rd.vma)>0?parseFloat(rd.vma).toFixed(4):'—',readOnly:true,style:Object.assign({},inpS,{background:'#F8FAFC',color:'#0F766E',fontWeight:700})});})()),
+            !esVehiculo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Cantidad de árboles'+(esFaenaLpoo(form.faena_id)?' *':''),esFaenaLpoo(form.faena_id)&&h('span',{style:{fontSize:9,color:'#B45309',marginLeft:5}},'(obligatorio en Leonidas Poo)')),h('input',{type:'number',min:'0',step:'1',value:form.arboles_producidos,onChange:function(e){upd('arboles_producidos',e.target.value);},placeholder:'N° de árboles del día',style:Object.assign({},inpS,esFaenaLpoo(form.faena_id)&&form.arboles_producidos===''?{borderColor:'#F59E0B',background:'#FFFBEB'}:{})})),
             !esVehiculo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'m³ producidos'),h('input',{type:'number',min:'0',step:'0.001',value:form.m3_producidos,onChange:function(e){upd('m3_producidos',e.target.value);},placeholder:'Metros cúbicos del día (manual)',style:Object.assign({},inpS,{background:'#F0FDF4',fontWeight:700,color:'#166534'})})),
             h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observaciones'),h('input',{value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},style:inpS}))
           ),
@@ -22410,7 +22421,14 @@ function MobileTerreno(p){
     }).catch(function(){setHistorial([]);}).finally(function(){setLoadHist(false);});
   }
   useEffect(function(){if(modo==='historial')cargarHistorial();},[modo,filtroMesHist,filtroEquipoHist,p.tok]);
-  var[form,setForm]=useState({fecha:new Date().toISOString().slice(0,10),equipo_id:'',faena_id:userFaenaId||'',jornada:'DIA',horometro_inicial:'',horometro_final:'',horas_perdidas:'0',litros_combustible:'',estanque_id:'',observaciones:'',operador_id:'',fundo_id:'',rodal_id:'',m3_producidos:''});
+  var[form,setForm]=useState({fecha:new Date().toISOString().slice(0,10),equipo_id:'',faena_id:userFaenaId||'',jornada:'DIA',horometro_inicial:'',horometro_final:'',horas_perdidas:'0',litros_combustible:'',estanque_id:'',observaciones:'',operador_id:'',fundo_id:'',rodal_id:'',m3_producidos:'',arboles_producidos:''});
+  // Árboles obligatorio SOLO para maquinaria en faenas de Leonidas Poo
+  function esFaenaLpooM(fid){
+    var f=(p.m.faenas||[]).find(function(x){return String(x.faena_id)===String(fid);});
+    if(!f)return false;
+    var emp=(p.m.empresas||[]).find(function(e){return String(e.empresa_id)===String(f.empresa_id);});
+    return !!emp&&/leonidas/i.test(emp.razon_social||'')&&/poo/i.test(emp.razon_social||'');
+  }
   // Fundos/rodales desde la oferta del OEE (Control Programa vs Avance por Rodal).
   // La oferta cambia MES a MES → se recargan según el mes de la fecha del registro.
   var[fundosM,setFundosM]=useState([]);
@@ -22455,6 +22473,7 @@ function MobileTerreno(p){
     if(hf<hi){setMsg('Horómetro final debe ser mayor o igual al inicial');return;}
     var _eqSelTope=equipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
     if(!esVehiculoEq(_eqSelTope)&&hf-hi>24){setMsg('Las horas trabajadas de un día no pueden superar 24 ('+(hf-hi).toFixed(1)+' h ingresadas) — revisa los horómetros');return;}
+    if(!esVehiculoEq(_eqSelTope)&&esFaenaLpooM(form.faena_id)&&(form.arboles_producidos===''||form.arboles_producidos==null)){setMsg('La cantidad de árboles es obligatoria para registros de maquinaria de Leonidas Poo');return;}
     if(hPerd>0){
       var linVal=tobLineas.filter(function(l){return l.tob_cat_id&&parseFloat(l.horas)>0;});
       if(linVal.length===0){setMsg('Debe desglosar las horas perdidas en tiempos obvios');return;}
@@ -22473,7 +22492,7 @@ function MobileTerreno(p){
         .catch(function(e){setMsg(e.message);});
     }
   }
-  function nuevo(){setSaved(false);setEditingId(null);setEditNombres(null);setTobLineas([]);setForm(Object.assign({},form,{fecha:new Date().toISOString().slice(0,10),jornada:'DIA',horometro_inicial:'',horometro_final:'',horas_perdidas:'0',litros_combustible:'',estanque_id:'',observaciones:'',m3_producidos:''}));setUltimoHoro(null);}
+  function nuevo(){setSaved(false);setEditingId(null);setEditNombres(null);setTobLineas([]);setForm(Object.assign({},form,{fecha:new Date().toISOString().slice(0,10),jornada:'DIA',horometro_inicial:'',horometro_final:'',horas_perdidas:'0',litros_combustible:'',estanque_id:'',observaciones:'',m3_producidos:'',arboles_producidos:''}));setUltimoHoro(null);}
   function abrirEdicion(reg){
     // Cargar el registro al formulario, cargar también su desglose TOB y entrar en modo edición
     setEditingId(reg.registro_id);
@@ -22491,7 +22510,8 @@ function MobileTerreno(p){
       operador_id:reg.operador_id||'',
       fundo_id:reg.fundo_id||'',
       rodal_id:reg.rodal_id||'',
-      m3_producidos:reg.m3_producidos!=null?reg.m3_producidos:''
+      m3_producidos:reg.m3_producidos!=null?reg.m3_producidos:'',
+      arboles_producidos:reg.arboles_producidos!=null?reg.arboles_producidos:''
     });
     setEditNombres({fundo_nombre:reg.fundo_nombre||'',rodal_nombre:reg.rodal_nombre||''});
     // Cargar el desglose TOB existente del backend
@@ -22683,6 +22703,8 @@ function MobileTerreno(p){
             h('option',{value:''},form.fundo_id?'— Sin asignar —':'Primero elija fundo'),
             rodalesM.filter(function(rd){return String(rd.fundo_id)===String(form.fundo_id);}).map(function(rd){return h('option',{key:rd.rodal_id,value:rd.rodal_id},rd.nombre);}),
             form.rodal_id&&editingId&&!rodalesM.some(function(rd){return String(rd.rodal_id)===String(form.rodal_id);})&&h('option',{value:form.rodal_id},((editNombres&&editNombres.rodal_nombre)||'Rodal del registro')+' (histórico)'))),
+          !esVehiculo&&form.rodal_id&&(function(){var rd=rodalesM.find(function(r){return String(r.rodal_id)===String(form.rodal_id);});return rd&&parseFloat(rd.vma)>0?F('VMA (automático del rodal)',h('input',{value:parseFloat(rd.vma).toFixed(4),readOnly:true,style:{background:'#F8FAFC',color:'#0F766E',fontWeight:700}})):null;})(),
+          !esVehiculo&&F('Cantidad de árboles'+(esFaenaLpooM(form.faena_id)?' * (obligatorio en Leonidas Poo)':''),h('input',{type:'number',value:form.arboles_producidos,onChange:function(e){upd('arboles_producidos',e.target.value);},step:1,min:0,inputMode:'numeric',placeholder:'N° de árboles del día',style:esFaenaLpooM(form.faena_id)&&form.arboles_producidos===''?{borderColor:'#F59E0B',background:'#FFFBEB'}:{}})),
           !esVehiculo&&F('m³ producidos',h('input',{type:'number',value:form.m3_producidos,onChange:function(e){upd('m3_producidos',e.target.value);},step:0.001,min:0,inputMode:'decimal',placeholder:'Metros cúbicos del día'})),
           // Horas perdidas + TOB solo para maquinaria (vehículos no aplican)
           !esVehiculo&&F('Horas perdidas (detenciones)',h('input',{type:'number',value:form.horas_perdidas,onChange:function(e){upd('horas_perdidas',e.target.value);},step:0.1,min:0,inputMode:'decimal',placeholder:'0'}))
