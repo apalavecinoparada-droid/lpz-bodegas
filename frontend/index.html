@@ -8161,13 +8161,25 @@ function OCView(p){
     api(ep+qs,'GET',null,p.tok).then(function(r){setOCs(Array.isArray(r)?r:[]);}).catch(function(){setOCs([]);}).finally(function(){setLoad(false);});
   }
   useEffect(function(){load2();},[p.tok,filtEst,filtProv,filtDesde,filtHasta,filtEmp,filtSubcat,filtFaena,filtEquipo,filtNdoc,filtFactura,filtNoc,filtDocResp]);
+  var esAdminOC=!!(p.user&&(p.user.es_admin||p.user.rol==='ADMINISTRADOR'||p.user.rol==='Administrador'));
   function anular(id){
-    if(!window.confirm('Anular esta OC? Esta accion no se puede deshacer.'))return;
-    api('/ordenes-compra/'+id+'/anular','PATCH',{},p.tok).then(function(){load2();}).catch(function(ex){alert(ex.message);});
+    var motivo=window.prompt('Anular esta OC (queda registrada como ANULADA, con auditoría).\n\nMotivo de la anulación (obligatorio):');
+    if(motivo===null)return;
+    if(!motivo.trim()){alert('Debe indicar el motivo de la anulación');return;}
+    api('/ordenes-compra/'+id+'/anular','PATCH',{motivo:motivo.trim()},p.tok).then(function(){load2();}).catch(function(ex){alert(ex.message);});
   }
-  function eliminarOC(id){
-    if(!window.confirm('ELIMINAR esta OC permanentemente? Se borrarán todos sus datos. Esta acción no se puede deshacer.'))return;
-    api('/ordenes-compra/'+id,'DELETE',null,p.tok).then(function(){load2();}).catch(function(ex){alert(ex.message);});
+  function eliminarOC(id,msgExtra){
+    var motivo=window.prompt('⚠ ELIMINACIÓN DEFINITIVA (solo administradores).\nEl contenido completo quedará respaldado en la bitácora de auditoría.'+(msgExtra?'\n\n'+msgExtra:'')+'\n\nMotivo de la eliminación (obligatorio):');
+    if(motivo===null)return;
+    if(!motivo.trim()){alert('Debe indicar el motivo de la eliminación');return;}
+    api('/ordenes-compra/'+id,'DELETE',{motivo:motivo.trim()},p.tok).then(function(){load2();}).catch(function(ex){alert(ex.message);});
+  }
+  // ── Historial (bitácora de auditoría) de una OC ──
+  var[histOC,setHistOC]=useState(null); // {numero_oc, rows}
+  function verHistorial(r){
+    api('/ordenes-compra/'+r.oc_id+'/historial','GET',null,p.tok)
+      .then(function(rows){setHistOC({numero_oc:r.numero_oc,rows:Array.isArray(rows)?rows:[]});})
+      .catch(function(ex){alert(ex.message);});
   }
   function openLinkOT(oc){
     setLinkOT(oc);
@@ -8338,13 +8350,11 @@ function OCView(p){
           }},null,'✏'),
           r.estado==='PENDIENTE'&&h('button',{className:'btn btn-p btn-xs',onClick:function(){setCerrarOC(r);}},'Cerrar'),
           r.estado==='PENDIENTE'&&h('button',{className:'btn btn-d btn-xs',onClick:function(){anular(r.oc_id);}},'Anular'),
-          r.estado==='PENDIENTE'&&h('button',{className:'btn btn-xs',onClick:function(){eliminarOC(r.oc_id);},style:{background:'#7F1D1D',color:'#fff',border:'none',borderRadius:4,padding:'2px 6px',fontSize:10,cursor:'pointer'}},'🗑'),
-          r.estado==='CERRADA'&&p.user&&(p.user.es_admin||p.user.rol==='ADMINISTRADOR'||p.user.rol==='Administrador')&&h('button',{className:'btn btn-xs',onClick:function(){
-            var msg='⚠ ELIMINAR OC '+r.numero_oc+' (CERRADA)';
-            if(r.movimiento_id||r.recibido_en)msg+='\n\nEsta OC fue recibida en stock. Al eliminarla:\n• Se revertirá el inventario/combustible ingresado\n• Si hubo distribuciones, el stock quedará negativo';
-            msg+='\n\n¿Está seguro?';
-            if(!confirm(msg))return;
-            api('/ordenes-compra/'+r.oc_id,'DELETE',null,p.tok).then(function(){load2();}).catch(function(ex){alert(ex.message);});
+          r.estado==='PENDIENTE'&&esAdminOC&&h('button',{className:'btn btn-xs',title:'Eliminación definitiva (solo administradores, queda auditada)',onClick:function(){eliminarOC(r.oc_id);},style:{background:'#7F1D1D',color:'#fff',border:'none',borderRadius:4,padding:'2px 6px',fontSize:10,cursor:'pointer'}},'🗑'),
+          r.estado==='CERRADA'&&esAdminOC&&h('button',{className:'btn btn-xs',onClick:function(){
+            var extra='OC '+r.numero_oc+' (CERRADA).';
+            if(r.movimiento_id||r.recibido_en)extra+=' Fue recibida en stock: se revertirá el inventario/combustible ingresado y si hubo distribuciones el stock quedará negativo.';
+            eliminarOC(r.oc_id,extra);
           },style:{background:'#7F1D1D',color:'#fff',border:'none',borderRadius:4,padding:'2px 6px',fontSize:10,cursor:'pointer'}},'🗑 Eliminar'),
           r.estado==='CERRADA'&&!r.recibido_en&&!r.movimiento_id&&h('button',{className:'btn btn-teal btn-xs',onClick:function(){
             api('/ordenes-compra/'+r.oc_id,'GET',null,p.tok).then(function(full){setRecibirOC(full);}).catch(function(ex){alert(ex.message);});
@@ -8352,10 +8362,45 @@ function OCView(p){
           r.estado==='CERRADA'&&h('button',{className:'btn btn-a btn-xs',onClick:function(){setReabrirOC(r);},title:r.movimiento_id||r.recibido_en?'Reabrir OC recibida (revierte stock)':'Reabrir OC cerrada'},null,'↩ Reabrir'),
           r.estado==='CERRADA'&&(r.movimiento_id||r.recibido_en)&&h(Bg,{c:'teal'},'Recibida'),
           r.estado==='CERRADA'&&h('button',{className:'btn btn-teal btn-xs',onClick:function(){openLinkOT(r);},title:'Vincular líneas de esta OC a Órdenes de Trabajo de mantención'},'🔗 OT'),
-          (r.estado==='CERRADA'||r.estado==='PENDIENTE')&&h('button',{className:'btn btn-g btn-xs',onClick:function(){openDoc(r);}},'Ver')
+          (r.estado==='CERRADA'||r.estado==='PENDIENTE')&&h('button',{className:'btn btn-g btn-xs',onClick:function(){openDoc(r);}},'Ver'),
+          h('button',{className:'btn btn-xs',title:'Historial de auditoría de esta OC',onClick:function(){verHistorial(r);},style:{background:'#F1F5F9',color:'#475569',border:'1px solid #CBD5E1',borderRadius:4,padding:'2px 6px',fontSize:10,cursor:'pointer'}},'🕘')
         );
       }}
     ],rows:sortedOCs,empty:'Sin ordenes de compra'})),
+    // ── Modal Historial de auditoría de la OC ──
+    histOC&&h(Modal,{title:'🕘 Historial de auditoría — '+(histOC.numero_oc||''),onClose:function(){setHistOC(null);},xl:true},
+      h('div',{style:{maxHeight:'65vh',overflowY:'auto',padding:'0 4px'}},
+        histOC.rows.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B',fontSize:13}},'Sin eventos de auditoría para esta OC. La bitácora registra eventos desde su activación (agosto 2026); las operaciones anteriores no quedaron registradas.'):
+        histOC.rows.map(function(ev,i){
+          var CFG={CREATE:{c:'#166534',bg:'#F0FDF4',l:'✚ Creada'},UPDATE:{c:'#1E40AF',bg:'#EFF6FF',l:'✏ Modificada'},CERRAR:{c:'#7C3AED',bg:'#F5F3FF',l:'🔒 Cerrada'},REABRIR:{c:'#B45309',bg:'#FFFBEB',l:'↩ Reabierta'},ANULAR:{c:'#B91C1C',bg:'#FEF2F2',l:'⛔ Anulada'},DELETE:{c:'#7F1D1D',bg:'#FEF2F2',l:'🗑 ELIMINADA'}};
+          var cfg=CFG[ev.accion]||{c:'#475569',bg:'#F8FAFC',l:ev.accion};
+          var a=ev.datos_anteriores||null,d=ev.datos_nuevos||null;
+          // Diff de campos relevantes entre snapshots (para UPDATE/CERRAR/REABRIR/ANULAR)
+          var cambios=[];
+          if(a&&d){
+            var CAMPOS=[['total','Total',1],['neto','Neto',1],['proveedor_id','Proveedor (id)',0],['empresa_id','Empresa (id)',0],['fecha_emision','Fecha emisión',0],['numero_documento','N° documento',0],['estado','Estado',0],['observaciones','Observaciones',0],['solicitante','Solicitante',0]];
+            CAMPOS.forEach(function(cp){
+              var va=a[cp[0]],vd=d[cp[0]];
+              if(cp[2]){va=Math.round(parseFloat(va)||0);vd=Math.round(parseFloat(vd)||0);}
+              if(cp[0]==='fecha_emision'){va=(va+'').slice(0,10);vd=(vd+'').slice(0,10);}
+              if(String(va??'')!==String(vd??''))cambios.push(cp[1]+': '+(cp[2]?CLP(va):((va??'—')||'—'))+' → '+(cp[2]?CLP(vd):((vd??'—')||'—')));
+            });
+            var nA=(a.lineas||[]).length,nD=(d.lineas||[]).length;
+            if(nA!==nD)cambios.push('Líneas: '+nA+' → '+nD);
+            else if(JSON.stringify((a.lineas||[]).map(function(l){return[l.descripcion,l.cantidad,l.precio_unitario,l.equipo_id,l.faena_id];}))!==JSON.stringify((d.lineas||[]).map(function(l){return[l.descripcion,l.cantidad,l.precio_unitario,l.equipo_id,l.faena_id];})))cambios.push('Contenido de líneas modificado');
+          }
+          var motivoEv=(a&&a.motivo_eliminacion)||(d&&d.motivo_anulacion&&ev.accion==='ANULAR'?d.motivo_anulacion:null)||(d&&d.motivo_reapertura&&ev.accion==='REABRIR'?d.motivo_reapertura:null);
+          return h('div',{key:ev.auditoria_id||i,style:{borderLeft:'4px solid '+cfg.c,background:cfg.bg,borderRadius:6,padding:'8px 12px',marginBottom:8}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',flexWrap:'wrap',gap:6}},
+              h('strong',{style:{color:cfg.c,fontSize:12}},cfg.l),
+              h('span',{style:{fontSize:11,color:'#475569'}},ev.fecha_cl+' · '+(ev.usuario||'—')+(ev.ip_origen?' · IP '+ev.ip_origen:''))),
+            motivoEv&&h('div',{style:{fontSize:11,color:'#78350F',marginTop:3,fontStyle:'italic'}},'Motivo: '+motivoEv),
+            cambios.length>0&&h('ul',{style:{margin:'4px 0 0 16px',padding:0,fontSize:11,color:'#334155'}},cambios.map(function(c2,j){return h('li',{key:j},c2);})),
+            ev.accion==='CREATE'&&d&&h('div',{style:{fontSize:11,color:'#334155',marginTop:3}},'Total '+CLP(Math.round(parseFloat(d.total)||0))+' · '+(d.lineas||[]).length+' línea(s)'),
+            ev.accion==='DELETE'&&a&&h('div',{style:{fontSize:11,color:'#7F1D1D',marginTop:3}},'Contenido respaldado en bitácora: total '+CLP(Math.round(parseFloat(a.total)||0))+' · '+(a.lineas||[]).length+' línea(s)'+((a.dte_vinculados||[]).length?' · '+a.dte_vinculados.length+' factura(s) vinculada(s)':''))
+          );
+        })
+      )),
     formOC!==null&&h(OCFormModal,{key:'ocform-'+(formOC.oc_id||'new'),tok:p.tok,oc:formOC,m:p.m,onClose:function(){setFormOC(null);},onSave:function(){setFormOC(null);load2();}}),
     cerrarOC&&h(OCCerrarModal,{tok:p.tok,oc:cerrarOC,m:p.m,onClose:function(){setCerrarOC(null);},onSave:function(){setCerrarOC(null);load2();}}),
     recibirOC&&h(OCRecibirModal,{tok:p.tok,oc:recibirOC,m:p.m,onClose:function(){setRecibirOC(null);},onSave:function(){setRecibirOC(null);load2();}}),
@@ -15588,6 +15633,10 @@ function PlanificacionView(p){
 // ══ GESTIÓN DE USUARIOS Y ROLES ══
 var MODULOS_SISTEMA=[
   {k:'ordenes',l:'Órdenes de Compra'},
+  {k:'ordenes-crear',l:'OC: Crear',hint:'Permiso fino: si el rol marca ALGÚN permiso "OC:", se exige el específico; si no marca ninguno, "Órdenes de Compra" habilita todo'},
+  {k:'ordenes-editar',l:'OC: Editar y Cerrar',hint:'Editar OCs pendientes y cerrarlas con DTE'},
+  {k:'ordenes-anular',l:'OC: Anular',hint:'Anular OCs (con motivo obligatorio, auditado)'},
+  {k:'ordenes-reabrir',l:'OC: Reabrir',hint:'Reabrir OCs cerradas (auditado; revierte inventario)'},
   {k:'rendiciones',l:'Rendiciones'},
   {k:'terreno',l:'Terreno'},
   {k:'combustibles',l:'Combustibles'},
