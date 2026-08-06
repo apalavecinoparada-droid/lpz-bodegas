@@ -266,25 +266,23 @@ async function auth(req, res, next) {
   if (!h) return res.status(401).json({ error: 'No autorizado' });
   try {
     req.user = jwt.verify(h.split(' ')[1], JWT_SECRET);
-    // Compatibilidad: tokens emitidos antes del cambio que agregó "modulos" al JWT
-    // pueden venir sin esa propiedad. En ese caso, refrescamos desde la BD para
-    // que los middlewares de requireModulo() funcionen correctamente sin forzar
-    // a todos los usuarios a relogarse.
-    if (req.user.modulos === undefined || req.user.modulos === null) {
-      try {
-        const r = await pool.query(
-          'SELECT ro.modulos, ro.es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',
-          [req.user.id]
-        );
-        if (r.rows.length) {
-          req.user.modulos = r.rows[0].modulos || [];
-          if (r.rows[0].es_admin) req.user.es_admin = true;
-        } else {
-          req.user.modulos = [];
-        }
-      } catch (e) {
+    // SEGURIDAD (auditoría 2026-08): permisos SIEMPRE frescos desde la BD en cada request.
+    // Antes se usaban los del JWT (congelados hasta 8 h): revocar un permiso o desactivar
+    // un rol no surtía efecto hasta re-login. Fallback a los del token si la BD falla.
+    try {
+      const r = await pool.query(
+        'SELECT ro.modulos, COALESCE(ro.es_admin,false) AS es_admin, u.activo FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',
+        [req.user.id]
+      );
+      if (r.rows.length) {
+        if (r.rows[0].activo === false) return res.status(401).json({ error: 'Usuario desactivado' });
+        req.user.modulos = r.rows[0].modulos || [];
+        req.user.es_admin = !!r.rows[0].es_admin || req.user.rol === 'ADMINISTRADOR';
+      } else if (req.user.modulos === undefined || req.user.modulos === null) {
         req.user.modulos = [];
       }
+    } catch (e) {
+      if (req.user.modulos === undefined || req.user.modulos === null) req.user.modulos = [];
     }
     next();
   } catch { res.status(401).json({ error: 'Token invalido' }); }
@@ -304,8 +302,43 @@ function requireModulo(mod) {
   };
 }
 
-async function audit(tabla, id, accion, antes, despues, usr) {
-  try { await pool.query('INSERT INTO auditoria(tabla_afectada,registro_id,accion,datos_anteriores,datos_nuevos,usuario) VALUES($1,$2,$3,$4,$5,$6)',[tabla,id,accion,antes?JSON.stringify(antes):null,despues?JSON.stringify(despues):null,usr]); } catch {}
+async function audit(tabla, id, accion, antes, despues, usr, ip) {
+  try { await pool.query('INSERT INTO auditoria(tabla_afectada,registro_id,accion,datos_anteriores,datos_nuevos,usuario,ip_origen) VALUES($1,$2,$3,$4,$5,$6,$7)',[tabla,id,accion,antes?JSON.stringify(antes):null,despues?JSON.stringify(despues):null,usr,ip||null]); } catch(e) { console.error('audit:',e.message); }
+}
+function reqIp(req){return ((req.headers['x-forwarded-for']||req.ip||'')+'').split(',')[0].trim().slice(0,45);}
+// ── Auditoría de OC: snapshot completo (encabezado + líneas) ──
+// q = pool o client (dentro de transacción). Nunca lanza: la auditoría no debe romper la operación.
+async function ocSnapshot(q,ocId){
+  try{
+    const oc=(await q.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[ocId])).rows[0];
+    if(!oc)return null;
+    const lin=(await q.query('SELECT * FROM ordenes_compra_detalle WHERE oc_id=$1 ORDER BY linea_num,detalle_id',[ocId])).rows;
+    let dte=[];
+    try{dte=(await q.query('SELECT x.dte_id,x.monto_aplicado,d.folio,d.tipo_doc,d.proveedor_nombre FROM dte_oc x LEFT JOIN dte_recibidos d ON x.dte_id=d.dte_id WHERE x.oc_id=$1',[ocId])).rows;}catch(e){}
+    return Object.assign({},oc,{lineas:lin,dte_vinculados:dte});
+  }catch(e){return null;}
+}
+async function auditOC(q,ocId,accion,antes,req,despues){
+  try{
+    if(despues===undefined)despues=await ocSnapshot(q,ocId);
+    await q.query('INSERT INTO auditoria(tabla_afectada,registro_id,accion,datos_anteriores,datos_nuevos,usuario,ip_origen) VALUES($1,$2,$3,$4,$5,$6,$7)',
+      ['ordenes_compra',parseInt(ocId),accion,antes?JSON.stringify(antes):null,despues?JSON.stringify(despues):null,req.user.email,reqIp(req)]);
+  }catch(e){console.error('auditOC:',e.message);}
+}
+// ── Permisos granulares de OC (patrón inventario-editar) ──
+// Compatibilidad: si el rol NO declara ningún permiso fino 'ordenes-*', el módulo 'ordenes'
+// habilita todo (roles antiguos siguen funcionando). Si declara alguno, se exige el específico.
+function requireOC(perm){
+  return function(req,res,next){
+    if(!req.user)return res.status(401).json({error:'No autorizado'});
+    if(req.user.es_admin)return next();
+    const mods=req.user.modulos||[];
+    if(mods.indexOf('ordenes')<0)return res.status(403).json({error:'Sin permiso para módulo ordenes'});
+    const finos=mods.filter(function(m){return (m+'').indexOf('ordenes-')===0;});
+    if(!finos.length)return next();
+    if(mods.indexOf('ordenes-'+perm)>=0)return next();
+    return res.status(403).json({error:'Sin permiso: ordenes-'+perm+'. Solicite al administrador habilitarlo en su rol.'});
+  };
 }
 
 
@@ -875,6 +908,12 @@ async function autoSetup() {
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS usuario VARCHAR(100)",
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT NOW()",
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS modificado_en TIMESTAMP DEFAULT NOW()",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS modificado_por VARCHAR(100)",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS motivo_anulacion TEXT",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS reabierto_en TIMESTAMP",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS reabierto_por VARCHAR(100)",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS motivo_reapertura TEXT",
+    "CREATE INDEX IF NOT EXISTS idx_auditoria_reg ON auditoria(tabla_afectada,registro_id)",
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_en TIMESTAMP",
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_por VARCHAR(100)",
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS recibido_en TIMESTAMP",
@@ -2681,13 +2720,24 @@ app.get('/api/reportes/ingresos', auth, async(req,res)=>{
 
 // ORDENES DE COMPRA
 const ocR=express.Router();
+// Scoping por empresa del usuario (auditoría 2026-08): usuario no-admin con empresa
+// asignada en el maestro SOLO ve las OCs de su empresa; el filtro del query se ignora.
+async function ocUserEmpresa(userId){
+  try{
+    const r=await pool.query('SELECT u.empresa_id, COALESCE(ro.es_admin,false) AS es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',[userId]);
+    if(!r.rows.length)return null;
+    return r.rows[0].es_admin?null:(r.rows[0].empresa_id||null);
+  }catch(e){return null;}
+}
 ocR.get('/', auth, async(req,res)=>{
   try{
     const{estado,proveedor_id,desde,hasta,empresa_id,numero_documento,numero_factura,numero_oc,doc_respaldo}=req.query;
     let where=['1=1'],vals=[];
+    const userEmp=await ocUserEmpresa(req.user.id);
+    if(userEmp){vals.push(userEmp);where.push(`oc.empresa_id=$${vals.length}`);}
     if(estado){vals.push(estado);where.push(`oc.estado=$${vals.length}`);}
     if(proveedor_id){vals.push(proveedor_id);where.push(`oc.proveedor_id=$${vals.length}`);}
-    if(empresa_id){vals.push(empresa_id);where.push(`oc.empresa_id=$${vals.length}`);}
+    if(empresa_id&&!userEmp){vals.push(empresa_id);where.push(`oc.empresa_id=$${vals.length}`);}
     if(desde){vals.push(desde);where.push(`oc.fecha_emision>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`oc.fecha_emision<=$${vals.length}`);}
     if(numero_documento){vals.push('%'+numero_documento+'%');where.push(`oc.numero_documento ILIKE $${vals.length}`);}
@@ -2727,11 +2777,15 @@ ocR.get('/:id', auth, async(req,res)=>{
   try{
     const oc=await pool.query('SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,pr.rut AS proveedor_rut,cp.nombre AS condicion_nombre,td.nombre AS tipo_doc_nombre,b.nombre AS bodega_ingreso_nombre,uc.nombre AS usuario_nombre,uk.nombre AS cerrada_por_nombre FROM ordenes_compra oc LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id LEFT JOIN condiciones_pago cp ON oc.condicion_id=cp.condicion_id LEFT JOIN tipos_documento td ON oc.tipo_doc_id=td.tipo_doc_id LEFT JOIN bodegas b ON oc.bodega_ingreso_id=b.bodega_id LEFT JOIN usuarios uc ON LOWER(uc.email)=LOWER(oc.usuario) LEFT JOIN usuarios uk ON LOWER(uk.email)=LOWER(oc.cerrada_por) WHERE oc.oc_id=$1',[req.params.id]);
     if(!oc.rows.length) return res.status(404).json({error:'No encontrado'});
+    // Scoping por empresa del usuario (evita enumeración de IDs de la otra empresa)
+    const userEmpD=await ocUserEmpresa(req.user.id);
+    if(userEmpD&&oc.rows[0].empresa_id&&String(oc.rows[0].empresa_id)!==String(userEmpD))
+      return res.status(403).json({error:'No tiene acceso a órdenes de esa empresa'});
     const dets=await pool.query('SELECT d.*,p.nombre AS producto_nombre,p.codigo AS producto_codigo,sc.nombre AS subcategoria_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre,b.nombre AS bodega_destino_nombre FROM ordenes_compra_detalle d LEFT JOIN productos p ON d.producto_id=p.producto_id LEFT JOIN subcategorias sc ON d.subcategoria_id=sc.subcategoria_id LEFT JOIN faenas f ON d.faena_id=f.faena_id LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id LEFT JOIN bodegas b ON d.bodega_destino_id=b.bodega_id WHERE d.oc_id=$1 ORDER BY d.linea_num,d.detalle_id',[req.params.id]);
     res.json({...oc.rows[0],lineas:dets.rows});
   }catch(e){res.status(500).json({error:e.message});}
 });
-ocR.post('/', auth, async(req,res)=>{
+ocR.post('/', auth, requireOC('crear'), async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
@@ -2750,18 +2804,20 @@ ocR.post('/', auth, async(req,res)=>{
     const ocR2=await client.query('INSERT INTO ordenes_compra(numero_oc,empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,neto,iva,total,observaciones,usuario,es_activo_fijo,af_vida_util_meses,af_valor_residual,af_descripcion) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING oc_id',[numero_oc,empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,req.user.email,es_activo_fijo||false,es_activo_fijo?(parseInt(af_vida_util_meses)||60):null,es_activo_fijo?(parseFloat(af_valor_residual)||0):null,es_activo_fijo?(af_descripcion||null):null]);
     const ocId=ocR2.rows[0].oc_id;
     for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[ocId,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
+    await auditOC(client,ocId,'CREATE',null,req);
     await client.query('COMMIT');
     res.status(201).json({ok:true,oc_id:ocId,numero_oc});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
-ocR.put('/:id', auth, async(req,res)=>{
+ocR.put('/:id', auth, requireOC('editar'), async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
     const chk=await client.query('SELECT estado FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length) throw new Error('OC no encontrada');
     if(chk.rows[0].estado!=='PENDIENTE') throw new Error('Solo se pueden editar ordenes PENDIENTES');
+    const _snapAntes=await ocSnapshot(client,req.params.id);
     const{empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,observaciones,lineas,tipo_doc_id,numero_documento,fecha_documento,es_activo_fijo,af_vida_util_meses,af_valor_residual,af_descripcion}=req.body;
     const netoAfecto=lineas.filter(l=>!l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
     const netoExento=lineas.filter(l=>l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
@@ -2771,6 +2827,7 @@ ocR.put('/:id', auth, async(req,res)=>{
     const _numDoc = (numero_documento && String(numero_documento).trim()) ? String(numero_documento).trim() : null;
     const _fechaDoc = fecha_documento || null;
     await client.query('UPDATE ordenes_compra SET empresa_id=$1,proveedor_id=$2,fecha_emision=$3,solicitante=$4,retira=$5,condicion_id=$6,impuesto_adicional=$7,neto=$8,iva=$9,total=$10,observaciones=$11,tipo_doc_id=$12,numero_documento=$13,fecha_documento=$14,es_activo_fijo=$15,af_vida_util_meses=$16,af_valor_residual=$17,af_descripcion=$18,modificado_en=NOW() WHERE oc_id=$19',[empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,_tipoDoc,_numDoc,_fechaDoc,es_activo_fijo||false,es_activo_fijo?(parseInt(af_vida_util_meses)||60):null,es_activo_fijo?(parseFloat(af_valor_residual)||0):null,es_activo_fijo?(af_descripcion||null):null,req.params.id]);
+    await client.query('UPDATE ordenes_compra SET modificado_por=$1 WHERE oc_id=$2',[req.user.email,req.params.id]);
     await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
     for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[req.params.id,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
     // Si se asignó un DTE manualmente y existe en dte_recibidos del mismo proveedor → vincular automáticamente en dte_oc
@@ -2804,11 +2861,12 @@ ocR.put('/:id', auth, async(req,res)=>{
         }
       }catch(_){/* no bloquear el update si falla la vinculación */}
     }
+    await auditOC(client,req.params.id,'UPDATE',_snapAntes,req);
     await client.query('COMMIT');res.json({ok:true});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
-ocR.patch('/:id/cerrar', auth, async(req,res)=>{
+ocR.patch('/:id/cerrar', auth, requireOC('editar'), async(req,res)=>{
   try{
     const{tipo_doc_id,numero_documento,fecha_documento}=req.body;
     const chk=await pool.query('SELECT estado,tipo_doc_id AS curr_tipo,numero_documento AS curr_num,fecha_documento AS curr_fecha,proveedor_id,total FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
@@ -2849,7 +2907,9 @@ ocR.patch('/:id/cerrar', auth, async(req,res)=>{
       }).join('; ');
       return res.status(400).json({error:'No se puede cerrar: hay '+incompletas.rows.length+' línea(s) incompleta(s). '+detalle});
     }
+    const _snapAntesCierre=await ocSnapshot(pool,req.params.id);
     await pool.query("UPDATE ordenes_compra SET estado='CERRADA',tipo_doc_id=$1,numero_documento=$2,fecha_documento=$3,cerrada_por=$4,fecha_cierre=NOW(),modificado_en=NOW() WHERE oc_id=$5",[_tipoDoc,_numDoc,_fechaDoc,req.user.email,req.params.id]);
+    await auditOC(pool,req.params.id,'CERRAR',_snapAntesCierre,req);
     // ── Si la OC es activo fijo y aún no se ha capitalizado, crear el registro ──
     try{
       const ocFull=await pool.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
@@ -2877,17 +2937,18 @@ ocR.patch('/:id/cerrar', auth, async(req,res)=>{
     res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
 });
-ocR.patch('/:id/reabrir', auth, async(req,res)=>{
+ocR.patch('/:id/reabrir', auth, requireOC('reabrir'), async(req,res)=>{
   // Reabre una OC CERRADA, revirtiendo el ingreso a inventario si lo hubo.
-  // Cualquier usuario con acceso al módulo de OC puede reabrir.
   // Permite reabrir aunque haya salidas posteriores (el stock puede quedar negativo
-  // y se ajusta manualmente).
+  // y se ajusta manualmente). AUDITADO: la evidencia del cierre que se limpia
+  // (folio, cerrada_por, fecha_cierre) queda en el snapshot datos_anteriores.
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
     const chk=await client.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length){ await client.query('ROLLBACK'); return res.status(404).json({error:'OC no encontrada'}); }
     const oc=chk.rows[0];
+    const _snapAntesReabrir=await ocSnapshot(client,req.params.id);
     if(oc.estado==='PENDIENTE'){ await client.query('ROLLBACK'); return res.status(400).json({error:'La OC ya está en estado PENDIENTE'}); }
     if(oc.estado==='ANULADA'){ await client.query('ROLLBACK'); return res.status(400).json({error:'No se puede reabrir una OC anulada'}); }
     let infoRevert={mov_inventario:false,mov_combustible:0,salidas_posteriores:0};
@@ -2929,21 +2990,26 @@ ocR.patch('/:id/reabrir', auth, async(req,res)=>{
       }
       infoRevert.mov_combustible=combMovs.rows.length;
     }
-    // 3) Volver a PENDIENTE y limpiar campos de cierre/recepción
-    await client.query("UPDATE ordenes_compra SET estado='PENDIENTE',tipo_doc_id=NULL,numero_documento=NULL,fecha_documento=NULL,movimiento_id=NULL,recibido_en=NULL,bodega_ingreso_id=NULL,cerrada_por=NULL,fecha_cierre=NULL,modificado_en=NOW() WHERE oc_id=$1",[req.params.id]);
+    // 3) Volver a PENDIENTE y limpiar campos de cierre/recepción — registrando QUIÉN reabre y por qué
+    await client.query("UPDATE ordenes_compra SET estado='PENDIENTE',tipo_doc_id=NULL,numero_documento=NULL,fecha_documento=NULL,movimiento_id=NULL,recibido_en=NULL,bodega_ingreso_id=NULL,cerrada_por=NULL,fecha_cierre=NULL,reabierto_en=NOW(),reabierto_por=$1,motivo_reapertura=$2,modificado_en=NOW(),modificado_por=$1 WHERE oc_id=$3",[req.user.email,(req.body&&req.body.motivo)||null,req.params.id]);
+    await auditOC(client,req.params.id,'REABRIR',_snapAntesReabrir,req);
     await client.query('COMMIT');
     res.json({ok:true,info:infoRevert});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
-ocR.patch('/:id/anular', auth, async(req,res)=>{
+ocR.patch('/:id/anular', auth, requireOC('anular'), async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
+    // Motivo OBLIGATORIO: la anulación es la vía estándar de "eliminación" y debe quedar justificada
+    const motivoAnul=((req.body&&req.body.motivo)||'').trim();
+    if(!motivoAnul) return res.status(400).json({error:'Debe indicar el motivo de la anulación'});
     const chk=await client.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length) return res.status(404).json({error:'OC no encontrada'});
     const oc=chk.rows[0];
     if(oc.estado==='ANULADA') return res.status(400).json({error:'La OC ya esta anulada'});
+    const _snapAntesAnular=await ocSnapshot(client,req.params.id);
     // Si tiene movimiento de inventario, no se puede anular desde aquí
     if(oc.movimiento_id) return res.status(400).json({error:'No se puede anular: ya se recibieron productos en bodega. Anule el movimiento primero.'});
     // Revertir movimientos de combustible asociados
@@ -2956,9 +3022,11 @@ ocR.patch('/:id/anular', auth, async(req,res)=>{
         await client.query("UPDATE comb_movimientos SET estado='ANULADO',anulado_en=NOW(),anulado_por=$1,motivo_anulacion='OC anulada' WHERE mov_id=$2",[req.user.email,mv.mov_id]);
       }
     }
-    await client.query("UPDATE ordenes_compra SET estado='ANULADA',anulado_en=NOW(),anulado_por=$1,recibido_en=NULL WHERE oc_id=$2",[req.user.email,req.params.id]);
+    await client.query("UPDATE ordenes_compra SET estado='ANULADA',anulado_en=NOW(),anulado_por=$1,motivo_anulacion=$2,recibido_en=NULL WHERE oc_id=$3",[req.user.email,motivoAnul,req.params.id]);
     // Quitar vinculaciones con DTE recibidos: una OC anulada no debe seguir contando en el avance de cierre de las facturas
+    // (las vinculaciones quedan preservadas en dte_vinculados del snapshot ANTES en auditoría)
     await client.query('DELETE FROM dte_oc WHERE oc_id=$1',[req.params.id]);
+    await auditOC(client,req.params.id,'ANULAR',_snapAntesAnular,req);
     await client.query('COMMIT');
     res.json({ok:true});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
@@ -2968,13 +3036,20 @@ ocR.delete('/:id', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
+    // SEGURIDAD (auditoría 2026-08): la eliminación FÍSICA es exclusiva de administradores
+    // (flag es_admin del rol, no el nombre) y exige motivo. La vía estándar para todos los
+    // demás usuarios es la ANULACIÓN, que conserva el registro.
+    if(!req.user.es_admin){
+      return res.status(403).json({error:'La eliminación definitiva es exclusiva de administradores. Use "Anular" (conserva el registro y exige motivo).'});
+    }
+    const motivoDel=((req.body&&req.body.motivo)||'').trim();
+    if(!motivoDel) return res.status(400).json({error:'Debe indicar el motivo de la eliminación definitiva'});
     const chk=await client.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length) return res.status(404).json({error:'OC no encontrada'});
     const oc=chk.rows[0];
-    // Solo admin puede eliminar OCs cerradas/recibidas
-    if((oc.estado==='CERRADA'||oc.movimiento_id||oc.recibido_en)&&req.user.rol!=='ADMINISTRADOR'&&req.user.rol!=='Administrador'){
-      return res.status(403).json({error:'Solo administradores pueden eliminar OCs cerradas o recibidas.'});
-    }
+    // Snapshot COMPLETO antes de borrar: encabezado + líneas + facturas vinculadas → auditoria
+    const _snapAntesDel=await ocSnapshot(client,req.params.id);
+    if(_snapAntesDel)_snapAntesDel.motivo_eliminacion=motivoDel;
     // 1) Revertir movimientos de inventario (bodega) si los hay
     if(oc.movimiento_id){
       const dets=await client.query('SELECT * FROM movimiento_detalle WHERE movimiento_id=$1',[oc.movimiento_id]);
@@ -3010,7 +3085,8 @@ ocR.delete('/:id', auth, async(req,res)=>{
     if(oc.factura_guia_id){
       await client.query('UPDATE ordenes_compra SET factura_guia_id=NULL WHERE oc_id=$1',[req.params.id]);
     }
-    // 4) Eliminar OC
+    // 4) Auditar ANTES de eliminar (el snapshot es lo único que sobrevivirá) y eliminar OC
+    await auditOC(client,req.params.id,'DELETE',_snapAntesDel,req,null);
     await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
     await client.query('DELETE FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     await client.query('COMMIT');
@@ -3018,7 +3094,7 @@ ocR.delete('/:id', auth, async(req,res)=>{
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
-ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
+ocR.post('/:id/recibir-bodega', auth, requireOC('editar'), async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
@@ -3112,23 +3188,19 @@ ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
-// REABRIR OC (solo si no generó ingreso a bodega)
-ocR.patch('/:id/reabrir', auth, async(req,res)=>{
-  const client=await pool.connect();
+// (Ruta /:id/reabrir duplicada ELIMINADA en auditoría 2026-08: era código muerto —
+// Express siempre resolvía la primera definición. La activa está más arriba, auditada.)
+
+// ── HISTORIAL de una OC: bitácora completa desde la tabla auditoria ──
+ocR.get('/:id/historial', auth, async(req,res)=>{
   try{
-    await client.query('BEGIN');
-    const chk=await client.query('SELECT estado,movimiento_id FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
-    if(!chk.rows.length) throw new Error('OC no encontrada');
-    const oc=chk.rows[0];
-    if(oc.estado!=='CERRADA') throw new Error('Solo se pueden reabrir ordenes en estado CERRADA');
-    if(oc.recibido_en) throw new Error('No se puede reabrir: la OC ya fue recibida el '+(oc.recibido_en+'').slice(0,10)+'. Debe revertir la recepción primero.');
-    if(oc.movimiento_id) throw new Error('No se puede reabrir: la OC ya genero un ingreso a bodega (movimiento #'+oc.movimiento_id+'). Anule el movimiento primero si desea reabrir la OC.');
-    const motivo=req.body.motivo||'Sin motivo especificado';
-    await client.query("UPDATE ordenes_compra SET estado='PENDIENTE',tipo_doc_id=NULL,numero_documento=NULL,fecha_documento=NULL,reabierto_en=NOW(),reabierto_por=$1,motivo_reapertura=$2,modificado_en=NOW() WHERE oc_id=$3",[req.user.email,motivo,req.params.id]);
-    await client.query('COMMIT');
-    res.json({ok:true});
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
+    const r=await pool.query(`SELECT auditoria_id,accion,usuario,ip_origen,
+        to_char(fecha_hora AT TIME ZONE 'UTC' AT TIME ZONE 'America/Santiago','DD-MM-YYYY HH24:MI') AS fecha_cl,
+        datos_anteriores,datos_nuevos
+      FROM auditoria WHERE tabla_afectada='ordenes_compra' AND registro_id=$1
+      ORDER BY auditoria_id`,[req.params.id]);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
 });
 
 // OC con filtros adicionales (subcategoria, faena, equipo)
@@ -3480,7 +3552,7 @@ app.post('/api/import/proveedores-xml', auth, async(req,res)=>{
 });
 
 // ══ IMPORTACIÓN MASIVA DE OC DESDE XML (ZIP Facto) ══
-app.post('/api/import/bulk-oc', auth, async(req,res)=>{
+app.post('/api/import/bulk-oc', auth, requireModulo('ordenes'), async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
@@ -4535,7 +4607,7 @@ app.post('/api/comb/cierres/:id/procesar', auth, async(req,res)=>{
 
 
 // OCR FACTURA — extracción local PDF/XML + parseo DTE chileno
-app.post('/api/ocr/factura', auth, async(req,res)=>{
+app.post('/api/ocr/factura', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     const{base64,mediaType}=req.body;
     if(!base64||!mediaType) return res.status(400).json({error:'Falta base64 o mediaType'});
@@ -6696,7 +6768,7 @@ app.delete('/api/mant/ot/personal/:id', auth, async(req,res)=>{
 // ══════════════════════════════════════════════════════
 // OC DETALLE — Vincular a OT
 // ══════════════════════════════════════════════════════
-app.patch('/api/oc/detalle/:id/ot', auth, async(req,res)=>{
+app.patch('/api/oc/detalle/:id/ot', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     const{ot_id}=req.body;
     const r=await pool.query('UPDATE ordenes_compra_detalle SET ot_id=$1 WHERE detalle_id=$2 RETURNING *',[ot_id||null,req.params.id]);
@@ -6705,7 +6777,7 @@ app.patch('/api/oc/detalle/:id/ot', auth, async(req,res)=>{
 });
 
 // GET líneas de una OC con info de OT asignada
-app.get('/api/oc/:id/lineas', auth, async(req,res)=>{
+app.get('/api/oc/:id/lineas', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     const r=await pool.query(`SELECT d.*,ot.numero_ot,ot.equipo_id,eq.nombre AS equipo_nombre,sc.nombre AS subcategoria_nombre,cat.nombre AS categoria_nombre FROM ordenes_compra_detalle d LEFT JOIN mant_ot ot ON d.ot_id=ot.ot_id LEFT JOIN equipos eq ON ot.equipo_id=eq.equipo_id LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,(SELECT p.subcategoria_id FROM productos p WHERE p.producto_id=d.producto_id))=sc.subcategoria_id LEFT JOIN categorias cat ON sc.categoria_id=cat.categoria_id WHERE d.oc_id=$1 ORDER BY d.linea_num,d.detalle_id`,[req.params.id]);
     res.json(r.rows);
@@ -6721,7 +6793,7 @@ app.get('/api/mant/ot/:id/compras', auth, async(req,res)=>{
 
 
 // Enlazar OC completa a una OT
-app.patch('/api/oc/link-ot', auth, async(req,res)=>{
+app.patch('/api/oc/link-ot', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     const oc_id=parseInt(req.body.oc_id), ot_id=parseInt(req.body.ot_id);
     if(!oc_id||!ot_id) return res.status(400).json({error:'oc_id y ot_id requeridos'});
@@ -6757,7 +6829,7 @@ app.patch('/api/oc/link-ot', auth, async(req,res)=>{
 });
 
 // Desenlazar OC de una OT
-app.patch('/api/oc/unlink-ot', auth, async(req,res)=>{
+app.patch('/api/oc/unlink-ot', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     const{oc_id,ot_id}=req.body;
     if(!oc_id||!ot_id) return res.status(400).json({error:'oc_id y ot_id requeridos'});
@@ -6769,7 +6841,7 @@ app.patch('/api/oc/unlink-ot', auth, async(req,res)=>{
 });
 
 // OCs disponibles para enlazar (no anuladas, sin enlace a otra OT)
-app.get('/api/oc/disponibles-ot', auth, async(req,res)=>{
+app.get('/api/oc/disponibles-ot', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     const r=await pool.query(`SELECT DISTINCT oc.oc_id,oc.numero_oc,oc.fecha_emision,oc.estado,oc.total,pr.nombre AS proveedor FROM ordenes_compra oc LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id WHERE oc.estado NOT IN ('ANULADA') AND NOT EXISTS (SELECT 1 FROM ordenes_compra_detalle d WHERE d.oc_id=oc.oc_id AND d.ot_id IS NOT NULL) ORDER BY oc.fecha_emision DESC`);
     res.json(r.rows);
@@ -10048,7 +10120,7 @@ async function setupFacturaGuias(q){
 }
 
 // Listar OCs con guía de despacho pendientes de facturar
-app.get('/api/oc-guias/pendientes', auth, async(req,res)=>{
+app.get('/api/oc-guias/pendientes', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     const{proveedor_id,empresa_id}=req.query;
     let w=["oc.estado='CERRADA'","oc.factura_guia_id IS NULL"],v=[];
@@ -10103,7 +10175,7 @@ app.get('/api/oc-guias/pendientes', auth, async(req,res)=>{
 });
 
 // Listar proveedores que tienen guías pendientes
-app.get('/api/oc-guias/proveedores-pendientes', auth, async(req,res)=>{
+app.get('/api/oc-guias/proveedores-pendientes', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     const r=await pool.query(`SELECT DISTINCT pr.proveedor_id,pr.nombre,pr.rut,COUNT(oc.oc_id) AS guias_pendientes,SUM(oc.total) AS monto_total
       FROM ordenes_compra oc
@@ -10118,7 +10190,7 @@ app.get('/api/oc-guias/proveedores-pendientes', auth, async(req,res)=>{
 });
 
 // Crear factura asociando guías + recalcular combustible por categoría
-app.post('/api/oc-guias/facturar', auth, async(req,res)=>{
+app.post('/api/oc-guias/facturar', auth, requireModulo('ordenes'), async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
@@ -10218,7 +10290,7 @@ app.post('/api/oc-guias/facturar', auth, async(req,res)=>{
 });
 
 // Listar facturas de guías
-app.get('/api/oc-guias/facturas', auth, async(req,res)=>{
+app.get('/api/oc-guias/facturas', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     const{proveedor_id,buscar,fecha_desde,fecha_hasta,empresa_id}=req.query;
     let w=['1=1'],v=[];
@@ -10244,7 +10316,7 @@ app.get('/api/oc-guias/facturas', auth, async(req,res)=>{
 });
 
 // ─── GET: detalle de una factura con todas las OC y guías asociadas ───
-app.get('/api/oc-guias/facturas/:id', auth, async(req,res)=>{
+app.get('/api/oc-guias/facturas/:id', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     const head=await pool.query(`
       SELECT f.*, pr.nombre AS proveedor_nombre, pr.rut AS proveedor_rut, 
@@ -10277,12 +10349,17 @@ app.get('/api/oc-guias/facturas/:id', auth, async(req,res)=>{
 });
 
 // Eliminar factura de guías (desasocia las OCs)
-app.delete('/api/oc-guias/facturas/:id', auth, async(req,res)=>{
+app.delete('/api/oc-guias/facturas/:id', auth, requireModulo('ordenes'), async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
+    // AUDITADO (2026-08): snapshot del cierre + OCs asociadas antes de borrar
+    const snap=(await client.query(`SELECT f.*, (SELECT json_agg(json_build_object('oc_id',o.oc_id,'numero_oc',o.numero_oc,'total',o.total)) FROM ordenes_compra o WHERE o.factura_guia_id=f.factura_id) AS ocs
+      FROM oc_factura_guias f WHERE f.factura_id=$1`,[req.params.id])).rows[0]||null;
     await client.query('UPDATE ordenes_compra SET factura_guia_id=NULL WHERE factura_guia_id=$1',[req.params.id]);
     await client.query('DELETE FROM oc_factura_guias WHERE factura_id=$1',[req.params.id]);
+    try{await client.query('INSERT INTO auditoria(tabla_afectada,registro_id,accion,datos_anteriores,usuario,ip_origen) VALUES($1,$2,$3,$4,$5,$6)',
+      ['oc_factura_guias',parseInt(req.params.id),'DELETE',snap?JSON.stringify(snap):null,req.user.email,reqIp(req)]);}catch(e){console.error('audit guias:',e.message);}
     await client.query('COMMIT');
     res.json({ok:true});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
@@ -11314,7 +11391,7 @@ app.post('/api/admin/wipe-transacciones', auth, async(req,res)=>{
 // ═══════════════════════════════════════════════════════════════
 
 // GET: lista de DTE recibidos con filtros + estado de vinculación calculado
-app.get('/api/dte-recibidos', auth, async(req,res)=>{
+app.get('/api/dte-recibidos', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     var w=[];var p=[];var i=1;
     if(req.query.tipo_dte){w.push('d.tipo_dte=$'+i);p.push(req.query.tipo_dte);i++;}
@@ -11346,7 +11423,7 @@ app.get('/api/dte-recibidos', auth, async(req,res)=>{
 });
 
 // GET: detalle de un DTE con líneas y OCs vinculadas
-app.get('/api/dte-recibidos/:id', auth, async(req,res)=>{
+app.get('/api/dte-recibidos/:id', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     var d=await pool.query('SELECT d.*, p.nombre AS proveedor_nombre_match, e.razon_social AS empresa_razon_social FROM dte_recibidos d LEFT JOIN proveedores p ON d.proveedor_id=p.proveedor_id LEFT JOIN empresas e ON d.empresa_id=e.empresa_id WHERE d.dte_id=$1',[req.params.id]);
     if(!d.rows.length)return res.status(404).json({error:'No encontrado'});
@@ -11365,7 +11442,7 @@ app.get('/api/dte-recibidos/:id', auth, async(req,res)=>{
 });
 
 // POST: importar lote de DTE desde el parser del frontend
-app.post('/api/dte-recibidos/import', auth, async(req,res)=>{
+app.post('/api/dte-recibidos/import', auth, requireModulo('ordenes'), async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
@@ -11482,7 +11559,7 @@ app.post('/api/dte-recibidos/import', auth, async(req,res)=>{
 });
 
 // PUT: actualizar metadatos de un DTE
-app.put('/api/dte-recibidos/:id', auth, async(req,res)=>{
+app.put('/api/dte-recibidos/:id', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     var b=req.body;
     var r=await pool.query(`UPDATE dte_recibidos SET
@@ -11497,7 +11574,7 @@ app.put('/api/dte-recibidos/:id', auth, async(req,res)=>{
 });
 
 // POST: agregar una vinculación DTE→OC con monto
-app.post('/api/dte-recibidos/:id/oc', auth, async(req,res)=>{
+app.post('/api/dte-recibidos/:id/oc', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     if(!req.body.oc_id)return res.status(400).json({error:'oc_id requerido'});
     var monto=parseFloat(req.body.monto_aplicado);
@@ -11533,7 +11610,7 @@ app.post('/api/dte-recibidos/:id/oc', auth, async(req,res)=>{
 //   Tier 2 (monto): total ≈ total, mismo proveedor, ventana de fecha, candidata única
 // modo:'preview' (default) solo propone; modo:'aplicar' inserta las vinculaciones.
 // ═══════════════════════════════════════════════════════════════
-app.post('/api/dte-recibidos/cruce-automatico', auth, async(req,res)=>{
+app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), async(req,res)=>{
   const client=await pool.connect();
   try{
     const modo=(req.body.modo==='aplicar')?'aplicar':'preview';
@@ -11669,7 +11746,7 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, async(req,res)=>{
 });
 
 // PUT: actualizar monto de una vinculación
-app.put('/api/dte-oc/:relId', auth, async(req,res)=>{
+app.put('/api/dte-oc/:relId', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     var monto=parseFloat(req.body.monto_aplicado);
     if(!monto||monto<=0)return res.status(400).json({error:'monto_aplicado debe ser mayor a 0'});
@@ -11694,7 +11771,7 @@ app.put('/api/dte-oc/:relId', auth, async(req,res)=>{
 });
 
 // DELETE: quitar una vinculación específica DTE-OC
-app.delete('/api/dte-oc/:relId', auth, async(req,res)=>{
+app.delete('/api/dte-oc/:relId', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     var r=await pool.query('DELETE FROM dte_oc WHERE rel_id=$1 RETURNING *',[req.params.relId]);
     if(!r.rows.length)return res.status(404).json({error:'No encontrado'});
@@ -11703,7 +11780,7 @@ app.delete('/api/dte-oc/:relId', auth, async(req,res)=>{
 });
 
 // DELETE: eliminar DTE de la bandeja
-app.delete('/api/dte-recibidos/:id', auth, async(req,res)=>{
+app.delete('/api/dte-recibidos/:id', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     await pool.query('DELETE FROM dte_recibidos WHERE dte_id=$1',[req.params.id]);
     res.json({ok:true});
@@ -11885,7 +11962,7 @@ app.post('/api/bandeja-dte-oc/marcar-sin-oc', auth, async(req,res)=>{
 });
 
 // POST: re-detectar empresa de DTEs por RUT del receptor (útil para DTEs ya importados sin empresa)
-app.post('/api/dte-recibidos/redetectar-empresa', auth, async(req,res)=>{
+app.post('/api/dte-recibidos/redetectar-empresa', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     // Trae todas las empresas activas
     var emps=await pool.query("SELECT empresa_id, rut FROM empresas WHERE activo=true OR activo IS NULL");
@@ -11913,7 +11990,7 @@ app.post('/api/dte-recibidos/redetectar-empresa', auth, async(req,res)=>{
 });
 
 // POST: eliminar múltiples DTE de la bandeja en una sola operación
-app.post('/api/dte-recibidos/bulk-delete', auth, async(req,res)=>{
+app.post('/api/dte-recibidos/bulk-delete', auth, requireModulo('ordenes'), async(req,res)=>{
   const client=await pool.connect();
   try{
     var ids=Array.isArray(req.body.ids)?req.body.ids.map(function(i){return parseInt(i);}).filter(function(i){return !isNaN(i);}):[];
@@ -11927,7 +12004,7 @@ app.post('/api/dte-recibidos/bulk-delete', auth, async(req,res)=>{
 });
 
 // GET: OCs candidatas para vincular a un DTE (mismo proveedor preferentemente)
-app.get('/api/dte-recibidos/:id/ocs-candidatas', auth, async(req,res)=>{
+app.get('/api/dte-recibidos/:id/ocs-candidatas', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     var dte=await pool.query('SELECT proveedor_id FROM dte_recibidos WHERE dte_id=$1',[req.params.id]);
     if(!dte.rows.length)return res.status(404).json({error:'DTE no encontrado'});
@@ -12881,7 +12958,7 @@ app.get('/api/fin/resultado-anual', auth, async(req,res)=>{
 // Une compras directas (líneas de OC con equipo) y salidas de bodega valorizadas.
 // Filtros: período, empresa, faena, cargo, subcategoría. Ruta plana (sin /api/oc/:id).
 // ════════════════════════════════════════════════════════════════════
-app.get('/api/oc-libro-productos', auth, async(req,res)=>{
+app.get('/api/oc-libro-productos', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
     const{desde,hasta,empresa_id,faena_id,equipo_id,subcategoria_id,solo_cerradas}=req.query;
     const soloCerr=solo_cerradas!=='0';
