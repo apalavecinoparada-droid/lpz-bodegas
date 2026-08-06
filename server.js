@@ -3191,6 +3191,20 @@ ocR.post('/:id/recibir-bodega', auth, requireOC('editar'), async(req,res)=>{
 // (Ruta /:id/reabrir duplicada ELIMINADA en auditoría 2026-08: era código muerto —
 // Express siempre resolvía la primera definición. La activa está más arriba, auditada.)
 
+// ── OCs ELIMINADAS: visor de la bitácora (solo administradores) ──
+// El snapshot completo de cada OC eliminada vive en auditoria.datos_anteriores.
+ocR.get('/eliminadas/listado', auth, async(req,res)=>{
+  try{
+    if(!req.user.es_admin)return res.status(403).json({error:'Solo administradores pueden ver las órdenes eliminadas'});
+    const r=await pool.query(`SELECT auditoria_id,usuario,ip_origen,
+        to_char(fecha_hora AT TIME ZONE 'UTC' AT TIME ZONE 'America/Santiago','DD-MM-YYYY HH24:MI') AS fecha_cl,
+        datos_anteriores
+      FROM auditoria WHERE tabla_afectada='ordenes_compra' AND accion='DELETE'
+      ORDER BY auditoria_id DESC LIMIT 500`);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 // ── HISTORIAL de una OC: bitácora completa desde la tabla auditoria ──
 ocR.get('/:id/historial', auth, async(req,res)=>{
   try{
