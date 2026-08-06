@@ -8181,6 +8181,14 @@ function OCView(p){
       .then(function(rows){setHistOC({numero_oc:r.numero_oc,rows:Array.isArray(rows)?rows:[]});})
       .catch(function(ex){alert(ex.message);});
   }
+  // ── Visor de OCs eliminadas (solo admin): lee los snapshots DELETE de la bitácora ──
+  var[eliminadas,setEliminadas]=useState(null); // array de eventos
+  var[elimVer,setElimVer]=useState(null); // snapshot expandido
+  function verEliminadas(){
+    api('/ordenes-compra/eliminadas/listado','GET',null,p.tok)
+      .then(function(rows){setEliminadas(Array.isArray(rows)?rows:[]);})
+      .catch(function(ex){alert(ex.message);});
+  }
   function openLinkOT(oc){
     setLinkOT(oc);
     api('/oc/'+oc.oc_id+'/lineas','GET',null,p.tok).then(function(r){setLinkOT(function(prev){return Object.assign({},prev,{_lineas:Array.isArray(r)?r:[]});});}).catch(function(){});
@@ -8317,7 +8325,8 @@ function OCView(p){
       h('input',{value:filtFactura||'',onChange:function(e){setFiltFactura(e.target.value);},placeholder:'N° factura cierre',title:'Buscar OCs cerradas con una factura específica',style:{padding:'6px 7px',border:'1px solid #15803D',borderRadius:5,fontSize:12,width:140,background:'#F0FDF4'}}),
       h(Btn,{v:'teal',sm:true,onClick:exportFiltered},null,'⬇ Excel filtrado'),
       h(Btn,{v:'teal',sm:true,onClick:informePDFProveedor},null,'\ud83d\udcc4 Informe PDF'),
-      h(Btn,{v:'g',sm:true,onClick:exportDetalle},null,'⬇ Informe masivo')
+      h(Btn,{v:'g',sm:true,onClick:exportDetalle},null,'⬇ Informe masivo'),
+      esAdminOC&&h('button',{onClick:function(){verEliminadas();},title:'Órdenes eliminadas definitivamente (respaldo de la bitácora de auditoría)',style:{padding:'5px 10px',border:'1px solid #FCA5A5',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'🗑 Eliminadas')
     ),
     h('div',{style:{fontSize:12,color:'#64748B',marginBottom:6}},ocs.length+' resultado(s)'),
     load?h('div',{className:'spin'},'Cargando...'):
@@ -8367,6 +8376,41 @@ function OCView(p){
         );
       }}
     ],rows:sortedOCs,empty:'Sin ordenes de compra'})),
+    // ── Modal OCs ELIMINADAS (solo admin): snapshots respaldados en la bitácora ──
+    eliminadas&&h(Modal,{title:'🗑 Órdenes eliminadas definitivamente ('+eliminadas.length+')',onClose:function(){setEliminadas(null);setElimVer(null);},xl:true},
+      h('div',{style:{maxHeight:'65vh',overflowY:'auto',padding:'0 4px'}},
+        h('div',{style:{fontSize:11,color:'#64748B',marginBottom:8}},'Respaldo íntegro de cada OC al momento de eliminarla (bitácora de auditoría). La eliminación definitiva es exclusiva de administradores y exige motivo.'),
+        eliminadas.length===0?h('div',{style:{padding:20,textAlign:'center',color:'#64748B',fontSize:13}},'No hay órdenes eliminadas registradas en la bitácora.'):
+        eliminadas.map(function(ev,i){
+          var s=ev.datos_anteriores||{};
+          var abierto=elimVer===ev.auditoria_id;
+          return h('div',{key:ev.auditoria_id||i,style:{border:'1px solid #FCA5A5',borderRadius:6,marginBottom:8,background:'#FFF'}},
+            h('div',{onClick:function(){setElimVer(abierto?null:ev.auditoria_id);},style:{cursor:'pointer',padding:'8px 12px',background:'#FEF2F2',borderRadius:abierto?'6px 6px 0 0':'6px',display:'flex',justifyContent:'space-between',flexWrap:'wrap',gap:6,alignItems:'center'}},
+              h('div',null,
+                h('strong',{style:{color:'#7F1D1D',fontSize:12}},s.numero_oc||('OC #'+(s.oc_id||'?'))),
+                h('span',{style:{fontSize:11,color:'#334155',marginLeft:8}},CLP(Math.round(parseFloat(s.total)||0))+' · '+((s.lineas||[]).length)+' línea(s)'+(s.estado?' · estaba '+s.estado:'')),
+                s.motivo_eliminacion&&h('div',{style:{fontSize:10,color:'#78350F',fontStyle:'italic'}},'Motivo: '+s.motivo_eliminacion)),
+              h('div',{style:{textAlign:'right'}},
+                h('div',{style:{fontSize:11,color:'#475569'}},'Eliminada el '+ev.fecha_cl+' por '+(ev.usuario||'—')),
+                h('div',{style:{fontSize:9,color:'#94A3B8'}},(ev.ip_origen?'IP '+ev.ip_origen+' · ':'')+(abierto?'▲ ocultar':'▼ ver contenido')))),
+            abierto&&h('div',{style:{padding:'8px 12px',fontSize:11}},
+              h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:6,marginBottom:8}},
+                h('div',null,h('span',{style:{color:'#94A3B8'}},'Fecha emisión: '),(s.fecha_emision+'').slice(0,10)||'—'),
+                h('div',null,h('span',{style:{color:'#94A3B8'}},'Creada por: '),s.usuario||'—'),
+                h('div',null,h('span',{style:{color:'#94A3B8'}},'Neto: '),CLP(Math.round(parseFloat(s.neto)||0))),
+                h('div',null,h('span',{style:{color:'#94A3B8'}},'Documento: '),s.numero_documento?('#'+s.numero_documento):'—'),
+                s.observaciones&&h('div',{style:{gridColumn:'1/-1'}},h('span',{style:{color:'#94A3B8'}},'Observaciones: '),s.observaciones)),
+              (s.lineas||[]).length>0&&h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:10}},
+                h('thead',null,h('tr',null,['#','Detalle','Cant.','P. unit.','Total'].map(function(c2,j){return h('th',{key:j,style:{padding:'3px 6px',background:'#F8FAFC',textAlign:j>=2?'right':'left'}},c2);}))),
+                h('tbody',null,(s.lineas||[]).map(function(l,j){return h('tr',{key:j,style:{borderTop:'1px solid #F1F5F9'}},
+                  h('td',{style:{padding:'3px 6px'}},l.linea_num||j+1),
+                  h('td',{style:{padding:'3px 6px'}},l.descripcion||'—'),
+                  h('td',{style:{padding:'3px 6px',textAlign:'right'}},parseFloat(l.cantidad)||0),
+                  h('td',{style:{padding:'3px 6px',textAlign:'right',fontFamily:'monospace'}},CLP(Math.round(parseFloat(l.precio_unitario)||0))),
+                  h('td',{style:{padding:'3px 6px',textAlign:'right',fontFamily:'monospace',fontWeight:600}},CLP(Math.round((parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0)))));}))),
+              (s.dte_vinculados||[]).length>0&&h('div',{style:{marginTop:6,color:'#7C3AED'}},'Facturas que estaban vinculadas: '+(s.dte_vinculados||[]).map(function(dv){return '#'+(dv.folio||dv.dte_id);}).join(', '))))
+          ;})
+      )),
     // ── Modal Historial de auditoría de la OC ──
     histOC&&h(Modal,{title:'🕘 Historial de auditoría — '+(histOC.numero_oc||''),onClose:function(){setHistOC(null);},xl:true},
       h('div',{style:{maxHeight:'65vh',overflowY:'auto',padding:'0 4px'}},
