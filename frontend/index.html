@@ -17293,6 +17293,112 @@ function FinLiquidacionesView(p){
     if(!confirm('¿Eliminar la liquidación del período '+l.periodo+' por '+CLP(l.total_neto)+'?\n\nEsta acción no se puede deshacer.'))return;
     api('/fin/liquidaciones/'+l.liq_id,'DELETE',null,p.tok).then(function(){setDet(null);load2();}).catch(function(e){alert(e.message);});
   }
+  // ── INFORME PDF PARA GERENCIA: detalle de producciones del filtro actual ──
+  // Trae el detalle de líneas de cada liquidación listada, agrega por período /
+  // equipo de contrato / fundo + detalle de partidas especiales, e imprime con
+  // el diseño corporativo vía imprimirHTMLViaIframe (Guardar como PDF).
+  var[genInforme,setGenInforme]=useState(false);
+  function informeGerencia(){
+    if(!lista.length){alert('No hay liquidaciones para el filtro actual');return;}
+    setGenInforme(true);
+    Promise.all(lista.map(function(l){return api('/fin/liquidaciones/'+l.liq_id,'GET',null,p.tok);}))
+      .then(function(dets){construirInformeGerencia(dets);})
+      .catch(function(e){alert('Error al generar informe: '+e.message);})
+      .finally(function(){setGenInforme(false);});
+  }
+  function construirInformeGerencia(dets){
+    var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
+    var money=function(n){var v=Math.round(parseFloat(n)||0);return (v<0?'-$':'$')+new Intl.NumberFormat('es-CL').format(Math.abs(v));};
+    dets=dets.slice().sort(function(a,b){return (a.periodo||'').localeCompare(b.periodo||'')||a.liq_id-b.liq_id;});
+    // ── Agregaciones ──
+    var tot={vol:0,prod:0,pe:0,neto:0};
+    var porEquipo={},porFundo={},pes=[];
+    var filasPeriodo=dets.map(function(d){
+      var vol=0,prod=0,pe=0;
+      (d.lineas||[]).forEach(function(x){
+        var m=parseFloat(x.monto)||0,v=parseFloat(x.volumen_m3)||0;
+        if(x.tipo==='PRODUCCION'){
+          prod+=m;vol+=v;
+          var ke=(x.equipo_contrato||'Sin equipo');
+          if(!porEquipo[ke])porEquipo[ke]={vol:0,prod:0,pe:0};
+          porEquipo[ke].vol+=v;porEquipo[ke].prod+=m;
+          var kf=((x.fundo_codigo||'')+'|'+(x.fundo_nombre||x.fundo_codigo||'Sin fundo'));
+          if(!porFundo[kf])porFundo[kf]={cod:x.fundo_codigo||'',nom:x.fundo_nombre||x.fundo_codigo||'Sin fundo',vol:0,prod:0};
+          porFundo[kf].vol+=v;porFundo[kf].prod+=m;
+        }else{
+          pe+=m;
+          if(porEquipo[(x.equipo_contrato||'Sin equipo')])porEquipo[(x.equipo_contrato||'Sin equipo')].pe+=m;
+          pes.push({periodo:d.periodo,equipo:x.equipo_contrato||'—',concepto:x.concepto||'Partida especial',monto:m});
+        }
+      });
+      tot.vol+=vol;tot.prod+=prod;tot.pe+=pe;tot.neto+=prod+pe;
+      return{periodo:d.periodo,empresa:d.empresa_nombre||'—',mandante:d.mandante||'—',ref:d.numero_ref||'—',vol:vol,prod:prod,pe:pe,neto:prod+pe};
+    });
+    var eqList=Object.keys(porEquipo).map(function(k){var x=porEquipo[k];return{eq:k,vol:x.vol,prod:x.prod,pe:x.pe,neto:x.prod+x.pe};}).sort(function(a,b){return b.prod-a.prod;});
+    var fuList=Object.keys(porFundo).map(function(k){return porFundo[k];}).sort(function(a,b){return b.prod-a.prod;});
+    pes.sort(function(a,b){return (a.periodo||'').localeCompare(b.periodo||'')||a.monto-b.monto;});
+    var empSel=fEmpresa?(empresas.find(function(e){return String(e.empresa_id)===String(fEmpresa);})||{}).razon_social:null;
+    var periodos=filasPeriodo.map(function(f){return f.periodo;});
+    var rangoTxt=periodos.length?(periodos[0]===periodos[periodos.length-1]?('Período '+periodos[0]):('Períodos '+periodos[0]+' a '+periodos[periodos.length-1])):'';
+    var hoyTxt=new Date().toLocaleDateString('es-CL')+' '+new Date().toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});
+    var G='#1E3A2D',VERDE='#16A34A',ROJO='#B91C1C';
+    var thTxt='padding:6px 8px;font-size:9px;letter-spacing:.5px;text-transform:uppercase;background:'+G+';color:#fff;text-align:left;';
+    var thNum=thTxt+'text-align:right;';
+    var td='padding:5px 8px;font-size:10px;border-bottom:1px solid #E5E7EB;';
+    var tdN=td+'text-align:right;font-family:Consolas,monospace;';
+    var seccion=function(t){return '<div style="font-size:12px;font-weight:700;color:'+G+';margin:18px 0 6px;border-bottom:2px solid '+G+';padding-bottom:3px;">'+t+'</div>';};
+    var kpi=function(lbl,val,color){return '<td style="border:1px solid #E5E7EB;border-left:4px solid '+(color||G)+';padding:8px 10px;"><div style="font-size:8px;color:#6B7280;letter-spacing:.5px;">'+lbl+'</div><div style="font-size:14px;font-weight:700;color:'+(color||G)+';">'+val+'</div></td>';};
+    var html='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Informe Liquidaciones de Producción</title>'+
+      '<style>@page{size:letter;margin:14mm}body{font-family:Segoe UI,Arial,sans-serif;color:#111827;margin:0}table{border-collapse:collapse;width:100%}'+
+      'thead{display:table-header-group}tr{page-break-inside:avoid}'+
+      '@media print{*{-webkit-print-color-adjust:exact;print-color-adjust:exact}}</style></head><body>'+
+      // Encabezado corporativo
+      '<div style="border-bottom:4px solid '+G+';padding-bottom:10px;margin-bottom:14px;">'+
+        '<table><tr><td>'+
+          '<div style="font-size:18px;font-weight:800;color:'+G+';">EMPRESAS POO</div>'+
+          '<div style="font-size:9px;color:#6B7280;letter-spacing:1px;">SISTEMA DE GESTIÓN FORESTAL</div>'+
+        '</td><td style="text-align:right;">'+
+          '<div style="font-size:14px;font-weight:700;color:'+G+';">INFORME DE LIQUIDACIONES DE PRODUCCIÓN</div>'+
+          '<div style="font-size:10px;color:#374151;">'+esc(empSel||'Consolidado — todas las empresas')+(fAnio?' · Año '+esc(fAnio):'')+'</div>'+
+          '<div style="font-size:9px;color:#6B7280;">'+esc(rangoTxt)+' · Generado el '+esc(hoyTxt)+((p.user&&p.user.nombre)?' por '+esc(p.user.nombre):'')+'</div>'+
+        '</td></tr></table></div>'+
+      // Resumen ejecutivo
+      seccion('RESUMEN EJECUTIVO')+
+      '<table style="border-spacing:6px;border-collapse:separate;margin-left:-6px;"><tr>'+
+        kpi('LIQUIDACIONES',filasPeriodo.length)+
+        kpi('VOLUMEN PRODUCIDO',nf(tot.vol,1)+' m³','#0F766E')+
+        kpi('PRODUCCIÓN',money(tot.prod),VERDE)+
+        kpi('PARTIDAS ESPECIALES',money(tot.pe),tot.pe<0?ROJO:VERDE)+
+        kpi('INGRESO NETO',money(tot.neto))+
+        kpi('PRECIO MEDIO',tot.vol>0?money(tot.neto/tot.vol)+'/m³':'—','#0F766E')+
+      '</tr></table>'+
+      // 1) Resumen por período
+      seccion('1 · RESUMEN POR PERÍODO')+
+      '<table><thead><tr><th style="'+thTxt+'">Período</th><th style="'+thTxt+'">Empresa</th><th style="'+thTxt+'">Mandante</th><th style="'+thTxt+'">N° Ref.</th><th style="'+thNum+'">m³</th><th style="'+thNum+'">Producción</th><th style="'+thNum+'">Part. Esp.</th><th style="'+thNum+'">Neto</th><th style="'+thNum+'">$/m³</th></tr></thead><tbody>'+
+      filasPeriodo.map(function(f){return '<tr><td style="'+td+'font-weight:700;color:'+G+';">'+esc(f.periodo)+'</td><td style="'+td+'">'+esc(f.empresa)+'</td><td style="'+td+'">'+esc(f.mandante)+'</td><td style="'+td+'">'+esc(f.ref)+'</td><td style="'+tdN+'">'+nf(f.vol,1)+'</td><td style="'+tdN+'">'+money(f.prod)+'</td><td style="'+tdN+(f.pe<0?'color:'+ROJO+';':'')+'">'+money(f.pe)+'</td><td style="'+tdN+'font-weight:700;">'+money(f.neto)+'</td><td style="'+tdN+'">'+(f.vol>0?money(f.neto/f.vol):'—')+'</td></tr>';}).join('')+
+      '<tr><td colspan="4" style="'+td+'font-weight:800;background:#F3F4F6;">TOTAL</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+nf(tot.vol,1)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+money(tot.prod)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;'+(tot.pe<0?'color:'+ROJO+';':'')+'">'+money(tot.pe)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+money(tot.neto)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+(tot.vol>0?money(tot.neto/tot.vol):'—')+'</td></tr>'+
+      '</tbody></table>'+
+      // 2) Producción por equipo de contrato
+      seccion('2 · PRODUCCIÓN POR EQUIPO DE CONTRATO')+
+      '<table><thead><tr><th style="'+thTxt+'">Equipo contrato</th><th style="'+thNum+'">m³</th><th style="'+thNum+'">Producción</th><th style="'+thNum+'">$/m³</th><th style="'+thNum+'">Part. Esp.</th><th style="'+thNum+'">Neto</th><th style="'+thNum+'">% del neto</th></tr></thead><tbody>'+
+      eqList.map(function(x){return '<tr><td style="'+td+'font-weight:600;">'+esc(x.eq)+'</td><td style="'+tdN+'">'+nf(x.vol,1)+'</td><td style="'+tdN+'">'+money(x.prod)+'</td><td style="'+tdN+'">'+(x.vol>0?money(x.prod/x.vol):'—')+'</td><td style="'+tdN+(x.pe<0?'color:'+ROJO+';':'')+'">'+money(x.pe)+'</td><td style="'+tdN+'font-weight:700;">'+money(x.neto)+'</td><td style="'+tdN+'">'+(tot.neto?nf(x.neto/tot.neto*100,1)+'%':'—')+'</td></tr>';}).join('')+
+      '</tbody></table>'+
+      // 3) Producción por fundo
+      seccion('3 · PRODUCCIÓN POR FUNDO')+
+      '<table><thead><tr><th style="'+thTxt+'">Fundo</th><th style="'+thNum+'">m³</th><th style="'+thNum+'">Monto</th><th style="'+thNum+'">$/m³</th><th style="'+thNum+'">% del volumen</th></tr></thead><tbody>'+
+      fuList.map(function(x){return '<tr><td style="'+td+'">'+esc((x.cod?x.cod+' — ':'')+x.nom)+'</td><td style="'+tdN+'">'+nf(x.vol,1)+'</td><td style="'+tdN+'">'+money(x.prod)+'</td><td style="'+tdN+'">'+(x.vol>0?money(x.prod/x.vol):'—')+'</td><td style="'+tdN+'">'+(tot.vol?nf(x.vol/tot.vol*100,1)+'%':'—')+'</td></tr>';}).join('')+
+      '</tbody></table>'+
+      // 4) Partidas especiales
+      seccion('4 · DETALLE DE PARTIDAS ESPECIALES (ajustes, premios y descuentos)')+
+      (pes.length?('<table><thead><tr><th style="'+thTxt+'">Período</th><th style="'+thTxt+'">Equipo</th><th style="'+thTxt+'">Concepto</th><th style="'+thNum+'">Monto</th></tr></thead><tbody>'+
+        pes.map(function(x){return '<tr><td style="'+td+'">'+esc(x.periodo)+'</td><td style="'+td+'">'+esc(x.equipo)+'</td><td style="'+td+'">'+esc(x.concepto)+'</td><td style="'+tdN+(x.monto<0?'color:'+ROJO+';font-weight:600;':'color:'+VERDE+';')+'">'+money(x.monto)+'</td></tr>';}).join('')+
+        '<tr><td colspan="3" style="'+td+'font-weight:800;background:#F3F4F6;">TOTAL PARTIDAS ESPECIALES</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;'+(tot.pe<0?'color:'+ROJO+';':'')+'">'+money(tot.pe)+'</td></tr></tbody></table>')
+        :'<div style="font-size:10px;color:#6B7280;">Sin partidas especiales en el rango consultado.</div>')+
+      // Pie
+      '<div style="margin-top:18px;border-top:1px solid #E5E7EB;padding-top:6px;font-size:8px;color:#9CA3AF;">Informe generado automáticamente por el Sistema de Gestión Empresas Poo · Fuente: módulo Finanzas — Liquidaciones de Producción (liquidaciones del mandante'+(dets[0]&&dets[0].mandante?' '+esc(dets[0].mandante):'')+') · '+esc(hoyTxt)+'</div>'+
+      '</body></html>';
+    imprimirHTMLViaIframe(html,'Informe Liquidaciones de Producción');
+  }
   function setF(k,v){setForm(function(f){var n=Object.assign({},f);n[k]=v;return n;});}
   function setL(i,k,v){setForm(function(f){var nl=f.lineas.slice();nl[i]=Object.assign({},nl[i]);nl[i][k]=v;return Object.assign({},f,{lineas:nl});});}
   function addLinea(tipo){setForm(function(f){var nl2=lineaVacia();if(tipo)nl2.tipo=tipo;return Object.assign({},f,{lineas:f.lineas.concat([nl2])});});}
@@ -17391,6 +17497,7 @@ function FinLiquidacionesView(p){
         h('option',{value:''},'Todas las empresas'),empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
       h('input',{type:'number',value:fAnio,onChange:function(e){setFAnio(e.target.value);},placeholder:'Año (todos)',style:Object.assign({},inpS,{width:110})}),
       h('div',{style:{marginLeft:'auto',display:'flex',gap:6}},
+        lista.length>0&&h(Btn,{v:'teal',onClick:informeGerencia,disabled:genInforme},genInforme?'Generando...':'📄 Informe PDF Gerencia'),
         h('label',{style:{padding:'7px 12px',background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:5,fontSize:12,fontWeight:600,color:'#1E40AF',cursor:'pointer'}},
           '📥 Importar Excel del mandante',
           h('input',{type:'file',accept:'.xlsx,.xls',onChange:onFileImport,style:{display:'none'}})),
@@ -24839,7 +24946,7 @@ function App(){
           view==='prod-oee'&&h(OEEView,{tok,m,user}),
           view==='ia-chat'&&h(IAChatView,{tok,m,user}),
           view==='fin-cheques'&&h(FinChequesView,{tok,m}),
-          view==='fin-liquidaciones'&&h(FinLiquidacionesView,{tok,m}),
+          view==='fin-liquidaciones'&&h(FinLiquidacionesView,{tok,m,user}),
           view==='fin-honorarios'&&h(FinHonorariosView,{tok,m}),
           view==='fin-eerr'&&h(FinEERRView,{tok,m}),
           view==='fin-rcv'&&h(FinRcvView,{tok,m}),
