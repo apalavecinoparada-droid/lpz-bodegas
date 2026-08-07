@@ -17298,10 +17298,13 @@ function FinLiquidacionesView(p){
   // equipo de contrato / fundo + detalle de partidas especiales, e imprime con
   // el diseño corporativo vía imprimirHTMLViaIframe (Guardar como PDF).
   var[genInforme,setGenInforme]=useState(false);
+  var[mesInforme,setMesInforme]=useState(''); // el informe es POR MES: se selecciona el período
   function informeGerencia(){
-    if(!lista.length){alert('No hay liquidaciones para el filtro actual');return;}
+    if(!mesInforme){alert('Seleccione el mes del informe');return;}
+    var delMes=lista.filter(function(l){return l.periodo===mesInforme;});
+    if(!delMes.length){alert('No hay liquidaciones del período '+mesInforme+' con el filtro actual');return;}
     setGenInforme(true);
-    Promise.all(lista.map(function(l){return api('/fin/liquidaciones/'+l.liq_id,'GET',null,p.tok);}))
+    Promise.all(delMes.map(function(l){return api('/fin/liquidaciones/'+l.liq_id,'GET',null,p.tok);}))
       .then(function(dets){construirInformeGerencia(dets);})
       .catch(function(e){alert('Error al generar informe: '+e.message);})
       .finally(function(){setGenInforme(false);});
@@ -17373,7 +17376,7 @@ function FinLiquidacionesView(p){
         kpi('PRECIO MEDIO',tot.vol>0?money(tot.neto/tot.vol)+'/m³':'—','#0F766E')+
       '</tr></table>'+
       // 1) Resumen por período
-      seccion('1 · RESUMEN POR PERÍODO')+
+      seccion('1 · RESUMEN DEL MES POR LIQUIDACIÓN')+
       '<table><thead><tr><th style="'+thTxt+'">Período</th><th style="'+thTxt+'">Empresa</th><th style="'+thTxt+'">Mandante</th><th style="'+thTxt+'">N° Ref.</th><th style="'+thNum+'">m³</th><th style="'+thNum+'">Producción</th><th style="'+thNum+'">Part. Esp.</th><th style="'+thNum+'">Neto</th><th style="'+thNum+'">$/m³</th></tr></thead><tbody>'+
       filasPeriodo.map(function(f){return '<tr><td style="'+td+'font-weight:700;color:'+G+';">'+esc(f.periodo)+'</td><td style="'+td+'">'+esc(f.empresa)+'</td><td style="'+td+'">'+esc(f.mandante)+'</td><td style="'+td+'">'+esc(f.ref)+'</td><td style="'+tdN+'">'+nf(f.vol,1)+'</td><td style="'+tdN+'">'+money(f.prod)+'</td><td style="'+tdN+(f.pe<0?'color:'+ROJO+';':'')+'">'+money(f.pe)+'</td><td style="'+tdN+'font-weight:700;">'+money(f.neto)+'</td><td style="'+tdN+'">'+(f.vol>0?money(f.neto/f.vol):'—')+'</td></tr>';}).join('')+
       '<tr><td colspan="4" style="'+td+'font-weight:800;background:#F3F4F6;">TOTAL</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+nf(tot.vol,1)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+money(tot.prod)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;'+(tot.pe<0?'color:'+ROJO+';':'')+'">'+money(tot.pe)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+money(tot.neto)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+(tot.vol>0?money(tot.neto/tot.vol):'—')+'</td></tr>'+
@@ -17496,8 +17499,11 @@ function FinLiquidacionesView(p){
       h('select',{value:fEmpresa,onChange:function(e){setFEmpresa(e.target.value);},style:inpS},
         h('option',{value:''},'Todas las empresas'),empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
       h('input',{type:'number',value:fAnio,onChange:function(e){setFAnio(e.target.value);},placeholder:'Año (todos)',style:Object.assign({},inpS,{width:110})}),
-      h('div',{style:{marginLeft:'auto',display:'flex',gap:6}},
-        lista.length>0&&h(Btn,{v:'teal',onClick:informeGerencia,disabled:genInforme},genInforme?'Generando...':'📄 Informe PDF Gerencia'),
+      h('div',{style:{marginLeft:'auto',display:'flex',gap:6,alignItems:'center'}},
+        lista.length>0&&h('select',{value:mesInforme,onChange:function(e){setMesInforme(e.target.value);},style:Object.assign({},inpS,{fontWeight:mesInforme?600:400,background:mesInforme?'#F0FDFA':'#fff'})},
+          h('option',{value:''},'Mes del informe...'),
+          (function(){var ps={};lista.forEach(function(l){ps[l.periodo]=1;});return Object.keys(ps).sort().reverse();})().map(function(per){return h('option',{key:per,value:per},per);})),
+        lista.length>0&&h(Btn,{v:'teal',onClick:informeGerencia,disabled:genInforme||!mesInforme},genInforme?'Generando...':'📄 Informe PDF Gerencia'),
         h('label',{style:{padding:'7px 12px',background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:5,fontSize:12,fontWeight:600,color:'#1E40AF',cursor:'pointer'}},
           '📥 Importar Excel del mandante',
           h('input',{type:'file',accept:'.xlsx,.xls',onChange:onFileImport,style:{display:'none'}})),
