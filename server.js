@@ -12098,6 +12098,27 @@ app.get('/api/fin/liquidaciones', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
+// GET: producción anual en m³, mes a mes, desglosada por faena (para el gráfico)
+app.get('/api/fin/liquidaciones/grafico/anual', auth, async(req,res)=>{
+  try{
+    await finLiqEnsure();
+    const anio=/^\d{4}$/.test(req.query.anio||'')?req.query.anio:String(new Date().getFullYear());
+    const vals=[anio+'-%'];
+    let wEmp='';
+    if(req.query.empresa_id&&!isNaN(parseInt(req.query.empresa_id))){vals.push(parseInt(req.query.empresa_id));wEmp=' AND l.empresa_id=$2';}
+    const r=await pool.query(`
+      SELECT l.periodo, d.faena_id, COALESCE(f.nombre,'Sin faena asignada') AS faena_nombre,
+             SUM(d.volumen_m3) AS m3
+      FROM fin_liquidacion_lineas d
+      JOIN fin_liquidaciones l ON d.liq_id=l.liq_id
+      LEFT JOIN faenas f ON d.faena_id=f.faena_id
+      WHERE d.tipo='PRODUCCION' AND l.periodo LIKE $1${wEmp}
+      GROUP BY l.periodo, d.faena_id, f.nombre
+      ORDER BY l.periodo`,vals);
+    res.json({anio:anio,rows:r.rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 // GET: detalle con líneas
 app.get('/api/fin/liquidaciones/:id', auth, async(req,res)=>{
   try{
