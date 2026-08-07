@@ -17297,6 +17297,15 @@ function FinLiquidacionesView(p){
   // Trae el detalle de líneas de cada liquidación listada, agrega por período /
   // equipo de contrato / fundo + detalle de partidas especiales, e imprime con
   // el diseño corporativo vía imprimirHTMLViaIframe (Guardar como PDF).
+  // ── Gráfico: producción anual en m³, mes a mes, filtrable por faena ──
+  var[grafAnio,setGrafAnio]=useState(String(new Date().getFullYear()));
+  var[grafFaena,setGrafFaena]=useState('');
+  var[grafRows,setGrafRows]=useState([]);
+  useEffect(function(){
+    var qs='?anio='+grafAnio+(fEmpresa?'&empresa_id='+fEmpresa:'');
+    api('/fin/liquidaciones/grafico/anual'+qs,'GET',null,p.tok)
+      .then(function(r){setGrafRows(r&&r.rows||[]);}).catch(function(){setGrafRows([]);});
+  },[p.tok,grafAnio,fEmpresa]);
   var[genInforme,setGenInforme]=useState(false);
   var[mesInforme,setMesInforme]=useState(''); // el informe es POR MES: se selecciona el período
   function informeGerencia(){
@@ -17494,6 +17503,45 @@ function FinLiquidacionesView(p){
       kpiCard('PARTIDAS ESPECIALES',CLP(tot.pe),tot.pe<0?'#DC2626':'#16A34A'),
       kpiCard('NETO',CLP(tot.neto),'#1E3A2D',tot.vol>0?('$'+nf(tot.neto/tot.vol,0)+' por m³'):null)
     ),
+    // ── Gráfico: producción del año mes a mes (m³), filtrable por faena ──
+    (function(){
+      var MES_L=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+      // Faenas presentes en los datos del año (para el selector)
+      var faenasG={};
+      grafRows.forEach(function(r){faenasG[r.faena_id==null?'null':String(r.faena_id)]=r.faena_nombre;});
+      var fKeys=Object.keys(faenasG).sort(function(a,b){return (faenasG[a]||'').localeCompare(faenasG[b]||'');});
+      // Serie mensual con el filtro de faena aplicado
+      var serie=[];var totAnio=0;
+      for(var mi=1;mi<=12;mi++){
+        var per=grafAnio+'-'+('0'+mi).slice(-2);
+        var m3=grafRows.reduce(function(s,r){
+          if(r.periodo!==per)return s;
+          if(grafFaena&&String(r.faena_id==null?'null':r.faena_id)!==grafFaena)return s;
+          return s+(parseFloat(r.m3)||0);
+        },0);
+        totAnio+=m3;serie.push({lbl:MES_L[mi-1],m3:m3});
+      }
+      var maxM=Math.max.apply(null,serie.map(function(s){return s.m3;}).concat([1]));
+      return h('div',{className:'card',style:{padding:'12px 14px',marginBottom:10}},
+        h('div',{style:{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:10}},
+          h('div',{style:{fontWeight:700,fontSize:13,color:'#1E3A2D'}},'🌲 Producción del año (m³) — mes a mes'),
+          h('input',{type:'number',value:grafAnio,onChange:function(e){setGrafAnio(e.target.value);},style:Object.assign({},inpS,{width:90})}),
+          h('select',{value:grafFaena,onChange:function(e){setGrafFaena(e.target.value);},style:Object.assign({},inpS,{maxWidth:220,fontWeight:grafFaena?600:400,background:grafFaena?'#F0FDFA':'#fff'})},
+            h('option',{value:''},'Todas las faenas'),
+            fKeys.map(function(k){return h('option',{key:k,value:k},faenasG[k]);})),
+          h('div',{style:{marginLeft:'auto',fontSize:12,fontWeight:700,color:'#0F766E'}},'Total '+grafAnio+(grafFaena?' · '+(faenasG[grafFaena]||''):'')+': '+nf(totAnio,1)+' m³')),
+        totAnio===0?h('div',{style:{padding:14,textAlign:'center',color:'#94A3B8',fontSize:12}},'Sin producción registrada para '+grafAnio+(grafFaena?' en la faena seleccionada':'')+(fEmpresa?' (empresa filtrada)':'')):
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(12,1fr)',gap:6,alignItems:'end'}},
+          serie.map(function(s,i){
+            var hB=Math.max(s.m3>0?3:0,Math.round(s.m3/maxM*110));
+            return h('div',{key:i,style:{textAlign:'center'},title:s.lbl+' '+grafAnio+': '+nf(s.m3,1)+' m³'},
+              h('div',{style:{fontSize:9,fontWeight:700,color:s.m3>0?'#0F766E':'#CBD5E1',marginBottom:2,whiteSpace:'nowrap'}},s.m3>0?nf(s.m3,0):''),
+              h('div',{style:{height:112,display:'flex',alignItems:'flex-end',justifyContent:'center'}},
+                h('div',{style:{width:'70%',maxWidth:44,height:hB,background:s.m3>0?'#0F766E':'#F1F5F9',borderRadius:'3px 3px 0 0',opacity:0.9}})),
+              h('div',{style:{fontSize:10,fontWeight:s.m3>0?700:400,color:s.m3>0?'#334155':'#CBD5E1',borderTop:'1px solid #E2E8F0',paddingTop:3,marginTop:0}},s.lbl));
+          })),
+        h('div',{style:{fontSize:9,color:'#94A3B8',marginTop:6}},'Fuente: líneas de producción de las liquidaciones del mandante (m³ facturados). "Sin faena asignada" agrupa las líneas aún no mapeadas a una faena del sistema.'+(fEmpresa?' Respeta el filtro de empresa de arriba.':' Incluye ambas empresas (usa el filtro de empresa para separar).')));
+    })(),
     // Filtros y acciones
     h('div',{className:'card',style:{padding:10,marginBottom:10,display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}},
       h('select',{value:fEmpresa,onChange:function(e){setFEmpresa(e.target.value);},style:inpS},
