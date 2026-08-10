@@ -3956,6 +3956,7 @@ function TerrenoView(p){
   var[registros,setRegistros]=useState([]);var[tobCats,setTobCats]=useState([]);
   var[showForm,setShowForm]=useState(false);var[editReg,setEditReg]=useState(null);var[msg,setMsg]=useState('');
   var[filtEquipo,setFiltEquipo]=useState('');var[filtMes,setFiltMes]=useState(new Date().toISOString().slice(0,7));
+  var[filtEmpresa,setFiltEmpresa]=useState('');var[filtFaena,setFiltFaena]=useState(userFaenaId||'');var[filtOperador,setFiltOperador]=useState('');
   var[rendimiento,setRendimiento]=useState(null);
   var[showTOB,setShowTOB]=useState(false);
   // Ordenamiento por columna
@@ -3987,12 +3988,12 @@ function TerrenoView(p){
   var[sinReg,setSinReg]=useState([]);
   var[showSinReg,setShowSinReg]=useState(false);
   function loadSinReg(){api('/terreno/sin-registro','GET',null,p.tok).then(function(r){setSinReg(r&&r.rows||[]);}).catch(function(){setSinReg([]);});}
-  function loadReg(){var q='?';if(filtEquipo)q+='equipo_id='+filtEquipo+'&';if(filtMes)q+='mes='+filtMes+'&';api('/terreno/registros'+q,'GET',null,p.tok).then(function(r){setRegistros(Array.isArray(r)?r:[]);}).catch(function(){});loadSinReg();}
+  function loadReg(){var q='?';if(filtEquipo)q+='equipo_id='+filtEquipo+'&';if(filtMes)q+='mes='+filtMes+'&';if(filtEmpresa)q+='empresa_id='+filtEmpresa+'&';if(filtFaena)q+='faena_id='+filtFaena+'&';if(filtOperador)q+='operador_id='+filtOperador+'&';api('/terreno/registros'+q,'GET',null,p.tok).then(function(r){setRegistros(Array.isArray(r)?r:[]);}).catch(function(){});loadSinReg();}
   function loadRend(){if(filtEquipo&&filtMes)api('/terreno/rendimiento-mensual?equipo_id='+filtEquipo+'&mes='+filtMes,'GET',null,p.tok).then(function(r){setRendimiento(r);}).catch(function(){setRendimiento(null);});else setRendimiento(null);}
   useEffect(function(){loadCats();},[p.tok]);
   // La oferta de fundos/rodales cambia MES a MES → recargar según el mes de la fecha del registro
   useEffect(function(){loadFundosRodales((form.fecha||'').slice(0,7));},[p.tok,(form.fecha||'').slice(0,7)]);
-  useEffect(function(){loadReg();loadRend();},[p.tok,filtEquipo,filtMes]);
+  useEffect(function(){loadReg();loadRend();},[p.tok,filtEquipo,filtMes,filtEmpresa,filtFaena,filtOperador]);
   function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
   var hTrab=(parseFloat(form.horometro_final)||0)-(parseFloat(form.horometro_inicial)||0);
   var sumTob=(form.tob_detalle||[]).reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
@@ -4074,10 +4075,31 @@ function TerrenoView(p){
     ),
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
       h('div',{style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}},
-        h('select',{value:filtEquipo,onChange:function(e){setFiltEquipo(e.target.value);},style:Object.assign({},inpS,{width:220})},h('option',{value:''},'Todos los equipos'),allEquipos.map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' \u2014 '+eq.nombre);})),
-        h('input',{type:'month',value:filtMes,onChange:function(e){setFiltMes(e.target.value);},style:Object.assign({},inpS,{width:140})}),
+        h('input',{type:'month',title:'Período',value:filtMes,onChange:function(e){setFiltMes(e.target.value);},style:Object.assign({},inpS,{width:130,fontWeight:600})}),
+        h('select',{value:filtEmpresa,onChange:function(e){setFiltEmpresa(e.target.value);setFiltFaena(userFaenaId||'');setFiltEquipo('');setFiltOperador('');},style:Object.assign({},inpS,{width:170,fontWeight:filtEmpresa?600:400,background:filtEmpresa?'#EFF6FF':'#fff'})},
+          h('option',{value:''},'Todas las empresas'),
+          (p.m.empresas||[]).filter(function(em){return em.activo;}).map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
+        h('select',{value:filtFaena,disabled:!!userFaenaId,onChange:function(e){setFiltFaena(e.target.value);setFiltEquipo('');setFiltOperador('');},style:Object.assign({},inpS,{width:160,fontWeight:filtFaena?600:400,background:userFaenaId?'#F1F5F9':(filtFaena?'#F0FDF4':'#fff')})},
+          h('option',{value:''},'Todas las faenas'),
+          allFaenas.filter(function(fa){return (!filtEmpresa||String(fa.empresa_id)===String(filtEmpresa))&&(!userFaenaId||String(fa.faena_id)===userFaenaId);}).map(function(fa){return h('option',{key:fa.faena_id,value:fa.faena_id},fa.nombre);})),
+        h('select',{value:filtEquipo,onChange:function(e){setFiltEquipo(e.target.value);},style:Object.assign({},inpS,{width:200,fontWeight:filtEquipo?600:400,background:filtEquipo?'#FFFBEB':'#fff'})},
+          h('option',{value:''},'Todas las máquinas'),
+          allEquipos.filter(function(eq){
+            if(filtEmpresa&&!equipoEnEmpresa(eq,filtEmpresa))return false;
+            if(filtFaena&&eq.faena_id&&!esMultiEmpresaEq(eq)&&String(eq.faena_id)!==String(filtFaena))return false;
+            return true;
+          }).map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);})),
+        h('select',{value:filtOperador,onChange:function(e){setFiltOperador(e.target.value);},style:Object.assign({},inpS,{width:190,fontWeight:filtOperador?600:400,background:filtOperador?'#F5F3FF':'#fff'})},
+          h('option',{value:''},'Todos los operadores'),
+          (p.m.personal||[]).filter(function(x){
+            if(!x.activo)return false;
+            if(filtFaena&&x.faena_id&&String(x.faena_id)!==String(filtFaena))return false;
+            if(!filtFaena&&filtEmpresa&&x.empresa_id&&String(x.empresa_id)!==String(filtEmpresa))return false;
+            return true;
+          }).map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},nombresPrimero(x.nombre_completo||''));})),
+        (filtEmpresa||(filtFaena&&!userFaenaId)||filtEquipo||filtOperador)&&h('button',{onClick:function(){setFiltEmpresa('');setFiltFaena(userFaenaId||'');setFiltEquipo('');setFiltOperador('');},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
         filtEquipo&&rendimiento&&h('div',{style:{fontSize:11,padding:'6px 10px',background:'#F0FDF4',border:'1px solid #86EFAC',borderRadius:5}},
-          h('strong',{style:{color:'#166534'}},'Rend: '),rendimiento.rendimiento?rendimiento.rendimiento.toFixed(2)+' L/h':'\u2014',' (',rendimiento.horas.toFixed(1)+'h / ',rendimiento.litros.toFixed(1)+'L)')
+          h('strong',{style:{color:'#166534'}},'Rend: '),rendimiento.rendimiento?rendimiento.rendimiento.toFixed(2)+' L/h':'—',' (',rendimiento.horas.toFixed(1)+'h / ',rendimiento.litros.toFixed(1)+'L)')
       ),
       h(Btn,{onClick:function(){setEditReg(null);var f=Object.assign({},emptyForm);if(filtEquipo){var eq=allEquipos.find(function(e){return String(e.equipo_id)===String(filtEquipo);});
         // Prefill del equipo filtrado solo si es compatible con la faena permitida (usuario restringido)
