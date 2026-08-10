@@ -8422,6 +8422,7 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
           horas_trabajadas:0,horas_perdidas:0,
           tob_horas_e:0,tob_horas_f:0,tob_horas_otros:0,
           litros_combustible:0,
+          arboles:0,m3:0,
           primera_fecha:r.fecha,ultima_fecha:r.fecha
         };
       }
@@ -8433,6 +8434,8 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
       x.tob_horas_f+=parseFloat(r.tob_horas_f)||0;
       x.tob_horas_otros+=parseFloat(r.tob_horas_otros)||0;
       x.litros_combustible+=parseFloat(r.litros_combustible)||0;
+      x.arboles+=parseInt(r.arboles_producidos)||0;
+      x.m3+=parseFloat(r.m3_producidos)||0;
       if(r.fecha<x.primera_fecha)x.primera_fecha=r.fecha;
       if(r.fecha>x.ultima_fecha)x.ultima_fecha=r.fecha;
     });
@@ -8461,7 +8464,9 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
       tob_horas_e:resumen.reduce(function(s,x){return s+x.tob_horas_e;},0),
       tob_horas_f:resumen.reduce(function(s,x){return s+x.tob_horas_f;},0),
       tob_horas_otros:resumen.reduce(function(s,x){return s+x.tob_horas_otros;},0),
-      litros_combustible:resumen.reduce(function(s,x){return s+x.litros_combustible;},0)
+      litros_combustible:resumen.reduce(function(s,x){return s+x.litros_combustible;},0),
+      arboles:resumen.reduce(function(s,x){return s+x.arboles;},0),
+      m3:resumen.reduce(function(s,x){return s+x.m3;},0)
     };
     tot.disponibilidad_pct=(tot.horas_trabajadas+tot.horas_perdidas)>0?(tot.horas_trabajadas/(tot.horas_trabajadas+tot.horas_perdidas)*100):null;
     // Top categorías de tiempo perdido (TOB) — agrupado por t.clasificacion (la del DETALLE, no la de la categoría)
