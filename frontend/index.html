@@ -2808,7 +2808,7 @@ function TerrenoInforme(p){
           filas:[],
           registros:0,horas_trabajadas:0,horas_perdidas:0,
           tob_horas_e:0,tob_horas_f:0,tob_horas_otros:0,
-          litros_combustible:0
+          litros_combustible:0,arboles:0,m3:0
         };
       }
       var g=grupos[key];
@@ -2820,6 +2820,8 @@ function TerrenoInforme(p){
       g.tob_horas_f+=x.tob_horas_f;
       g.tob_horas_otros+=x.tob_horas_otros;
       g.litros_combustible+=x.litros_combustible;
+      g.arboles+=(parseInt(x.arboles)||0);
+      g.m3+=(parseFloat(x.m3)||0);
     });
     return Object.values(grupos).sort(function(a,b){return (a.label||'').localeCompare(b.label||'');});
   }
@@ -2828,10 +2830,11 @@ function TerrenoInforme(p){
     if(typeof XLSX==='undefined'){alert('Librería de Excel no disponible');return;}
     var wb=XLSX.utils.book_new();
     // Hoja 1: Resumen
-    var resData=[['Empresa','Faena','Código','Equipo','Tipo','Registros','Hrs trabajadas','Hrs perdidas','TOB Empresa (E)','TOB Mandante (F)','TOB Otros','Litros','Rendimiento','Disponibilidad %','Primera','Última']];
+    var resData=[['Empresa','Faena','Código','Equipo','Tipo','Registros','Hrs trabajadas','Hrs perdidas','Árboles','m³ producidos','TOB Empresa (E)','TOB Mandante (F)','TOB Otros','Litros','Rendimiento','Disponibilidad %','Primera','Última']];
     (data.resumen||[]).forEach(function(x){
       resData.push([x.empresa_nombre,x.faena_nombre,x.equipo_codigo,x.equipo_nombre,x.tipo_cargo,x.registros,
         Number(x.horas_trabajadas.toFixed(2)),Number(x.horas_perdidas.toFixed(2)),
+        parseInt(x.arboles)||0,Number((parseFloat(x.m3)||0).toFixed(1)),
         Number(x.tob_horas_e.toFixed(2)),Number(x.tob_horas_f.toFixed(2)),Number(x.tob_horas_otros.toFixed(2)),
         Number(x.litros_combustible.toFixed(2)),
         x.rendimiento?Number(x.rendimiento.toFixed(2))+' '+(x.rendimiento_unidad||''):'—',
@@ -2844,6 +2847,7 @@ function TerrenoInforme(p){
     resData.push(['TOTALES','','','','',t.registros||0,
       Number((t.horas_trabajadas||0).toFixed(2)),
       Number((t.horas_perdidas||0).toFixed(2)),
+      parseInt(t.arboles)||0,Number((parseFloat(t.m3)||0).toFixed(1)),
       Number((t.tob_horas_e||0).toFixed(2)),
       Number((t.tob_horas_f||0).toFixed(2)),
       Number((t.tob_horas_otros||0).toFixed(2)),
@@ -2854,13 +2858,17 @@ function TerrenoInforme(p){
     // Orden cronológico ASC (antigua->reciente), desempate por registro_id — mismo patrón ordFecha de combustible
     var ordFechaTer=function(a,b){var fa=(a.fecha+'').slice(0,10),fb=(b.fecha+'').slice(0,10);if(fa!==fb)return fa<fb?-1:1;return (a.registro_id||0)-(b.registro_id||0);};
     var detalleOrd=(data.detalle||[]).slice().sort(ordFechaTer);
-    var detData=[['Fecha','Empresa','Faena','Código','Equipo','Operador','Tipo','Horómetro inicial','Horómetro final','Hrs trabajadas','Hrs perdidas','Descripción tiempo perdido (TOB)','Litros','Observaciones']];
+    var detData=[['Fecha','Jornada','Empresa','Faena','Código','Equipo','Operador','Tipo','Horómetro inicial','Horómetro final','Hrs trabajadas','Hrs perdidas','Fundo','Rodal','VMA','Árboles','m³ producidos','Descripción tiempo perdido (TOB)','Litros','Observaciones']];
     detalleOrd.forEach(function(r){
-      detData.push([(r.fecha+'').slice(0,10),r.empresa_nombre||'—',r.faena_nombre||'—',r.equipo_codigo,r.equipo_nombre,r.operador_nombre||'—',r.tipo_cargo,
+      detData.push([(r.fecha+'').slice(0,10),r.jornada==='NOCHE'?'Noche':'Día',r.empresa_nombre||'—',r.faena_nombre||'—',r.equipo_codigo,r.equipo_nombre,r.operador_nombre||'—',r.tipo_cargo,
         Number((parseFloat(r.horometro_inicial)||0).toFixed(2)),
         Number((parseFloat(r.horometro_final)||0).toFixed(2)),
         Number((parseFloat(r.horas_trabajadas)||0).toFixed(2)),
         Number((parseFloat(r.horas_perdidas)||0).toFixed(2)),
+        r.fundo_nombre||'',r.rodal_nombre||'',
+        r.vma_aplicado!=null?Number(parseFloat(r.vma_aplicado).toFixed(4)):'',
+        r.arboles_producidos!=null?parseInt(r.arboles_producidos):'',
+        r.m3_producidos!=null?Number((parseFloat(r.m3_producidos)||0).toFixed(1)):'',
         r.tob_descripcion||'',
         Number((parseFloat(r.litros_combustible)||0).toFixed(2)),
         r.observaciones||'']);
@@ -3017,12 +3025,13 @@ function TerrenoInforme(p){
                 h('span',null,h('strong',{style:{color:'#16A34A'}},g.horas_trabajadas.toFixed(1)+'h'),' trabajadas'),
                 h('span',null,h('strong',{style:{color:'#F59E0B'}},g.horas_perdidas.toFixed(1)+'h'),' perdidas'),
                 h('span',null,h('strong',{style:{color:'#3B82F6'}},g.litros_combustible.toFixed(0)+'L')),
+                (parseFloat(g.m3)||0)>0&&h('span',null,h('strong',{style:{color:'#166534'}},(parseFloat(g.m3)).toFixed(1)+' m³'),(parseInt(g.arboles)||0)>0?' · '+new Intl.NumberFormat('es-CL').format(parseInt(g.arboles))+' árb.':''),
                 dispG!=null&&h('span',null,h('strong',{style:{color:dispG>=85?'#16A34A':dispG>=70?'#F59E0B':'#DC2626'}},dispG.toFixed(1)+'%'),' disp.')
               )
             ),
             agrupar!=='equipo'&&h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
               h('thead',null,h('tr',{style:{background:'#fff',borderBottom:'1px solid #E2E8F0'}},
-                ['Código','Equipo','Reg.','Trab.','Perd.','TOB Empresa (E)','TOB Mandante (F)','Litros','Rend.','Disp.'].map(function(c,j){
+                ['Código','Equipo','Reg.','Trab.','Perd.','Árb.','m³','TOB Empresa (E)','TOB Mandante (F)','Litros','Rend.','Disp.'].map(function(c,j){
                   return h('th',{key:j,style:{padding:'6px 8px',textAlign:j<2?'left':'right',color:'#64748B',fontWeight:600,fontSize:10}},c);
                 })
               )),
@@ -3034,6 +3043,8 @@ function TerrenoInforme(p){
                   h('td',{style:{padding:'6px 8px',textAlign:'right'}},x.registros),
                   h('td',{style:{padding:'6px 8px',textAlign:'right',fontWeight:600,color:'#16A34A'}},x.horas_trabajadas.toFixed(1)),
                   h('td',{style:{padding:'6px 8px',textAlign:'right',color:'#F59E0B'}},x.horas_perdidas.toFixed(1)),
+                  h('td',{style:{padding:'6px 8px',textAlign:'right',color:'#0F766E',fontWeight:600}},(parseInt(x.arboles)||0)>0?new Intl.NumberFormat('es-CL').format(parseInt(x.arboles)):'—'),
+                  h('td',{style:{padding:'6px 8px',textAlign:'right',color:'#166534',fontWeight:600}},(parseFloat(x.m3)||0)>0?(parseFloat(x.m3)).toFixed(1):'—'),
                   h('td',{style:{padding:'6px 8px',textAlign:'right',color:'#1d4ed8',fontWeight:600},title:'Tiempo perdido atribuible a la Empresa (contratista)'},(x.tob_horas_e||0).toFixed(1)),
                   h('td',{style:{padding:'6px 8px',textAlign:'right',color:'#6d28d9',fontWeight:600},title:'Tiempo perdido atribuible a la empresa Mandante (Forestal)'},(x.tob_horas_f||0).toFixed(1)),
                   h('td',{style:{padding:'6px 8px',textAlign:'right',color:'#3B82F6'}},x.litros_combustible.toFixed(0)),
@@ -3078,8 +3089,8 @@ function TerrenoInforme(p){
       h('div',{className:'card',style:{padding:0,overflow:'auto'}},
         h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
           h('thead',null,h('tr',{style:{background:'#1E3A2D',color:'#fff'}},
-            ['Fecha','Empresa','Faena','Código','Equipo','Operador','Horóm. inicial','Horóm. final','Trabajadas','Perdidas','Combust.','Observaciones'].map(function(c,j){
-              return h('th',{key:j,style:{padding:'8px 10px',textAlign:j<6?'left':'right',fontWeight:600,fontSize:10}},c);
+            ['Fecha','Jorn.','Empresa','Faena','Código','Equipo','Operador','Horóm. inicial','Horóm. final','Trabajadas','Perdidas','Fundo / Rodal','Árb.','m³','Combust.','Observaciones'].map(function(c,j){
+              return h('th',{key:j,style:{padding:'8px 10px',textAlign:(j<7||j===11)?'left':'right',fontWeight:600,fontSize:10}},c);
             })
           )),
           h('tbody',null,data.detalle.map(function(r,i){
@@ -3092,6 +3103,7 @@ function TerrenoInforme(p){
             var uni=esVeh?'km':'h';
             return h('tr',{key:i,style:{background:i%2===0?'#fff':'#F8FAFC',borderBottom:'1px solid #F1F5F9'}},
               h('td',{style:{padding:'6px 10px',whiteSpace:'nowrap'}},(r.fecha+'').slice(0,10)),
+              h('td',{style:{padding:'6px 10px'}},h('span',{style:{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:r.jornada==='NOCHE'?'#EEF2FF':'#FFFBEB',color:r.jornada==='NOCHE'?'#3730A3':'#92400E'}},r.jornada==='NOCHE'?'🌙':'☀')),
               h('td',{style:{padding:'6px 10px',color:'#475569'}},r.empresa_nombre||'—'),
               h('td',{style:{padding:'6px 10px',color:'#475569'}},r.faena_nombre||'—'),
               h('td',{style:{padding:'6px 10px',fontWeight:600,color:'#1E3A2D'}},r.equipo_codigo),
@@ -3101,6 +3113,9 @@ function TerrenoInforme(p){
               h('td',{style:{padding:'6px 10px',textAlign:'right',color:'#1E3A2D',fontFamily:'monospace',fontWeight:600}},hF.toFixed(esVeh?0:1)+' '+uni),
               h('td',{style:{padding:'6px 10px',textAlign:'right',fontWeight:600,color:'#16A34A'}},hT.toFixed(esVeh?0:1)+' '+uni),
               h('td',{style:{padding:'6px 10px',textAlign:'right',color:'#F59E0B'}},hP>0?hP.toFixed(1)+'h':'—'),
+              h('td',{style:{padding:'6px 10px',fontSize:10,color:'#0F766E'}},r.fundo_nombre?h('span',{title:'VMA: '+(r.vma_aplicado!=null?parseFloat(r.vma_aplicado).toFixed(4):'—')},r.fundo_nombre+(r.rodal_nombre?' / '+r.rodal_nombre:'')):'—'),
+              h('td',{style:{padding:'6px 10px',textAlign:'right',color:'#0F766E',fontWeight:600}},r.arboles_producidos!=null&&r.arboles_producidos!==''?new Intl.NumberFormat('es-CL').format(parseInt(r.arboles_producidos)):'—'),
+              h('td',{style:{padding:'6px 10px',textAlign:'right',color:'#166534',fontWeight:600}},(parseFloat(r.m3_producidos)||0)>0?(parseFloat(r.m3_producidos)).toFixed(1):'—'),
               h('td',{style:{padding:'6px 10px',textAlign:'right',color:'#3B82F6'}},lt>0?lt.toFixed(1)+'L':'—'),
               h('td',{style:{padding:'6px 10px',fontSize:10,color:'#64748B',fontStyle:'italic',maxWidth:200,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},title:r.observaciones||''},r.observaciones||'')
             );
