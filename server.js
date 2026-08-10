@@ -6975,6 +6975,12 @@ async function setupRendiciones(q){
     UNIQUE(dte_id,oc_id)
   )`);
 
+  // Garantizar la restricción única (dte_id,oc_id): si la tabla se creó en un deploy antiguo
+  // SIN el UNIQUE, TODO INSERT con ON CONFLICT falla en Postgres (42P10) aunque no haya
+  // conflicto real — síntoma: el "Aplicar" del cruce automático nunca persistía.
+  try{await q('DELETE FROM dte_oc a USING dte_oc b WHERE a.rel_id>b.rel_id AND a.dte_id=b.dte_id AND a.oc_id=b.oc_id');}catch(e){}
+  try{await q('CREATE UNIQUE INDEX IF NOT EXISTS dte_oc_pair_uq ON dte_oc(dte_id,oc_id)');}catch(e){console.log('[WARN] dte_oc índice único:',e.message);}
+
   // Migración por si la tabla existía sin columna oc_id
   try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS oc_id INT REFERENCES ordenes_compra(oc_id)');}catch(e){}
   try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS xml_completo TEXT');}catch(e){}
@@ -11649,7 +11655,7 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
     const w=['1=1'];const pv=[];
     if(empresa_id){pv.push(empresa_id);w.push('d.empresa_id=$'+pv.length);}
     const dtes=(await client.query(`
-      SELECT d.dte_id, d.folio, d.total, d.proveedor_id, d.proveedor_rut, d.proveedor_nombre, d.fecha_emision,
+      SELECT d.dte_id, d.folio, d.tipo_dte, d.total, d.proveedor_id, d.proveedor_rut, d.proveedor_nombre, d.fecha_emision,
              COALESCE(SUM(do2.monto_aplicado),0) AS asignado
       FROM dte_recibidos d
       LEFT JOIN dte_oc do2 ON d.dte_id=do2.dte_id
@@ -11658,7 +11664,7 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
       HAVING COALESCE(SUM(do2.monto_aplicado),0) < d.total - 1
       ORDER BY d.fecha_emision DESC NULLS LAST`,pv)).rows;
 
-    const detalles=[]; let porFolio=0, porMonto=0, porFacturaGuias=0;
+    const detalles=[]; let porFolio=0, porMonto=0, porFacturaGuias=0, insertadas=0, yaExistian=0;
     for(const d of dtes){
       const total=parseFloat(d.total)||0;
       const restante=total-(parseFloat(d.asignado)||0);
@@ -11756,16 +11762,22 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
         else if(mt.criterio==='folio'||mt.criterio==='folio_nc')porFolio++;
         else porMonto++;
         if(modo==='aplicar'){
-          await client.query(
-            `INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por)
-             VALUES($1,$2,$3,$4,$5) ON CONFLICT(dte_id,oc_id) DO NOTHING`,
-            [d.dte_id,mt.oc_id,mt.monto,'Cruce automático ('+mt.criterio+')',req.user.email]);
+          // Verificación explícita en vez de ON CONFLICT: funciona aunque la restricción única
+          // no exista todavía en la BD, y permite contar cuántas se insertaron de verdad
+          const ya=await client.query('SELECT rel_id FROM dte_oc WHERE dte_id=$1 AND oc_id=$2',[d.dte_id,mt.oc_id]);
+          if(ya.rows.length){yaExistian++;}
+          else{
+            await client.query(
+              `INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5)`,
+              [d.dte_id,mt.oc_id,mt.monto,'Cruce automático ('+mt.criterio+')',req.user.email]);
+            insertadas++;
+          }
         }
       }
     }
 
     if(modo==='aplicar') await client.query('COMMIT'); else await client.query('ROLLBACK');
-    res.json({modo:modo, procesados:dtes.length, vinculados:detalles.length, por_folio:porFolio, por_monto:porMonto, por_factura_guias:porFacturaGuias, detalles:detalles});
+    res.json({modo:modo, procesados:dtes.length, vinculados:detalles.length, insertadas:insertadas, ya_existian:yaExistian, por_folio:porFolio, por_monto:porMonto, por_factura_guias:porFacturaGuias, detalles:detalles});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
