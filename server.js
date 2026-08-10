@@ -11461,15 +11461,17 @@ app.post('/api/dte-recibidos/import', auth, requireModulo('ordenes'), async(req,
   try{
     await client.query('BEGIN');
     var dtes=Array.isArray(req.body.dtes)?req.body.dtes:[];
-    var resumen={importados:0,duplicados:0,ya_en_oc:0,errores:0,detalles:[]};
+    var resumen={importados:0,duplicados:0,ya_en_oc:0,vinculados:0,errores:0,detalles:[]};
     for(var i=0;i<dtes.length;i++){
       var d=dtes[i];
       try{
         // ❶ Verificar duplicado dentro de dte_recibidos (folio+proveedor+tipo)
         var dup=await client.query('SELECT dte_id FROM dte_recibidos WHERE proveedor_rut=$1 AND tipo_dte=$2 AND folio=$3',[d.proveedor_rut,d.tipo_dte,String(d.folio)]);
         if(dup.rows.length){resumen.duplicados++;resumen.detalles.push({folio:d.folio,status:'duplicado',dte_id:dup.rows[0].dte_id});continue;}
-        // ❷ Verificar si ese folio ya está asignado a una OC del mismo proveedor (caso clave)
-        //    Compara por proveedor_id + numero_documento + tipo_doc (vía tipos_documento.codigo)
+        // ❷ Detectar si ese folio ya está asignado a una OC del mismo proveedor.
+        //    CAMBIO (2026-08 a pedido del usuario): ya NO se bloquea la importación — la bandeja
+        //    es el repositorio de TODOS los DTE recibidos para consulta. El DTE se importa igual
+        //    y se AUTO-VINCULA a esa OC (dte_oc) para que aparezca de inmediato como asignado.
         var ocAsignada=null;
         if(d.proveedor_id){
           var qOc=await client.query(
@@ -11486,18 +11488,7 @@ app.post('/api/dte-recibidos/import', auth, requireModulo('ordenes'), async(req,
           );
           if(qOc.rows.length) ocAsignada=qOc.rows[0];
         }
-        if(ocAsignada){
-          resumen.ya_en_oc++;
-          resumen.detalles.push({
-            folio:d.folio,
-            status:'ya_en_oc',
-            oc_id:ocAsignada.oc_id,
-            numero_oc:ocAsignada.numero_oc,
-            estado_oc:ocAsignada.estado
-          });
-          continue;  // NO importar: el DTE ya está asignado a una OC del sistema
-        }
-        // ❸ Si pasa los dos filtros → insertar normalmente
+        // ❸ Insertar SIEMPRE (aunque tenga OC asignada — se auto-vincula más abajo)
         var ins=await client.query(`INSERT INTO dte_recibidos
           (tipo_dte,tipo_doc,folio,fecha_emision,proveedor_rut,proveedor_nombre,proveedor_giro,proveedor_direccion,proveedor_id,
            cliente_rut,cliente_nombre,empresa_id,neto,iva,total,xml_completo,importado_por,ref_tipo_dte,ref_folio,ref_razon)
@@ -11514,7 +11505,25 @@ app.post('/api/dte-recibidos/import', auth, requireModulo('ordenes'), async(req,
           }
         }
         resumen.importados++;
-        resumen.detalles.push({folio:d.folio,status:'importado',dte_id:dteId});
+        // ❹ Auto-vinculación: si el folio coincidía con una OC del proveedor, dejarlo asignado.
+        // Incluye NOTAS DE CRÉDITO (61): la práctica es crear la OC de la NC en negativo con el
+        // folio de la NC, así que el calce por folio es igual de seguro. Montos en valor absoluto
+        // (la OC de NC tiene total negativo; dte_oc.monto_aplicado es siempre positivo).
+        if(ocAsignada){
+          try{
+            var mVinc=Math.min(Math.abs(parseFloat(d.total)||0),Math.abs(parseFloat(ocAsignada.total)||0));
+            if(mVinc>1){
+              await client.query('INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5) ON CONFLICT(dte_id,oc_id) DO NOTHING',
+                [dteId,ocAsignada.oc_id,mVinc,'Vinculación automática al importar (folio coincide con la OC)',req.user.email]);
+              resumen.vinculados++;
+              resumen.detalles.push({folio:d.folio,status:'importado_vinculado',dte_id:dteId,oc_id:ocAsignada.oc_id,numero_oc:ocAsignada.numero_oc});
+            }else{
+              resumen.detalles.push({folio:d.folio,status:'importado',dte_id:dteId});
+            }
+          }catch(eV){resumen.detalles.push({folio:d.folio,status:'importado',dte_id:dteId,warn:'vinculación automática falló: '+eV.message});}
+        }else{
+          resumen.detalles.push({folio:d.folio,status:'importado',dte_id:dteId});
+        }
       }catch(ex){
         resumen.errores++;
         resumen.detalles.push({folio:d.folio,status:'error',mensaje:ex.message});
@@ -11635,9 +11644,9 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
     await client.query('BEGIN');
 
     // DTE no asignados completamente (sin asignar o parciales)
-    // Notas de crédito (61) quedan fuera del cruce automático: se tratan como documento aparte,
+    // Notas de crédito (61) SÍ entran al cruce (2026-08), pero SOLO por folio exacto (Tier B):
     // con vinculación manual y registro del documento de referencia (ref_folio)
-    const w=["d.tipo_dte<>'61'"];const pv=[];
+    const w=['1=1'];const pv=[];
     if(empresa_id){pv.push(empresa_id);w.push('d.empresa_id=$'+pv.length);}
     const dtes=(await client.query(`
       SELECT d.dte_id, d.folio, d.total, d.proveedor_id, d.proveedor_rut, d.proveedor_nombre, d.fecha_emision,
@@ -11654,6 +11663,8 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
       const total=parseFloat(d.total)||0;
       const restante=total-(parseFloat(d.asignado)||0);
       if(restante<=1) continue;
+      // NC (61): solo calce por FOLIO EXACTO — los tiers por monto o cierre de guías no aplican
+      const esNC=String(d.tipo_dte)==='61';
       // Resolver proveedor (id directo o por RUT)
       const provCond = d.proveedor_id
         ? 'oc.proveedor_id=$1'
@@ -11671,7 +11682,7 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
       // ── Tier A: FACTURA POR CIERRE DE GUÍAS ──
       // El folio del DTE corresponde al numero_factura de oc_factura_guias (que agrupa varias OC).
       // Se vincula el DTE a TODAS las OC de esa factura.
-      let faci=(await client.query(`
+      let faci=esNC?null:(await client.query(`
         SELECT f.factura_id, f.numero_factura, f.total
         FROM oc_factura_guias f
         WHERE ${provCondF}
@@ -11679,7 +11690,7 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
           AND regexp_replace(f.numero_factura,'^0+','')=regexp_replace($2,'^0+','')
         ORDER BY ABS(f.total - $3) ASC LIMIT 1`,[provVal,normFolio(d.folio),total])).rows[0];
       let critFac='factura_guias';
-      if(!faci){
+      if(!faci&&!esNC){
         // por monto: factura de guías única cuyo total calza con el DTE
         const fcands=(await client.query(`
           SELECT f.factura_id, f.numero_factura, f.total
@@ -11716,11 +11727,11 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
             AND regexp_replace(oc.numero_documento,'^0+','')=regexp_replace($2,'^0+','')
             AND NOT EXISTS (SELECT 1 FROM dte_oc x WHERE x.oc_id=oc.oc_id)
           ORDER BY ABS(oc.total - $3) ASC LIMIT 1`,[provVal,normFolio(d.folio),total])).rows[0];
-        if(oc){matches.push({oc_id:oc.oc_id,oc_numero:oc.numero_oc,oc_total:parseFloat(oc.total)||0,numero_documento:oc.numero_documento,criterio:'folio',monto:Math.min(parseFloat(oc.total)||0,restante)});}
+        if(oc){matches.push({oc_id:oc.oc_id,oc_numero:oc.numero_oc,oc_total:parseFloat(oc.total)||0,numero_documento:oc.numero_documento,criterio:esNC?'folio_nc':'folio',monto:Math.min(Math.abs(parseFloat(oc.total)||0),restante)});}
       }
 
-      // ── Tier C: monto cercano, OC CERRADA candidata única ──
-      if(matches.length===0){
+      // ── Tier C: monto cercano, OC CERRADA candidata única (NO aplica a NC) ──
+      if(matches.length===0&&!esNC){
         const cands=(await client.query(`
           SELECT oc.oc_id, oc.numero_oc, oc.total, oc.numero_documento, oc.fecha_emision
           FROM ordenes_compra oc
@@ -11742,7 +11753,7 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
           oc_documento:mt.numero_documento, factura:mt.factura||null, criterio:mt.criterio, monto:Math.round(mt.monto)
         });
         if(mt.criterio.indexOf('factura_guias')===0)porFacturaGuias++;
-        else if(mt.criterio==='folio')porFolio++;
+        else if(mt.criterio==='folio'||mt.criterio==='folio_nc')porFolio++;
         else porMonto++;
         if(modo==='aplicar'){
           await client.query(
