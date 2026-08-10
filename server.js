@@ -8308,13 +8308,15 @@ app.delete('/api/rodales/:id', auth, async(req,res)=>{
 
 app.get('/api/terreno/registros', auth, async(req,res)=>{
   try{
-    const{equipo_id,faena_id,desde,hasta,mes}=req.query;
+    const{equipo_id,faena_id,desde,hasta,mes,empresa_id,operador_id}=req.query;
     let w=['1=1'],v=[];
     // Scoping: usuario no-admin con faena asignada SOLO ve los registros de su faena
     const userFaenaLst=await terrenoUserScope(pool,req.user.id);
     if(userFaenaLst){v.push(userFaenaLst);w.push(`r.faena_id=$${v.length}`);}
     if(equipo_id){v.push(equipo_id);w.push(`r.equipo_id=$${v.length}`);}
     if(faena_id&&!userFaenaLst){v.push(faena_id);w.push(`r.faena_id=$${v.length}`);}
+    if(empresa_id&&!isNaN(parseInt(empresa_id))){v.push(parseInt(empresa_id));w.push(`e.empresa_id=$${v.length}`);}
+    if(operador_id&&!isNaN(parseInt(operador_id))){v.push(parseInt(operador_id));w.push(`r.operador_id=$${v.length}`);}
     if(desde){v.push(desde);w.push(`r.fecha>=$${v.length}`);}
     if(hasta){v.push(hasta);w.push(`r.fecha<=$${v.length}`);}
     if(mes){v.push(mes);w.push(`TO_CHAR(r.fecha,'YYYY-MM')=$${v.length}`);}
