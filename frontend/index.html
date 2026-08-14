@@ -2887,9 +2887,9 @@ function TerrenoInforme(p){
     // Orden cronológico ASC (antigua->reciente), desempate por registro_id — mismo patrón ordFecha de combustible
     var ordFechaTer=function(a,b){var fa=(a.fecha+'').slice(0,10),fb=(b.fecha+'').slice(0,10);if(fa!==fb)return fa<fb?-1:1;return (a.registro_id||0)-(b.registro_id||0);};
     var detalleOrd=(data.detalle||[]).slice().sort(ordFechaTer);
-    var detData=[['Fecha','Jornada','Empresa','Faena','Código','Equipo','Operador','Tipo','Horómetro inicial','Horómetro final','Hrs trabajadas','Hrs perdidas','Fundo','Rodal','VMA','Árboles','m³ producidos','Descripción tiempo perdido (TOB)','Litros','Observaciones']];
+    var detData=[['Fecha','Turno','Jornada','Empresa','Faena','Código','Equipo','Operador','Tipo','Horómetro inicial','Horómetro final','Hrs trabajadas','Hrs perdidas','Fundo','Rodal','VMA','Árboles','m³ producidos','Descripción tiempo perdido (TOB)','Litros','Observaciones']];
     detalleOrd.forEach(function(r){
-      detData.push([(r.fecha+'').slice(0,10),r.jornada==='NOCHE'?'Noche':'Día',r.empresa_nombre||'—',r.faena_nombre||'—',r.equipo_codigo,r.equipo_nombre,r.operador_nombre||'—',r.tipo_cargo,
+      detData.push([(r.fecha+'').slice(0,10),(function(){var t=r.operador_turno;return t==='A'?'A':t==='B'?'B':t==='AB'?'A+B':t==='P'?'7x7 propio':'—';})(),r.jornada==='NOCHE'?'Noche':'Día',r.empresa_nombre||'—',r.faena_nombre||'—',r.equipo_codigo,r.equipo_nombre,r.operador_nombre||'—',r.tipo_cargo,
         Number((parseFloat(r.horometro_inicial)||0).toFixed(2)),
         Number((parseFloat(r.horometro_final)||0).toFixed(2)),
         Number((parseFloat(r.horas_trabajadas)||0).toFixed(2)),
@@ -3118,8 +3118,8 @@ function TerrenoInforme(p){
       h('div',{className:'card',style:{padding:0,overflow:'auto'}},
         h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
           h('thead',null,h('tr',{style:{background:'#1E3A2D',color:'#fff'}},
-            ['Fecha','Jorn.','Empresa','Faena','Código','Equipo','Operador','Horóm. inicial','Horóm. final','Trabajadas','Perdidas','Fundo / Rodal','Árb.','m³','Combust.','Observaciones'].map(function(c,j){
-              return h('th',{key:j,style:{padding:'8px 10px',textAlign:(j<7||j===11)?'left':'right',fontWeight:600,fontSize:10}},c);
+            ['Fecha','Turno','Jorn.','Empresa','Faena','Código','Equipo','Operador','Horóm. inicial','Horóm. final','Trabajadas','Perdidas','Fundo / Rodal','Árb.','m³','Combust.','Observaciones'].map(function(c,j){
+              return h('th',{key:j,style:{padding:'8px 10px',textAlign:(j<8||j===12)?'left':'right',fontWeight:600,fontSize:10}},c);
             })
           )),
           h('tbody',null,data.detalle.map(function(r,i){
@@ -3132,6 +3132,12 @@ function TerrenoInforme(p){
             var uni=esVeh?'km':'h';
             return h('tr',{key:i,style:{background:i%2===0?'#fff':'#F8FAFC',borderBottom:'1px solid #F1F5F9'}},
               h('td',{style:{padding:'6px 10px',whiteSpace:'nowrap'}},(r.fecha+'').slice(0,10)),
+              h('td',{style:{padding:'6px 10px'}},(function(){
+                var t=r.operador_turno;var lbl=t==='A'?'A':t==='B'?'B':t==='AB'?'A+B':t==='P'?'7x7':null;
+                if(!lbl)return h('span',{style:{fontSize:10,color:'#94A3B8'}},'—');
+                var col=t==='A'?{bg:'#EFF6FF',fg:'#1E40AF'}:t==='B'?{bg:'#F5F3FF',fg:'#6D28D9'}:{bg:'#F0FDFA',fg:'#0F766E'};
+                return h('span',{style:{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:col.bg,color:col.fg}},lbl);
+              })()),
               h('td',{style:{padding:'6px 10px'}},h('span',{style:{fontSize:9,fontWeight:700,padding:'1px 6px',borderRadius:8,background:r.jornada==='NOCHE'?'#EEF2FF':'#FFFBEB',color:r.jornada==='NOCHE'?'#3730A3':'#92400E'}},r.jornada==='NOCHE'?'🌙':'☀')),
               h('td',{style:{padding:'6px 10px',color:'#475569'}},r.empresa_nombre||'—'),
               h('td',{style:{padding:'6px 10px',color:'#475569'}},r.faena_nombre||'—'),
@@ -4076,11 +4082,9 @@ function TerrenoView(p){
   }
   // Equipos de la faena seleccionada (equipo sin faena = común a todas). Sin faena elegida → lista vacía.
   function equiposDeFaena(fid){return fid?allEquipos.filter(function(e){return !e.faena_id||esMultiEmpresaEq(e)||String(e.faena_id)===String(fid);}):[];}
-  // Operadores: SOLO personal de la faena seleccionada (Maestro de Personal; sin faena = común).
-  // Si el usuario tiene TURNO asociado (no admin), ve solo el personal de su turno (sin turno = jornada normal, siempre visible).
-  // Turnos SIEMPRE visibles para cualquier usuario: sin turno (jornada normal), 'AB' (ambos turnos) y 'P' (ciclo 7x7 propio)
-  var userTurno=p.user&&!p.user.es_admin&&p.user.turno?p.user.turno:null;
-  function operadoresDeFaena(fid){return fid?(p.m.personal||[]).filter(function(x){return x.activo&&(!x.faena_id||String(x.faena_id)===String(fid))&&(!userTurno||!x.turno||x.turno==='AB'||x.turno==='P'||x.turno===userTurno);}):[];}
+  // Operadores: TODO el personal de la faena seleccionada (Maestro de Personal; sin faena = común).
+  // REVERTIDO 2026-08: el filtro por turno del usuario se eliminó (traspasos entre turnos lo complicaban).
+  function operadoresDeFaena(fid){return fid?(p.m.personal||[]).filter(function(x){return x.activo&&(!x.faena_id||String(x.faena_id)===String(fid));}):[];}
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
   var totHorasMes=registros.reduce(function(s,r){return s+(parseFloat(r.horas_trabajadas)||0);},0);
   var totLitrosMes=registros.reduce(function(s,r){return s+(parseFloat(r.litros_combustible)||0);},0);
@@ -22751,10 +22755,9 @@ function MobileTerreno(p){
   function equiposDeFaenaM(fid){return fid?equipos.filter(function(e){return !e.faena_id||esMultiEmpresaEq(e)||String(e.faena_id)===String(fid);}):[];}
   // Operadores de una faena, desde el Maestro de Personal (sin faena = común).
   // Usuario con turno asociado: solo personal de su turno (sin turno = jornada normal, siempre visible).
-  // Turnos SIEMPRE visibles: sin turno (normal), 'AB' (ambos turnos) y 'P' (ciclo 7x7 propio)
-  var userTurnoM=p.user&&!p.user.es_admin&&p.user.turno?p.user.turno:null;
+  // Operadores: TODO el personal de la faena (REVERTIDO 2026-08: sin filtro por turno del usuario)
   var esAdminM=!!(p.user&&p.user.es_admin);
-  function operadoresDeFaenaM(fid){return fid?(p.m.personal||[]).filter(function(x){return x.activo&&(!x.faena_id||String(x.faena_id)===String(fid))&&(!userTurnoM||!x.turno||x.turno==='AB'||x.turno==='P'||x.turno===userTurnoM);}):[];}
+  function operadoresDeFaenaM(fid){return fid?(p.m.personal||[]).filter(function(x){return x.activo&&(!x.faena_id||String(x.faena_id)===String(fid));}):[];}
   var estanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
   var[msg,setMsg]=useState('');
   var[saved,setSaved]=useState(false);
