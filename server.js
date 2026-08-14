@@ -1806,7 +1806,7 @@ mvR.get('/', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 mvR.get('/:id/detalles', auth, async(req,res)=>{
-  try{const r=await pool.query('SELECT md.*,p.nombre AS producto_nombre,p.codigo AS producto_codigo,p.unidad_medida FROM movimiento_detalle md JOIN productos p ON md.producto_id=p.producto_id WHERE md.movimiento_id=$1',[req.params.id]);res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
+  try{const r=await pool.query('SELECT md.*,p.nombre AS producto_nombre,p.codigo AS producto_codigo,p.unidad_medida,sc.nombre AS subcategoria_nombre FROM movimiento_detalle md JOIN productos p ON md.producto_id=p.producto_id LEFT JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id WHERE md.movimiento_id=$1',[req.params.id]);res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
 });
 mvR.post('/', auth, async(req,res)=>{
   const client=await pool.connect();
