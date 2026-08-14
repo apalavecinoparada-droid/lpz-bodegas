@@ -1728,7 +1728,36 @@ function SalidaView(p){
   return h('div',null,
     h('div',{className:'tb'},
       h(Btn,{onClick:function(){setErr('');setEditMov(null);setForm(blank);setModal(true);}},'+ Nueva Salida'),
-      h(Btn,{v:'g',onClick:function(){exportXLSX(movs.slice().sort(function(a,b){var fa=(a.fecha||'').slice(0,10),fb=(b.fecha||'').slice(0,10);if(fa!==fb)return fa<fb?-1:1;return (a.movimiento_id||a.mov_id||0)-(b.movimiento_id||b.mov_id||0);}),[{header:'N°',value:r=>r.movimiento_id},{header:'Fecha',value:r=>r.fecha},{header:'Bodega',value:r=>r.bodega_nombre},{header:'Faena',value:r=>r.faena_nombre},{header:'Equipo',value:r=>r.equipo_nombre},{header:'Motivo',value:r=>r.motivo_nombre},{header:'Total CPP',value:r=>r.total},{header:'Usuario',value:r=>r.usuario_nombre||r.usuario},{header:'Estado',value:r=>r.estado}],'salidas');}},null,'Exportar Excel')
+      h(Btn,{v:'g',onClick:function(){
+        // Export DETALLADO: una fila por PRODUCTO de cada salida (subcategoría + producto + cantidad)
+        var ordenadas=movs.slice().sort(function(a,b){var fa=(a.fecha||'').slice(0,10),fb=(b.fecha||'').slice(0,10);if(fa!==fb)return fa<fb?-1:1;return (a.movimiento_id||a.mov_id||0)-(b.movimiento_id||b.mov_id||0);});
+        if(!ordenadas.length){alert('No hay salidas para exportar con el filtro actual');return;}
+        Promise.all(ordenadas.map(function(mv){return api('/movimientos/'+mv.movimiento_id+'/detalles','GET',null,p.tok).then(function(ls){return{mv:mv,lineas:Array.isArray(ls)?ls:[]};}).catch(function(){return{mv:mv,lineas:[]};});}))
+          .then(function(res){
+            var filas=[];
+            res.forEach(function(x){
+              if(!x.lineas.length){filas.push({mv:x.mv,l:null});return;}
+              x.lineas.forEach(function(l){filas.push({mv:x.mv,l:l});});
+            });
+            exportXLSX(filas,[
+              {header:'N°',value:function(r){return r.mv.movimiento_id;}},
+              {header:'Fecha',value:function(r){return (r.mv.fecha+'').slice(0,10);}},
+              {header:'Bodega',value:function(r){return r.mv.bodega_nombre;}},
+              {header:'Faena',value:function(r){return r.mv.faena_nombre;}},
+              {header:'Equipo',value:function(r){return r.mv.equipo_nombre;}},
+              {header:'Motivo',value:function(r){return r.mv.motivo_nombre;}},
+              {header:'Subcategoría',value:function(r){return r.l?(r.l.subcategoria_nombre||'Sin subcategoría'):'—';}},
+              {header:'Código',value:function(r){return r.l?(r.l.producto_codigo||''):'—';}},
+              {header:'Producto',value:function(r){return r.l?(r.l.producto_nombre||''):'(sin líneas)';}},
+              {header:'Cantidad',value:function(r){return r.l?(parseFloat(r.l.cantidad)||0):'';}},
+              {header:'Unidad',value:function(r){return r.l?(r.l.unidad_medida||''):'';}},
+              {header:'Costo unit. (CPP)',value:function(r){return r.l?Math.round(parseFloat(r.l.costo_unitario)||0):'';}},
+              {header:'Total línea',value:function(r){return r.l?Math.round((parseFloat(r.l.cantidad)||0)*(parseFloat(r.l.costo_unitario)||0)):'';}},
+              {header:'Usuario',value:function(r){return r.mv.usuario_nombre||r.mv.usuario;}},
+              {header:'Estado',value:function(r){return r.mv.estado;}}
+            ],'salidas');
+          }).catch(function(ex){alert('Error al exportar: '+ex.message);});
+      }},null,'Exportar Excel')
     ),
     // ── Barra de filtros ──
     h('div',{style:{display:'flex',gap:8,marginBottom:10,padding:10,background:'#F8FAFC',borderRadius:6,flexWrap:'wrap',alignItems:'center'}},
