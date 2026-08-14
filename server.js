@@ -7144,9 +7144,12 @@ async function setupRendiciones(q){
   // m3_producidos pasa de columna GENERADA (árboles×VMA) a ingreso MANUAL. DROP EXPRESSION conserva
   // los valores ya calculados de los registros antiguos. Idempotente: 2ª corrida falla y se ignora.
   try{await q('ALTER TABLE terreno_registros ALTER COLUMN m3_producidos DROP EXPRESSION');}catch(e){}
-  // Único por fecha+equipo+JORNADA (antes fecha+equipo): permite un registro Día y uno Noche por máquina
+  // Único por fecha+equipo+JORNADA+OPERADOR (2026-08): permite un 2° turno en la misma
+  // jornada cuando el OPERADOR es distinto (máquinas operando casi 24 h con relevos).
+  // COALESCE(operador_id,-1) evita duplicar dos registros sin operador en la misma jornada.
   try{await q('ALTER TABLE terreno_registros DROP CONSTRAINT IF EXISTS terreno_registros_fecha_equipo_id_key');}catch(e){}
-  try{await q("CREATE UNIQUE INDEX IF NOT EXISTS terreno_reg_fecha_eq_jor_uq ON terreno_registros(fecha,equipo_id,jornada)");}catch(e){}
+  try{await q('DROP INDEX IF EXISTS terreno_reg_fecha_eq_jor_uq');}catch(e){}
+  try{await q("CREATE UNIQUE INDEX IF NOT EXISTS terreno_reg_fecha_eq_jor_op_uq ON terreno_registros(fecha,equipo_id,jornada,COALESCE(operador_id,-1))");}catch(e){}
 
   // ── PRODUCTIVIDAD / OEE (registros mensuales por faena) ──
   await q(`CREATE TABLE IF NOT EXISTS prod_oee_registros (
@@ -8590,11 +8593,53 @@ async function terrenoValidar(client,b,userId,excluirId){
     if(esLpoo&&(b.arboles_producidos==null||b.arboles_producidos===''))
       throw new Error('La cantidad de árboles es obligatoria para registros de maquinaria de Leonidas Poo');
   }
-  // Máximo un registro por máquina + fecha + jornada
-  const dupV=[b.fecha,b.equipo_id,jor];
-  if(excluirId)dupV.push(excluirId);
-  const dup=await client.query("SELECT registro_id FROM terreno_registros WHERE fecha=$1 AND equipo_id=$2 AND COALESCE(jornada,'DIA')=$3"+(excluirId?' AND registro_id<>$4':''),dupV);
-  if(dup.rows.length)throw new Error('Ya existe un registro de este equipo para esa fecha en jornada '+(jor==='DIA'?'Día':'Noche')+'. Máximo un registro por jornada');
+  // Máximo un registro por máquina + fecha + jornada + OPERADOR: un segundo turno en la
+  // misma jornada es válido solo con operador distinto (relevos con máquina casi 24 h operativa)
+  const dupV=[b.fecha,b.equipo_id,jor,b.operador_id||null];
+  let dupSql="SELECT registro_id FROM terreno_registros WHERE fecha=$1 AND equipo_id=$2 AND COALESCE(jornada,'DIA')=$3 AND COALESCE(operador_id,-1)=COALESCE($4,-1)";
+  if(excluirId){dupV.push(excluirId);dupSql+=' AND registro_id<>$5';}
+  const dup=await client.query(dupSql,dupV);
+  if(dup.rows.length)throw new Error('Ya existe un registro de este equipo para esa fecha, jornada '+(jor==='DIA'?'Día':'Noche')+' y ese operador. Un segundo turno en la misma jornada requiere un OPERADOR DISTINTO'+(b.operador_id?'':' (y debe indicarlo)'));
+  // ── CONTINUIDAD DEL HORÓMETRO (2026-08): el inicial DEBE ser el final del registro
+  // anterior del equipo — sin saltos (jefes de faena omitían horas trabajadas saltando
+  // el horómetro). Solo es_admin puede romper la continuidad (correcciones legítimas:
+  // cambio de horómetro, ajustes). Aplica a horas (maquinaria) y km (vehículos).
+  {
+    const jorC=(String(b.jornada||'DIA').toUpperCase()==='NOCHE')?'NOCHE':'DIA';
+    const pvV=[b.equipo_id,b.fecha,jorC];
+    if(excluirId)pvV.push(excluirId);
+    const prev=(await client.query(`SELECT horometro_final, to_char(fecha,'DD-MM-YYYY') AS f, COALESCE(jornada,'DIA') AS j
+      FROM terreno_registros
+      WHERE equipo_id=$1${excluirId?' AND registro_id<>$4':''}
+        AND (fecha<$2::date OR (fecha=$2::date AND
+             (CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END) <= (CASE WHEN $3='NOCHE' THEN 2 ELSE 1 END)))
+      ORDER BY fecha DESC, CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END DESC, horometro_final DESC, registro_id DESC
+      LIMIT 1`,pvV)).rows[0];
+    // Registro SIGUIENTE (si se está rellenando un día faltante entre registros existentes):
+    // el final no puede pasarse del inicial del sucesor, o el relleno rompería la cadena
+    const sigC=(await client.query(`SELECT horometro_inicial, to_char(fecha,'DD-MM-YYYY') AS f FROM terreno_registros
+      WHERE equipo_id=$1${excluirId?' AND registro_id<>$4':''}
+        AND (fecha>$2::date OR (fecha=$2::date AND
+             (CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END) > (CASE WHEN $3='NOCHE' THEN 2 ELSE 1 END)))
+      ORDER BY fecha ASC, CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END ASC, horometro_inicial ASC, registro_id ASC LIMIT 1`,pvV)).rows[0];
+    if(prev||sigC){
+      const adm=(await client.query('SELECT COALESCE(ro.es_admin,false) AS es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',[userId])).rows[0];
+      const esAdminC=!!(adm&&adm.es_admin);
+      const tolC=esVeh?1.01:0.11;
+      if(prev&&!esAdminC){
+        const hiC=parseFloat(b.horometro_inicial);
+        const finPrev=parseFloat(prev.horometro_final);
+        if(Math.abs(hiC-finPrev)>tolC)
+          throw new Error('El '+(esVeh?'odómetro':'horómetro')+' inicial debe ser exactamente el final del registro anterior: '+finPrev.toFixed(esVeh?0:1)+' ('+prev.f+', jornada '+(prev.j==='NOCHE'?'Noche':'Día')+'). No se permiten saltos: si hay una diferencia real (cambio de horómetro, corrección), debe ajustarla un administrador');
+      }
+      if(sigC&&!esAdminC){
+        const hfC=parseFloat(b.horometro_final);
+        const iniSig=parseFloat(sigC.horometro_inicial);
+        if(hfC>iniSig+tolC)
+          throw new Error('El '+(esVeh?'odómetro':'horómetro')+' final ('+hfC.toFixed(esVeh?0:1)+') no puede superar el inicial del registro siguiente: '+iniSig.toFixed(esVeh?0:1)+' ('+sigC.f+'). Para cerrar el salto por completo, el final debe llegar exactamente a ese valor');
+      }
+    }
+  }
   // Tope 24 h del día completo: este registro + la otra jornada (solo equipos con horómetro)
   const horas=parseFloat(b.horometro_final)-parseFloat(b.horometro_inicial);
   if(!esVeh){
@@ -8774,9 +8819,37 @@ app.get('/api/terreno/fundos-rodales', auth, async(req,res)=>{
   finally{client.release();}
 });
 
+// Último horómetro del equipo. Con ?fecha=AAAA-MM-DD&jornada=DIA|NOCHE devuelve el
+// PREDECESOR relativo a esa fecha/jornada (para rellenar días faltantes hacia atrás)
+// y además el inicial del registro SIGUIENTE (tope: el final no puede pasarse de ahí).
 app.get('/api/terreno/ultimo-horometro/:equipo_id', auth, async(req,res)=>{
-  try{const r=await pool.query('SELECT horometro_final FROM terreno_registros WHERE equipo_id=$1 ORDER BY fecha DESC, registro_id DESC LIMIT 1',[req.params.equipo_id]);
-  res.json({horometro_final:r.rows.length?parseFloat(r.rows[0].horometro_final):null});}catch(e){res.status(500).json({error:e.message});}
+  try{
+    const eq=req.params.equipo_id;
+    const fecha=/^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha||'')?req.query.fecha:null;
+    if(!fecha){
+      const r=await pool.query('SELECT horometro_final FROM terreno_registros WHERE equipo_id=$1 ORDER BY fecha DESC, registro_id DESC LIMIT 1',[eq]);
+      return res.json({horometro_final:r.rows.length?parseFloat(r.rows[0].horometro_final):null});
+    }
+    const jor=(String(req.query.jornada||'DIA').toUpperCase()==='NOCHE')?'NOCHE':'DIA';
+    const excl=req.query.excluir&&!isNaN(parseInt(req.query.excluir))?parseInt(req.query.excluir):null;
+    const pv=[eq,fecha,jor];if(excl)pv.push(excl);
+    const prev=(await pool.query(`SELECT horometro_final, to_char(fecha,'DD-MM-YYYY') AS f FROM terreno_registros
+      WHERE equipo_id=$1${excl?' AND registro_id<>$4':''}
+        AND (fecha<$2::date OR (fecha=$2::date AND
+             (CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END) <= (CASE WHEN $3='NOCHE' THEN 2 ELSE 1 END)))
+      ORDER BY fecha DESC, CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END DESC, horometro_final DESC, registro_id DESC LIMIT 1`,pv)).rows[0];
+    const sig=(await pool.query(`SELECT horometro_inicial, to_char(fecha,'DD-MM-YYYY') AS f FROM terreno_registros
+      WHERE equipo_id=$1${excl?' AND registro_id<>$4':''}
+        AND (fecha>$2::date OR (fecha=$2::date AND
+             (CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END) > (CASE WHEN $3='NOCHE' THEN 2 ELSE 1 END)))
+      ORDER BY fecha ASC, CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END ASC, horometro_inicial ASC, registro_id ASC LIMIT 1`,pv)).rows[0];
+    res.json({
+      horometro_final:prev?parseFloat(prev.horometro_final):null,
+      fecha_prev:prev?prev.f:null,
+      siguiente_inicial:sig?parseFloat(sig.horometro_inicial):null,
+      fecha_sig:sig?sig.f:null
+    });
+  }catch(e){res.status(500).json({error:e.message});}
 });
 
 // ═══════════════════════════════════════════════════════════════════
