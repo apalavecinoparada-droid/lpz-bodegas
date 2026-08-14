@@ -3957,6 +3957,10 @@ function TerrenoView(p){
   var[showForm,setShowForm]=useState(false);var[editReg,setEditReg]=useState(null);var[msg,setMsg]=useState('');
   var[filtEquipo,setFiltEquipo]=useState('');var[filtMes,setFiltMes]=useState(new Date().toISOString().slice(0,7));
   var[filtEmpresa,setFiltEmpresa]=useState('');var[filtFaena,setFiltFaena]=useState(userFaenaId||'');var[filtOperador,setFiltOperador]=useState('');
+  // Continuidad del horómetro: si existe registro anterior, el inicial viene del sistema y NO es editable (salvo admin)
+  var[horoPrev,setHoroPrev]=useState(null);
+  var[horoSig,setHoroSig]=useState(null); // {ini,f}: inicial del registro SIGUIENTE (tope al rellenar días faltantes)
+  var esAdminT=!!(p.user&&p.user.es_admin);
   var[rendimiento,setRendimiento]=useState(null);
   var[showTOB,setShowTOB]=useState(false);
   // Ordenamiento por columna
@@ -3994,6 +3998,17 @@ function TerrenoView(p){
   // La oferta de fundos/rodales cambia MES a MES → recargar según el mes de la fecha del registro
   useEffect(function(){loadFundosRodales((form.fecha||'').slice(0,7));},[p.tok,(form.fecha||'').slice(0,7)]);
   useEffect(function(){loadReg();loadRend();},[p.tok,filtEquipo,filtMes,filtEmpresa,filtFaena,filtOperador]);
+  // Autocarga del horómetro inicial: el FINAL del registro ANTERIOR a la fecha/jornada elegida
+  // (no el último global) — así el relleno de días faltantes parte del valor correcto.
+  useEffect(function(){
+    if(editReg)return;
+    if(!form.equipo_id||!form.fecha){setHoroPrev(null);setHoroSig(null);return;}
+    api('/terreno/ultimo-horometro/'+form.equipo_id+'?fecha='+form.fecha+'&jornada='+(form.jornada||'DIA'),'GET',null,p.tok).then(function(r){
+      if(r.horometro_final!=null){setHoroPrev(parseFloat(r.horometro_final));setForm(function(ff){return Object.assign({},ff,{horometro_inicial:r.horometro_final});});}
+      else setHoroPrev(null);
+      setHoroSig(r.siguiente_inicial!=null?{ini:parseFloat(r.siguiente_inicial),f:r.fecha_sig}:null);
+    }).catch(function(){setHoroPrev(null);setHoroSig(null);});
+  },[p.tok,form.equipo_id,form.fecha,form.jornada,editReg]);
   function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
   var hTrab=(parseFloat(form.horometro_final)||0)-(parseFloat(form.horometro_inicial)||0);
   var sumTob=(form.tob_detalle||[]).reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
@@ -4028,7 +4043,7 @@ function TerrenoView(p){
   function onEquipoChange(eqId){
     // La faena manda sobre el equipo (orden Fecha → Faena → Máquina): ya no se auto-asigna faena desde el equipo
     upd('equipo_id',eqId);
-    if(eqId&&!editReg){api('/terreno/ultimo-horometro/'+eqId,'GET',null,p.tok).then(function(r){if(r.horometro_final!=null){setForm(function(f){return Object.assign({},f,{horometro_inicial:r.horometro_final});});}}).catch(function(){});}
+    // El horómetro inicial lo carga el efecto según equipo + FECHA + JORNADA (permite rellenar días faltantes)
   }
   // Equipos de la faena seleccionada (equipo sin faena = común a todas). Sin faena elegida → lista vacía.
   function equiposDeFaena(fid){return fid?allEquipos.filter(function(e){return !e.faena_id||esMultiEmpresaEq(e)||String(e.faena_id)===String(fid);}):[];}
@@ -4106,7 +4121,6 @@ function TerrenoView(p){
         if(eq&&(!userFaenaId||!eq.faena_id||String(eq.faena_id)===userFaenaId)){
           f.equipo_id=filtEquipo;
           if(!userFaenaId&&eq.faena_id)f.faena_id=eq.faena_id;
-          api('/terreno/ultimo-horometro/'+filtEquipo,'GET',null,p.tok).then(function(r){if(r.horometro_final!=null){setForm(function(ff){return Object.assign({},ff,{horometro_inicial:r.horometro_final});});}}).catch(function(){});
         }}setForm(f);setShowForm(!showForm);setShowTOB(false);}},showForm?'Cancelar':'+ Nuevo Registro')
     ),
     msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
@@ -4142,7 +4156,15 @@ function TerrenoView(p){
               h('select',{value:form.jornada||'DIA',onChange:function(e){upd('jornada',e.target.value);},style:Object.assign({},inpS,{fontWeight:600,background:form.jornada==='NOCHE'?'#EEF2FF':'#FFFBEB'})},
                 h('option',{value:'DIA'},'\u2600 D\u00eda'),
                 h('option',{value:'NOCHE'},'\ud83c\udf19 Noche'))),
-            h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},lblIni),h('input',{type:'number',step:'0.1',value:form.horometro_inicial,onChange:function(e){upd('horometro_inicial',e.target.value);},style:inpS,placeholder:esVehiculo?'Ej: 125430':'Ej: 5046.5'})),
+            (function(){
+              // Bloqueado para no-admin cuando: hay registro anterior (nuevo) o se edita uno existente.
+              // Motivo: los saltos de horómetro ocultan horas trabajadas (continuidad obligatoria, validada también en backend).
+              var horoLock=!esAdminT&&(editReg?true:(horoPrev!=null));
+              return h('div',null,
+                h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},lblIni,horoLock&&h('span',{style:{fontSize:9,color:'#B45309',marginLeft:5}},'🔒 continuidad del registro anterior')),
+                h('input',{type:'number',step:'0.1',value:form.horometro_inicial,readOnly:horoLock,onChange:function(e){if(!horoLock)upd('horometro_inicial',e.target.value);},style:Object.assign({},inpS,horoLock?{background:'#F1F5F9',color:'#475569',cursor:'not-allowed'}:{}),placeholder:esVehiculo?'Ej: 125430':'Ej: 5046.5',title:horoLock?'El inicial es el final del registro anterior a esta fecha y no se puede modificar. Ajustes solo por un administrador.':''}),
+                horoSig&&!editReg&&h('div',{style:{fontSize:9,color:'#B45309',marginTop:2}},'⛓ Registro siguiente ('+horoSig.f+') inicia en '+horoSig.ini.toFixed(esVehiculo?0:1)+' — para cerrar el salto, el final debe llegar a ese valor'));
+            })(),
             h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},lblFin),h('input',{type:'number',step:'0.1',value:form.horometro_final,onChange:function(e){upd('horometro_final',e.target.value);},style:inpS,placeholder:esVehiculo?'Ej: 125678':'Ej: 5054.5'})),
             h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},lblTrab),h('input',{value:hTrab.toFixed(2)+' '+unidadCorta,style:Object.assign({},inpS,{background:'#F0FDF4',fontWeight:700,color:'#166534'}),readOnly:true})),
             !esVehiculo&&h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},lblPerd),h('input',{type:'number',step:'0.1',value:form.horas_perdidas,onChange:function(e){upd('horas_perdidas',e.target.value);},style:Object.assign({},inpS,{background:hp>0?'#FEF3C7':'#fff',borderColor:tobDesc&&hp>0?'#EF4444':'#CBD5E1'})})),
@@ -22702,6 +22724,7 @@ function MobileTerreno(p){
   // Usuario con turno asociado: solo personal de su turno (sin turno = jornada normal, siempre visible).
   // Turnos SIEMPRE visibles: sin turno (normal), 'AB' (ambos turnos) y 'P' (ciclo 7x7 propio)
   var userTurnoM=p.user&&!p.user.es_admin&&p.user.turno?p.user.turno:null;
+  var esAdminM=!!(p.user&&p.user.es_admin);
   function operadoresDeFaenaM(fid){return fid?(p.m.personal||[]).filter(function(x){return x.activo&&(!x.faena_id||String(x.faena_id)===String(fid))&&(!userTurnoM||!x.turno||x.turno==='AB'||x.turno==='P'||x.turno===userTurnoM);}):[];}
   var estanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
   var[msg,setMsg]=useState('');
@@ -22747,19 +22770,23 @@ function MobileTerreno(p){
     var mesF=(form.fecha||'').slice(0,7);
     api('/terreno/fundos-rodales'+(mesF?'?mes='+mesF:''),'GET',null,p.tok).then(function(r){setFundosM(r&&r.fundos||[]);setRodalesM(r&&r.rodales||[]);setSinOfertaMesM(!!(r&&r.sin_oferta_mes));}).catch(function(){});
   },[p.tok,(form.fecha||'').slice(0,7)]);
+  var[horoSigM,setHoroSigM]=useState(null); // inicial del registro siguiente (tope al rellenar días)
   useEffect(function(){
-    if(!form.equipo_id){setUltimoHoro(null);return;}
+    if(!form.equipo_id){setUltimoHoro(null);setHoroSigM(null);return;}
     // En modo edición, no auto-cargar el último horómetro (mantener el del registro original)
     if(editingId)return;
     var eq=equipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
     setLoadingHoro(true);
-    api('/terreno/ultimo-horometro/'+form.equipo_id,'GET',null,p.tok).then(function(r){
-      var h=r&&r.horometro_final!=null?r.horometro_final:(eq&&eq.horometro_actual?parseFloat(eq.horometro_actual):0);
-      setUltimoHoro(h);
+    // Predecesor según la FECHA y JORNADA elegidas (permite rellenar días faltantes hacia atrás)
+    api('/terreno/ultimo-horometro/'+form.equipo_id+'?fecha='+form.fecha+'&jornada='+(form.jornada||'DIA'),'GET',null,p.tok).then(function(r){
+      var real=r&&r.horometro_final!=null;
+      var h=real?parseFloat(r.horometro_final):(eq&&eq.horometro_actual?parseFloat(eq.horometro_actual):0);
+      setUltimoHoro(real?h:null); // solo bloquea si hay predecesor REAL (primer registro queda editable)
+      setHoroSigM(r&&r.siguiente_inicial!=null?{ini:parseFloat(r.siguiente_inicial),f:r.fecha_sig}:null);
       setForm(function(f){return Object.assign({},f,{horometro_inicial:h});});
       setLoadingHoro(false);
-    }).catch(function(){setLoadingHoro(false);});
-  },[form.equipo_id,editingId]);
+    }).catch(function(){setLoadingHoro(false);setHoroSigM(null);});
+  },[form.equipo_id,form.fecha,form.jornada,editingId]);
   function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
   var hi=parseFloat(form.horometro_inicial)||0;
   var hf=parseFloat(form.horometro_final)||0;
@@ -22986,7 +23013,12 @@ function MobileTerreno(p){
               h('div',{style:{fontSize:20,fontWeight:700,color:'#1E3A2D'}},ultimoHoro.toFixed(esVehiculo?0:1)+' '+unidad)
             ):h('div',{style:{color:'#64748B'}},'Primer registro de este equipo')
           ),
-          F(lblIni,h('input',{type:'number',value:form.horometro_inicial,onChange:function(e){upd('horometro_inicial',e.target.value);},step:esVehiculo?1:0.1,min:0,inputMode:'decimal',style:{background:'#F8FAFC'}})),
+          (function(){
+            var horoLockM=!esAdminM&&(editingId?true:(ultimoHoro!=null));
+            return h(React.Fragment,null,
+              F(lblIni+(horoLockM?' 🔒':''),h('input',{type:'number',value:form.horometro_inicial,readOnly:horoLockM,onChange:function(e){if(!horoLockM)upd('horometro_inicial',e.target.value);},step:esVehiculo?1:0.1,min:0,inputMode:'decimal',style:horoLockM?{background:'#F1F5F9',color:'#475569'}:{background:'#F8FAFC'},title:horoLockM?'Continuidad del registro anterior: no editable. Ajustes solo por administrador.':''})),
+              horoSigM&&!editingId&&h('div',{style:{fontSize:10,color:'#B45309',background:'#FFFBEB',border:'1px solid #FCD34D',borderRadius:6,padding:'6px 10px',marginBottom:10}},'⛓ El registro siguiente ('+horoSigM.f+') inicia en '+horoSigM.ini.toFixed(esVehiculo?0:1)+' — para cerrar el salto, el final debe llegar a ese valor'));
+          })(),
           h('div',{className:'mob-field'},
             h('label',{style:{color:'#1E3A2D',fontWeight:700}},lblFin),
             h('input',{type:'number',value:form.horometro_final,onChange:function(e){upd('horometro_final',e.target.value);},step:esVehiculo?1:0.1,min:0,inputMode:'decimal',placeholder:phFin,style:{fontSize:22,fontWeight:700,border:'2px solid #1E3A2D',padding:'16px 12px',textAlign:'center'}})
