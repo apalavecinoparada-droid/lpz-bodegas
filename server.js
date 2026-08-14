@@ -8369,6 +8369,7 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
              f.nombre AS faena_nombre,
              es.codigo AS estanque_codigo, es.nombre AS estanque_nombre,
              op.nombre_completo AS operador_nombre,
+             op.turno AS operador_turno,
              fu.nombre AS fundo_nombre,
              rd.nombre AS rodal_nombre,
              COALESCE((SELECT SUM(t.horas) FROM terreno_tob_detalle t WHERE t.registro_id=r.registro_id AND t.clasificacion='E'),0) AS tob_horas_e,
@@ -8574,16 +8575,13 @@ async function terrenoValidar(client,b,userId,excluirId){
   if(eqChk.faena_id&&eqChk.n_emp<2&&String(eqChk.faena_id)!==String(b.faena_id))
     throw new Error('El equipo seleccionado pertenece a otra faena: no se puede registrar en esta faena');
   const esVeh=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf((eqChk.tipo_cargo||'maquinaria').toLowerCase())>=0;
-  // Operador debe pertenecer a la faena (personal sin faena = común) y al turno del usuario
+  // Operador debe pertenecer a la faena (personal sin faena = común).
+  // REVERTIDO 2026-08: la restricción por TURNO del usuario se eliminó — los traspasos de
+  // trabajadores entre turnos la hicieron impracticable; el jefe de faena ve TODO el personal de su faena.
   if(b.operador_id){
-    const op=(await client.query('SELECT faena_id,turno FROM personal WHERE persona_id=$1',[b.operador_id])).rows[0];
+    const op=(await client.query('SELECT faena_id FROM personal WHERE persona_id=$1',[b.operador_id])).rows[0];
     if(op&&op.faena_id&&String(op.faena_id)!==String(b.faena_id))
       throw new Error('El operador seleccionado no pertenece a la faena del registro');
-    // Usuario asociado a un turno (A/B) → el operador debe ser de ese turno.
-    // SIEMPRE permitidos: sin turno (jornada normal), 'AB' (ambos turnos) y 'P' (ciclo 7x7 propio)
-    const ut=(await client.query('SELECT u.turno, COALESCE(ro.es_admin,false) AS es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',[userId])).rows[0];
-    if(ut&&!ut.es_admin&&ut.turno&&op&&op.turno&&op.turno!=='AB'&&op.turno!=='P'&&op.turno!==ut.turno)
-      throw new Error('El operador pertenece al turno '+op.turno+' y su usuario está asociado al turno '+ut.turno);
   }
   // Control interno (2026-08): cantidad de árboles OBLIGATORIA, pero SOLO para
   // registros de MAQUINARIA en faenas de la empresa Leonidas Poo (por razón social)
