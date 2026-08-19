@@ -9427,7 +9427,7 @@ app.get('/api/terreno/auditoria-diaria', auth, async(req,res)=>{
 // Endpoint ligero para obtener resumen de pendientes dirigidas al usuario actual
 // Usado por la alerta del dashboard
 // ─── Contratos a plazo fijo próximos a vencer (alerta de renovación / finiquito) ───
-app.get('/api/contratos/por-vencer', auth, async(req,res)=>{
+app.get('/api/contratos/por-vencer', auth, requireModulo('contratos'), async(req,res)=>{
   try{
     const dias=Math.max(1,Math.min(parseInt(req.query.dias)||30,180));
     // Fuente: personal activo con fecha de término (contrato a plazo fijo / obra), excluyendo indefinidos.
