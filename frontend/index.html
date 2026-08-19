@@ -893,14 +893,25 @@ function AlertaContratos(p){
   var[data,setData]=useState(null);
   var[cerrada,setCerrada]=useState(false);
   var[expandida,setExpandida]=useState(false);
+  // Solo usuarios con el módulo CONTRATOS (o admin) ven esta alerta — en el home móvil
+  // aparecía para todos (ej: jefes de faena) mientras en la web no, porque acá vive dentro
+  // de vistas que ellos no abren. Se gatea una sola vez para los 3 puntos de render.
+  var _puedeVerContratos=(function(){
+    try{
+      var u=JSON.parse(localStorage.getItem('lpz_user')||'null');
+      if(!u)return false;
+      if(u.es_admin||u.rol==='ADMINISTRADOR'||u.rol==='Administrador')return true;
+      return Array.isArray(u.modulos)&&u.modulos.indexOf('contratos')>=0;
+    }catch(e){return false;}
+  })();
   useEffect(function(){
-    if(!p.tok)return;
+    if(!p.tok||!_puedeVerContratos)return;
     var load=function(){api('/contratos/por-vencer?dias=30','GET',null,p.tok).then(function(r){setData(r);}).catch(function(){});};
     load();
     var iv=setInterval(load,300000); // refrescar cada 5 minutos
     return function(){clearInterval(iv);};
   },[p.tok]);
-  if(!data||data.total===0||cerrada)return null;
+  if(!_puedeVerContratos||!data||data.total===0||cerrada)return null;
   var items=data.items||[];
   var vencidos=items.filter(function(x){return x.urgencia==='vencido';}).length;
   var urgentes=items.filter(function(x){return x.urgencia==='urgente';}).length;
