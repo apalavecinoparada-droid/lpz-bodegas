@@ -3514,23 +3514,34 @@ ocR.get('/buscar/filtros', auth, async(req,res)=>{
     if(empresa_id){vals.push(empresa_id);where.push(`oc.empresa_id=$${vals.length}`);}
     if(desde){vals.push(desde);where.push(`oc.fecha_emision>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`oc.fecha_emision<=$${vals.length}`);}
-    if(subcategoria_id){vals.push(subcategoria_id);where.push(`d.subcategoria_id=$${vals.length}`);}
-    if(faena_id){vals.push(faena_id);where.push(`d.faena_id=$${vals.length}`);}
-    if(equipo_id){vals.push(equipo_id);where.push(`d.equipo_id=$${vals.length}`);}
+    // Filtros por LÍNEA vía EXISTS (una misma línea debe cumplir todas las condiciones a la vez,
+    // igual que el JOIN anterior, pero sin duplicar filas ni necesitar DISTINCT)
+    const condsLinea=[];
+    if(subcategoria_id){vals.push(subcategoria_id);condsLinea.push(`d.subcategoria_id=$${vals.length}`);}
+    if(faena_id){vals.push(faena_id);condsLinea.push(`d.faena_id=$${vals.length}`);}
+    if(equipo_id){vals.push(equipo_id);condsLinea.push(`d.equipo_id=$${vals.length}`);}
+    if(condsLinea.length)where.push(`EXISTS (SELECT 1 FROM ordenes_compra_detalle d WHERE d.oc_id=oc.oc_id AND ${condsLinea.join(' AND ')})`);
     if(numero_documento){vals.push('%'+numero_documento+'%');where.push(`oc.numero_documento ILIKE $${vals.length}`);}
     if(numero_oc){vals.push('%'+numero_oc+'%');where.push(`oc.numero_oc ILIKE $${vals.length}`);}
     if(numero_factura){vals.push('%'+numero_factura+'%');where.push(`oc.factura_guia_id IN (SELECT factura_id FROM oc_factura_guias WHERE numero_factura ILIKE $${vals.length})`);}
+    // Scoping por empresa del usuario (mismo criterio que el listado principal)
+    const userEmpBF=await ocUserEmpresa(req.user.id);
+    if(userEmpBF){vals.push(userEmpBF);where.push(`oc.empresa_id=$${vals.length}`);}
+    // BUG corregido 2026-08: este endpoint devolvía solo un subconjunto de columnas (sin
+    // recibido_en/movimiento_id/factura asociada) → las OCs recibidas mostraban el botón
+    // "Recibir" y al intentarlo el backend las rechazaba. Ahora devuelve EXACTAMENTE la
+    // misma estructura que GET / (oc.* + los mismos alias).
     const r=await pool.query(`
-      SELECT DISTINCT oc.oc_id,oc.numero_oc,oc.fecha_emision,oc.estado,oc.solicitante,oc.retira,
-             oc.fecha_documento,oc.numero_documento,oc.neto,oc.iva,oc.impuesto_adicional,oc.total,oc.usuario,
-             e.razon_social AS empresa,pr.nombre AS proveedor,pr.rut AS proveedor_rut,
-             cp.nombre AS condicion_pago,td.nombre AS tipo_documento
+      SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,pr.rut AS proveedor_rut,cp.nombre AS condicion_nombre,td.nombre AS tipo_doc_nombre,uc.nombre AS usuario_nombre,uk.nombre AS cerrada_por_nombre,
+      fac.numero_factura AS factura_asociada_numero, fac.fecha_factura AS factura_asociada_fecha, fac.total AS factura_asociada_total
       FROM ordenes_compra oc
       LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id
       LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
       LEFT JOIN condiciones_pago cp ON oc.condicion_id=cp.condicion_id
       LEFT JOIN tipos_documento td ON oc.tipo_doc_id=td.tipo_doc_id
-      LEFT JOIN ordenes_compra_detalle d ON oc.oc_id=d.oc_id
+      LEFT JOIN usuarios uc ON LOWER(uc.email)=LOWER(oc.usuario)
+      LEFT JOIN usuarios uk ON LOWER(uk.email)=LOWER(oc.cerrada_por)
+      LEFT JOIN oc_factura_guias fac ON oc.factura_guia_id=fac.factura_id
       WHERE ${where.join(' AND ')}
       ORDER BY oc.oc_id DESC`,vals);
     res.json(r.rows);
