@@ -16395,20 +16395,20 @@ function FinResultadoView(p){
     var serie=[];
     for(var mi=1;mi<=12;mi++){
       var per=anio+'-'+('0'+mi).slice(-2);
-      var d=data.meses[per]||{ventas:0,compras:0,compras_af:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};
+      var d=data.meses[per]||{ventas:0,ventas_af:0,compras:0,compras_af:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};
       var remuLiq=d.remu_costo-d.imposiciones-d.ret_imp_unico;
       if(remuLiq<0)remuLiq=0; // sin datos de remu suficientes: no restar de más
       // Activo fijo NO es gasto del mes (es inversión que se deprecia): se excluye de egresos y se muestra aparte
       var egresos=d.compras+remuLiq+d.imposiciones+d.honorarios;
-      var hayDatos=(d.ventas||d.compras||d.compras_af||d.remu_costo||d.imposiciones||d.honorarios)?true:false;
-      serie.push({mes:mi,per:per,lbl:MESES_L[mi-1],ventas:d.ventas,compras:d.compras,compras_af:d.compras_af||0,
+      var hayDatos=(d.ventas||d.ventas_af||d.compras||d.compras_af||d.remu_costo||d.imposiciones||d.honorarios)?true:false;
+      serie.push({mes:mi,per:per,lbl:MESES_L[mi-1],ventas:d.ventas,ventas_af:d.ventas_af||0,compras:d.compras,compras_af:d.compras_af||0,
         remu_liq:remuLiq,imposiciones:d.imposiciones,honorarios:d.honorarios,
         egresos:egresos,resultado:d.ventas-egresos,hayDatos:hayDatos,
         faltaImp:d.remu_costo>0&&d.imposiciones===0,
         faltaRemu:d.imposiciones>0&&d.remu_costo===0});
     }
     serie.forEach(function(s){s.incompleto=s.faltaImp||s.faltaRemu;});
-    var tot=serie.reduce(function(a,s){['ventas','compras','compras_af','remu_liq','imposiciones','honorarios','egresos','resultado'].forEach(function(k){a[k]=(a[k]||0)+s[k];});return a;},{});
+    var tot=serie.reduce(function(a,s){['ventas','ventas_af','compras','compras_af','remu_liq','imposiciones','honorarios','egresos','resultado'].forEach(function(k){a[k]=(a[k]||0)+s[k];});return a;},{});
     // ── Gráfico alineado con la matriz: el grid de barras usa los MISMOS anchos % que el colgroup de la tabla ──
     var conDatos=serie.filter(function(s){return s.hayDatos;});
     var GRID_LBL='15%',GRID_MES='6.25%',GRID_TOT='10%'; // 15 + 12×6.25 + 10 = 100
@@ -16448,15 +16448,16 @@ function FinResultadoView(p){
       h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:8,marginBottom:12}},
         h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #16A34A'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'VENTAS DEL AÑO'),h('div',{style:{fontSize:16,fontWeight:700,color:'#16A34A'}},CLP(tot.ventas))),
         h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #DC2626'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'EGRESOS DEL AÑO'),h('div',{style:{fontSize:16,fontWeight:700,color:'#DC2626'}},CLP(tot.egresos))),
-        h('div',{className:'card',style:{padding:10,borderLeft:'4px solid '+(tot.resultado>=0?'#1E3A2D':'#DC2626')}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'RESULTADO DEL AÑO'),h('div',{style:{fontSize:16,fontWeight:700,color:tot.resultado>=0?'#1E3A2D':'#DC2626'}},CLP(tot.resultado))),
+        h('div',{className:'card',style:{padding:10,borderLeft:'4px solid '+(tot.resultado>=0?'#1E3A2D':'#DC2626')}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'EBITDA DEL AÑO'),h('div',{style:{fontSize:16,fontWeight:700,color:tot.resultado>=0?'#1E3A2D':'#DC2626'}},CLP(tot.resultado))),
         h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #7C3AED'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'MARGEN'),h('div',{style:{fontSize:16,fontWeight:700,color:'#7C3AED'}},tot.ventas>0?((tot.resultado/tot.ventas*100).toFixed(1)+'%'):'—')),
         tot.compras_af>0&&h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #1E40AF'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'INVERSIÓN ACTIVO FIJO'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF'}},CLP(tot.compras_af))),
+        tot.ventas_af>0&&h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #0E7490'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'VENTA ACTIVO FIJO'),h('div',{style:{fontSize:16,fontWeight:700,color:'#0E7490'}},CLP(tot.ventas_af)),h('div',{style:{fontSize:9,color:'#94A3B8'}},'fuera del EBITDA')),
         h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #0F766E'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'MEJOR / PEOR MES'),h('div',{style:{fontSize:13,fontWeight:700,color:'#0F766E'}},(function(){if(!conDatos.length)return '—';var mx=conDatos.reduce(function(a,b2){return b2.resultado>a.resultado?b2:a;});var mn=conDatos.reduce(function(a,b2){return b2.resultado<a.resultado?b2:a;});return mx.lbl+' '+nfM(mx.resultado)+' / '+mn.lbl+' '+nfM(mn.resultado);})()))
       ),
       // Gráfico + matriz en UNA tarjeta: las barras quedan exactamente sobre su columna de mes
       h('div',{className:'card',style:{padding:0,overflowX:'auto',marginBottom:12}},
         h('div',{style:{minWidth:1350}},
-          h('div',{style:{fontWeight:700,fontSize:13,color:'#1E3A2D',padding:'12px 14px 2px'}},'Resultado mes a mes — '+anio),
+          h('div',{style:{fontWeight:700,fontSize:13,color:'#1E3A2D',padding:'12px 14px 2px'}},'EBITDA mes a mes — '+anio),
           h('div',{style:{display:'grid',gridTemplateColumns:GRID_LBL+' repeat(12,'+GRID_MES+') '+GRID_TOT,padding:'6px 0 8px'}},
             h('div',null,h('div',{style:ejeSup}),h('div',{style:{height:negH}})),
             celdas,
@@ -16477,9 +16478,10 @@ function FinResultadoView(p){
               filaM('Imposiciones (Previred)','imposiciones','#334155',false),
               filaM('Honorarios (BHE+BTE)','honorarios','#334155',false),
               filaM('TOTAL EGRESOS','egresos','#B91C1C',true,'#FEF2F2'),
-              filaM('RESULTADO DEL MES','resultado',null,true,'#E9F1EC'),
-              filaM('Compras activo fijo (no resta)','compras_af','#1E40AF',false,'#EFF6FF'))))),
-      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Mes a mes (no acumulado). Ventas y compras: neto + EXENTO del Libro de Compras y Ventas (RCV, notas de crédito restadas) — las facturas exentas (tipo 34) son ingreso/gasto real aunque no lleven IVA. Las compras marcadas como ACTIVO FIJO en el RCV del SII se excluyen del resultado (son inversión, no gasto del mes) y se muestran en la fila azul informativa. Remuneraciones líquidas = costo del libro de remuneraciones − imposiciones Previred − retención impuesto único (F29). Honorarios: boletas BHE+BTE brutas vigentes. Cada mes muestra datos solo si sus fuentes están cargadas.')
+              filaM('EBITDA DEL MES','resultado',null,true,'#E9F1EC'),
+              filaM('Compras activo fijo (no resta)','compras_af','#1E40AF',false,'#EFF6FF'),
+              filaM('Ventas activo fijo (no suma)','ventas_af','#0E7490',false,'#ECFEFF'))))),
+      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Mes a mes (no acumulado). Ventas y compras: neto + EXENTO del Libro de Compras y Ventas (RCV, notas de crédito restadas) — las facturas exentas (tipo 34) son ingreso/gasto real aunque no lleven IVA. Las compras Y ventas clasificadas como ACTIVO FIJO (según el SII o reclasificadas a mano en el libro RCV) quedan FUERA del resultado operacional — son inversión/desinversión, no operación — y se muestran en filas informativas. El resultado es por tanto un EBITDA (no incluye depreciación, intereses ni impuestos). Remuneraciones líquidas = costo del libro de remuneraciones − imposiciones Previred − retención impuesto único (F29). Honorarios: boletas BHE+BTE brutas vigentes. Cada mes muestra datos solo si sus fuentes están cargadas.')
     );
   }
   var inpS={padding:'6px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
@@ -16492,15 +16494,17 @@ function FinResultadoView(p){
           h('option',{value:''},'Ambas empresas (consolidado)'),
           empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
       data&&h(Btn,{v:'g',sm:true,onClick:calc},'↻ Recalcular'),
-      data&&h(Btn,{v:'teal',sm:true,onClick:function(){if(typeof XLSX==='undefined'){alert('Librería Excel no disponible');return;}var wb=XLSX.utils.book_new();var MESES_L2=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];var serie2=[];for(var mi2=1;mi2<=12;mi2++){var per2=anio+'-'+('0'+mi2).slice(-2);var d2=data.meses[per2]||{ventas:0,compras:0,compras_af:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};var rl2=Math.max(0,d2.remu_costo-d2.imposiciones-d2.ret_imp_unico);serie2.push({l:MESES_L2[mi2-1],v:d2.ventas,c:d2.compras,af:d2.compras_af||0,r:rl2,i:d2.imposiciones,h:d2.honorarios});}
+      data&&h(Btn,{v:'teal',sm:true,onClick:function(){if(typeof XLSX==='undefined'){alert('Librería Excel no disponible');return;}var wb=XLSX.utils.book_new();var MESES_L2=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];var serie2=[];for(var mi2=1;mi2<=12;mi2++){var per2=anio+'-'+('0'+mi2).slice(-2);var d2=data.meses[per2]||{ventas:0,ventas_af:0,compras:0,compras_af:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};var rl2=Math.max(0,d2.remu_costo-d2.imposiciones-d2.ret_imp_unico);serie2.push({l:MESES_L2[mi2-1],v:d2.ventas,vaf:d2.ventas_af||0,c:d2.compras,af:d2.compras_af||0,r:rl2,i:d2.imposiciones,h:d2.honorarios});}
         var aoa=[['Resultado del Año '+anio],['Concepto'].concat(MESES_L2).concat(['TOTAL'])];
         [['Ventas (neto + exento)','v'],['Compras (neto + exento, del giro)','c'],['Remuneraciones líquidas','r'],['Imposiciones','i'],['Honorarios','h']].forEach(function(rw){
           var vals=serie2.map(function(s){return Math.round(s[rw[1]]);});
           aoa.push([rw[0]].concat(vals).concat([vals.reduce(function(a,b2){return a+b2;},0)]));});
         var res2=serie2.map(function(s){return Math.round(s.v-s.c-s.r-s.i-s.h);});
-        aoa.push(['RESULTADO DEL MES'].concat(res2).concat([res2.reduce(function(a,b2){return a+b2;},0)]));
+        aoa.push(['EBITDA DEL MES'].concat(res2).concat([res2.reduce(function(a,b2){return a+b2;},0)]));
         var afs2=serie2.map(function(s){return Math.round(s.af);});
         aoa.push(['Compras activo fijo (inversión, no resta)'].concat(afs2).concat([afs2.reduce(function(a,b2){return a+b2;},0)]));
+        var vafs2=serie2.map(function(s){return Math.round(s.vaf);});
+        aoa.push(['Ventas activo fijo (no suma al EBITDA)'].concat(vafs2).concat([vafs2.reduce(function(a,b2){return a+b2;},0)]));
         XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(aoa),'Resultado '+anio);
         XLSX.writeFile(wb,'resultado_anual_'+anio+'.xlsx');}},'⬇ Excel')
     ),
@@ -16650,7 +16654,7 @@ function FinRcvView(p){
       var aoa=[['Período','Tipo DTE','Operación','RUT','Razón Social','Folio','Fecha','Exento','Neto','IVA','IVA no rec.','Otros imp.','Total']];
       ds.forEach(function(d){
         var s=sg(d);
-        aoa.push([d.periodo,d.tipo_dte,d.tipo_operacion||'',d.rut_contraparte,d.razon_social||'',d.folio,d.fecha_docto?(d.fecha_docto+'').slice(0,10):'',
+        aoa.push([d.periodo,d.tipo_dte,d.clasif_manual||d.tipo_operacion||'',d.rut_contraparte,d.razon_social||'',d.folio,d.fecha_docto?(d.fecha_docto+'').slice(0,10):'',
           s*(parseFloat(d.exento)||0),s*(parseFloat(d.neto)||0),s*(parseFloat(d.iva)||0),s*(parseFloat(d.iva_no_rec)||0),s*(parseFloat(d.otros_imp)||0),s*(parseFloat(d.total)||0)]);
       });
       var t2=totLibro(lb);
@@ -16699,8 +16703,8 @@ function FinRcvView(p){
     h('div',{className:'card',style:{padding:0,overflow:'auto'}},
       h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
         h('thead',null,h('tr',{style:{background:'#F1F5F9'}},
-          ['Libro','Tipo','Folio','Fecha','RUT','Razón Social','Exento','Neto','IVA','Otros imp.','Total',''].map(function(c,j){
-            return h('th',{key:j,style:{padding:8,fontSize:10,color:'#475569',textAlign:j>=6&&j<=10?'right':'left'}},c);
+          ['Libro','Tipo','Folio','Fecha','RUT','Razón Social','Operación','Exento','Neto','IVA','Otros imp.','Total',''].map(function(c,j){
+            return h('th',{key:j,style:{padding:8,fontSize:10,color:'#475569',textAlign:j>=7&&j<=11?'right':'left'}},c);
           })
         )),
         h('tbody',null,lista.map(function(d){
@@ -16713,6 +16717,15 @@ function FinRcvView(p){
             h('td',{style:{padding:8,fontSize:11}},d.fecha_docto?fmtD(d.fecha_docto):'—'),
             h('td',{style:{padding:8,fontSize:11,fontFamily:'monospace'}},d.rut_contraparte),
             h('td',{style:{padding:8,fontSize:11}},d.razon_social||'—'),
+            // Operación: Giro / Activo fijo — click para reclasificar (la manual prevalece sobre el SII y sobrevive a la reimportación)
+            h('td',{style:{padding:8}},(function(){
+              var efect=d.clasif_manual||d.tipo_operacion||'Del Giro';var esAF=/activo/i.test(efect);
+              return h('button',{onClick:function(){
+                  api('/fin/rcv/'+d.rcv_id+'/clasificar','PATCH',{activo_fijo:!esAF},p.tok).then(function(){load2();}).catch(function(e2){alert(e2.message);});
+                },title:(esAF?'Clasificado como ACTIVO FIJO (no suma al EBITDA). Click → Del Giro':'Del giro. Click → marcar como ACTIVO FIJO (queda fuera del EBITDA)')+(d.clasif_manual?' · clasificación manual':' · según SII'),
+                style:{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',border:'1px solid '+(esAF?'#1E40AF':'#CBD5E1'),background:esAF?'#DBEAFE':'#F8FAFC',color:esAF?'#1E40AF':'#64748B'}},
+                esAF?'🏗 Activo fijo':'Giro');
+            })()),
             cell(d.exento),cell(d.neto),cell(d.iva),cell(d.otros_imp),
             h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',fontWeight:700,color:nc?'#DC2626':'#1E3A2D'}},(nc?'-':'')+'$'+nf(d.total)),
             h('td',{style:{padding:8}},h('button',{onClick:function(){eliminar(d);},title:'Eliminar',style:{padding:'3px 8px',fontSize:11,background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:4,cursor:'pointer',color:'#DC2626'}},'🗑'))
