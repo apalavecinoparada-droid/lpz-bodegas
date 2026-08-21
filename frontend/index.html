@@ -16471,15 +16471,15 @@ function FinResultadoView(p){
               serie.map(function(s){return h('th',{key:s.mes,style:Object.assign({},thM,{opacity:s.hayDatos?1:0.45})},s.lbl.toUpperCase()+(s.incompleto?' ⚠':''));}),
               h('th',{style:Object.assign({},thM,{color:'#FCD34D'})},'TOTAL AÑO'))),
             h('tbody',null,
-              filaM('Ventas (neto)','ventas','#166534',false,'#F0FDF4'),
-              filaM('Compras (neto)','compras','#334155',false),
+              filaM('Ventas (neto + exento)','ventas','#166534',false,'#F0FDF4'),
+              filaM('Compras (neto + exento)','compras','#334155',false),
               filaM('Remuneraciones líquidas','remu_liq','#334155',false),
               filaM('Imposiciones (Previred)','imposiciones','#334155',false),
               filaM('Honorarios (BHE+BTE)','honorarios','#334155',false),
               filaM('TOTAL EGRESOS','egresos','#B91C1C',true,'#FEF2F2'),
               filaM('RESULTADO DEL MES','resultado',null,true,'#E9F1EC'),
               filaM('Compras activo fijo (no resta)','compras_af','#1E40AF',false,'#EFF6FF'))))),
-      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Mes a mes (no acumulado). Ventas y compras: netos del Libro de Compras y Ventas (RCV, notas de crédito restadas). Las compras marcadas como ACTIVO FIJO en el RCV del SII se excluyen del resultado (son inversión, no gasto del mes) y se muestran en la fila azul informativa. Remuneraciones líquidas = costo del libro de remuneraciones − imposiciones Previred − retención impuesto único (F29). Honorarios: boletas BHE+BTE brutas vigentes. Cada mes muestra datos solo si sus fuentes están cargadas.')
+      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Mes a mes (no acumulado). Ventas y compras: neto + EXENTO del Libro de Compras y Ventas (RCV, notas de crédito restadas) — las facturas exentas (tipo 34) son ingreso/gasto real aunque no lleven IVA. Las compras marcadas como ACTIVO FIJO en el RCV del SII se excluyen del resultado (son inversión, no gasto del mes) y se muestran en la fila azul informativa. Remuneraciones líquidas = costo del libro de remuneraciones − imposiciones Previred − retención impuesto único (F29). Honorarios: boletas BHE+BTE brutas vigentes. Cada mes muestra datos solo si sus fuentes están cargadas.')
     );
   }
   var inpS={padding:'6px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
@@ -16494,7 +16494,7 @@ function FinResultadoView(p){
       data&&h(Btn,{v:'g',sm:true,onClick:calc},'↻ Recalcular'),
       data&&h(Btn,{v:'teal',sm:true,onClick:function(){if(typeof XLSX==='undefined'){alert('Librería Excel no disponible');return;}var wb=XLSX.utils.book_new();var MESES_L2=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];var serie2=[];for(var mi2=1;mi2<=12;mi2++){var per2=anio+'-'+('0'+mi2).slice(-2);var d2=data.meses[per2]||{ventas:0,compras:0,compras_af:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};var rl2=Math.max(0,d2.remu_costo-d2.imposiciones-d2.ret_imp_unico);serie2.push({l:MESES_L2[mi2-1],v:d2.ventas,c:d2.compras,af:d2.compras_af||0,r:rl2,i:d2.imposiciones,h:d2.honorarios});}
         var aoa=[['Resultado del Año '+anio],['Concepto'].concat(MESES_L2).concat(['TOTAL'])];
-        [['Ventas (neto)','v'],['Compras (neto, del giro)','c'],['Remuneraciones líquidas','r'],['Imposiciones','i'],['Honorarios','h']].forEach(function(rw){
+        [['Ventas (neto + exento)','v'],['Compras (neto + exento, del giro)','c'],['Remuneraciones líquidas','r'],['Imposiciones','i'],['Honorarios','h']].forEach(function(rw){
           var vals=serie2.map(function(s){return Math.round(s[rw[1]]);});
           aoa.push([rw[0]].concat(vals).concat([vals.reduce(function(a,b2){return a+b2;},0)]));});
         var res2=serie2.map(function(s){return Math.round(s.v-s.c-s.r-s.i-s.h);});
@@ -16664,9 +16664,10 @@ function FinRcvView(p){
     // KPIs + determinación de IVA
     h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))',gap:8,marginBottom:10}},
       kpi('COMPRAS — DOCS',tC.docs,'#1E40AF',fPeriodo||'todos los períodos'),
-      kpi('NETO COMPRAS','$'+nf(tC.neto),'#1E40AF','IVA crédito: $'+nf(tC.iva)),
+      kpi('NETO COMPRAS','$'+nf(tC.neto),'#1E40AF','IVA crédito: $'+nf(tC.iva)+(tC.exento?' · Exento: $'+nf(tC.exento):'')),
       kpi('VENTAS — DOCS',tV.docs,'#16A34A',fPeriodo||'todos los períodos'),
       kpi('NETO VENTAS','$'+nf(tV.neto),'#16A34A','IVA débito: $'+nf(tV.iva)),
+      kpi('EXENTO VENTAS','$'+nf(tV.exento),'#0F766E','Ingreso total (neto + exento): $'+nf(tV.neto+tV.exento)),
       kpi(ivaDet>=0?'IVA A PAGAR (débito − crédito)':'REMANENTE CRÉDITO FISCAL','$'+nf(Math.abs(ivaDet)),ivaDet>=0?'#DC2626':'#0F766E',fPeriodo?('período '+fPeriodo):'según filtro')
     ),
     // Filtros y acciones
@@ -16730,9 +16731,10 @@ function FinRcvView(p){
             'Reemplazar el período (borra lo cargado antes de importar)')
         ),
         (function(){
-          var t2=imp.docs.reduce(function(a,d){var s=d.tipo_dte==='61'?-1:1;a.n++;a.neto+=s*d.neto;a.iva+=s*d.iva;a.total+=s*d.total;return a;},{n:0,neto:0,iva:0,total:0});
+          var t2=imp.docs.reduce(function(a,d){var s=d.tipo_dte==='61'?-1:1;a.n++;a.exento+=s*(parseFloat(d.exento)||0);a.neto+=s*d.neto;a.iva+=s*d.iva;a.total+=s*d.total;return a;},{n:0,exento:0,neto:0,iva:0,total:0});
           return h('div',{style:{padding:'10px 14px',background:'#E9F1EC',border:'1px solid #1E3A2D',borderRadius:6,display:'flex',gap:20,flexWrap:'wrap',fontSize:12,color:'#1E3A2D',marginBottom:8}},
             h('span',null,'Documentos: ',h('strong',null,t2.n)),
+            t2.exento!==0&&h('span',null,'Exento: ',h('strong',{style:{color:'#0F766E'}},'$'+nf(t2.exento))),
             h('span',null,'Neto: ',h('strong',null,'$'+nf(t2.neto))),
             h('span',null,'IVA: ',h('strong',null,'$'+nf(t2.iva))),
             h('span',null,'Total: ',h('strong',null,'$'+nf(t2.total))),
