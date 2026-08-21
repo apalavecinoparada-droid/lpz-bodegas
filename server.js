@@ -12969,8 +12969,23 @@ async function finRcvEnsure(){
     creado_en TIMESTAMP DEFAULT NOW(),
     UNIQUE(empresa_id,libro,periodo,tipo_dte,folio,rut_contraparte)
   )`);
+  // Clasificación MANUAL (2026-08): 'Activo Fijo' | 'Del Giro' — prevalece sobre tipo_operacion del SII.
+  // Uso: ventas de activo fijo (maquinaria, vehículos) que el SII marca "Del Giro" y distorsionan el EBITDA.
+  try{await pool.query('ALTER TABLE fin_rcv ADD COLUMN IF NOT EXISTS clasif_manual VARCHAR(20)');}catch(e){}
   _finRcvOk=true;
 }
+
+// PATCH: clasificar manualmente un documento como Activo Fijo / Del Giro (null = volver al SII)
+app.patch('/api/fin/rcv/:id/clasificar', auth, async(req,res)=>{
+  try{
+    await finRcvEnsure();
+    const v=req.body&&req.body.activo_fijo;
+    const val=v===true?'Activo Fijo':(v===false?'Del Giro':null);
+    const r=await pool.query('UPDATE fin_rcv SET clasif_manual=$1 WHERE rcv_id=$2 RETURNING rcv_id,clasif_manual,tipo_operacion',[val,req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Documento no encontrado'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
 
 // GET: documentos del libro con filtros
 app.get('/api/fin/rcv', auth, async(req,res)=>{
@@ -13019,7 +13034,10 @@ app.post('/api/fin/rcv/import', auth, async(req,res)=>{
     var docs=Array.isArray(b.docs)?b.docs:[];
     if(!docs.length)return res.status(400).json({error:'Sin documentos para importar'});
     await client.query('BEGIN');
+    // Preservar las clasificaciones MANUALES (activo fijo) al reemplazar el período
+    var manuales=[];
     if(b.reemplazar){
+      manuales=(await client.query('SELECT tipo_dte,folio,rut_contraparte,clasif_manual FROM fin_rcv WHERE empresa_id=$1 AND libro=$2 AND periodo=$3 AND clasif_manual IS NOT NULL',[b.empresa_id,libro,b.periodo])).rows;
       await client.query('DELETE FROM fin_rcv WHERE empresa_id=$1 AND libro=$2 AND periodo=$3',[b.empresa_id,libro,b.periodo]);
     }
     var importados=0,duplicados=0,errores=[];
@@ -13035,8 +13053,11 @@ app.post('/api/fin/rcv/import', auth, async(req,res)=>{
         if(ins.rows.length)importados++;else duplicados++;
       }catch(ex){errores.push('Folio '+(d.folio||'?')+': '+ex.message);}
     }
+    for(const mcl of manuales){
+      try{await client.query('UPDATE fin_rcv SET clasif_manual=$1 WHERE empresa_id=$2 AND libro=$3 AND periodo=$4 AND tipo_dte=$5 AND folio=$6 AND rut_contraparte=$7',[mcl.clasif_manual,b.empresa_id,libro,b.periodo,mcl.tipo_dte,mcl.folio,mcl.rut_contraparte]);}catch(e){}
+    }
     await client.query('COMMIT');
-    res.json({ok:true,importados:importados,duplicados:duplicados,errores:errores});
+    res.json({ok:true,importados:importados,duplicados:duplicados,errores:errores,clasif_restauradas:manuales.length});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
@@ -13072,7 +13093,7 @@ app.get('/api/fin/resultado-anual', auth, async(req,res)=>{
     // Compras separadas: del giro (gasto del mes) vs activo fijo (inversión, NO resta del resultado)
     const rcv=await q2('libro compra/venta',`
       SELECT periodo, libro,
-             (COALESCE(tipo_operacion,'') ILIKE '%activo%') AS af,
+             (COALESCE(clasif_manual,tipo_operacion,'') ILIKE '%activo%') AS af,
              SUM(CASE WHEN tipo_dte='61' THEN -(COALESCE(neto,0)+COALESCE(exento,0)) ELSE (COALESCE(neto,0)+COALESCE(exento,0)) END) AS neto
       FROM fin_rcv WHERE periodo LIKE $1 ${emp?'AND empresa_id=$2':''}
       GROUP BY periodo, libro, 3`,emp?[like,emp]:[like]);
@@ -13090,8 +13111,11 @@ app.get('/api/fin/resultado-anual', auth, async(req,res)=>{
       SELECT periodo, SUM(bruto) AS monto FROM fin_honorarios
       WHERE estado='VIGENTE' AND periodo LIKE $1 ${emp?'AND empresa_id=$2':''} GROUP BY periodo`,emp?[like,emp]:[like]);
     const meses={};
-    const M=function(p){if(!meses[p])meses[p]={ventas:0,compras:0,compras_af:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};return meses[p];};
-    rcv.forEach(function(r){const m=M(r.periodo);if(r.libro==='VENTA')m.ventas+=parseFloat(r.neto)||0;else if(r.af===true)m.compras_af+=parseFloat(r.neto)||0;else m.compras+=parseFloat(r.neto)||0;});
+    const M=function(p){if(!meses[p])meses[p]={ventas:0,ventas_af:0,compras:0,compras_af:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};return meses[p];};
+    // Ventas y compras de ACTIVO FIJO quedan FUERA del resultado operacional (EBITDA): solo informativas
+    rcv.forEach(function(r){const m=M(r.periodo);const v=parseFloat(r.neto)||0;
+      if(r.libro==='VENTA'){if(r.af===true)m.ventas_af+=v;else m.ventas+=v;}
+      else{if(r.af===true)m.compras_af+=v;else m.compras+=v;}});
     remu.forEach(function(r){M(r.periodo).remu_costo+=parseFloat(r.monto)||0;});
     impos.forEach(function(r){M(r.periodo).imposiciones+=parseFloat(r.monto)||0;});
     f29r.forEach(function(r){M(r.periodo).ret_imp_unico+=parseFloat(r.ret)||0;});
