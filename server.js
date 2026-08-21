@@ -13073,7 +13073,7 @@ app.get('/api/fin/resultado-anual', auth, async(req,res)=>{
     const rcv=await q2('libro compra/venta',`
       SELECT periodo, libro,
              (COALESCE(tipo_operacion,'') ILIKE '%activo%') AS af,
-             SUM(CASE WHEN tipo_dte='61' THEN -neto ELSE neto END) AS neto
+             SUM(CASE WHEN tipo_dte='61' THEN -(COALESCE(neto,0)+COALESCE(exento,0)) ELSE (COALESCE(neto,0)+COALESCE(exento,0)) END) AS neto
       FROM fin_rcv WHERE periodo LIKE $1 ${emp?'AND empresa_id=$2':''}
       GROUP BY periodo, libro, 3`,emp?[like,emp]:[like]);
     const remu=await q2('remuneraciones',`
