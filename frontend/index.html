@@ -7080,6 +7080,7 @@ function RendicionesView(p){
 function ImportZipDTE(p){
   var[status,setStatus]=useState('idle');var[dtes,setDtes]=useState([]);var[sel,setSel]=useState({});
   var[msg,setMsg]=useState('');var[results,setResults]=useState(null);var[filtTipo,setFiltTipo]=useState('');
+  var[precheck,setPrecheck]=useState({}); // dteKey → {existe, ocs, cierre_guias}
   var provs=p.m&&Array.isArray(p.m.provs)?p.m.provs:[];
   function parseXmlDte(xmlStr){
     try{
@@ -7129,7 +7130,14 @@ function ImportZipDTE(p){
             if(done===xmlFiles.length){
               parsed.sort(function(a,b){return(a.fecha_emision||'').localeCompare(b.fecha_emision||'');});
               setDtes(parsed);setStatus('preview');
-              setMsg(parsed.length+' DTE encontrados de '+xmlFiles.length+' archivos');
+              setMsg(parsed.length+' DTE encontrados de '+xmlFiles.length+' archivos — verificando folios ya registrados...');
+              // AVISO PREVIO: consultar qué folios ya existen como OC o cierre de guías
+              api('/import/bulk-oc/precheck','POST',{items:parsed.map(function(d2){return{folio:d2.folio,proveedor_rut:d2.proveedor_rut};})},p.tok).then(function(r2){
+                var mp={};(r2.items||[]).forEach(function(x){if(x.existe)mp[x.folio+'_'+x.proveedor_rut]=x;});
+                setPrecheck(mp);
+                var nDup=Object.keys(mp).length;
+                setMsg(parsed.length+' DTE encontrados'+(nDup?(' — ⚠ '+nDup+' folio(s) YA registrados en el sistema (marcados en rojo, desmarcados por defecto)'):' — ningún folio repetido'));
+              }).catch(function(){setMsg(parsed.length+' DTE encontrados (no se pudo verificar folios repetidos)');});
             }
           });
         });
@@ -7139,13 +7147,20 @@ function ImportZipDTE(p){
     reader.readAsArrayBuffer(file);
   }
   function toggleSel(folio){setSel(function(prev){var n=Object.assign({},prev);if(n[folio])delete n[folio];else n[folio]=true;return n;});}
-  function selAll(){var n={};var filtered=getFiltered();filtered.forEach(function(d){n[d.folio+'_'+d.proveedor_rut]=true;});setSel(n);}
+  function selAll(){var n={};var filtered=getFiltered();filtered.forEach(function(d){if(!precheck[d.folio+'_'+d.proveedor_rut])n[d.folio+'_'+d.proveedor_rut]=true;});setSel(n);}
   function selNone(){setSel({});}
   function dteKey(d){return d.folio+'_'+d.proveedor_rut;}
   function getFiltered(){return dtes.filter(function(d){return!filtTipo||d.tipo_dte===filtTipo;});}
   function importar(){
     var items=dtes.filter(function(d){return sel[dteKey(d)];});
     if(!items.length){setMsg('Seleccione al menos un DTE');return;}
+    // Folios repetidos seleccionados a propósito → confirmación explícita + flag forzar
+    var repes=items.filter(function(d){return !!precheck[dteKey(d)];});
+    if(repes.length){
+      var det=repes.map(function(d){var pc=precheck[dteKey(d)];var donde=(pc.ocs||[]).map(function(o){return o.numero_oc+' ('+o.estado+')';}).join(', ')||(pc.cierre_guias?('cierre de guías '+(pc.cierre_guias.ocs||'')):'');return '• Folio '+d.folio+' → ya en '+donde;}).join('\n');
+      if(!confirm('⚠ '+repes.length+' documento(s) seleccionados YA están registrados:\n\n'+det+'\n\nLo habitual es 1 orden = 1 factura. ¿Crear IGUALMENTE una OC adicional para estos folios? (caso válido: una factura que respalda varias órdenes)'))return;
+    }
+    items=items.map(function(d){return precheck[dteKey(d)]?Object.assign({},d,{forzar:true}):d;});
     setStatus('importing');setMsg('Creando '+items.length+' OC...');
     api('/import/bulk-oc','POST',{items:items},p.tok).then(function(r){
       setResults(r.results||[]);setStatus('done');
@@ -7184,7 +7199,12 @@ function ImportZipDTE(p){
           h(TBL,{cols:[
             {lbl:'',w:35,render:function(r){return h('input',{type:'checkbox',checked:!!sel[dteKey(r)],onChange:function(){toggleSel(dteKey(r));},style:{cursor:'pointer'}});}},
             {lbl:'Tipo',render:function(r){return h(Bg,{c:r.tipo_dte==='33'?'b':r.tipo_dte==='61'?'r':r.tipo_dte==='56'?'y':'gray'},r.tipo_doc);}},
-            {lbl:'Folio',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.folio);}},
+            {lbl:'Folio',render:function(r){var pc=precheck[dteKey(r)];
+              return h('div',null,
+                h('span',{style:{fontFamily:'monospace',fontSize:11}},r.folio),
+                pc&&h('div',{style:{fontSize:9,fontWeight:800,color:'#B91C1C',background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:6,padding:'1px 5px',display:'inline-block',marginTop:2},
+                  title:'Ya registrado: '+((pc.ocs||[]).map(function(o){return o.numero_oc+' ('+o.estado+', $'+new Intl.NumberFormat('es-CL').format(Math.round(o.total))+')';}).join(' · ')||'')+(pc.cierre_guias?(' · cierre de guías: '+(pc.cierre_guias.ocs||'')):'')+'. Lo habitual es 1 orden = 1 factura; márcalo solo si esta factura respalda una OC adicional legítima.'},
+                  '⚠ YA EN '+((pc.ocs&&pc.ocs[0])?pc.ocs[0].numero_oc:'CIERRE GUÍAS')));}},
             {lbl:'Fecha',render:function(r){return fmtD(r.fecha_emision);}},
             {lbl:'Proveedor',render:function(r){return h('div',null,h('div',{style:{fontSize:12,fontWeight:500}},r.proveedor_nombre||'—'),h('div',{style:{fontSize:10,color:r.proveedor_match?'#10B981':'#F59E0B'}},r.proveedor_match?'✓ '+r.proveedor_match:'⚠ No registrado — se creará'));}},
             {lbl:'Líneas',r:true,render:function(r){return r.lineas.length;}},
@@ -8432,10 +8452,16 @@ function OCView(p){
       esAdminOC&&h('button',{onClick:function(){verEliminadas();},title:'Órdenes eliminadas definitivamente (respaldo de la bitácora de auditoría)',style:{padding:'5px 10px',border:'1px solid #FCA5A5',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'🗑 Eliminadas')
     ),
     h('div',{style:{fontSize:12,color:'#64748B',marginBottom:6}},ocs.length+' resultado(s)'),
+    // Detector de folios repetidos entre las OCs VIGENTES listadas (compra duplicada)
+    (function(){window.__ocFolioDup={};var mp=window.__ocFolioDup;ocs.forEach(function(o){if(o.estado==='ANULADA'||!o.numero_documento)return;var k=String(o.proveedor_rut||o.proveedor_id||'')+'|'+String(o.numero_documento).replace(/^0+/,'');mp[k]=(mp[k]||0)+1;});return null;})(),
     load?h('div',{className:'spin'},'Cargando...'):
     h('div',{className:'card'},h(TBL,{cols:[
       {lbl:h(SortHdr,{field:'numero_oc',label:'N° OC'}),k:'numero_oc',mono:true},{lbl:h(SortHdr,{field:'empresa_nombre',label:'Empresa'}),render:function(r){return r.empresa_nombre||r.empresa||'—';}},{lbl:h(SortHdr,{field:'proveedor_nombre',label:'Proveedor'}),render:function(r){return r.proveedor_nombre||r.proveedor||'—';}},
-      {lbl:'DT',render:function(r){var isNC=(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0||(r.tipo_doc_nombre||'').toLowerCase().indexOf('nota')>=0&&(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0;return r.tipo_doc_nombre?h('div',{style:{fontSize:10}},h('span',{style:{fontWeight:600,color:isNC?'#DC2626':'#475569'}},r.tipo_doc_nombre),r.numero_documento?h('div',{style:{fontFamily:'monospace',color:'#64748B'}},'#'+r.numero_documento):null):'—';}},
+      {lbl:'DT',render:function(r){var isNC=(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0||(r.tipo_doc_nombre||'').toLowerCase().indexOf('nota')>=0&&(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0;
+        var esDup=false;
+        if(r.numero_documento&&r.estado!=='ANULADA'&&window.__ocFolioDup){var k=String(r.proveedor_rut||r.proveedor_id||'')+'|'+String(r.numero_documento).replace(/^0+/,'');esDup=(window.__ocFolioDup[k]||0)>1;}
+        return r.tipo_doc_nombre?h('div',{style:{fontSize:10}},h('span',{style:{fontWeight:600,color:isNC?'#DC2626':'#475569'}},r.tipo_doc_nombre),r.numero_documento?h('div',{style:{fontFamily:'monospace',color:'#64748B'}},'#'+r.numero_documento):null,
+          esDup&&h('div',{style:{fontSize:9,fontWeight:800,color:'#B91C1C',background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:6,padding:'1px 5px',display:'inline-block',marginTop:2},title:'Este folio respalda MÁS DE UNA OC vigente de este proveedor. Puede ser legítimo (una factura que cubre varias órdenes) o una compra duplicada del import — revisar; si sobra una, anularla'},'⚠ FOLIO REPETIDO')):'—';}},
       {lbl:h(SortHdr,{field:'fecha_emision',label:'Fecha'}),render:function(r){return fmtD(r.fecha_emision);}},{lbl:h(SortHdr,{field:'estado',label:'Estado'}),render:function(r){return h(Bg,{c:estadoColor[r.estado]||'gray'},r.estado);}},
       {lbl:'Guía Despacho',render:function(r){
         var tipo=(r.tipo_doc_nombre||'').toLowerCase();
