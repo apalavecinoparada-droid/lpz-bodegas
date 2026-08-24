@@ -243,22 +243,16 @@ const app        = express();
 const PORT       = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || 'lpz_bodegas_secret_2025';
 
-const _poolBase = process.env.DATABASE_URL
-  ? { connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } }
-  : { host: process.env.DB_HOST||'localhost', port: parseInt(process.env.DB_PORT||'5432'),
-      database: process.env.DB_NAME||'lpz_bodegas', user: process.env.DB_USER||'postgres',
-      password: process.env.DB_PASSWORD||'postgres' };
-const pool = new Pool(Object.assign({}, _poolBase, {
-  max: parseInt(process.env.DB_POOL_MAX||'10'),     // tope de conexiones por instancia
-  idleTimeoutMillis: 30000,                          // cierra conexiones ociosas a los 30s
-  connectionTimeoutMillis: 12000,                    // si no consigue conexión en 12s, falla rápido
-  keepAlive: true
-}));
-// Evita que un error de conexión en una conexión ociosa tumbe el proceso
-pool.on('error', function(err){ try{ console.error('[pool] error en cliente ocioso:', err.message); }catch(e){} });
+const pool = new Pool(
+  process.env.DATABASE_URL
+    ? { connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } }
+    : { host: process.env.DB_HOST||'localhost', port: parseInt(process.env.DB_PORT||'5432'),
+        database: process.env.DB_NAME||'lpz_bodegas', user: process.env.DB_USER||'postgres',
+        password: process.env.DB_PASSWORD||'postgres' }
+);
 
 app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'frontend')));
 
 async function auth(req, res, next) {
@@ -266,23 +260,25 @@ async function auth(req, res, next) {
   if (!h) return res.status(401).json({ error: 'No autorizado' });
   try {
     req.user = jwt.verify(h.split(' ')[1], JWT_SECRET);
-    // SEGURIDAD (auditoría 2026-08): permisos SIEMPRE frescos desde la BD en cada request.
-    // Antes se usaban los del JWT (congelados hasta 8 h): revocar un permiso o desactivar
-    // un rol no surtía efecto hasta re-login. Fallback a los del token si la BD falla.
-    try {
-      const r = await pool.query(
-        'SELECT ro.modulos, COALESCE(ro.es_admin,false) AS es_admin, u.activo FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',
-        [req.user.id]
-      );
-      if (r.rows.length) {
-        if (r.rows[0].activo === false) return res.status(401).json({ error: 'Usuario desactivado' });
-        req.user.modulos = r.rows[0].modulos || [];
-        req.user.es_admin = !!r.rows[0].es_admin || req.user.rol === 'ADMINISTRADOR';
-      } else if (req.user.modulos === undefined || req.user.modulos === null) {
+    // Compatibilidad: tokens emitidos antes del cambio que agregó "modulos" al JWT
+    // pueden venir sin esa propiedad. En ese caso, refrescamos desde la BD para
+    // que los middlewares de requireModulo() funcionen correctamente sin forzar
+    // a todos los usuarios a relogarse.
+    if (req.user.modulos === undefined || req.user.modulos === null) {
+      try {
+        const r = await pool.query(
+          'SELECT ro.modulos, ro.es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',
+          [req.user.id]
+        );
+        if (r.rows.length) {
+          req.user.modulos = r.rows[0].modulos || [];
+          if (r.rows[0].es_admin) req.user.es_admin = true;
+        } else {
+          req.user.modulos = [];
+        }
+      } catch (e) {
         req.user.modulos = [];
       }
-    } catch (e) {
-      if (req.user.modulos === undefined || req.user.modulos === null) req.user.modulos = [];
     }
     next();
   } catch { res.status(401).json({ error: 'Token invalido' }); }
@@ -302,43 +298,8 @@ function requireModulo(mod) {
   };
 }
 
-async function audit(tabla, id, accion, antes, despues, usr, ip) {
-  try { await pool.query('INSERT INTO auditoria(tabla_afectada,registro_id,accion,datos_anteriores,datos_nuevos,usuario,ip_origen) VALUES($1,$2,$3,$4,$5,$6,$7)',[tabla,id,accion,antes?JSON.stringify(antes):null,despues?JSON.stringify(despues):null,usr,ip||null]); } catch(e) { console.error('audit:',e.message); }
-}
-function reqIp(req){return ((req.headers['x-forwarded-for']||req.ip||'')+'').split(',')[0].trim().slice(0,45);}
-// ── Auditoría de OC: snapshot completo (encabezado + líneas) ──
-// q = pool o client (dentro de transacción). Nunca lanza: la auditoría no debe romper la operación.
-async function ocSnapshot(q,ocId){
-  try{
-    const oc=(await q.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[ocId])).rows[0];
-    if(!oc)return null;
-    const lin=(await q.query('SELECT * FROM ordenes_compra_detalle WHERE oc_id=$1 ORDER BY linea_num,detalle_id',[ocId])).rows;
-    let dte=[];
-    try{dte=(await q.query('SELECT x.dte_id,x.monto_aplicado,d.folio,d.tipo_doc,d.proveedor_nombre FROM dte_oc x LEFT JOIN dte_recibidos d ON x.dte_id=d.dte_id WHERE x.oc_id=$1',[ocId])).rows;}catch(e){}
-    return Object.assign({},oc,{lineas:lin,dte_vinculados:dte});
-  }catch(e){return null;}
-}
-async function auditOC(q,ocId,accion,antes,req,despues){
-  try{
-    if(despues===undefined)despues=await ocSnapshot(q,ocId);
-    await q.query('INSERT INTO auditoria(tabla_afectada,registro_id,accion,datos_anteriores,datos_nuevos,usuario,ip_origen) VALUES($1,$2,$3,$4,$5,$6,$7)',
-      ['ordenes_compra',parseInt(ocId),accion,antes?JSON.stringify(antes):null,despues?JSON.stringify(despues):null,req.user.email,reqIp(req)]);
-  }catch(e){console.error('auditOC:',e.message);}
-}
-// ── Permisos granulares de OC (patrón inventario-editar) ──
-// Compatibilidad: si el rol NO declara ningún permiso fino 'ordenes-*', el módulo 'ordenes'
-// habilita todo (roles antiguos siguen funcionando). Si declara alguno, se exige el específico.
-function requireOC(perm){
-  return function(req,res,next){
-    if(!req.user)return res.status(401).json({error:'No autorizado'});
-    if(req.user.es_admin)return next();
-    const mods=req.user.modulos||[];
-    if(mods.indexOf('ordenes')<0)return res.status(403).json({error:'Sin permiso para módulo ordenes'});
-    const finos=mods.filter(function(m){return (m+'').indexOf('ordenes-')===0;});
-    if(!finos.length)return next();
-    if(mods.indexOf('ordenes-'+perm)>=0)return next();
-    return res.status(403).json({error:'Sin permiso: ordenes-'+perm+'. Solicite al administrador habilitarlo en su rol.'});
-  };
+async function audit(tabla, id, accion, antes, despues, usr) {
+  try { await pool.query('INSERT INTO auditoria(tabla_afectada,registro_id,accion,datos_anteriores,datos_nuevos,usuario) VALUES($1,$2,$3,$4,$5,$6)',[tabla,id,accion,antes?JSON.stringify(antes):null,despues?JSON.stringify(despues):null,usr]); } catch {}
 }
 
 
@@ -823,8 +784,6 @@ async function autoSetup() {
   try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS username VARCHAR(50) UNIQUE');}catch(e){}
   try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS empresa_id INT REFERENCES empresas(empresa_id)');}catch(e){}
   try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS faena_id INT REFERENCES faenas(faena_id)');}catch(e){}
-  // Turno del usuario (A/B, mismo esquema 7x7 del personal): en Terreno el usuario ve solo el personal de su turno
-  try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS turno VARCHAR(2)');}catch(e){}
   await q(`CREATE TABLE IF NOT EXISTS roles (rol_id SERIAL PRIMARY KEY, nombre VARCHAR(50) NOT NULL UNIQUE, descripcion VARCHAR(200), modulos JSONB DEFAULT '[]', es_admin BOOLEAN DEFAULT false, activo BOOLEAN DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
   try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS rol_id INT REFERENCES roles(rol_id)');}catch(e){}
   // ── Extensión pg_trgm para similitud de texto (auditoría de compras) ──
@@ -908,12 +867,6 @@ async function autoSetup() {
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS usuario VARCHAR(100)",
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS creado_en TIMESTAMP DEFAULT NOW()",
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS modificado_en TIMESTAMP DEFAULT NOW()",
-    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS modificado_por VARCHAR(100)",
-    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS motivo_anulacion TEXT",
-    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS reabierto_en TIMESTAMP",
-    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS reabierto_por VARCHAR(100)",
-    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS motivo_reapertura TEXT",
-    "CREATE INDEX IF NOT EXISTS idx_auditoria_reg ON auditoria(tabla_afectada,registro_id)",
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_en TIMESTAMP",
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS anulado_por VARCHAR(100)",
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS recibido_en TIMESTAMP",
@@ -1364,7 +1317,7 @@ app.post('/api/auth/login', async(req,res)=>{
     const modulos=u.modulos||[];
     const esAdmin=u.es_admin||u.rol==='ADMINISTRADOR';
     const token=jwt.sign({id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos},JWT_SECRET,{expiresIn:'8h'});
-    res.json({token,usuario:{id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos,empresa_id:u.empresa_id||null,faena_id:u.faena_id||null,turno:u.turno||null}});
+    res.json({token,usuario:{id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos,empresa_id:u.empresa_id||null,faena_id:u.faena_id||null}});
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.get('/api/auth/me', auth, (req,res)=>res.json(req.user));
@@ -1434,7 +1387,7 @@ faenaRouter.put('/:id', auth, async(req,res)=>{
       empresa_id=er.rows[0].empresa_id;
     }
     empresa_id=empresa_id?parseInt(empresa_id):null;
-    const r=await pool.query('UPDATE faenas SET codigo=$1,nombre=$2,descripcion=$3,empresa_id=$4,nombre_linea=$5,turno_inicio_a=$6 WHERE faena_id=$7 RETURNING *',[codigo,nombre||null,descripcion||null,empresa_id,nombre_linea||null,req.body.turno_inicio_a||null,req.params.id]);
+    const r=await pool.query('UPDATE faenas SET codigo=$1,nombre=$2,descripcion=$3,empresa_id=$4,nombre_linea=$5 WHERE faena_id=$6 RETURNING *',[codigo,nombre||null,descripcion||null,empresa_id,nombre_linea||null,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -1806,7 +1759,7 @@ mvR.get('/', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 mvR.get('/:id/detalles', auth, async(req,res)=>{
-  try{const r=await pool.query('SELECT md.*,p.nombre AS producto_nombre,p.codigo AS producto_codigo,p.unidad_medida,sc.nombre AS subcategoria_nombre FROM movimiento_detalle md JOIN productos p ON md.producto_id=p.producto_id LEFT JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id WHERE md.movimiento_id=$1',[req.params.id]);res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
+  try{const r=await pool.query('SELECT md.*,p.nombre AS producto_nombre,p.codigo AS producto_codigo,p.unidad_medida FROM movimiento_detalle md JOIN productos p ON md.producto_id=p.producto_id WHERE md.movimiento_id=$1',[req.params.id]);res.json(r.rows);}catch(e){res.status(500).json({error:e.message});}
 });
 mvR.post('/', auth, async(req,res)=>{
   const client=await pool.connect();
@@ -2720,51 +2673,18 @@ app.get('/api/reportes/ingresos', auth, async(req,res)=>{
 
 // ORDENES DE COMPRA
 const ocR=express.Router();
-// ── Anti-duplicados de compra (2026-08): busca otra OC VIGENTE del mismo proveedor
-// (mismo RUT — cubre proveedores duplicados en el maestro) con el mismo folio normalizado.
-// Devuelve {numero_oc} o null. excluirOcId omite la propia OC (ediciones).
-async function ocFolioDuplicado(q,proveedorId,folio,excluirOcId){
-  try{
-    if(!proveedorId||!folio)return null;
-    const vals=[String(folio),proveedorId];
-    let ex='';
-    if(excluirOcId){vals.push(excluirOcId);ex=' AND oc.oc_id<>$3';}
-    const r=await q.query(`SELECT oc.numero_oc, oc.estado FROM ordenes_compra oc
-      WHERE oc.estado<>'ANULADA' AND oc.numero_documento IS NOT NULL AND oc.numero_documento<>''
-        AND regexp_replace(oc.numero_documento,'^0+','')=regexp_replace($1,'^0+','')
-        AND oc.proveedor_id IN (
-          SELECT p2.proveedor_id FROM proveedores p2
-          JOIN proveedores p1 ON LOWER(REPLACE(REPLACE(COALESCE(p1.rut,''),'.',''),'-',''))=LOWER(REPLACE(REPLACE(COALESCE(p2.rut,''),'.',''),'-',''))
-          WHERE p1.proveedor_id=$2 AND COALESCE(p1.rut,'')<>'' )
-        ${ex} LIMIT 1`,vals);
-    return r.rows[0]||null;
-  }catch(e){return null;}
-}
-// Scoping por empresa del usuario (auditoría 2026-08): usuario no-admin con empresa
-// asignada en el maestro SOLO ve las OCs de su empresa; el filtro del query se ignora.
-async function ocUserEmpresa(userId){
-  try{
-    const r=await pool.query('SELECT u.empresa_id, COALESCE(ro.es_admin,false) AS es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',[userId]);
-    if(!r.rows.length)return null;
-    return r.rows[0].es_admin?null:(r.rows[0].empresa_id||null);
-  }catch(e){return null;}
-}
 ocR.get('/', auth, async(req,res)=>{
   try{
-    const{estado,proveedor_id,desde,hasta,empresa_id,numero_documento,numero_factura,numero_oc,doc_respaldo}=req.query;
+    const{estado,proveedor_id,desde,hasta,empresa_id,numero_documento,numero_factura,numero_oc}=req.query;
     let where=['1=1'],vals=[];
-    const userEmp=await ocUserEmpresa(req.user.id);
-    if(userEmp){vals.push(userEmp);where.push(`oc.empresa_id=$${vals.length}`);}
     if(estado){vals.push(estado);where.push(`oc.estado=$${vals.length}`);}
     if(proveedor_id){vals.push(proveedor_id);where.push(`oc.proveedor_id=$${vals.length}`);}
-    if(empresa_id&&!userEmp){vals.push(empresa_id);where.push(`oc.empresa_id=$${vals.length}`);}
+    if(empresa_id){vals.push(empresa_id);where.push(`oc.empresa_id=$${vals.length}`);}
     if(desde){vals.push(desde);where.push(`oc.fecha_emision>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`oc.fecha_emision<=$${vals.length}`);}
     if(numero_documento){vals.push('%'+numero_documento+'%');where.push(`oc.numero_documento ILIKE $${vals.length}`);}
     if(numero_factura){vals.push('%'+numero_factura+'%');where.push(`fac.numero_factura ILIKE $${vals.length}`);}
     if(numero_oc){vals.push('%'+numero_oc+'%');where.push(`oc.numero_oc ILIKE $${vals.length}`);}
-    if(doc_respaldo==='sin'){where.push(`TRIM(COALESCE(oc.numero_documento,''))='' AND oc.anulado_en IS NULL`);}
-    if(doc_respaldo==='con'){where.push(`TRIM(COALESCE(oc.numero_documento,''))<>''`);}
     const r=await pool.query(`SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,pr.rut AS proveedor_rut,cp.nombre AS condicion_nombre,td.nombre AS tipo_doc_nombre,uc.nombre AS usuario_nombre,uk.nombre AS cerrada_por_nombre,
       fac.numero_factura AS factura_asociada_numero, fac.fecha_factura AS factura_asociada_fecha, fac.total AS factura_asociada_total
       FROM ordenes_compra oc 
@@ -2797,15 +2717,11 @@ ocR.get('/:id', auth, async(req,res)=>{
   try{
     const oc=await pool.query('SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,pr.rut AS proveedor_rut,cp.nombre AS condicion_nombre,td.nombre AS tipo_doc_nombre,b.nombre AS bodega_ingreso_nombre,uc.nombre AS usuario_nombre,uk.nombre AS cerrada_por_nombre FROM ordenes_compra oc LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id LEFT JOIN condiciones_pago cp ON oc.condicion_id=cp.condicion_id LEFT JOIN tipos_documento td ON oc.tipo_doc_id=td.tipo_doc_id LEFT JOIN bodegas b ON oc.bodega_ingreso_id=b.bodega_id LEFT JOIN usuarios uc ON LOWER(uc.email)=LOWER(oc.usuario) LEFT JOIN usuarios uk ON LOWER(uk.email)=LOWER(oc.cerrada_por) WHERE oc.oc_id=$1',[req.params.id]);
     if(!oc.rows.length) return res.status(404).json({error:'No encontrado'});
-    // Scoping por empresa del usuario (evita enumeración de IDs de la otra empresa)
-    const userEmpD=await ocUserEmpresa(req.user.id);
-    if(userEmpD&&oc.rows[0].empresa_id&&String(oc.rows[0].empresa_id)!==String(userEmpD))
-      return res.status(403).json({error:'No tiene acceso a órdenes de esa empresa'});
     const dets=await pool.query('SELECT d.*,p.nombre AS producto_nombre,p.codigo AS producto_codigo,sc.nombre AS subcategoria_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre,b.nombre AS bodega_destino_nombre FROM ordenes_compra_detalle d LEFT JOIN productos p ON d.producto_id=p.producto_id LEFT JOIN subcategorias sc ON d.subcategoria_id=sc.subcategoria_id LEFT JOIN faenas f ON d.faena_id=f.faena_id LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id LEFT JOIN bodegas b ON d.bodega_destino_id=b.bodega_id WHERE d.oc_id=$1 ORDER BY d.linea_num,d.detalle_id',[req.params.id]);
     res.json({...oc.rows[0],lineas:dets.rows});
   }catch(e){res.status(500).json({error:e.message});}
 });
-ocR.post('/', auth, requireOC('crear'), async(req,res)=>{
+ocR.post('/', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
@@ -2824,20 +2740,18 @@ ocR.post('/', auth, requireOC('crear'), async(req,res)=>{
     const ocR2=await client.query('INSERT INTO ordenes_compra(numero_oc,empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,neto,iva,total,observaciones,usuario,es_activo_fijo,af_vida_util_meses,af_valor_residual,af_descripcion) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING oc_id',[numero_oc,empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,req.user.email,es_activo_fijo||false,es_activo_fijo?(parseInt(af_vida_util_meses)||60):null,es_activo_fijo?(parseFloat(af_valor_residual)||0):null,es_activo_fijo?(af_descripcion||null):null]);
     const ocId=ocR2.rows[0].oc_id;
     for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[ocId,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
-    await auditOC(client,ocId,'CREATE',null,req);
     await client.query('COMMIT');
     res.status(201).json({ok:true,oc_id:ocId,numero_oc});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
-ocR.put('/:id', auth, requireOC('editar'), async(req,res)=>{
+ocR.put('/:id', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
     const chk=await client.query('SELECT estado FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length) throw new Error('OC no encontrada');
     if(chk.rows[0].estado!=='PENDIENTE') throw new Error('Solo se pueden editar ordenes PENDIENTES');
-    const _snapAntes=await ocSnapshot(client,req.params.id);
     const{empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,observaciones,lineas,tipo_doc_id,numero_documento,fecha_documento,es_activo_fijo,af_vida_util_meses,af_valor_residual,af_descripcion}=req.body;
     const netoAfecto=lineas.filter(l=>!l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
     const netoExento=lineas.filter(l=>l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
@@ -2847,46 +2761,37 @@ ocR.put('/:id', auth, requireOC('editar'), async(req,res)=>{
     const _numDoc = (numero_documento && String(numero_documento).trim()) ? String(numero_documento).trim() : null;
     const _fechaDoc = fecha_documento || null;
     await client.query('UPDATE ordenes_compra SET empresa_id=$1,proveedor_id=$2,fecha_emision=$3,solicitante=$4,retira=$5,condicion_id=$6,impuesto_adicional=$7,neto=$8,iva=$9,total=$10,observaciones=$11,tipo_doc_id=$12,numero_documento=$13,fecha_documento=$14,es_activo_fijo=$15,af_vida_util_meses=$16,af_valor_residual=$17,af_descripcion=$18,modificado_en=NOW() WHERE oc_id=$19',[empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,_tipoDoc,_numDoc,_fechaDoc,es_activo_fijo||false,es_activo_fijo?(parseInt(af_vida_util_meses)||60):null,es_activo_fijo?(parseFloat(af_valor_residual)||0):null,es_activo_fijo?(af_descripcion||null):null,req.params.id]);
-    await client.query('UPDATE ordenes_compra SET modificado_por=$1 WHERE oc_id=$2',[req.user.email,req.params.id]);
     await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
     for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[req.params.id,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
     // Si se asignó un DTE manualmente y existe en dte_recibidos del mismo proveedor → vincular automáticamente en dte_oc
     if(_numDoc && _tipoDoc && proveedor_id){
       try{
         const dteMatch=await client.query(
-          `SELECT d.dte_id, d.total,
-                  COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.dte_id=d.dte_id),0) AS asignado
-             FROM dte_recibidos d
+          `SELECT d.dte_id FROM dte_recibidos d 
              JOIN tipos_documento t ON t.tipo_doc_id=$1
-             WHERE d.proveedor_id=$2
-               AND regexp_replace(d.folio,'^0+','')=regexp_replace($3,'^0+','')
+             WHERE d.proveedor_id=$2 AND d.folio=$3
                AND (UPPER(d.tipo_doc)=UPPER(t.codigo) OR UPPER(d.tipo_dte)=UPPER(t.codigo))
              LIMIT 1`,
           [_tipoDoc, proveedor_id, _numDoc]
         );
         if(dteMatch.rows.length){
-          const dm=dteMatch.rows[0];
-          const dteId=dm.dte_id;
-          // Tope: nunca asignar más que el saldo sin asignar del DTE ni más que el total de la OC
-          const restanteDte=(parseFloat(dm.total)||0)-(parseFloat(dm.asignado)||0);
-          const montoVinc=Math.min(total, Math.max(0,restanteDte));
+          const dteId=dteMatch.rows[0].dte_id;
           // Verificar que no exista ya el vínculo
           const ex=await client.query('SELECT rel_id FROM dte_oc WHERE dte_id=$1 AND oc_id=$2',[dteId,req.params.id]);
-          if(!ex.rows.length && montoVinc>1){
+          if(!ex.rows.length){
             await client.query(
               'INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5)',
-              [dteId, req.params.id, montoVinc, 'Vinculación automática al editar OC con DTE', req.user.email]
+              [dteId, req.params.id, total, 'Vinculación automática al editar OC con DTE', req.user.email]
             );
           }
         }
       }catch(_){/* no bloquear el update si falla la vinculación */}
     }
-    await auditOC(client,req.params.id,'UPDATE',_snapAntes,req);
     await client.query('COMMIT');res.json({ok:true});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
-ocR.patch('/:id/cerrar', auth, requireOC('editar'), async(req,res)=>{
+ocR.patch('/:id/cerrar', auth, async(req,res)=>{
   try{
     const{tipo_doc_id,numero_documento,fecha_documento}=req.body;
     const chk=await pool.query('SELECT estado,tipo_doc_id AS curr_tipo,numero_documento AS curr_num,fecha_documento AS curr_fecha,proveedor_id,total FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
@@ -2927,9 +2832,7 @@ ocR.patch('/:id/cerrar', auth, requireOC('editar'), async(req,res)=>{
       }).join('; ');
       return res.status(400).json({error:'No se puede cerrar: hay '+incompletas.rows.length+' línea(s) incompleta(s). '+detalle});
     }
-    const _snapAntesCierre=await ocSnapshot(pool,req.params.id);
     await pool.query("UPDATE ordenes_compra SET estado='CERRADA',tipo_doc_id=$1,numero_documento=$2,fecha_documento=$3,cerrada_por=$4,fecha_cierre=NOW(),modificado_en=NOW() WHERE oc_id=$5",[_tipoDoc,_numDoc,_fechaDoc,req.user.email,req.params.id]);
-    await auditOC(pool,req.params.id,'CERRAR',_snapAntesCierre,req);
     // ── Si la OC es activo fijo y aún no se ha capitalizado, crear el registro ──
     try{
       const ocFull=await pool.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
@@ -2957,18 +2860,17 @@ ocR.patch('/:id/cerrar', auth, requireOC('editar'), async(req,res)=>{
     res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
 });
-ocR.patch('/:id/reabrir', auth, requireOC('reabrir'), async(req,res)=>{
+ocR.patch('/:id/reabrir', auth, async(req,res)=>{
   // Reabre una OC CERRADA, revirtiendo el ingreso a inventario si lo hubo.
+  // Cualquier usuario con acceso al módulo de OC puede reabrir.
   // Permite reabrir aunque haya salidas posteriores (el stock puede quedar negativo
-  // y se ajusta manualmente). AUDITADO: la evidencia del cierre que se limpia
-  // (folio, cerrada_por, fecha_cierre) queda en el snapshot datos_anteriores.
+  // y se ajusta manualmente).
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
     const chk=await client.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length){ await client.query('ROLLBACK'); return res.status(404).json({error:'OC no encontrada'}); }
     const oc=chk.rows[0];
-    const _snapAntesReabrir=await ocSnapshot(client,req.params.id);
     if(oc.estado==='PENDIENTE'){ await client.query('ROLLBACK'); return res.status(400).json({error:'La OC ya está en estado PENDIENTE'}); }
     if(oc.estado==='ANULADA'){ await client.query('ROLLBACK'); return res.status(400).json({error:'No se puede reabrir una OC anulada'}); }
     let infoRevert={mov_inventario:false,mov_combustible:0,salidas_posteriores:0};
@@ -3010,26 +2912,21 @@ ocR.patch('/:id/reabrir', auth, requireOC('reabrir'), async(req,res)=>{
       }
       infoRevert.mov_combustible=combMovs.rows.length;
     }
-    // 3) Volver a PENDIENTE y limpiar campos de cierre/recepción — registrando QUIÉN reabre y por qué
-    await client.query("UPDATE ordenes_compra SET estado='PENDIENTE',tipo_doc_id=NULL,numero_documento=NULL,fecha_documento=NULL,movimiento_id=NULL,recibido_en=NULL,bodega_ingreso_id=NULL,cerrada_por=NULL,fecha_cierre=NULL,reabierto_en=NOW(),reabierto_por=$1,motivo_reapertura=$2,modificado_en=NOW(),modificado_por=$1 WHERE oc_id=$3",[req.user.email,(req.body&&req.body.motivo)||null,req.params.id]);
-    await auditOC(client,req.params.id,'REABRIR',_snapAntesReabrir,req);
+    // 3) Volver a PENDIENTE y limpiar campos de cierre/recepción
+    await client.query("UPDATE ordenes_compra SET estado='PENDIENTE',tipo_doc_id=NULL,numero_documento=NULL,fecha_documento=NULL,movimiento_id=NULL,recibido_en=NULL,bodega_ingreso_id=NULL,cerrada_por=NULL,fecha_cierre=NULL,modificado_en=NOW() WHERE oc_id=$1",[req.params.id]);
     await client.query('COMMIT');
     res.json({ok:true,info:infoRevert});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
-ocR.patch('/:id/anular', auth, requireOC('anular'), async(req,res)=>{
+ocR.patch('/:id/anular', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
-    // Motivo OBLIGATORIO: la anulación es la vía estándar de "eliminación" y debe quedar justificada
-    const motivoAnul=((req.body&&req.body.motivo)||'').trim();
-    if(!motivoAnul) return res.status(400).json({error:'Debe indicar el motivo de la anulación'});
     const chk=await client.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length) return res.status(404).json({error:'OC no encontrada'});
     const oc=chk.rows[0];
     if(oc.estado==='ANULADA') return res.status(400).json({error:'La OC ya esta anulada'});
-    const _snapAntesAnular=await ocSnapshot(client,req.params.id);
     // Si tiene movimiento de inventario, no se puede anular desde aquí
     if(oc.movimiento_id) return res.status(400).json({error:'No se puede anular: ya se recibieron productos en bodega. Anule el movimiento primero.'});
     // Revertir movimientos de combustible asociados
@@ -3042,11 +2939,7 @@ ocR.patch('/:id/anular', auth, requireOC('anular'), async(req,res)=>{
         await client.query("UPDATE comb_movimientos SET estado='ANULADO',anulado_en=NOW(),anulado_por=$1,motivo_anulacion='OC anulada' WHERE mov_id=$2",[req.user.email,mv.mov_id]);
       }
     }
-    await client.query("UPDATE ordenes_compra SET estado='ANULADA',anulado_en=NOW(),anulado_por=$1,motivo_anulacion=$2,recibido_en=NULL WHERE oc_id=$3",[req.user.email,motivoAnul,req.params.id]);
-    // Quitar vinculaciones con DTE recibidos: una OC anulada no debe seguir contando en el avance de cierre de las facturas
-    // (las vinculaciones quedan preservadas en dte_vinculados del snapshot ANTES en auditoría)
-    await client.query('DELETE FROM dte_oc WHERE oc_id=$1',[req.params.id]);
-    await auditOC(client,req.params.id,'ANULAR',_snapAntesAnular,req);
+    await client.query("UPDATE ordenes_compra SET estado='ANULADA',anulado_en=NOW(),anulado_por=$1,recibido_en=NULL WHERE oc_id=$2",[req.user.email,req.params.id]);
     await client.query('COMMIT');
     res.json({ok:true});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
@@ -3056,20 +2949,13 @@ ocR.delete('/:id', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
-    // SEGURIDAD (auditoría 2026-08): la eliminación FÍSICA es exclusiva de administradores
-    // (flag es_admin del rol, no el nombre) y exige motivo. La vía estándar para todos los
-    // demás usuarios es la ANULACIÓN, que conserva el registro.
-    if(!req.user.es_admin){
-      return res.status(403).json({error:'La eliminación definitiva es exclusiva de administradores. Use "Anular" (conserva el registro y exige motivo).'});
-    }
-    const motivoDel=((req.body&&req.body.motivo)||'').trim();
-    if(!motivoDel) return res.status(400).json({error:'Debe indicar el motivo de la eliminación definitiva'});
     const chk=await client.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     if(!chk.rows.length) return res.status(404).json({error:'OC no encontrada'});
     const oc=chk.rows[0];
-    // Snapshot COMPLETO antes de borrar: encabezado + líneas + facturas vinculadas → auditoria
-    const _snapAntesDel=await ocSnapshot(client,req.params.id);
-    if(_snapAntesDel)_snapAntesDel.motivo_eliminacion=motivoDel;
+    // Solo admin puede eliminar OCs cerradas/recibidas
+    if((oc.estado==='CERRADA'||oc.movimiento_id||oc.recibido_en)&&req.user.rol!=='ADMINISTRADOR'&&req.user.rol!=='Administrador'){
+      return res.status(403).json({error:'Solo administradores pueden eliminar OCs cerradas o recibidas.'});
+    }
     // 1) Revertir movimientos de inventario (bodega) si los hay
     if(oc.movimiento_id){
       const dets=await client.query('SELECT * FROM movimiento_detalle WHERE movimiento_id=$1',[oc.movimiento_id]);
@@ -3105,8 +2991,7 @@ ocR.delete('/:id', auth, async(req,res)=>{
     if(oc.factura_guia_id){
       await client.query('UPDATE ordenes_compra SET factura_guia_id=NULL WHERE oc_id=$1',[req.params.id]);
     }
-    // 4) Auditar ANTES de eliminar (el snapshot es lo único que sobrevivirá) y eliminar OC
-    await auditOC(client,req.params.id,'DELETE',_snapAntesDel,req,null);
+    // 4) Eliminar OC
     await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
     await client.query('DELETE FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
     await client.query('COMMIT');
@@ -3114,7 +2999,7 @@ ocR.delete('/:id', auth, async(req,res)=>{
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
-ocR.post('/:id/recibir-bodega', auth, requireOC('editar'), async(req,res)=>{
+ocR.post('/:id/recibir-bodega', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
@@ -3208,33 +3093,23 @@ ocR.post('/:id/recibir-bodega', auth, requireOC('editar'), async(req,res)=>{
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
-// (Ruta /:id/reabrir duplicada ELIMINADA en auditoría 2026-08: era código muerto —
-// Express siempre resolvía la primera definición. La activa está más arriba, auditada.)
-
-// ── OCs ELIMINADAS: visor de la bitácora (solo administradores) ──
-// El snapshot completo de cada OC eliminada vive en auditoria.datos_anteriores.
-ocR.get('/eliminadas/listado', auth, async(req,res)=>{
+// REABRIR OC (solo si no generó ingreso a bodega)
+ocR.patch('/:id/reabrir', auth, async(req,res)=>{
+  const client=await pool.connect();
   try{
-    if(!req.user.es_admin)return res.status(403).json({error:'Solo administradores pueden ver las órdenes eliminadas'});
-    const r=await pool.query(`SELECT auditoria_id,usuario,ip_origen,
-        to_char(fecha_hora AT TIME ZONE 'UTC' AT TIME ZONE 'America/Santiago','DD-MM-YYYY HH24:MI') AS fecha_cl,
-        datos_anteriores
-      FROM auditoria WHERE tabla_afectada='ordenes_compra' AND accion='DELETE'
-      ORDER BY auditoria_id DESC LIMIT 500`);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// ── HISTORIAL de una OC: bitácora completa desde la tabla auditoria ──
-ocR.get('/:id/historial', auth, async(req,res)=>{
-  try{
-    const r=await pool.query(`SELECT auditoria_id,accion,usuario,ip_origen,
-        to_char(fecha_hora AT TIME ZONE 'UTC' AT TIME ZONE 'America/Santiago','DD-MM-YYYY HH24:MI') AS fecha_cl,
-        datos_anteriores,datos_nuevos
-      FROM auditoria WHERE tabla_afectada='ordenes_compra' AND registro_id=$1
-      ORDER BY auditoria_id`,[req.params.id]);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
+    await client.query('BEGIN');
+    const chk=await client.query('SELECT estado,movimiento_id FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
+    if(!chk.rows.length) throw new Error('OC no encontrada');
+    const oc=chk.rows[0];
+    if(oc.estado!=='CERRADA') throw new Error('Solo se pueden reabrir ordenes en estado CERRADA');
+    if(oc.recibido_en) throw new Error('No se puede reabrir: la OC ya fue recibida el '+(oc.recibido_en+'').slice(0,10)+'. Debe revertir la recepción primero.');
+    if(oc.movimiento_id) throw new Error('No se puede reabrir: la OC ya genero un ingreso a bodega (movimiento #'+oc.movimiento_id+'). Anule el movimiento primero si desea reabrir la OC.');
+    const motivo=req.body.motivo||'Sin motivo especificado';
+    await client.query("UPDATE ordenes_compra SET estado='PENDIENTE',tipo_doc_id=NULL,numero_documento=NULL,fecha_documento=NULL,reabierto_en=NOW(),reabierto_por=$1,motivo_reapertura=$2,modificado_en=NOW() WHERE oc_id=$3",[req.user.email,motivo,req.params.id]);
+    await client.query('COMMIT');
+    res.json({ok:true});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 
 // OC con filtros adicionales (subcategoria, faena, equipo)
@@ -3249,8 +3124,6 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
     const diasFracc = parseInt(req.query.dias_fraccion)||3;      // ventana para compra fraccionada
     const umbralPrecio = parseFloat(req.query.umbral_precio)||30;// % variación de precio
     const simUmbral = parseFloat(req.query.umbral_similitud)||0.45; // similitud de nombres
-    const umbralVida = Math.min(Math.max(parseFloat(req.query.umbral_vida)||50,10),90); // % del promedio del producto bajo el cual la duración en un equipo es crítica
-    const diasPendiente = parseInt(req.query.dias_pendiente)||30;   // antigüedad mínima de OC pendientes
     const desde = req.query.desde||null;
     const hasta = req.query.hasta||null;
     var fechaFiltro = '';
@@ -3263,11 +3136,7 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
       SELECT a.oc_id AS oc_a, a.numero_oc AS num_a, a.fecha_emision AS fecha_a, a.total AS total_a,
              b.oc_id AS oc_b, b.numero_oc AS num_b, b.fecha_emision AS fecha_b, b.total AS total_b,
              pr.nombre AS proveedor_nombre, e.razon_social AS empresa_nombre,
-             ABS(a.fecha_emision - b.fecha_emision) AS dias_diferencia,
-             NULLIF(TRIM(a.numero_documento),'') AS doc_a,
-             NULLIF(TRIM(b.numero_documento),'') AS doc_b,
-             (SELECT STRING_AGG(DISTINCT dd.folio,', ') FROM dte_oc x JOIN dte_recibidos dd ON dd.dte_id=x.dte_id WHERE x.oc_id=a.oc_id) AS dte_a,
-             (SELECT STRING_AGG(DISTINCT dd.folio,', ') FROM dte_oc x JOIN dte_recibidos dd ON dd.dte_id=x.dte_id WHERE x.oc_id=b.oc_id) AS dte_b
+             ABS(a.fecha_emision - b.fecha_emision) AS dias_diferencia
       FROM ordenes_compra a
       JOIN ordenes_compra b ON a.proveedor_id=b.proveedor_id 
         AND a.empresa_id=b.empresa_id
@@ -3280,16 +3149,6 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
       WHERE a.estado!='ANULADA' AND b.estado!='ANULADA' ${fechaFiltro.replace(/oc\./g,'a.')}
       ORDER BY a.fecha_emision DESC
       LIMIT 100`, baseVals);
-
-    // Clasificar pares: si AMBAS OC tienen respaldo tributario (N° doc de la OC o DTE vinculado)
-    // y son DISTINTOS, es probable compra legítima recurrente → no cuenta como hallazgo.
-    const normResp=function(s){return String(s==null?'':s).trim().replace(/^0+/,'');};
-    const dupOC=dupMonto.rows.map(function(r){
-      const respA=normResp(r.doc_a||r.dte_a);
-      const respB=normResp(r.doc_b||r.dte_b);
-      r.docs_distintos=!!(respA&&respB&&respA!==respB);
-      return r;
-    }).sort(function(x,y){return (x.docs_distintos?1:0)-(y.docs_distintos?1:0);});
 
     // ─── CHECK 2: Mismo N° de documento tributario en OCs distintas ───
     const dupDoc = await pool.query(`
@@ -3388,139 +3247,23 @@ ocR.get('/auditoria/analisis', auth, async(req,res)=>{
       ORDER BY num_ocs DESC, monto_total DESC
       LIMIT 100`, baseVals);
 
-    // ─── CHECK 7: Durabilidad deficiente (vida útil de productos por equipo) ───
-    // Intervalos entre compras sucesivas del mismo producto para el mismo equipo.
-    // Las HORAS DE USO se estiman desde los horómetros del control de COMBUSTIBLE
-    // (fuente más fidedigna que terreno): span MAX-MIN del horómetro dentro de la ventana.
-    // Compara la duración en cada equipo contra el promedio del producto en toda la flota.
-    var durabilidad={rows:[]};
-    try{
-      durabilidad = await pool.query(`
-        WITH compras AS (
-          SELECT d.producto_id, d.equipo_id, oc.fecha_emision AS fecha,
-                 SUM(d.cantidad) AS cantidad, SUM(d.total_linea) AS monto
-          FROM ordenes_compra_detalle d
-          JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
-          WHERE oc.estado!='ANULADA' AND d.producto_id IS NOT NULL AND d.equipo_id IS NOT NULL ${fechaFiltro}
-          GROUP BY d.producto_id, d.equipo_id, oc.fecha_emision
-        ),
-        intervalos AS (
-          SELECT c.*, LAG(c.fecha) OVER (PARTITION BY c.producto_id, c.equipo_id ORDER BY c.fecha) AS fecha_anterior
-          FROM compras c
-        ),
-        con_dias AS (
-          SELECT i.*, (i.fecha - i.fecha_anterior) AS dias_intervalo
-          FROM intervalos i WHERE i.fecha_anterior IS NOT NULL
-        ),
-        por_equipo AS (
-          SELECT producto_id, equipo_id, COUNT(*) AS recambios,
-                 ROUND(AVG(dias_intervalo)::numeric,0) AS dias_prom,
-                 MIN(dias_intervalo) AS dias_min,
-                 MIN(fecha_anterior) AS primera_compra,
-                 MAX(fecha) AS ultima_compra,
-                 SUM(cantidad) AS cantidad_total, SUM(monto) AS monto_total
-          FROM con_dias GROUP BY producto_id, equipo_id
-        ),
-        por_producto AS (
-          SELECT producto_id, ROUND(AVG(dias_intervalo)::numeric,0) AS dias_prom_producto, COUNT(*) AS recambios_producto
-          FROM con_dias GROUP BY producto_id
-        )
-        SELECT p.codigo AS producto_codigo, p.nombre AS producto_nombre,
-               eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
-               pe.recambios, pe.dias_prom, pe.dias_min, pe.ultima_compra,
-               pe.cantidad_total, pe.monto_total,
-               pp.dias_prom_producto, pp.recambios_producto,
-               ROUND((SELECT MAX(m.horometro)-MIN(m.horometro) FROM comb_movimientos m
-                      WHERE m.equipo_id=pe.equipo_id AND m.estado='ACTIVO' AND m.horometro>0
-                        AND m.fecha>=pe.primera_compra AND m.fecha<=pe.ultima_compra)::numeric
-                     / NULLIF(pe.recambios,0), 0) AS horas_prom_uso,
-               (pp.recambios_producto>=3 AND pe.dias_prom < pp.dias_prom_producto*${umbralVida}/100.0) AS critico
-        FROM por_equipo pe
-        JOIN por_producto pp ON pp.producto_id=pe.producto_id
-        JOIN productos p ON p.producto_id=pe.producto_id
-        JOIN equipos eq ON eq.equipo_id=pe.equipo_id
-        ORDER BY (pp.recambios_producto>=3 AND pe.dias_prom < pp.dias_prom_producto*${umbralVida}/100.0) DESC, pe.dias_prom ASC
-        LIMIT 150`, baseVals);
-    }catch(e){ durabilidad={rows:[],error:e.message}; }
-
-    // ─── CHECK 8: Línea duplicada (mismo producto + cantidad + precio en OCs distintas del mismo proveedor) ───
-    // Señal fuerte de doble digitación: más precisa que comparar totales de OC.
-    const lineaDup = await pool.query(`
-      SELECT p.codigo AS producto_codigo, p.nombre AS producto_nombre,
-             pr.nombre AS proveedor_nombre,
-             da.cantidad, da.precio_unitario, (da.cantidad*da.precio_unitario) AS monto_linea,
-             oca.numero_oc AS oc_a, ocb.numero_oc AS oc_b,
-             oca.fecha_emision AS fecha_a, ocb.fecha_emision AS fecha_b,
-             ABS(oca.fecha_emision-ocb.fecha_emision) AS dias_diferencia,
-             COALESCE(eqa.codigo,'—') AS equipo_a, COALESCE(eqb.codigo,'—') AS equipo_b,
-             NULLIF(TRIM(oca.numero_documento),'') AS doc_a,
-             NULLIF(TRIM(ocb.numero_documento),'') AS doc_b,
-             (SELECT STRING_AGG(DISTINCT dd.folio,', ') FROM dte_oc x JOIN dte_recibidos dd ON dd.dte_id=x.dte_id WHERE x.oc_id=oca.oc_id) AS dte_a,
-             (SELECT STRING_AGG(DISTINCT dd.folio,', ') FROM dte_oc x JOIN dte_recibidos dd ON dd.dte_id=x.dte_id WHERE x.oc_id=ocb.oc_id) AS dte_b
-      FROM ordenes_compra_detalle da
-      JOIN ordenes_compra oca ON da.oc_id=oca.oc_id
-      JOIN ordenes_compra_detalle db ON da.producto_id=db.producto_id
-        AND da.detalle_id<db.detalle_id AND da.oc_id<>db.oc_id
-        AND da.cantidad=db.cantidad AND da.precio_unitario=db.precio_unitario
-      JOIN ordenes_compra ocb ON db.oc_id=ocb.oc_id
-        AND ocb.proveedor_id=oca.proveedor_id
-        AND ABS(oca.fecha_emision-ocb.fecha_emision)<=${diasDup}
-      JOIN productos p ON da.producto_id=p.producto_id
-      LEFT JOIN proveedores pr ON oca.proveedor_id=pr.proveedor_id
-      LEFT JOIN equipos eqa ON da.equipo_id=eqa.equipo_id
-      LEFT JOIN equipos eqb ON db.equipo_id=eqb.equipo_id
-      WHERE oca.estado!='ANULADA' AND ocb.estado!='ANULADA'
-        AND da.cantidad>0 AND da.precio_unitario>0 ${fechaFiltro.replace(/oc\./g,'oca.')}
-      ORDER BY monto_linea DESC
-      LIMIT 100`, baseVals);
-
-    // Clasificar líneas duplicadas con el mismo criterio de respaldo tributario
-    const lineaRows=lineaDup.rows.map(function(r){
-      const respA=normResp(r.doc_a||r.dte_a);
-      const respB=normResp(r.doc_b||r.dte_b);
-      r.docs_distintos=!!(respA&&respB&&respA!==respB);
-      return r;
-    }).sort(function(x,y){return (x.docs_distintos?1:0)-(y.docs_distintos?1:0);});
-
-    // ─── CHECK 9: OC pendientes antiguas (sin cierre hace más de N días) ───
-    const ocAntiguas = await pool.query(`
-      SELECT oc.oc_id, oc.numero_oc, oc.fecha_emision, oc.total, oc.solicitante,
-             (CURRENT_DATE - oc.fecha_emision) AS dias_pendiente,
-             (oc.numero_documento IS NOT NULL AND oc.numero_documento<>'') AS con_documento,
-             pr.nombre AS proveedor_nombre, e.razon_social AS empresa_nombre
-      FROM ordenes_compra oc
-      LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
-      LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id
-      WHERE oc.estado='PENDIENTE' AND (CURRENT_DATE - oc.fecha_emision) >= ${diasPendiente} ${fechaFiltro}
-      ORDER BY dias_pendiente DESC, oc.total DESC
-      LIMIT 150`, baseVals);
-
     res.json({
-      parametros:{dias_duplicado:diasDup,dias_producto:diasProd,dias_fraccion:diasFracc,umbral_precio:umbralPrecio,umbral_similitud:simUmbral,umbral_vida:umbralVida,dias_pendiente:diasPendiente,desde,hasta},
+      parametros:{dias_duplicado:diasDup,dias_producto:diasProd,dias_fraccion:diasFracc,umbral_precio:umbralPrecio,umbral_similitud:simUmbral,desde,hasta},
       resumen:{
-        oc_duplicadas:dupOC.filter(function(r){return !r.docs_distintos;}).length,
-        oc_duplicadas_dte_distinto:dupOC.filter(function(r){return r.docs_distintos;}).length,
+        oc_duplicadas:dupMonto.rows.length,
         doc_duplicado:dupDoc.rows.length,
         producto_repetido:prodRepetido.rows.length,
         productos_similares:similares.rows.length,
         precio_variable:precioVar.rows.length,
-        compra_fraccionada:fraccionada.rows.length,
-        durabilidad_critica:durabilidad.rows.filter(function(r){return r.critico;}).length,
-        linea_duplicada:lineaRows.filter(function(r){return !r.docs_distintos;}).length,
-        linea_duplicada_dte_distinto:lineaRows.filter(function(r){return r.docs_distintos;}).length,
-        oc_antiguas:ocAntiguas.rows.length
+        compra_fraccionada:fraccionada.rows.length
       },
-      oc_duplicadas:dupOC,
+      oc_duplicadas:dupMonto.rows,
       doc_duplicado:dupDoc.rows,
       producto_repetido:prodRepetido.rows,
       productos_similares:similares.rows,
       similares_error:similares.error||null,
       precio_variable:precioVar.rows,
-      compra_fraccionada:fraccionada.rows,
-      durabilidad:durabilidad.rows,
-      durabilidad_error:durabilidad.error||null,
-      linea_duplicada:lineaRows,
-      oc_antiguas:ocAntiguas.rows
+      compra_fraccionada:fraccionada.rows
     });
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -3534,34 +3277,23 @@ ocR.get('/buscar/filtros', auth, async(req,res)=>{
     if(empresa_id){vals.push(empresa_id);where.push(`oc.empresa_id=$${vals.length}`);}
     if(desde){vals.push(desde);where.push(`oc.fecha_emision>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`oc.fecha_emision<=$${vals.length}`);}
-    // Filtros por LÍNEA vía EXISTS (una misma línea debe cumplir todas las condiciones a la vez,
-    // igual que el JOIN anterior, pero sin duplicar filas ni necesitar DISTINCT)
-    const condsLinea=[];
-    if(subcategoria_id){vals.push(subcategoria_id);condsLinea.push(`d.subcategoria_id=$${vals.length}`);}
-    if(faena_id){vals.push(faena_id);condsLinea.push(`d.faena_id=$${vals.length}`);}
-    if(equipo_id){vals.push(equipo_id);condsLinea.push(`d.equipo_id=$${vals.length}`);}
-    if(condsLinea.length)where.push(`EXISTS (SELECT 1 FROM ordenes_compra_detalle d WHERE d.oc_id=oc.oc_id AND ${condsLinea.join(' AND ')})`);
+    if(subcategoria_id){vals.push(subcategoria_id);where.push(`d.subcategoria_id=$${vals.length}`);}
+    if(faena_id){vals.push(faena_id);where.push(`d.faena_id=$${vals.length}`);}
+    if(equipo_id){vals.push(equipo_id);where.push(`d.equipo_id=$${vals.length}`);}
     if(numero_documento){vals.push('%'+numero_documento+'%');where.push(`oc.numero_documento ILIKE $${vals.length}`);}
     if(numero_oc){vals.push('%'+numero_oc+'%');where.push(`oc.numero_oc ILIKE $${vals.length}`);}
     if(numero_factura){vals.push('%'+numero_factura+'%');where.push(`oc.factura_guia_id IN (SELECT factura_id FROM oc_factura_guias WHERE numero_factura ILIKE $${vals.length})`);}
-    // Scoping por empresa del usuario (mismo criterio que el listado principal)
-    const userEmpBF=await ocUserEmpresa(req.user.id);
-    if(userEmpBF){vals.push(userEmpBF);where.push(`oc.empresa_id=$${vals.length}`);}
-    // BUG corregido 2026-08: este endpoint devolvía solo un subconjunto de columnas (sin
-    // recibido_en/movimiento_id/factura asociada) → las OCs recibidas mostraban el botón
-    // "Recibir" y al intentarlo el backend las rechazaba. Ahora devuelve EXACTAMENTE la
-    // misma estructura que GET / (oc.* + los mismos alias).
     const r=await pool.query(`
-      SELECT oc.*,e.razon_social AS empresa_nombre,pr.nombre AS proveedor_nombre,pr.rut AS proveedor_rut,cp.nombre AS condicion_nombre,td.nombre AS tipo_doc_nombre,uc.nombre AS usuario_nombre,uk.nombre AS cerrada_por_nombre,
-      fac.numero_factura AS factura_asociada_numero, fac.fecha_factura AS factura_asociada_fecha, fac.total AS factura_asociada_total
+      SELECT DISTINCT oc.oc_id,oc.numero_oc,oc.fecha_emision,oc.estado,oc.solicitante,oc.retira,
+             oc.fecha_documento,oc.numero_documento,oc.neto,oc.iva,oc.impuesto_adicional,oc.total,oc.usuario,
+             e.razon_social AS empresa,pr.nombre AS proveedor,pr.rut AS proveedor_rut,
+             cp.nombre AS condicion_pago,td.nombre AS tipo_documento
       FROM ordenes_compra oc
       LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id
       LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
       LEFT JOIN condiciones_pago cp ON oc.condicion_id=cp.condicion_id
       LEFT JOIN tipos_documento td ON oc.tipo_doc_id=td.tipo_doc_id
-      LEFT JOIN usuarios uc ON LOWER(uc.email)=LOWER(oc.usuario)
-      LEFT JOIN usuarios uk ON LOWER(uk.email)=LOWER(oc.cerrada_por)
-      LEFT JOIN oc_factura_guias fac ON oc.factura_guia_id=fac.factura_id
+      LEFT JOIN ordenes_compra_detalle d ON oc.oc_id=d.oc_id
       WHERE ${where.join(' AND ')}
       ORDER BY oc.oc_id DESC`,vals);
     res.json(r.rows);
@@ -3597,38 +3329,7 @@ app.post('/api/import/proveedores-xml', auth, async(req,res)=>{
 });
 
 // ══ IMPORTACIÓN MASIVA DE OC DESDE XML (ZIP Facto) ══
-// PRE-CHECK del import Facto (2026-08): informa QUÉ folios ya existen como OC (o como
-// cierre de guías) ANTES de importar. Regla de negocio: una factura PUEDE respaldar varias
-// OC (legítimo), pero lo habitual es 1 orden = 1 factura → el usuario decide con el aviso.
-app.post('/api/import/bulk-oc/precheck', auth, requireModulo('ordenes'), async(req,res)=>{
-  try{
-    const items=Array.isArray(req.body&&req.body.items)?req.body.items:[];
-    const out=[];
-    for(const it of items.slice(0,500)){
-      const folio=String(it.folio||'').trim();
-      const rNorm=String(it.proveedor_rut||'').replace(/[\.\-]/g,'').toLowerCase();
-      if(!folio||!rNorm){out.push({folio:it.folio,proveedor_rut:it.proveedor_rut,existe:false});continue;}
-      const ocs=(await pool.query(`SELECT oc.numero_oc, oc.estado, oc.total FROM ordenes_compra oc
-        WHERE oc.estado<>'ANULADA' AND oc.numero_documento IS NOT NULL AND oc.numero_documento<>''
-          AND regexp_replace(oc.numero_documento,'^0+','')=regexp_replace($1,'^0+','')
-          AND oc.proveedor_id IN (SELECT proveedor_id FROM proveedores WHERE LOWER(REPLACE(REPLACE(COALESCE(rut,''),'.',''),'-',''))=$2)
-        ORDER BY oc.oc_id DESC LIMIT 5`,[folio,rNorm])).rows;
-      const guia=(await pool.query(`SELECT f.numero_factura,
-          (SELECT string_agg(o2.numero_oc,', ') FROM ordenes_compra o2 WHERE o2.factura_guia_id=f.factura_id) AS ocs
-        FROM oc_factura_guias f
-        WHERE f.numero_factura IS NOT NULL AND f.numero_factura<>''
-          AND regexp_replace(f.numero_factura,'^0+','')=regexp_replace($1,'^0+','')
-          AND f.proveedor_id IN (SELECT proveedor_id FROM proveedores WHERE LOWER(REPLACE(REPLACE(COALESCE(rut,''),'.',''),'-',''))=$2)
-        LIMIT 1`,[folio,rNorm])).rows[0]||null;
-      out.push({folio:folio,proveedor_rut:it.proveedor_rut,existe:(ocs.length>0||!!guia),
-        ocs:ocs.map(function(o){return{numero_oc:o.numero_oc,estado:o.estado,total:parseFloat(o.total)||0};}),
-        cierre_guias:guia?{numero_factura:guia.numero_factura,ocs:guia.ocs||''}:null});
-    }
-    res.json({items:out});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-app.post('/api/import/bulk-oc', auth, requireModulo('ordenes'), async(req,res)=>{
+app.post('/api/import/bulk-oc', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
@@ -3640,7 +3341,7 @@ app.post('/api/import/bulk-oc', auth, requireModulo('ordenes'), async(req,res)=>
       let prov_id=null;
       if(item.proveedor_rut){
         const rNorm=item.proveedor_rut.replace(/[\.\-]/g,'').toLowerCase();
-        const prov=await client.query("SELECT proveedor_id FROM proveedores WHERE LOWER(REPLACE(REPLACE(rut,'.',''),'-',''))=LOWER($1) ORDER BY proveedor_id LIMIT 1",[rNorm]);
+        const prov=await client.query("SELECT proveedor_id FROM proveedores WHERE REPLACE(REPLACE(rut,'.',''),'-','')=$1 LIMIT 1",[rNorm]);
         if(prov.rows.length){
           prov_id=prov.rows[0].proveedor_id;
         }else{
@@ -3658,24 +3359,10 @@ app.post('/api/import/bulk-oc', auth, requireModulo('ordenes'), async(req,res)=>
         const emp=await client.query("SELECT empresa_id FROM empresas WHERE REPLACE(REPLACE(rut,'.',''),'-','')=$1 LIMIT 1",[eNorm]);
         if(emp.rows.length) emp_id=emp.rows[0].empresa_id;
       }
-      // Check duplicate by numero_documento (normaliza ceros; compara por RUT del proveedor,
-      // no por proveedor_id — cubre proveedores duplicados en el maestro)
-      if(item.folio&&item.forzar!==true){
-        const dup=await ocFolioDuplicado(client,prov_id,String(item.folio),null);
-        if(dup){results.push({folio:item.folio,error:'Ya existe como '+dup.numero_oc+' ('+dup.estado+')'});continue;}
-        // La factura pudo entrar como CIERRE DE GUÍAS: su folio queda en oc_factura_guias.numero_factura
-        // (no en numero_documento de la OC, que guarda el n° de la guía) → sin este chequeo se duplicaba la compra
-        const dupF=await client.query(`SELECT f.factura_id, f.numero_factura,
-            (SELECT string_agg(oc2.numero_oc,', ') FROM ordenes_compra oc2 WHERE oc2.factura_guia_id=f.factura_id) AS ocs
-          FROM oc_factura_guias f
-          WHERE f.numero_factura IS NOT NULL AND f.numero_factura<>''
-            AND regexp_replace(f.numero_factura,'^0+','')=regexp_replace($1,'^0+','')
-            AND f.proveedor_id IN (
-              SELECT p2.proveedor_id FROM proveedores p2
-              JOIN proveedores p1 ON LOWER(REPLACE(REPLACE(COALESCE(p1.rut,''),'.',''),'-',''))=LOWER(REPLACE(REPLACE(COALESCE(p2.rut,''),'.',''),'-',''))
-              WHERE p1.proveedor_id=$2 AND COALESCE(p1.rut,'')<>'' )
-          LIMIT 1`,[String(item.folio),prov_id]);
-        if(dupF.rows.length){results.push({folio:item.folio,error:'Ya existe: factura '+dupF.rows[0].numero_factura+' aplicada como cierre de guía(s) de despacho'+(dupF.rows[0].ocs?(' — OC '+dupF.rows[0].ocs):'')});continue;}
+      // Check duplicate by numero_documento
+      if(item.folio){
+        const dup=await client.query("SELECT oc_id,numero_oc FROM ordenes_compra WHERE numero_documento=$1 AND proveedor_id=$2 LIMIT 1",[String(item.folio),prov_id]);
+        if(dup.rows.length){results.push({folio:item.folio,error:'Ya existe como '+dup.rows[0].numero_oc,oc_id:dup.rows[0].oc_id});continue;}
       }
       // Match tipo doc — first by DTE code, then by name
       let tdoc_id=null;
@@ -3716,19 +3403,19 @@ app.post('/api/import/bulk-oc', auth, requireModulo('ordenes'), async(req,res)=>
 });
 
 // USUARIOS
-app.get('/api/usuarios', auth, async(req,res)=>{try{res.json((await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.empresa_id,u.faena_id,u.turno,u.activo,u.creado_en,r.nombre AS rol_nombre,r.es_admin,e.razon_social AS empresa_nombre,f.nombre AS faena_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id LEFT JOIN empresas e ON u.empresa_id=e.empresa_id LEFT JOIN faenas f ON u.faena_id=f.faena_id ORDER BY u.nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
+app.get('/api/usuarios', auth, async(req,res)=>{try{res.json((await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.empresa_id,u.faena_id,u.activo,u.creado_en,r.nombre AS rol_nombre,r.es_admin,e.razon_social AS empresa_nombre,f.nombre AS faena_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id LEFT JOIN empresas e ON u.empresa_id=e.empresa_id LEFT JOIN faenas f ON u.faena_id=f.faena_id ORDER BY u.nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
 app.post('/api/usuarios', auth, async(req,res)=>{
-  try{const{email,username,nombre,password,rol_id,empresa_id,faena_id,turno}=req.body;const tno=(turno==='A'||turno==='B')?turno:null;if(!email||!nombre||!password)return res.status(400).json({error:'Email, nombre y contraseña requeridos'});const hash=await bcrypt.hash(password,10);const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'BODEGUERO';const eid=empresa_id&&empresa_id!==''?parseInt(empresa_id):null;const fid=faena_id&&faena_id!==''?parseInt(faena_id):null;const r=await pool.query('INSERT INTO usuarios(email,username,nombre,password_hash,rol,rol_id,empresa_id,faena_id,turno) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',[email,username||null,nombre,hash,rolNombre,rid,eid,fid,tno]);res.status(201).json(r.rows[0]);}catch(e){if(e.code==='23505'){var msg=e.detail&&e.detail.indexOf('username')>=0?'El nombre de usuario ya existe':'El email ya está registrado';return res.status(400).json({error:msg});}res.status(400).json({error:e.message});}
+  try{const{email,username,nombre,password,rol_id,empresa_id,faena_id}=req.body;if(!email||!nombre||!password)return res.status(400).json({error:'Email, nombre y contraseña requeridos'});const hash=await bcrypt.hash(password,10);const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'BODEGUERO';const eid=empresa_id&&empresa_id!==''?parseInt(empresa_id):null;const fid=faena_id&&faena_id!==''?parseInt(faena_id):null;const r=await pool.query('INSERT INTO usuarios(email,username,nombre,password_hash,rol,rol_id,empresa_id,faena_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',[email,username||null,nombre,hash,rolNombre,rid,eid,fid]);res.status(201).json(r.rows[0]);}catch(e){if(e.code==='23505'){var msg=e.detail&&e.detail.indexOf('username')>=0?'El nombre de usuario ya existe':'El email ya está registrado';return res.status(400).json({error:msg});}res.status(400).json({error:e.message});}
 });
 app.put('/api/usuarios/:id', auth, async(req,res)=>{
-  try{const{email,username,nombre,rol_id,password,empresa_id,faena_id,turno}=req.body;const tno=(turno==='A'||turno==='B')?turno:null;
+  try{const{email,username,nombre,rol_id,password,empresa_id,faena_id}=req.body;
   const rid=rol_id&&rol_id!==''?parseInt(rol_id):null;
   const eid=empresa_id&&empresa_id!==''?parseInt(empresa_id):null;
   const fid=faena_id&&faena_id!==''?parseInt(faena_id):null;
   const rolNombre=rid?(await pool.query('SELECT nombre FROM roles WHERE rol_id=$1',[rid])).rows[0]?.nombre||'BODEGUERO':'ADMINISTRADOR';
-  if(password&&password.length>=4){const hash=await bcrypt.hash(password,10);await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5,password_hash=$6,empresa_id=$7,faena_id=$8,turno=$9 WHERE usuario_id=$10',[email,username||null,nombre,rolNombre,rid,hash,eid,fid,tno,req.params.id]);}
-  else{await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5,empresa_id=$6,faena_id=$7,turno=$8 WHERE usuario_id=$9',[email,username||null,nombre,rolNombre,rid,eid,fid,tno,req.params.id]);}
-  const r=await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.empresa_id,u.faena_id,u.turno,u.activo,r.nombre AS rol_nombre,e.razon_social AS empresa_nombre,f.nombre AS faena_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id LEFT JOIN empresas e ON u.empresa_id=e.empresa_id LEFT JOIN faenas f ON u.faena_id=f.faena_id WHERE u.usuario_id=$1',[req.params.id]);
+  if(password&&password.length>=4){const hash=await bcrypt.hash(password,10);await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5,password_hash=$6,empresa_id=$7,faena_id=$8 WHERE usuario_id=$9',[email,username||null,nombre,rolNombre,rid,hash,eid,fid,req.params.id]);}
+  else{await pool.query('UPDATE usuarios SET email=$1,username=$2,nombre=$3,rol=$4,rol_id=$5,empresa_id=$6,faena_id=$7 WHERE usuario_id=$8',[email,username||null,nombre,rolNombre,rid,eid,fid,req.params.id]);}
+  const r=await pool.query('SELECT u.usuario_id,u.email,u.username,u.nombre,u.rol,u.rol_id,u.empresa_id,u.faena_id,u.activo,r.nombre AS rol_nombre,e.razon_social AS empresa_nombre,f.nombre AS faena_nombre FROM usuarios u LEFT JOIN roles r ON u.rol_id=r.rol_id LEFT JOIN empresas e ON u.empresa_id=e.empresa_id LEFT JOIN faenas f ON u.faena_id=f.faena_id WHERE u.usuario_id=$1',[req.params.id]);
   res.json(r.rows[0]);}catch(e){if(e.code==='23505'){var msg=e.detail&&e.detail.indexOf('username')>=0?'El nombre de usuario ya existe':'El email ya está registrado';return res.status(400).json({error:msg});}res.status(400).json({error:e.message});}
 });
 app.patch('/api/usuarios/:id/activo', auth, async(req,res)=>{try{res.json((await pool.query('UPDATE usuarios SET activo=NOT activo WHERE usuario_id=$1 RETURNING *',[req.params.id])).rows[0]);}catch(e){res.status(400).json({error:e.message});}});
@@ -4353,21 +4040,6 @@ app.get('/api/comb/diagnostico-negativo/:estanque_id', auth, async(req,res)=>{
 });
 
 // ═══════════════════════════════════════════════════════════════════════
-// Último horómetro registrado en una CARGA de combustible del equipo (para alertar
-// errores de tipeo en la distribución: delta de horómetro > 24 h/día es imposible).
-// ?excluir=mov_id omite el propio movimiento al editar.
-app.get('/api/comb/ultimo-horometro/:equipo_id', auth, async(req,res)=>{
-  try{
-    const vals=[req.params.equipo_id];
-    let wx='';
-    if(req.query.excluir&&!isNaN(parseInt(req.query.excluir))){vals.push(parseInt(req.query.excluir));wx=' AND mov_id<>$2';}
-    const r=await pool.query(`SELECT horometro, fecha FROM comb_movimientos
-      WHERE tipo_mov='DISTRIBUCION' AND estado='ACTIVO' AND equipo_id=$1 AND horometro IS NOT NULL AND horometro>0${wx}
-      ORDER BY fecha DESC, mov_id DESC LIMIT 1`,vals);
-    res.json(r.rows.length?r.rows[0]:{horometro:null,fecha:null});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
 // RENDIMIENTOS DE COMBUSTIBLE por equipo, agrupados por faena.
 // Máquinas: L/h (litros consumidos / horas trabajadas en terreno).
 // Vehículos: km/L (km recorridos / litros), km desde el span de kilometraje
@@ -4375,14 +4047,11 @@ app.get('/api/comb/ultimo-horometro/:equipo_id', auth, async(req,res)=>{
 // ═══════════════════════════════════════════════════════════════════════
 app.get('/api/comb/rendimientos', auth, async(req,res)=>{
   try{
-    const{desde,hasta,empresa_id,faena_id,equipo_id}=req.query;
+    const{desde,hasta,empresa_id}=req.query;
     if(!desde||!hasta) return res.status(400).json({error:'Rango de fechas requerido (desde, hasta)'});
     const vals=[desde,hasta];
-    const wConds=[];
-    if(empresa_id){vals.push(empresa_id);wConds.push('eq.empresa_id=$'+vals.length);}
-    if(faena_id){vals.push(faena_id);wConds.push('(eq.faena_id=$'+vals.length+' OR eq.faena_id IS NULL)');} // cargo sin faena = común a todas las faenas de la empresa
-    if(equipo_id){vals.push(equipo_id);wConds.push('eq.equipo_id=$'+vals.length);}
-    const wEq=wConds.length?(' WHERE '+wConds.join(' AND ')):'';
+    let wEq='';
+    if(empresa_id){vals.push(empresa_id);wEq=' WHERE eq.empresa_id=$3';}
     const r=await pool.query(`
       WITH litros AS (
         SELECT equipo_id,
@@ -4413,7 +4082,7 @@ app.get('/api/comb/rendimientos', auth, async(req,res)=>{
       ORDER BY f.nombre NULLS LAST, eq.codigo`, vals);
 
     // Clasificación por tipo de cargo → categoría visible, orden y métrica
-    // metric: 'h' = máquina (L/h) · 'km' = rodante (km/L) · 'none' = sin rendimiento
+    // metric: 'h' = máquina (L/h) · 'km' = rodante (L/km) · 'none' = sin rendimiento
     const CAT={
       maquinaria:{label:'Máquinas',orden:1,metric:'h'},
       camioneta:{label:'Camionetas',orden:2,metric:'km'},
@@ -4437,17 +4106,14 @@ app.get('/api/comb/rendimientos', auth, async(req,res)=>{
       const kmSpan=(x.km_max!=null&&x.km_min!=null&&x.km_max>x.km_min)?(parseFloat(x.km_max)-parseFloat(x.km_min)):null;
       var horas=0, horas_origen=null, km=null, rendimiento=null, unidad=null, l_100=null;
       if(cat.metric==='h'){
-        // Prioridad (2026-08, a pedido del usuario): horas INFORMADAS DESDE TERRENO como fuente
-        // principal; el span de horómetros de las cargas queda solo como respaldo cuando el
-        // equipo no tiene registros de terreno en el período
-        horas=(horasTerreno>0)?horasTerreno:((hSpan&&hSpan>0)?hSpan:0);
-        horas_origen=horasTerreno>0?'terreno':((hSpan&&hSpan>0)?'horómetro':null);
+        horas=horasTerreno>0?horasTerreno:(hSpan||0);
+        horas_origen=horasTerreno>0?'terreno':(hSpan?'horómetro distrib.':null);
         unidad='L/h';
         if(horas>0)rendimiento=litros/horas;
       }else if(cat.metric==='km'){
         km=kmSpan;
-        unidad='km/L';
-        if(km&&km>0&&litros>0){rendimiento=km/litros; l_100=litros/km*100;}
+        unidad='L/km';
+        if(km&&km>0){rendimiento=litros/km; l_100=litros/km*100;}
       }
       return{
         equipo_id:x.equipo_id, codigo:x.codigo, nombre:x.nombre, tipo_cargo:tc,
@@ -4688,7 +4354,7 @@ app.post('/api/comb/cierres/:id/procesar', auth, async(req,res)=>{
 
 
 // OCR FACTURA — extracción local PDF/XML + parseo DTE chileno
-app.post('/api/ocr/factura', auth, requireModulo('ordenes'), async(req,res)=>{
+app.post('/api/ocr/factura', auth, async(req,res)=>{
   try{
     const{base64,mediaType}=req.body;
     if(!base64||!mediaType) return res.status(400).json({error:'Falta base64 o mediaType'});
@@ -6085,10 +5751,9 @@ app.post('/api/mant/ot', auth, async(req,res)=>{
   try{
     const{empresa_id,equipo_id,faena_id,plan_id,aviso_id,tipo_mantencion,origen,fecha_apertura,fecha_programada,horometro_servicio,kilometraje_servicio,estado,prioridad,sistema,sintoma_reportado,responsable,mecanico_asignado,taller_tipo,taller_nombre,observaciones}=req.body;
     if(!equipo_id||!tipo_mantencion) return res.status(400).json({error:'Equipo y tipo de mantención requeridos'});
-    // Generate OT number: MAX del sufijo numérico existente + 1 (NO COUNT+1 — si se
-    // eliminó una OT, el conteo queda corrido y choca con la constraint UNIQUE)
+    // Generate OT number
     const yr=new Date().getFullYear();
-    const cnt=await pool.query("SELECT COALESCE(MAX(NULLIF(regexp_replace(numero_ot,'^OT-\\d{4}-',''),'')::int),0)+1 AS n FROM mant_ot WHERE numero_ot LIKE $1 AND regexp_replace(numero_ot,'^OT-\\d{4}-','') ~ '^\\d+$'",['OT-'+yr+'-%']);
+    const cnt=await pool.query("SELECT COUNT(*)+1 AS n FROM mant_ot WHERE EXTRACT(YEAR FROM creado_en)=$1",[yr]);
     const num=`OT-${yr}-${String(cnt.rows[0].n).padStart(4,'0')}`;
     const r=await pool.query(`INSERT INTO mant_ot(numero_ot,empresa_id,equipo_id,faena_id,plan_id,aviso_id,tipo_mantencion,origen,fecha_apertura,fecha_programada,horometro_servicio,kilometraje_servicio,estado,prioridad,sistema,sintoma_reportado,responsable,mecanico_asignado,taller_tipo,taller_nombre,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
       [num,empresa_id||null,equipo_id,faena_id||null,plan_id||null,aviso_id||null,tipo_mantencion,origen||'manual',fecha_apertura||new Date().toISOString().split('T')[0],fecha_programada||null,horometro_servicio||null,kilometraje_servicio||null,estado||'abierta',prioridad||'normal',sistema||null,sintoma_reportado||null,responsable||null,mecanico_asignado||null,taller_tipo||'interno',taller_nombre||null,observaciones||null,req.user.email]);
@@ -6149,9 +5814,9 @@ app.post('/api/mant/ot/desde-plan', auth, async(req,res)=>{
     const eqQ=await client.query('SELECT faena_id,horometro_actual,kilometraje_actual FROM equipos WHERE equipo_id=$1',[equipoId]);
     const faenaId=eqQ.rows[0]?.faena_id||null;
 
-    // Número OT: MAX del sufijo existente + 1 (mismo fix que POST /api/mant/ot)
+    // Número OT
     const yr=new Date().getFullYear();
-    const cnt=await client.query("SELECT COALESCE(MAX(NULLIF(regexp_replace(numero_ot,'^OT-\\d{4}-',''),'')::int),0)+1 AS n FROM mant_ot WHERE numero_ot LIKE $1 AND regexp_replace(numero_ot,'^OT-\\d{4}-','') ~ '^\\d+$'",['OT-'+yr+'-%']);
+    const cnt=await client.query("SELECT COUNT(*)+1 AS n FROM mant_ot WHERE EXTRACT(YEAR FROM creado_en)=$1",[yr]);
     const num=`OT-${yr}-${String(cnt.rows[0].n).padStart(4,'0')}`;
 
     // Nota de consolidación
@@ -6611,70 +6276,6 @@ app.patch('/api/personal/:id/activo', auth, async(req,res)=>{
   try{const r=await pool.query('UPDATE personal SET activo=NOT activo WHERE persona_id=$1 RETURNING *',[req.params.id]);res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
 });
 
-// Asignar turno 7x7 (A/B) o jornada normal (null) a un trabajador
-app.patch('/api/personal/:id/turno', auth, async(req,res)=>{
-  try{
-    let t=req.body.turno;
-    t=(t==='A'||t==='B'||t==='AB'||t==='P')?t:null;
-    const inicio=(t==='P'&&req.body.turno_inicio)?req.body.turno_inicio:null;
-    const r=await pool.query('UPDATE personal SET turno=$1,turno_inicio=$2 WHERE persona_id=$3 RETURNING persona_id,nombre_completo,turno,turno_inicio',[t,inicio,req.params.id]);
-    if(!r.rows.length)return res.status(404).json({error:'Trabajador no encontrado'});
-    res.json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
-});
-
-// Actualizar SOLO los haberes de un trabajador (editor por trabajador)
-app.patch('/api/personal/:id/haberes', auth, async(req,res)=>{
-  try{
-    const b=req.body;
-    const r=await pool.query(`UPDATE personal SET
-      sueldo_base=$1, bono_responsabilidad=$2, bono_produccion_fijo=$3,
-      bono_produccion_variable=$4, bono_produccion_tarifa=$5, bono_produccion_detalle=$6,
-      semana_corrida=$7, asig_colacion=$8, asig_movilizacion=$9, asig_viatico=$10
-      WHERE persona_id=$11 RETURNING *`,
-      [parseFloat(b.sueldo_base)||0, parseFloat(b.bono_responsabilidad)||0, parseFloat(b.bono_produccion_fijo)||0,
-       b.bono_produccion_variable===true, parseFloat(b.bono_produccion_tarifa)||0, b.bono_produccion_detalle||null,
-       b.semana_corrida===true, parseFloat(b.asig_colacion)||0, parseFloat(b.asig_movilizacion)||0, parseFloat(b.asig_viatico)||0,
-       req.params.id]);
-    if(!r.rows.length) return res.status(404).json({error:'Trabajador no encontrado'});
-    res.json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
-});
-
-// Actualización MASIVA de haberes (ajuste de sueldos por ingreso mínimo, etc.)
-app.post('/api/personal/haberes-masivo', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    const COLUMNAS_PERMITIDAS={
-      sueldo_base:'Sueldo base', bono_responsabilidad:'Bono responsabilidad',
-      bono_produccion_fijo:'Bono producción fijo', bono_produccion_tarifa:'Bono producción (tarifa)',
-      asig_colacion:'Asignación colación', asig_movilizacion:'Asignación movilización', asig_viatico:'Asignación viático'
-    };
-    const{ids,campo,operacion,valor}=req.body;
-    if(!Array.isArray(ids)||!ids.length) return res.status(400).json({error:'Selecciona al menos un trabajador'});
-    if(!COLUMNAS_PERMITIDAS[campo]) return res.status(400).json({error:'Haber no válido'});
-    if(['set','add','pct','min'].indexOf(operacion)<0) return res.status(400).json({error:'Operación no válida'});
-    const v=parseFloat(valor);
-    if(isNaN(v)) return res.status(400).json({error:'Valor no válido'});
-    const idsInt=ids.map(function(x){return parseInt(x);}).filter(function(x){return !isNaN(x);});
-    if(!idsInt.length) return res.status(400).json({error:'IDs no válidos'});
-    // Expresión de cálculo según operación (columna ya validada contra whitelist)
-    let expr;
-    if(operacion==='set') expr='$1';
-    else if(operacion==='add') expr='ROUND(COALESCE('+campo+',0) + $1)';
-    else if(operacion==='pct') expr='ROUND(COALESCE('+campo+',0) * (1 + $1/100.0))';
-    else expr='GREATEST(COALESCE('+campo+',0), $1)'; // min: lleva al mínimo (sube los que estén por debajo)
-    await client.query('BEGIN');
-    const r=await client.query(
-      'UPDATE personal SET '+campo+' = '+expr+' WHERE persona_id = ANY($2::int[]) RETURNING persona_id',
-      [v, idsInt]
-    );
-    await client.query('COMMIT');
-    res.json({ok:true, actualizados:r.rowCount, campo:campo, etiqueta:COLUMNAS_PERMITIDAS[campo]});
-  }catch(e){ try{await client.query('ROLLBACK');}catch(_){}; res.status(400).json({error:e.message}); }
-  finally{ client.release(); }
-});
-
 // Reactivar trabajador con nuevas fechas de contrato
 app.patch('/api/personal/:id/reactivar', auth, async(req,res)=>{
   try{
@@ -6849,7 +6450,7 @@ app.delete('/api/mant/ot/personal/:id', auth, async(req,res)=>{
 // ══════════════════════════════════════════════════════
 // OC DETALLE — Vincular a OT
 // ══════════════════════════════════════════════════════
-app.patch('/api/oc/detalle/:id/ot', auth, requireModulo('ordenes'), async(req,res)=>{
+app.patch('/api/oc/detalle/:id/ot', auth, async(req,res)=>{
   try{
     const{ot_id}=req.body;
     const r=await pool.query('UPDATE ordenes_compra_detalle SET ot_id=$1 WHERE detalle_id=$2 RETURNING *',[ot_id||null,req.params.id]);
@@ -6858,7 +6459,7 @@ app.patch('/api/oc/detalle/:id/ot', auth, requireModulo('ordenes'), async(req,re
 });
 
 // GET líneas de una OC con info de OT asignada
-app.get('/api/oc/:id/lineas', auth, requireModulo('ordenes'), async(req,res)=>{
+app.get('/api/oc/:id/lineas', auth, async(req,res)=>{
   try{
     const r=await pool.query(`SELECT d.*,ot.numero_ot,ot.equipo_id,eq.nombre AS equipo_nombre,sc.nombre AS subcategoria_nombre,cat.nombre AS categoria_nombre FROM ordenes_compra_detalle d LEFT JOIN mant_ot ot ON d.ot_id=ot.ot_id LEFT JOIN equipos eq ON ot.equipo_id=eq.equipo_id LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,(SELECT p.subcategoria_id FROM productos p WHERE p.producto_id=d.producto_id))=sc.subcategoria_id LEFT JOIN categorias cat ON sc.categoria_id=cat.categoria_id WHERE d.oc_id=$1 ORDER BY d.linea_num,d.detalle_id`,[req.params.id]);
     res.json(r.rows);
@@ -6874,7 +6475,7 @@ app.get('/api/mant/ot/:id/compras', auth, async(req,res)=>{
 
 
 // Enlazar OC completa a una OT
-app.patch('/api/oc/link-ot', auth, requireModulo('ordenes'), async(req,res)=>{
+app.patch('/api/oc/link-ot', auth, async(req,res)=>{
   try{
     const oc_id=parseInt(req.body.oc_id), ot_id=parseInt(req.body.ot_id);
     if(!oc_id||!ot_id) return res.status(400).json({error:'oc_id y ot_id requeridos'});
@@ -6910,7 +6511,7 @@ app.patch('/api/oc/link-ot', auth, requireModulo('ordenes'), async(req,res)=>{
 });
 
 // Desenlazar OC de una OT
-app.patch('/api/oc/unlink-ot', auth, requireModulo('ordenes'), async(req,res)=>{
+app.patch('/api/oc/unlink-ot', auth, async(req,res)=>{
   try{
     const{oc_id,ot_id}=req.body;
     if(!oc_id||!ot_id) return res.status(400).json({error:'oc_id y ot_id requeridos'});
@@ -6922,7 +6523,7 @@ app.patch('/api/oc/unlink-ot', auth, requireModulo('ordenes'), async(req,res)=>{
 });
 
 // OCs disponibles para enlazar (no anuladas, sin enlace a otra OT)
-app.get('/api/oc/disponibles-ot', auth, requireModulo('ordenes'), async(req,res)=>{
+app.get('/api/oc/disponibles-ot', auth, async(req,res)=>{
   try{
     const r=await pool.query(`SELECT DISTINCT oc.oc_id,oc.numero_oc,oc.fecha_emision,oc.estado,oc.total,pr.nombre AS proveedor FROM ordenes_compra oc LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id WHERE oc.estado NOT IN ('ANULADA') AND NOT EXISTS (SELECT 1 FROM ordenes_compra_detalle d WHERE d.oc_id=oc.oc_id AND d.ot_id IS NOT NULL) ORDER BY oc.fecha_emision DESC`);
     res.json(r.rows);
@@ -7042,19 +6643,9 @@ async function setupRendiciones(q){
     UNIQUE(dte_id,oc_id)
   )`);
 
-  // Garantizar la restricción única (dte_id,oc_id): si la tabla se creó en un deploy antiguo
-  // SIN el UNIQUE, TODO INSERT con ON CONFLICT falla en Postgres (42P10) aunque no haya
-  // conflicto real — síntoma: el "Aplicar" del cruce automático nunca persistía.
-  try{await q('DELETE FROM dte_oc a USING dte_oc b WHERE a.rel_id>b.rel_id AND a.dte_id=b.dte_id AND a.oc_id=b.oc_id');}catch(e){}
-  try{await q('CREATE UNIQUE INDEX IF NOT EXISTS dte_oc_pair_uq ON dte_oc(dte_id,oc_id)');}catch(e){console.log('[WARN] dte_oc índice único:',e.message);}
-
   // Migración por si la tabla existía sin columna oc_id
   try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS oc_id INT REFERENCES ordenes_compra(oc_id)');}catch(e){}
   try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS xml_completo TEXT');}catch(e){}
-  // Documento de referencia (notas de crédito/débito: factura original según <Referencia> del XML SII)
-  try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS ref_tipo_dte VARCHAR(5)');}catch(e){}
-  try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS ref_folio VARCHAR(30)');}catch(e){}
-  try{await q('ALTER TABLE dte_recibidos ADD COLUMN IF NOT EXISTS ref_razon TEXT');}catch(e){}
 
 
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS fecha_ingreso DATE');}catch(e){}
@@ -7083,10 +6674,6 @@ async function setupRendiciones(q){
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS bono_produccion_tarifa NUMERIC(12,2) DEFAULT 0');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS bono_produccion_detalle TEXT');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS semana_corrida BOOLEAN DEFAULT false');}catch(e){}
-  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS turno VARCHAR(2)');}catch(e){}
-  try{await q('ALTER TABLE personal ALTER COLUMN turno TYPE VARCHAR(2)');}catch(e){}
-  try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS turno_inicio DATE');}catch(e){}
-  try{await q('ALTER TABLE faenas ADD COLUMN IF NOT EXISTS turno_inicio_a DATE');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS asig_colacion NUMERIC(10,2) DEFAULT 0');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS asig_movilizacion NUMERIC(10,2) DEFAULT 0');}catch(e){}
   try{await q('ALTER TABLE personal ADD COLUMN IF NOT EXISTS asig_viatico NUMERIC(10,2) DEFAULT 0');}catch(e){}
@@ -7168,11 +6755,8 @@ async function setupRendiciones(q){
     usuario VARCHAR(100),
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
-  // Ampliar columnas que quedaron cortas para nuevos valores (ej. 'prestamo_interempresa' = 21 chars)
-  try{ await q(`ALTER TABLE fin_cheques ALTER COLUMN tipo_beneficiario TYPE VARCHAR(40)`); }catch(e){}
-  try{ await q(`ALTER TABLE fin_cheques ALTER COLUMN estado TYPE VARCHAR(30)`); }catch(e){}
-  try{ await q(`ALTER TABLE fin_cheques ALTER COLUMN numero_cheque TYPE VARCHAR(40)`); }catch(e){}
 
+  // ── Terreno: Registros diarios y tiempos obvios ──
   await q(`CREATE TABLE IF NOT EXISTS terreno_tob_categorias (
     tob_cat_id SERIAL PRIMARY KEY,
     codigo VARCHAR(10),
@@ -7203,57 +6787,7 @@ async function setupRendiciones(q){
   try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS rodal_id INT REFERENCES rodales(rodal_id)');}catch(e){}
   try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS arboles_producidos INT');}catch(e){}
   try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS vma_aplicado NUMERIC(8,4)');}catch(e){}
-  try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS modificado_en TIMESTAMP');}catch(e){}
-  try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS modificado_por VARCHAR(100)');}catch(e){}
   try{await q('ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS m3_producidos NUMERIC(10,3) GENERATED ALWAYS AS (COALESCE(arboles_producidos,0)*COALESCE(vma_aplicado,0)) STORED');}catch(e){}
-  // ── Jornada Día/Noche + m³ manual (2026-07) ──
-  try{await q("ALTER TABLE terreno_registros ADD COLUMN IF NOT EXISTS jornada VARCHAR(6) NOT NULL DEFAULT 'DIA'");}catch(e){}
-  // m3_producidos pasa de columna GENERADA (árboles×VMA) a ingreso MANUAL. DROP EXPRESSION conserva
-  // los valores ya calculados de los registros antiguos. Idempotente: 2ª corrida falla y se ignora.
-  try{await q('ALTER TABLE terreno_registros ALTER COLUMN m3_producidos DROP EXPRESSION');}catch(e){}
-  // Único por fecha+equipo+JORNADA+OPERADOR (2026-08): permite un 2° turno en la misma
-  // jornada cuando el OPERADOR es distinto (máquinas operando casi 24 h con relevos).
-  // COALESCE(operador_id,-1) evita duplicar dos registros sin operador en la misma jornada.
-  try{await q('ALTER TABLE terreno_registros DROP CONSTRAINT IF EXISTS terreno_registros_fecha_equipo_id_key');}catch(e){}
-  try{await q('DROP INDEX IF EXISTS terreno_reg_fecha_eq_jor_uq');}catch(e){}
-  try{await q("CREATE UNIQUE INDEX IF NOT EXISTS terreno_reg_fecha_eq_jor_op_uq ON terreno_registros(fecha,equipo_id,jornada,COALESCE(operador_id,-1))");}catch(e){}
-
-  // ── PRODUCTIVIDAD / OEE (registros mensuales por faena) ──
-  await q(`CREATE TABLE IF NOT EXISTS prod_oee_registros (
-    oee_id SERIAL PRIMARY KEY,
-    faena VARCHAR(40) NOT NULL,
-    anio INT NOT NULL,
-    mes INT NOT NULL,
-    toc NUMERIC(12,4) DEFAULT 0,
-    tob NUMERIC(12,4) DEFAULT 0,
-    n_arboles NUMERIC(14,2) DEFAULT 0,
-    hrs_op NUMERIC(12,2) DEFAULT 0,
-    m3 NUMERIC(16,4) DEFAULT 0,
-    fd NUMERIC(8,4) DEFAULT 0,
-    fe NUMERIC(8,4) DEFAULT 0,
-    fp NUMERIC(8,4) DEFAULT 0,
-    oee NUMERIC(8,4) DEFAULT 0,
-    vma NUMERIC(10,4) DEFAULT 0,
-    rend NUMERIC(12,4) DEFAULT 0,
-    factores JSONB DEFAULT '{}'::jsonb,
-    actualizado_en TIMESTAMP DEFAULT NOW(),
-    UNIQUE(faena,anio,mes)
-  )`);
-  // Sembrar con los datos reales actuales si la tabla está vacía
-  try{
-    const cnt=await q('SELECT COUNT(*)::int AS n FROM prod_oee_registros');
-    if(cnt.rows[0].n===0){
-      const seed=OEE_SEED;
-      for(const r of seed){
-        const fact={}; Object.keys(r).forEach(function(k){ if(/^[FE]\d/.test(k)) fact[k]=r[k]; });
-        await q(`INSERT INTO prod_oee_registros(faena,anio,mes,toc,tob,n_arboles,hrs_op,m3,fd,fe,fp,oee,vma,rend,factores)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-          ON CONFLICT(faena,anio,mes) DO NOTHING`,
-          [r.FAENA,r.ANIO,r.MES,r.TOC||0,r.TOB||0,r.N_ARBOLES||0,r.HRS_OP||0,r.M3||0,r.FD||0,r.FE||0,r.FP||0,r.OEE||0,r.VMA||0,r.REND||0,JSON.stringify(fact)]);
-      }
-      console.log('OEE: sembrados '+seed.length+' registros iniciales');
-    }
-  }catch(e){ console.warn('OEE seed:', e.message); }
   await q(`CREATE TABLE IF NOT EXISTS terreno_tob_detalle (
     detalle_id SERIAL PRIMARY KEY,
     registro_id INT NOT NULL REFERENCES terreno_registros(registro_id) ON DELETE CASCADE,
@@ -7934,13 +7468,6 @@ app.post('/api/fin/cheques', auth, async(req,res)=>{
   try{
     const{empresa_id,cuenta_id,numero_cheque,fecha_emision,fecha_cobro,monto,tipo_beneficiario,proveedor_id,beneficiario_nombre,concepto,concepto_detalle,observaciones}=req.body;
     if(!cuenta_id||!numero_cheque||!fecha_cobro||!monto)return res.status(400).json({error:'Cuenta, N° cheque, fecha cobro y monto son obligatorios'});
-    // Validar número duplicado en la misma cuenta (se permite si el anterior está anulado)
-    const nch=String(numero_cheque).trim();
-    const dup=await pool.query("SELECT cheque_id,fecha_emision,monto,beneficiario_nombre,estado FROM fin_cheques WHERE cuenta_id=$1 AND TRIM(numero_cheque)=$2 AND estado<>'anulado' LIMIT 1",[cuenta_id,nch]);
-    if(dup.rows.length){
-      const d=dup.rows[0];
-      return res.status(400).json({error:'El cheque N° '+nch+' ya está registrado en esta cuenta (emitido el '+String(d.fecha_emision).slice(0,10)+', $'+Math.round(parseFloat(d.monto)).toLocaleString('es-CL')+(d.beneficiario_nombre?', a '+d.beneficiario_nombre:'')+', estado '+d.estado+'). Verifica el número o anula el cheque anterior.'});
-    }
     const cuenta=await pool.query('SELECT empresa_id FROM fin_cuentas_bancarias WHERE cuenta_id=$1',[cuenta_id]);
     const empId=empresa_id||cuenta.rows[0]?.empresa_id;
     const benNombre=tipo_beneficiario==='proveedor'&&proveedor_id?(await pool.query('SELECT nombre FROM proveedores WHERE proveedor_id=$1',[proveedor_id])).rows[0]?.nombre:beneficiario_nombre;
@@ -7952,13 +7479,6 @@ app.post('/api/fin/cheques', auth, async(req,res)=>{
 app.put('/api/fin/cheques/:id', auth, async(req,res)=>{
   try{
     const{cuenta_id,numero_cheque,fecha_emision,fecha_cobro,monto,tipo_beneficiario,proveedor_id,beneficiario_nombre,concepto,concepto_detalle,observaciones}=req.body;
-    // Validar número duplicado en la misma cuenta (excluyendo este mismo cheque; se permite si el otro está anulado)
-    const nch2=String(numero_cheque||'').trim();
-    const dup2=await pool.query("SELECT cheque_id,fecha_emision,monto,beneficiario_nombre,estado FROM fin_cheques WHERE cuenta_id=$1 AND TRIM(numero_cheque)=$2 AND estado<>'anulado' AND cheque_id<>$3 LIMIT 1",[cuenta_id,nch2,req.params.id]);
-    if(dup2.rows.length){
-      const d2=dup2.rows[0];
-      return res.status(400).json({error:'El cheque N° '+nch2+' ya está registrado en esta cuenta (emitido el '+String(d2.fecha_emision).slice(0,10)+', $'+Math.round(parseFloat(d2.monto)).toLocaleString('es-CL')+(d2.beneficiario_nombre?', a '+d2.beneficiario_nombre:'')+', estado '+d2.estado+'). Verifica el número o anula el cheque anterior.'});
-    }
     const benNombre=tipo_beneficiario==='proveedor'&&proveedor_id?(await pool.query('SELECT nombre FROM proveedores WHERE proveedor_id=$1',[proveedor_id])).rows[0]?.nombre:beneficiario_nombre;
     const r=await pool.query('UPDATE fin_cheques SET cuenta_id=$1,numero_cheque=$2,fecha_emision=$3,fecha_cobro=$4,monto=$5,tipo_beneficiario=$6,proveedor_id=$7,beneficiario_nombre=$8,concepto=$9,concepto_detalle=$10,observaciones=$11 WHERE cheque_id=$12 RETURNING *',
       [cuenta_id,numero_cheque,fecha_emision,fecha_cobro,parseFloat(monto),tipo_beneficiario,tipo_beneficiario==='proveedor'?proveedor_id:null,benNombre||null,concepto,concepto_detalle||null,observaciones||null,req.params.id]);
@@ -8378,28 +7898,21 @@ app.delete('/api/rodales/:id', auth, async(req,res)=>{
 
 app.get('/api/terreno/registros', auth, async(req,res)=>{
   try{
-    const{equipo_id,faena_id,desde,hasta,mes,empresa_id,operador_id}=req.query;
+    const{equipo_id,faena_id,desde,hasta,mes}=req.query;
     let w=['1=1'],v=[];
-    // Scoping: usuario no-admin con faena asignada SOLO ve los registros de su faena
-    const userFaenaLst=await terrenoUserScope(pool,req.user.id);
-    if(userFaenaLst){v.push(userFaenaLst);w.push(`r.faena_id=$${v.length}`);}
     if(equipo_id){v.push(equipo_id);w.push(`r.equipo_id=$${v.length}`);}
-    if(faena_id&&!userFaenaLst){v.push(faena_id);w.push(`r.faena_id=$${v.length}`);}
-    if(empresa_id&&!isNaN(parseInt(empresa_id))){v.push(parseInt(empresa_id));w.push(`e.empresa_id=$${v.length}`);}
-    if(operador_id&&!isNaN(parseInt(operador_id))){v.push(parseInt(operador_id));w.push(`r.operador_id=$${v.length}`);}
+    if(faena_id){v.push(faena_id);w.push(`r.faena_id=$${v.length}`);}
     if(desde){v.push(desde);w.push(`r.fecha>=$${v.length}`);}
     if(hasta){v.push(hasta);w.push(`r.fecha<=$${v.length}`);}
     if(mes){v.push(mes);w.push(`TO_CHAR(r.fecha,'YYYY-MM')=$${v.length}`);}
     const rs=await pool.query(`
       SELECT r.*, e.codigo AS equipo_codigo, e.nombre AS equipo_nombre, e.proceso_productivo,
-             f.nombre AS faena_nombre,
+             f.nombre AS faena_nombre, 
              es.codigo AS estanque_codigo, es.nombre AS estanque_nombre,
              op.nombre_completo AS operador_nombre,
              fu.nombre AS fundo_nombre,
-             rd.nombre AS rodal_nombre, rd.vma AS rodal_vma,
-             to_char(r.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Santiago','DD-MM-YYYY HH24:MI') AS ingresado_cl,
-             to_char(r.modificado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Santiago','DD-MM-YYYY HH24:MI') AS modificado_cl
-      FROM terreno_registros r
+             rd.nombre AS rodal_nombre, rd.vma AS rodal_vma
+      FROM terreno_registros r 
       JOIN equipos e ON r.equipo_id=e.equipo_id 
       JOIN faenas f ON r.faena_id=f.faena_id 
       LEFT JOIN comb_estanques es ON r.estanque_id=es.estanque_id 
@@ -8412,7 +7925,7 @@ app.get('/api/terreno/registros', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.get('/api/terreno/registros/:id/tob', auth, async(req,res)=>{
-  try{res.json((await pool.query("SELECT d.*,c.causa,COALESCE(NULLIF(TRIM(d.clasificacion),''),'E') AS clasificacion FROM terreno_tob_detalle d JOIN terreno_tob_categorias c ON d.tob_cat_id=c.tob_cat_id WHERE d.registro_id=$1 ORDER BY d.detalle_id",[req.params.id])).rows);}catch(e){res.status(500).json({error:e.message});}
+  try{res.json((await pool.query('SELECT d.*,c.causa,c.clasificacion FROM terreno_tob_detalle d JOIN terreno_tob_categorias c ON d.tob_cat_id=c.tob_cat_id WHERE d.registro_id=$1 ORDER BY d.detalle_id',[req.params.id])).rows);}catch(e){res.status(500).json({error:e.message});}
 });
 
 // ── INFORME DE TERRENO: agrupado por empresa/faena/equipo ──
@@ -8420,11 +7933,8 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
   try{
     const{empresa_id,faena_id,equipo_id,desde,hasta}=req.query;
     let w=['1=1'],v=[];
-    // Scoping: usuario no-admin con faena asignada SOLO ve el informe de su faena
-    const userFaenaInf=await terrenoUserScope(pool,req.user.id);
-    if(userFaenaInf){v.push(userFaenaInf);w.push(`r.faena_id=$${v.length}`);}
     if(empresa_id){v.push(empresa_id);w.push(`e.empresa_id=$${v.length}`);}
-    if(faena_id&&!userFaenaInf){v.push(faena_id);w.push(`r.faena_id=$${v.length}`);}
+    if(faena_id){v.push(faena_id);w.push(`r.faena_id=$${v.length}`);}
     if(equipo_id){v.push(equipo_id);w.push(`r.equipo_id=$${v.length}`);}
     if(desde){v.push(desde);w.push(`r.fecha>=$${v.length}`);}
     if(hasta){v.push(hasta);w.push(`r.fecha<=$${v.length}`);}
@@ -8436,7 +7946,6 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
              f.nombre AS faena_nombre,
              es.codigo AS estanque_codigo, es.nombre AS estanque_nombre,
              op.nombre_completo AS operador_nombre,
-             op.turno AS operador_turno,
              fu.nombre AS fundo_nombre,
              rd.nombre AS rodal_nombre,
              COALESCE((SELECT SUM(t.horas) FROM terreno_tob_detalle t WHERE t.registro_id=r.registro_id AND t.clasificacion='E'),0) AS tob_horas_e,
@@ -8457,7 +7966,7 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
     if(det.rows.length){
       const regIds=det.rows.map(r=>r.registro_id);
       const tobDet=await pool.query(`
-        SELECT t.registro_id, c.causa, COALESCE(NULLIF(TRIM(t.clasificacion),''),'E') AS clasificacion, t.horas, t.observacion
+        SELECT t.registro_id, c.causa, c.clasificacion, t.horas, t.observacion
         FROM terreno_tob_detalle t
         JOIN terreno_tob_categorias c ON t.tob_cat_id=c.tob_cat_id
         WHERE t.registro_id = ANY($1::int[])
@@ -8495,7 +8004,6 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
           horas_trabajadas:0,horas_perdidas:0,
           tob_horas_e:0,tob_horas_f:0,tob_horas_otros:0,
           litros_combustible:0,
-          arboles:0,m3:0,
           primera_fecha:r.fecha,ultima_fecha:r.fecha
         };
       }
@@ -8507,8 +8015,6 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
       x.tob_horas_f+=parseFloat(r.tob_horas_f)||0;
       x.tob_horas_otros+=parseFloat(r.tob_horas_otros)||0;
       x.litros_combustible+=parseFloat(r.litros_combustible)||0;
-      x.arboles+=parseInt(r.arboles_producidos)||0;
-      x.m3+=parseFloat(r.m3_producidos)||0;
       if(r.fecha<x.primera_fecha)x.primera_fecha=r.fecha;
       if(r.fecha>x.ultima_fecha)x.ultima_fecha=r.fecha;
     });
@@ -8537,9 +8043,7 @@ app.get('/api/terreno/informe', auth, async(req,res)=>{
       tob_horas_e:resumen.reduce(function(s,x){return s+x.tob_horas_e;},0),
       tob_horas_f:resumen.reduce(function(s,x){return s+x.tob_horas_f;},0),
       tob_horas_otros:resumen.reduce(function(s,x){return s+x.tob_horas_otros;},0),
-      litros_combustible:resumen.reduce(function(s,x){return s+x.litros_combustible;},0),
-      arboles:resumen.reduce(function(s,x){return s+x.arboles;},0),
-      m3:resumen.reduce(function(s,x){return s+x.m3;},0)
+      litros_combustible:resumen.reduce(function(s,x){return s+x.litros_combustible;},0)
     };
     tot.disponibilidad_pct=(tot.horas_trabajadas+tot.horas_perdidas)>0?(tot.horas_trabajadas/(tot.horas_trabajadas+tot.horas_perdidas)*100):null;
     // Top categorías de tiempo perdido (TOB) — agrupado por t.clasificacion (la del DETALLE, no la de la categoría)
@@ -8620,133 +8124,35 @@ app.patch('/api/terreno/tob-clasificar-masivo', auth, async(req,res)=>{
   }catch(e){res.status(400).json({error:e.message});}
 });
 
-// ── Helpers de validación Terreno (jornada Día/Noche + scoping por faena del usuario) ──
-// Usuario con faena asignada en el maestro (y rol NO admin) solo opera sobre esa faena.
-async function terrenoUserScope(client,userId){
-  try{
-    const r=await client.query('SELECT u.faena_id, COALESCE(ro.es_admin,false) AS es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',[userId]);
-    if(!r.rows.length)return null;
-    return r.rows[0].es_admin?null:(r.rows[0].faena_id||null);
-  }catch(e){return null;}
-}
-// Validaciones comunes de POST/PUT: scoping, integridad equipo/operador con la faena,
-// duplicado por fecha+equipo+jornada y tope 24 h sumando ambas jornadas (solo horómetro).
-async function terrenoValidar(client,b,userId,excluirId){
-  const jor=(String(b.jornada||'DIA').toUpperCase()==='NOCHE')?'NOCHE':'DIA';
-  const userFaena=await terrenoUserScope(client,userId);
-  if(userFaena&&String(b.faena_id)!==String(userFaena))
-    throw new Error('Su usuario está restringido a su faena asignada: solo puede crear o editar registros de esa faena');
-  const eqChk=(await client.query('SELECT e.faena_id,e.tipo_cargo,(SELECT COUNT(*)::int FROM equipos_empresas ee WHERE ee.equipo_id=e.equipo_id) AS n_emp FROM equipos e WHERE e.equipo_id=$1',[b.equipo_id])).rows[0];
-  if(!eqChk)throw new Error('El equipo seleccionado no existe');
-  // Equipo debe pertenecer a la faena del registro (sin faena = común; MULTIEMPRESA = todas las faenas)
-  if(eqChk.faena_id&&eqChk.n_emp<2&&String(eqChk.faena_id)!==String(b.faena_id))
-    throw new Error('El equipo seleccionado pertenece a otra faena: no se puede registrar en esta faena');
-  const esVeh=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'].indexOf((eqChk.tipo_cargo||'maquinaria').toLowerCase())>=0;
-  // Operador debe pertenecer a la faena (personal sin faena = común).
-  // REVERTIDO 2026-08: la restricción por TURNO del usuario se eliminó — los traspasos de
-  // trabajadores entre turnos la hicieron impracticable; el jefe de faena ve TODO el personal de su faena.
-  if(b.operador_id){
-    const op=(await client.query('SELECT faena_id FROM personal WHERE persona_id=$1',[b.operador_id])).rows[0];
-    if(op&&op.faena_id&&String(op.faena_id)!==String(b.faena_id))
-      throw new Error('El operador seleccionado no pertenece a la faena del registro');
-  }
-  // Control interno (2026-08): cantidad de árboles OBLIGATORIA, pero SOLO para
-  // registros de MAQUINARIA en faenas de la empresa Leonidas Poo (por razón social)
-  if(!esVeh){
-    const fEmp=(await client.query('SELECT emp.razon_social FROM faenas f JOIN empresas emp ON f.empresa_id=emp.empresa_id WHERE f.faena_id=$1',[b.faena_id])).rows[0];
-    const esLpoo=!!(fEmp&&/leonidas/i.test(fEmp.razon_social||'')&&/poo/i.test(fEmp.razon_social||''));
-    if(esLpoo&&(b.arboles_producidos==null||b.arboles_producidos===''))
-      throw new Error('La cantidad de árboles es obligatoria para registros de maquinaria de Leonidas Poo');
-  }
-  // Máximo un registro por máquina + fecha + jornada + OPERADOR: un segundo turno en la
-  // misma jornada es válido solo con operador distinto (relevos con máquina casi 24 h operativa)
-  const dupV=[b.fecha,b.equipo_id,jor,b.operador_id||null];
-  let dupSql="SELECT registro_id FROM terreno_registros WHERE fecha=$1 AND equipo_id=$2 AND COALESCE(jornada,'DIA')=$3 AND COALESCE(operador_id,-1)=COALESCE($4,-1)";
-  if(excluirId){dupV.push(excluirId);dupSql+=' AND registro_id<>$5';}
-  const dup=await client.query(dupSql,dupV);
-  if(dup.rows.length)throw new Error('Ya existe un registro de este equipo para esa fecha, jornada '+(jor==='DIA'?'Día':'Noche')+' y ese operador. Un segundo turno en la misma jornada requiere un OPERADOR DISTINTO'+(b.operador_id?'':' (y debe indicarlo)'));
-  // ── CONTINUIDAD DEL HORÓMETRO (2026-08): el inicial DEBE ser el final del registro
-  // anterior del equipo — sin saltos (jefes de faena omitían horas trabajadas saltando
-  // el horómetro). Solo es_admin puede romper la continuidad (correcciones legítimas:
-  // cambio de horómetro, ajustes). Aplica a horas (maquinaria) y km (vehículos).
-  {
-    const jorC=(String(b.jornada||'DIA').toUpperCase()==='NOCHE')?'NOCHE':'DIA';
-    const pvV=[b.equipo_id,b.fecha,jorC];
-    if(excluirId)pvV.push(excluirId);
-    const prev=(await client.query(`SELECT horometro_final, to_char(fecha,'DD-MM-YYYY') AS f, COALESCE(jornada,'DIA') AS j
-      FROM terreno_registros
-      WHERE equipo_id=$1${excluirId?' AND registro_id<>$4':''}
-        AND (fecha<$2::date OR (fecha=$2::date AND
-             (CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END) <= (CASE WHEN $3='NOCHE' THEN 2 ELSE 1 END)))
-      ORDER BY fecha DESC, CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END DESC, horometro_final DESC, registro_id DESC
-      LIMIT 1`,pvV)).rows[0];
-    // Registro SIGUIENTE (si se está rellenando un día faltante entre registros existentes):
-    // el final no puede pasarse del inicial del sucesor, o el relleno rompería la cadena
-    const sigC=(await client.query(`SELECT horometro_inicial, to_char(fecha,'DD-MM-YYYY') AS f FROM terreno_registros
-      WHERE equipo_id=$1${excluirId?' AND registro_id<>$4':''}
-        AND (fecha>$2::date OR (fecha=$2::date AND
-             (CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END) > (CASE WHEN $3='NOCHE' THEN 2 ELSE 1 END)))
-      ORDER BY fecha ASC, CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END ASC, horometro_inicial ASC, registro_id ASC LIMIT 1`,pvV)).rows[0];
-    if(prev||sigC){
-      const adm=(await client.query('SELECT COALESCE(ro.es_admin,false) AS es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.usuario_id=$1',[userId])).rows[0];
-      const esAdminC=!!(adm&&adm.es_admin);
-      const tolC=esVeh?1.01:0.11;
-      if(prev&&!esAdminC){
-        const hiC=parseFloat(b.horometro_inicial);
-        const finPrev=parseFloat(prev.horometro_final);
-        if(Math.abs(hiC-finPrev)>tolC)
-          throw new Error('El '+(esVeh?'odómetro':'horómetro')+' inicial debe ser exactamente el final del registro anterior: '+finPrev.toFixed(esVeh?0:1)+' ('+prev.f+', jornada '+(prev.j==='NOCHE'?'Noche':'Día')+'). No se permiten saltos: si hay una diferencia real (cambio de horómetro, corrección), debe ajustarla un administrador');
-      }
-      if(sigC&&!esAdminC){
-        const hfC=parseFloat(b.horometro_final);
-        const iniSig=parseFloat(sigC.horometro_inicial);
-        if(hfC>iniSig+tolC)
-          throw new Error('El '+(esVeh?'odómetro':'horómetro')+' final ('+hfC.toFixed(esVeh?0:1)+') no puede superar el inicial del registro siguiente: '+iniSig.toFixed(esVeh?0:1)+' ('+sigC.f+'). Para cerrar el salto por completo, el final debe llegar exactamente a ese valor');
-      }
-    }
-  }
-  // Tope 24 h del día completo: este registro + la otra jornada (solo equipos con horómetro)
-  const horas=parseFloat(b.horometro_final)-parseFloat(b.horometro_inicial);
-  if(!esVeh){
-    if(horas>24)throw new Error('Las horas trabajadas de una jornada no pueden superar 24: la diferencia de horómetros ingresada es '+horas.toFixed(1)+' horas. Revise los horómetros');
-    const otraV=[b.fecha,b.equipo_id];
-    if(excluirId)otraV.push(excluirId);
-    const otra=await client.query('SELECT COALESCE(SUM(horometro_final-horometro_inicial),0) AS h FROM terreno_registros WHERE fecha=$1 AND equipo_id=$2'+(excluirId?' AND registro_id<>$3':''),otraV);
-    const hOtra=parseFloat(otra.rows[0].h)||0;
-    if(horas+hOtra>24.001)throw new Error('La suma de horas de las jornadas Día + Noche no puede superar 24: este registro aporta '+horas.toFixed(1)+' h y la otra jornada ya tiene '+hOtra.toFixed(1)+' h (total '+(horas+hOtra).toFixed(1)+' h)');
-  }
-  return{jor:jor,esVeh:esVeh};
-}
 app.post('/api/terreno/registros', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
     const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle,
-          operador_id,fundo_id,rodal_id,m3_producidos,jornada,arboles_producidos}=req.body;
+          operador_id,fundo_id,rodal_id,arboles_producidos}=req.body;
     if(!fecha||!faena_id||!equipo_id||horometro_inicial==null||horometro_final==null)throw new Error('Fecha, faena, equipo y horómetros son obligatorios');
     if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
-    const val=await terrenoValidar(client,req.body,req.user.id,null);
-    // VMA automático: snapshot del rodal seleccionado (registro informativo, sin multiplicación)
-    let vmaSnap=null;
-    if(rodal_id){const rdV=await client.query('SELECT vma FROM rodales WHERE rodal_id=$1',[rodal_id]);if(rdV.rows.length)vmaSnap=parseFloat(rdV.rows[0].vma)||null;}
     // Validate TOB sum = horas_perdidas
     const hp=parseFloat(horas_perdidas||0);
-    if(hp>24)throw new Error('Las horas perdidas de un día no pueden superar 24 (ingresado: '+hp.toFixed(1)+')');
     const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
-    for(const dtx of detalle){ if((dtx.tob_cat_id||parseFloat(dtx.horas)>0)&&dtx.clasificacion!=='E'&&dtx.clasificacion!=='F') throw new Error('Cada tiempo perdido debe tener clasificación E (Empresa) o F (Mandante)'); }
     const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
     if(hp>0&&Math.abs(hp-sumTob)>0.01)throw new Error(`La suma del desglose de tiempos obvios (${sumTob}) no coincide con las horas perdidas (${hp})`);
+    // Producción: obtener VMA del rodal (snapshot)
+    let vmaSnapshot=null;
+    if(rodal_id){
+      const rd=await client.query('SELECT vma FROM rodales WHERE rodal_id=$1',[rodal_id]);
+      if(rd.rows.length) vmaSnapshot=parseFloat(rd.rows[0].vma)||0;
+    }
     const r=await client.query(
       `INSERT INTO terreno_registros(fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,usuario,
-        operador_id,fundo_id,rodal_id,m3_producidos,jornada,arboles_producidos,vma_aplicado)
-       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+        operador_id,fundo_id,rodal_id,arboles_producidos,vma_aplicado) 
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING *`,
       [fecha,faena_id,equipo_id,parseFloat(horometro_inicial),parseFloat(horometro_final),hp,parseFloat(litros_combustible||0),estanque_id||null,observaciones||null,req.user.email,
-       operador_id||null,fundo_id||null,rodal_id||null,m3_producidos!=null&&m3_producidos!==''?parseFloat(m3_producidos):null,val.jor,
-       arboles_producidos!=null&&arboles_producidos!==''?parseInt(arboles_producidos):null,vmaSnap]);
+       operador_id||null,fundo_id||null,rodal_id||null,arboles_producidos?parseInt(arboles_producidos):null,vmaSnapshot]);
     const regId=r.rows[0].registro_id;
     for(const d of detalle){
       if(d.tob_cat_id&&parseFloat(d.horas)>0){
-        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,clasificacion,horas,observacion) VALUES($1,$2,$3,$4,$5)',[regId,d.tob_cat_id,d.clasificacion,parseFloat(d.horas),d.observacion||null]);
+        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,clasificacion,horas,observacion) VALUES($1,$2,$3,$4,$5)',[regId,d.tob_cat_id,d.clasificacion||'E',parseFloat(d.horas),d.observacion||null]);
       }
     }
     // Actualizar horómetro del equipo si el final es mayor al actual
@@ -8761,37 +8167,29 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
   try{
     await client.query('BEGIN');
     const{fecha,faena_id,equipo_id,horometro_inicial,horometro_final,horas_perdidas,litros_combustible,estanque_id,observaciones,tob_detalle,
-          operador_id,fundo_id,rodal_id,m3_producidos,jornada,arboles_producidos}=req.body;
+          operador_id,fundo_id,rodal_id,arboles_producidos}=req.body;
     if(parseFloat(horometro_final)<parseFloat(horometro_inicial))throw new Error('Horómetro final debe ser mayor o igual al inicial');
-    // Scoping: el registro EXISTENTE también debe ser de la faena del usuario (no puede "traerse" registros de otra faena)
-    const regAct=(await client.query('SELECT faena_id FROM terreno_registros WHERE registro_id=$1',[req.params.id])).rows[0];
-    if(!regAct)throw new Error('Registro no existe');
-    const userFaenaPut=await terrenoUserScope(client,req.user.id);
-    if(userFaenaPut&&String(regAct.faena_id)!==String(userFaenaPut))
-      throw new Error('Su usuario está restringido a su faena asignada: no puede editar registros de otra faena');
-    const val=await terrenoValidar(client,req.body,req.user.id,req.params.id);
     const hp=parseFloat(horas_perdidas||0);
-    if(hp>24)throw new Error('Las horas perdidas de un día no pueden superar 24 (ingresado: '+hp.toFixed(1)+')');
     const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
-    for(const dtx of detalle){ if((dtx.tob_cat_id||parseFloat(dtx.horas)>0)&&dtx.clasificacion!=='E'&&dtx.clasificacion!=='F') throw new Error('Cada tiempo perdido debe tener clasificación E (Empresa) o F (Mandante)'); }
     const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
     if(hp>0&&Math.abs(hp-sumTob)>0.01)throw new Error(`La suma del desglose (${sumTob}) no coincide con las horas perdidas (${hp})`);
-    // VMA automático: snapshot del rodal seleccionado
-    let vmaSnap=null;
-    if(rodal_id){const rdV=await client.query('SELECT vma FROM rodales WHERE rodal_id=$1',[rodal_id]);if(rdV.rows.length)vmaSnap=parseFloat(rdV.rows[0].vma)||null;}
+    // Producción: VMA snapshot del rodal
+    let vmaSnapshot=null;
+    if(rodal_id){
+      const rd=await client.query('SELECT vma FROM rodales WHERE rodal_id=$1',[rodal_id]);
+      if(rd.rows.length) vmaSnapshot=parseFloat(rd.rows[0].vma)||0;
+    }
     await client.query(
       `UPDATE terreno_registros SET fecha=$1,faena_id=$2,equipo_id=$3,horometro_inicial=$4,horometro_final=$5,horas_perdidas=$6,litros_combustible=$7,estanque_id=$8,observaciones=$9,
-        operador_id=$10,fundo_id=$11,rodal_id=$12,m3_producidos=$13,jornada=$14,arboles_producidos=$17,vma_aplicado=$18,
-        modificado_en=NOW(),modificado_por=$16
+        operador_id=$10,fundo_id=$11,rodal_id=$12,arboles_producidos=$13,vma_aplicado=$14
        WHERE registro_id=$15`,
       [fecha,faena_id,equipo_id,parseFloat(horometro_inicial),parseFloat(horometro_final),hp,parseFloat(litros_combustible||0),estanque_id||null,observaciones||null,
-       operador_id||null,fundo_id||null,rodal_id||null,m3_producidos!=null&&m3_producidos!==''?parseFloat(m3_producidos):null,val.jor,
-       req.params.id,req.user.email,
-       arboles_producidos!=null&&arboles_producidos!==''?parseInt(arboles_producidos):null,vmaSnap]);
+       operador_id||null,fundo_id||null,rodal_id||null,arboles_producidos?parseInt(arboles_producidos):null,vmaSnapshot,
+       req.params.id]);
     await client.query('DELETE FROM terreno_tob_detalle WHERE registro_id=$1',[req.params.id]);
     for(const d of detalle){
       if(d.tob_cat_id&&parseFloat(d.horas)>0){
-        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,clasificacion,horas,observacion) VALUES($1,$2,$3,$4,$5)',[req.params.id,d.tob_cat_id,d.clasificacion,parseFloat(d.horas),d.observacion||null]);
+        await client.query('INSERT INTO terreno_tob_detalle(registro_id,tob_cat_id,clasificacion,horas,observacion) VALUES($1,$2,$3,$4,$5)',[req.params.id,d.tob_cat_id,d.clasificacion||'E',parseFloat(d.horas),d.observacion||null]);
       }
     }
     await client.query('COMMIT');
@@ -8800,14 +8198,7 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
   finally{client.release();}
 });
 app.delete('/api/terreno/registros/:id', auth, async(req,res)=>{
-  try{
-    const userFaena=await terrenoUserScope(pool,req.user.id);
-    if(userFaena){
-      const reg=(await pool.query('SELECT faena_id FROM terreno_registros WHERE registro_id=$1',[req.params.id])).rows[0];
-      if(reg&&String(reg.faena_id)!==String(userFaena))return res.status(403).json({error:'Su usuario está restringido a su faena asignada: no puede eliminar registros de otra faena'});
-    }
-    await pool.query('DELETE FROM terreno_registros WHERE registro_id=$1',[req.params.id]);res.json({ok:true});
-  }catch(e){res.status(400).json({error:e.message});}
+  try{await pool.query('DELETE FROM terreno_registros WHERE registro_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
 });
 app.get('/api/terreno/rendimiento-mensual', auth, async(req,res)=>{
   try{
@@ -8819,546 +8210,9 @@ app.get('/api/terreno/rendimiento-mensual', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
-// ── Fundos y rodales para Terreno: fuente = dataset oferta_rodal del OEE ──
-// (Productividad → Asertividad Oferta → Control Programa vs Avance por Rodal).
-// La oferta cambia MES a MES: con ?mes=AAAA-MM se devuelven solo los fundos/rodales
-// del programa de ese mes (el mes de la fecha del registro). Sincroniza (upsert) a las
-// tablas maestras para conservar los FK de registros antiguos.
-// Fallback: si el dataset no está cargado, devuelve los mantenedores completos.
-app.get('/api/terreno/fundos-rodales', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await client.query('BEGIN');
-    const mes=/^\d{4}-\d{2}$/.test(req.query.mes||'')?req.query.mes:null;
-    let oferta=[];
-    try{
-      const ds=await client.query("SELECT valor FROM prod_oee_datasets WHERE clave='oferta_rodal'");
-      if(ds.rows.length&&Array.isArray(ds.rows[0].valor))oferta=ds.rows[0].valor;
-    }catch(e){}
-    if(!oferta.length){
-      const f=await client.query('SELECT fundo_id,nombre FROM fundos WHERE activo=true ORDER BY nombre');
-      const r2=await client.query('SELECT rodal_id,fundo_id,nombre,vma FROM rodales WHERE activo=true ORDER BY nombre');
-      await client.query('COMMIT');
-      return res.json({origen:'mantenedor',fundos:f.rows,rodales:r2.rows});
-    }
-    // Filtrar la oferta al mes solicitado (cada fila trae o.mes = 'AAAA-MM')
-    let sinOfertaMes=false;
-    if(mes){
-      const delMes=oferta.filter(function(o){return String(o.mes||'').slice(0,7)===mes;});
-      if(delMes.length)oferta=delMes;
-      else{sinOfertaMes=true;oferta=[];}
-    }
-    if(!oferta.length){
-      await client.query('COMMIT');
-      return res.json({origen:'oferta_rodal',mes:mes,sin_oferta_mes:sinOfertaMes,fundos:[],rodales:[]});
-    }
-    const fundoIds={},rodalKeys={},outF=[],outR=[];
-    for(const o of oferta){
-      const fN=String(o.fundo||'').trim(),rN=String(o.rodal||'').trim();
-      if(!fN)continue;
-      if(!(fN in fundoIds)){
-        let fr=await client.query('SELECT fundo_id,nombre FROM fundos WHERE LOWER(TRIM(nombre))=LOWER($1) LIMIT 1',[fN]);
-        if(!fr.rows.length)fr=await client.query('INSERT INTO fundos(nombre,activo) VALUES($1,true) RETURNING fundo_id,nombre',[fN]);
-        fundoIds[fN]=fr.rows[0].fundo_id;
-        outF.push({fundo_id:fr.rows[0].fundo_id,nombre:fr.rows[0].nombre});
-      }
-      if(!rN)continue;
-      const rk=fN+'||'+rN;
-      if(!(rk in rodalKeys)){
-        const vma=parseFloat(o.vma)||0;
-        let rr=await client.query('SELECT rodal_id,fundo_id,nombre,vma FROM rodales WHERE fundo_id=$1 AND LOWER(TRIM(nombre))=LOWER($2) LIMIT 1',[fundoIds[fN],rN]);
-        if(!rr.rows.length)rr=await client.query('INSERT INTO rodales(fundo_id,nombre,vma,activo) VALUES($1,$2,$3,true) RETURNING rodal_id,fundo_id,nombre,vma',[fundoIds[fN],rN,vma]);
-        else if(vma>0&&Math.abs((parseFloat(rr.rows[0].vma)||0)-vma)>0.0001){
-          await client.query('UPDATE rodales SET vma=$1 WHERE rodal_id=$2',[vma,rr.rows[0].rodal_id]);
-          rr.rows[0].vma=vma;
-        }
-        rodalKeys[rk]=1;
-        outR.push(rr.rows[0]);
-      }
-    }
-    await client.query('COMMIT');
-    outF.sort(function(a,b){return (a.nombre||'').localeCompare(b.nombre||'');});
-    outR.sort(function(a,b){return (a.nombre||'').localeCompare(b.nombre||'');});
-    res.json({origen:'oferta_rodal',mes:mes,fundos:outF,rodales:outR});
-  }catch(e){await client.query('ROLLBACK');res.status(500).json({error:e.message});}
-  finally{client.release();}
-});
-
-// Último horómetro del equipo. Con ?fecha=AAAA-MM-DD&jornada=DIA|NOCHE devuelve el
-// PREDECESOR relativo a esa fecha/jornada (para rellenar días faltantes hacia atrás)
-// y además el inicial del registro SIGUIENTE (tope: el final no puede pasarse de ahí).
 app.get('/api/terreno/ultimo-horometro/:equipo_id', auth, async(req,res)=>{
-  try{
-    const eq=req.params.equipo_id;
-    const fecha=/^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha||'')?req.query.fecha:null;
-    if(!fecha){
-      const r=await pool.query('SELECT horometro_final FROM terreno_registros WHERE equipo_id=$1 ORDER BY fecha DESC, registro_id DESC LIMIT 1',[eq]);
-      return res.json({horometro_final:r.rows.length?parseFloat(r.rows[0].horometro_final):null});
-    }
-    const jor=(String(req.query.jornada||'DIA').toUpperCase()==='NOCHE')?'NOCHE':'DIA';
-    const excl=req.query.excluir&&!isNaN(parseInt(req.query.excluir))?parseInt(req.query.excluir):null;
-    const pv=[eq,fecha,jor];if(excl)pv.push(excl);
-    const prev=(await pool.query(`SELECT horometro_final, to_char(fecha,'DD-MM-YYYY') AS f FROM terreno_registros
-      WHERE equipo_id=$1${excl?' AND registro_id<>$4':''}
-        AND (fecha<$2::date OR (fecha=$2::date AND
-             (CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END) <= (CASE WHEN $3='NOCHE' THEN 2 ELSE 1 END)))
-      ORDER BY fecha DESC, CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END DESC, horometro_final DESC, registro_id DESC LIMIT 1`,pv)).rows[0];
-    const sig=(await pool.query(`SELECT horometro_inicial, to_char(fecha,'DD-MM-YYYY') AS f FROM terreno_registros
-      WHERE equipo_id=$1${excl?' AND registro_id<>$4':''}
-        AND (fecha>$2::date OR (fecha=$2::date AND
-             (CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END) > (CASE WHEN $3='NOCHE' THEN 2 ELSE 1 END)))
-      ORDER BY fecha ASC, CASE WHEN COALESCE(jornada,'DIA')='NOCHE' THEN 2 ELSE 1 END ASC, horometro_inicial ASC, registro_id ASC LIMIT 1`,pv)).rows[0];
-    res.json({
-      horometro_final:prev?parseFloat(prev.horometro_final):null,
-      fecha_prev:prev?prev.f:null,
-      siguiente_inicial:sig?parseFloat(sig.horometro_inicial):null,
-      fecha_sig:sig?sig.f:null
-    });
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// INFORME DE TIEMPOS por proceso: horas trabajadas de maquinaria
-// agrupadas por FAENA (del registro de terreno) → PROCESO (del equipo) → MÁQUINA.
-// Incluye campos internos de Forestal Mininco (nombre de línea / N° de equipo).
-// ═══════════════════════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════════════════════
-// PRODUCTIVIDAD — OEE Cosecha: datos mensuales por faena (RAW)
-// ═══════════════════════════════════════════════════════════════════
-const OEE_SEED = [{"FAENA":"Mec 2","ANIO":2025,"MES":1,"TOC":21.56,"TOB":135.22,"N_ARBOLES":26879.0,"HRS_OP":453.0,"M3":13565.15,"FD":0.7015,"FE":0.9322,"FP":0,"OEE":0.6539,"VMA":0.505,"REND":29.9451,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":22.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"E10PUESTA_EN_MARCHA":0.17,"E11BA_O_OPERADOR":0.12,"E12MANTENCI_N_PROGRAMADA":28.66,"E13CARGA_COMBUSTIBLE_O_ACEITE":2.02,"E14FALLA_EQUIPO":5.54,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":2.67,"E25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"E26CAMBIO_DE_CADENA_O_ESPADA":5.88,"E27MEDICI_N_DE_LARGO_DE_TROZOS":4.17,"E99OTROS":63.99},{"FAENA":"Mec 2","ANIO":2025,"MES":2,"TOC":28.32,"TOB":88.16,"N_ARBOLES":23549.0,"HRS_OP":379.0,"M3":12364.34,"FD":0.7674,"FE":0.9026,"FP":0,"OEE":0.6927,"VMA":0.525,"REND":32.6236,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":1.83,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.25,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":11.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":2.08,"E10PUESTA_EN_MARCHA":1.1,"E11BA_O_OPERADOR":0.76,"E12MANTENCI_N_PROGRAMADA":0.0,"E13CARGA_COMBUSTIBLE_O_ACEITE":2.25,"E14FALLA_EQUIPO":37.32,"E15TRASLADO_DE_FUNDO":14.5,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":8.69,"E25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"E26CAMBIO_DE_CADENA_O_ESPADA":4.36,"E27MEDICI_N_DE_LARGO_DE_TROZOS":4.02,"E99OTROS":0.0},{"FAENA":"Mec 2","ANIO":2025,"MES":3,"TOC":64.36,"TOB":100.68,"N_ARBOLES":32590.0,"HRS_OP":487.0,"M3":12590.27,"FD":0.7933,"FE":0.8334,"FP":0,"OEE":0.6611,"VMA":0.386,"REND":25.8527,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":13.17,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.17,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.5,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.92,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.5,"E10PUESTA_EN_MARCHA":1.21,"E11BA_O_OPERADOR":0.65,"E12MANTENCI_N_PROGRAMADA":14.85,"E13CARGA_COMBUSTIBLE_O_ACEITE":4.48,"E14FALLA_EQUIPO":36.63,"E15TRASLADO_DE_FUNDO":3.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":6.25,"E25DETENIDO_POR_FALTA_DE_MADEREO":6.25,"E26CAMBIO_DE_CADENA_O_ESPADA":8.32,"E27MEDICI_N_DE_LARGO_DE_TROZOS":3.53,"E99OTROS":0.25},{"FAENA":"Mec 2","ANIO":2025,"MES":4,"TOC":100.89,"TOB":170.97,"N_ARBOLES":38860.0,"HRS_OP":636.0,"M3":12435.2,"FD":0.7312,"FE":0.783,"FP":0,"OEE":0.5725,"VMA":0.32,"REND":19.5522,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":3.42,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.33,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.72,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":2.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":4.3,"E10PUESTA_EN_MARCHA":2.19,"E11BA_O_OPERADOR":1.63,"E12MANTENCI_N_PROGRAMADA":7.58,"E13CARGA_COMBUSTIBLE_O_ACEITE":5.6,"E14FALLA_EQUIPO":120.13,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":3.4,"E25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"E26CAMBIO_DE_CADENA_O_ESPADA":9.07,"E27MEDICI_N_DE_LARGO_DE_TROZOS":6.71,"E99OTROS":3.89},{"FAENA":"Mec 2","ANIO":2025,"MES":5,"TOC":111.79,"TOB":146.61,"N_ARBOLES":33312.0,"HRS_OP":574.0,"M3":12847.85,"FD":0.7446,"FE":0.7384,"FP":0,"OEE":0.5498,"VMA":0.386,"REND":22.383,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.65,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.55,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":1.33,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":5.73,"E10PUESTA_EN_MARCHA":1.57,"E11BA_O_OPERADOR":0.94,"E12MANTENCI_N_PROGRAMADA":2.55,"E13CARGA_COMBUSTIBLE_O_ACEITE":7.75,"E14FALLA_EQUIPO":100.75,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":2.42,"E25DETENIDO_POR_FALTA_DE_MADEREO":0.33,"E26CAMBIO_DE_CADENA_O_ESPADA":10.57,"E27MEDICI_N_DE_LARGO_DE_TROZOS":4.52,"E99OTROS":6.95},{"FAENA":"Mec 2","ANIO":2025,"MES":6,"TOC":77.84,"TOB":131.03,"N_ARBOLES":30410.0,"HRS_OP":503.0,"M3":10653.48,"FD":0.7395,"FE":0.7907,"FP":0,"OEE":0.5848,"VMA":0.35,"REND":21.1799,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.58,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.5,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":6.33,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.37,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.91,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":1.6,"E10PUESTA_EN_MARCHA":2.28,"E11BA_O_OPERADOR":0.49,"E12MANTENCI_N_PROGRAMADA":21.18,"E13CARGA_COMBUSTIBLE_O_ACEITE":13.93,"E14FALLA_EQUIPO":57.99,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.17,"E24TRASLADO_DENTRO_FAENA":3.07,"E25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"E26CAMBIO_DE_CADENA_O_ESPADA":6.03,"E27MEDICI_N_DE_LARGO_DE_TROZOS":2.25,"E99OTROS":13.35},{"FAENA":"Mec 2","ANIO":2025,"MES":7,"TOC":86.27,"TOB":150.44,"N_ARBOLES":30950.0,"HRS_OP":533.0,"M3":10414.15,"FD":0.7177,"FE":0.7745,"FP":0,"OEE":0.5559,"VMA":0.336,"REND":19.5387,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.6,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":4.74,"E10PUESTA_EN_MARCHA":1.78,"E11BA_O_OPERADOR":0.48,"E12MANTENCI_N_PROGRAMADA":5.08,"E13CARGA_COMBUSTIBLE_O_ACEITE":12.31,"E14FALLA_EQUIPO":97.7,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":8.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":4.5,"E25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"E26CAMBIO_DE_CADENA_O_ESPADA":6.67,"E27MEDICI_N_DE_LARGO_DE_TROZOS":2.06,"E99OTROS":6.52},{"FAENA":"Mec 2","ANIO":2025,"MES":8,"TOC":104.81,"TOB":134.28,"N_ARBOLES":31789.0,"HRS_OP":545.0,"M3":10879.85,"FD":0.7536,"FE":0.7448,"FP":0,"OEE":0.5613,"VMA":0.342,"REND":19.963,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":1.83,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":3.96,"E10PUESTA_EN_MARCHA":3.28,"E11BA_O_OPERADOR":0.56,"E12MANTENCI_N_PROGRAMADA":3.34,"E13CARGA_COMBUSTIBLE_O_ACEITE":8.14,"E14FALLA_EQUIPO":93.01,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":5.36,"E25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"E26CAMBIO_DE_CADENA_O_ESPADA":8.27,"E27MEDICI_N_DE_LARGO_DE_TROZOS":1.91,"E99OTROS":4.62},{"FAENA":"Mec 3","ANIO":2025,"MES":1,"TOC":26.19,"TOB":145.38,"N_ARBOLES":25922.0,"HRS_OP":541.0,"M3":31572.89,"FD":0.7313,"FE":0.9338,"FP":0,"OEE":0.6829,"VMA":1.218,"REND":58.3602,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":1.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":3.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":1.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":1.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.25,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.25,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"E10PUESTA_EN_MARCHA":3.4,"E11BA_O_OPERADOR":1.64,"E12MANTENCI_N_PROGRAMADA":51.49,"E13CARGA_COMBUSTIBLE_O_ACEITE":9.7,"E14FALLA_EQUIPO":33.6,"E15TRASLADO_DE_FUNDO":6.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":4.74,"E25DETENIDO_POR_FALTA_DE_MADEREO":2.0,"E26CAMBIO_DE_CADENA_O_ESPADA":11.72,"E27MEDICI_N_DE_LARGO_DE_TROZOS":10.59,"E99OTROS":4.0},{"FAENA":"Mec 3","ANIO":2025,"MES":2,"TOC":17.95,"TOB":105.27,"N_ARBOLES":19176.0,"HRS_OP":390.0,"M3":21379.11,"FD":0.7301,"FE":0.937,"FP":0,"OEE":0.6841,"VMA":1.115,"REND":54.8182,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.5,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":1.5,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":7.25,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":5.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":3.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.17,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.33,"E10PUESTA_EN_MARCHA":3.98,"E11BA_O_OPERADOR":0.33,"E12MANTENCI_N_PROGRAMADA":18.0,"E13CARGA_COMBUSTIBLE_O_ACEITE":4.1,"E14FALLA_EQUIPO":30.76,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":2.03,"E25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"E26CAMBIO_DE_CADENA_O_ESPADA":8.53,"E27MEDICI_N_DE_LARGO_DE_TROZOS":8.79,"E99OTROS":11.0},{"FAENA":"Mec 3","ANIO":2025,"MES":3,"TOC":15.11,"TOB":131.55,"N_ARBOLES":23676.0,"HRS_OP":462.0,"M3":23642.32,"FD":0.7153,"FE":0.9543,"FP":0,"OEE":0.6826,"VMA":0.999,"REND":51.1739,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":1.58,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":1.5,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":1.16,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":16.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.33,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.5,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":1.0,"E10PUESTA_EN_MARCHA":3.81,"E11BA_O_OPERADOR":0.68,"E12MANTENCI_N_PROGRAMADA":16.83,"E13CARGA_COMBUSTIBLE_O_ACEITE":5.87,"E14FALLA_EQUIPO":21.67,"E15TRASLADO_DE_FUNDO":5.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":7.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":6.85,"E25DETENIDO_POR_FALTA_DE_MADEREO":20.67,"E26CAMBIO_DE_CADENA_O_ESPADA":9.87,"E27MEDICI_N_DE_LARGO_DE_TROZOS":9.23,"E99OTROS":2.0},{"FAENA":"Mec 3","ANIO":2025,"MES":4,"TOC":20.01,"TOB":117.3,"N_ARBOLES":24897.0,"HRS_OP":487.0,"M3":30399.01,"FD":0.7591,"FE":0.9459,"FP":0,"OEE":0.718,"VMA":1.221,"REND":62.421,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":1.42,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.5,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":2.25,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":1.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"E10PUESTA_EN_MARCHA":3.82,"E11BA_O_OPERADOR":1.83,"E12MANTENCI_N_PROGRAMADA":15.75,"E13CARGA_COMBUSTIBLE_O_ACEITE":5.37,"E14FALLA_EQUIPO":53.47,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":6.66,"E25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"E26CAMBIO_DE_CADENA_O_ESPADA":15.49,"E27MEDICI_N_DE_LARGO_DE_TROZOS":9.19,"E99OTROS":0.55},{"FAENA":"Mec 3","ANIO":2025,"MES":5,"TOC":5.02,"TOB":152.36,"N_ARBOLES":27932.0,"HRS_OP":522.0,"M3":33432.06,"FD":0.7081,"FE":0.9864,"FP":0,"OEE":0.6985,"VMA":1.197,"REND":64.0461,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.17,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":2.5,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":1.66,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.5,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.58,"E10PUESTA_EN_MARCHA":4.35,"E11BA_O_OPERADOR":0.52,"E12MANTENCI_N_PROGRAMADA":23.5,"E13CARGA_COMBUSTIBLE_O_ACEITE":5.53,"E14FALLA_EQUIPO":74.76,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":9.14,"E25DETENIDO_POR_FALTA_DE_MADEREO":5.91,"E26CAMBIO_DE_CADENA_O_ESPADA":15.42,"E27MEDICI_N_DE_LARGO_DE_TROZOS":7.65,"E99OTROS":0.17},{"FAENA":"Mec 3","ANIO":2025,"MES":6,"TOC":20.14,"TOB":176.89,"N_ARBOLES":24880.0,"HRS_OP":528.0,"M3":30836.58,"FD":0.665,"FE":0.9426,"FP":0,"OEE":0.6268,"VMA":1.239,"REND":58.4026,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":4.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.33,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":1.5,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":11.0,"E5ATOCHAMIENTO_EN_CANCHA":1.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"E10PUESTA_EN_MARCHA":4.18,"E11BA_O_OPERADOR":1.2,"E12MANTENCI_N_PROGRAMADA":14.5,"E13CARGA_COMBUSTIBLE_O_ACEITE":7.18,"E14FALLA_EQUIPO":61.53,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":5.66,"E25DETENIDO_POR_FALTA_DE_MADEREO":35.33,"E26CAMBIO_DE_CADENA_O_ESPADA":13.7,"E27MEDICI_N_DE_LARGO_DE_TROZOS":13.61,"E99OTROS":2.17},{"FAENA":"Mec 3","ANIO":2025,"MES":7,"TOC":10.78,"TOB":119.54,"N_ARBOLES":25663.0,"HRS_OP":441.0,"M3":33326.1,"FD":0.7289,"FE":0.9665,"FP":0,"OEE":0.7045,"VMA":1.299,"REND":75.5694,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":3.58,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":3.75,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":1.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.5,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.33,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":1.58,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"E10PUESTA_EN_MARCHA":4.18,"E11BA_O_OPERADOR":0.5,"E12MANTENCI_N_PROGRAMADA":2.5,"E13CARGA_COMBUSTIBLE_O_ACEITE":4.98,"E14FALLA_EQUIPO":1.4,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":8.92,"E25DETENIDO_POR_FALTA_DE_MADEREO":33.5,"E26CAMBIO_DE_CADENA_O_ESPADA":13.81,"E27MEDICI_N_DE_LARGO_DE_TROZOS":8.01,"E99OTROS":31.0},{"FAENA":"Mec 3","ANIO":2025,"MES":8,"TOC":6.53,"TOB":120.77,"N_ARBOLES":27351.0,"HRS_OP":465.0,"M3":35326.38,"FD":0.7403,"FE":0.981,"FP":0,"OEE":0.7262,"VMA":1.292,"REND":75.9707,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.75,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":1.5,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":2.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":5.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":1.5,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.75,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":3.5,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.15,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":1.5,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":3.16,"E10PUESTA_EN_MARCHA":6.12,"E11BA_O_OPERADOR":1.52,"E12MANTENCI_N_PROGRAMADA":4.33,"E13CARGA_COMBUSTIBLE_O_ACEITE":5.07,"E14FALLA_EQUIPO":3.25,"E15TRASLADO_DE_FUNDO":10.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":2.0,"E24TRASLADO_DENTRO_FAENA":13.33,"E25DETENIDO_POR_FALTA_DE_MADEREO":26.5,"E26CAMBIO_DE_CADENA_O_ESPADA":14.5,"E27MEDICI_N_DE_LARGO_DE_TROZOS":8.51,"E99OTROS":5.83},{"FAENA":"Mec 3","ANIO":2025,"MES":9,"TOC":13.89,"TOB":96.31,"N_ARBOLES":25515.0,"HRS_OP":423.0,"M3":27676.27,"FD":0.7723,"FE":0.9575,"FP":0,"OEE":0.7395,"VMA":1.085,"REND":65.4285,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":7.33,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":2.5,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":2.5,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":4.33,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":1.7,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":1.08,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":3.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.99,"E10PUESTA_EN_MARCHA":3.99,"E11BA_O_OPERADOR":0.49,"E12MANTENCI_N_PROGRAMADA":4.5,"E13CARGA_COMBUSTIBLE_O_ACEITE":4.65,"E14FALLA_EQUIPO":0.91,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.91,"E24TRASLADO_DENTRO_FAENA":12.25,"E25DETENIDO_POR_FALTA_DE_MADEREO":21.66,"E26CAMBIO_DE_CADENA_O_ESPADA":13.23,"E27MEDICI_N_DE_LARGO_DE_TROZOS":9.79,"E99OTROS":0.5},{"FAENA":"Mec 3","ANIO":2025,"MES":10,"TOC":14.23,"TOB":119.65,"N_ARBOLES":27063.0,"HRS_OP":462.0,"M3":26240.7,"FD":0.741,"FE":0.9584,"FP":0,"OEE":0.7102,"VMA":0.97,"REND":56.7981,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":5.35,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":1.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":4.47,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":7.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.5,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":3.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":3.42,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":1.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.33,"E10PUESTA_EN_MARCHA":3.91,"E11BA_O_OPERADOR":1.09,"E12MANTENCI_N_PROGRAMADA":6.0,"E13CARGA_COMBUSTIBLE_O_ACEITE":3.91,"E14FALLA_EQUIPO":2.0,"E15TRASLADO_DE_FUNDO":0.33,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":15.27,"E25DETENIDO_POR_FALTA_DE_MADEREO":30.16,"E26CAMBIO_DE_CADENA_O_ESPADA":14.73,"E27MEDICI_N_DE_LARGO_DE_TROZOS":9.68,"E99OTROS":6.5},{"FAENA":"Mec 3","ANIO":2025,"MES":11,"TOC":27.55,"TOB":115.26,"N_ARBOLES":25935.0,"HRS_OP":442.0,"M3":20078.86,"FD":0.7392,"FE":0.9157,"FP":0,"OEE":0.6769,"VMA":0.774,"REND":45.4273,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.5,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":3.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":2.5,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":3.5,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":11.67,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":2.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":1.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":1.0,"E10PUESTA_EN_MARCHA":3.74,"E11BA_O_OPERADOR":0.15,"E12MANTENCI_N_PROGRAMADA":14.5,"E13CARGA_COMBUSTIBLE_O_ACEITE":4.03,"E14FALLA_EQUIPO":0.5,"E15TRASLADO_DE_FUNDO":0.66,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":2.5,"E24TRASLADO_DENTRO_FAENA":7.51,"E25DETENIDO_POR_FALTA_DE_MADEREO":25.03,"E26CAMBIO_DE_CADENA_O_ESPADA":14.48,"E27MEDICI_N_DE_LARGO_DE_TROZOS":10.99,"E99OTROS":6.0},{"FAENA":"Mec 3","ANIO":2025,"MES":12,"TOC":15.47,"TOB":69.35,"N_ARBOLES":26821.0,"HRS_OP":543.0,"M3":31910.13,"FD":0.8723,"FE":0.9673,"FP":0,"OEE":0.8438,"VMA":1.19,"REND":58.7664,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.66,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":1.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":1.5,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.5,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":1.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.5,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.49,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":1.5,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.33,"E10PUESTA_EN_MARCHA":4.79,"E11BA_O_OPERADOR":1.0,"E12MANTENCI_N_PROGRAMADA":7.78,"E13CARGA_COMBUSTIBLE_O_ACEITE":5.46,"E14FALLA_EQUIPO":2.28,"E15TRASLADO_DE_FUNDO":7.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":5.98,"E25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"E26CAMBIO_DE_CADENA_O_ESPADA":15.57,"E27MEDICI_N_DE_LARGO_DE_TROZOS":12.01,"E99OTROS":0.0},{"FAENA":"Mec 3","ANIO":2026,"MES":1,"TOC":11.27,"TOB":116.26,"N_ARBOLES":28725.0,"HRS_OP":498.0,"M3":33193.5,"FD":0.7665,"FE":0.9705,"FP":0,"OEE":0.7439,"VMA":1.156,"REND":66.6536,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.25,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":1.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":1.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":42.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":1.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":1.25,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.33,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":2.66,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"E10PUESTA_EN_MARCHA":4.67,"E11BA_O_OPERADOR":1.0,"E12MANTENCI_N_PROGRAMADA":7.0,"E13CARGA_COMBUSTIBLE_O_ACEITE":4.11,"E14FALLA_EQUIPO":0.66,"E15TRASLADO_DE_FUNDO":3.5,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":5.85,"E25DETENIDO_POR_FALTA_DE_MADEREO":3.83,"E26CAMBIO_DE_CADENA_O_ESPADA":15.55,"E27MEDICI_N_DE_LARGO_DE_TROZOS":10.6,"E99OTROS":10.0},{"FAENA":"Mec 3","ANIO":2026,"MES":2,"TOC":16.09,"TOB":108.36,"N_ARBOLES":23789.0,"HRS_OP":443.0,"M3":23598.71,"FD":0.7554,"FE":0.9519,"FP":0,"OEE":0.7191,"VMA":0.992,"REND":53.2702,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":2.5,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":2.25,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.83,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":2.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":18.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.2,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":1.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.42,"E10PUESTA_EN_MARCHA":4.76,"E11BA_O_OPERADOR":1.96,"E12MANTENCI_N_PROGRAMADA":10.33,"E13CARGA_COMBUSTIBLE_O_ACEITE":3.52,"E14FALLA_EQUIPO":6.0,"E15TRASLADO_DE_FUNDO":18.5,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":7.47,"E25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"E26CAMBIO_DE_CADENA_O_ESPADA":13.53,"E27MEDICI_N_DE_LARGO_DE_TROZOS":12.09,"E99OTROS":3.0},{"FAENA":"Mec 3","ANIO":2026,"MES":3,"TOC":14.82,"TOB":97.03,"N_ARBOLES":22987.0,"HRS_OP":408.0,"M3":24961.41,"FD":0.7622,"FE":0.9523,"FP":0,"OEE":0.7259,"VMA":1.086,"REND":61.1799,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.66,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.5,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":2.5,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":4.5,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.25,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":7.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":1.08,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.5,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":4.5,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":2.83,"E7CONTROL_A_FAENA":0.33,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"E10PUESTA_EN_MARCHA":5.1,"E11BA_O_OPERADOR":0.17,"E12MANTENCI_N_PROGRAMADA":1.0,"E13CARGA_COMBUSTIBLE_O_ACEITE":6.49,"E14FALLA_EQUIPO":2.0,"E15TRASLADO_DE_FUNDO":13.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":1.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":5.89,"E25DETENIDO_POR_FALTA_DE_MADEREO":7.5,"E26CAMBIO_DE_CADENA_O_ESPADA":15.31,"E27MEDICI_N_DE_LARGO_DE_TROZOS":12.42,"E99OTROS":2.5},{"FAENA":"Mec 3","ANIO":2026,"MES":4,"TOC":9.83,"TOB":41.55,"N_ARBOLES":11783.0,"HRS_OP":208.0,"M3":12369.15,"FD":0.8002,"FE":0.9409,"FP":0,"OEE":0.753,"VMA":1.05,"REND":59.4671,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":8.5,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":7.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":0.33,"E10PUESTA_EN_MARCHA":2.72,"E11BA_O_OPERADOR":0.43,"E12MANTENCI_N_PROGRAMADA":1.0,"E13CARGA_COMBUSTIBLE_O_ACEITE":3.04,"E14FALLA_EQUIPO":0.3,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":4.26,"E25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"E26CAMBIO_DE_CADENA_O_ESPADA":7.59,"E27MEDICI_N_DE_LARGO_DE_TROZOS":6.38,"E99OTROS":0.0},{"FAENA":"Mec 4","ANIO":2025,"MES":1,"TOC":49.3,"TOB":82.04,"N_ARBOLES":16171.0,"HRS_OP":300.5,"M3":7438.66,"FD":0.727,"FE":0.7743,"FP":0,"OEE":0.5629,"VMA":0.46,"REND":24.7543,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":7.25,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":1.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":11.0,"F5ATOCHAMIENTO_EN_CANCHA":4.25,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.25,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":1.25,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":8.73,"E10PUESTA_EN_MARCHA":0.91,"E11BA_O_OPERADOR":1.15,"E12MANTENCI_N_PROGRAMADA":0.0,"E13CARGA_COMBUSTIBLE_O_ACEITE":0.16,"E14FALLA_EQUIPO":13.5,"E15TRASLADO_DE_FUNDO":1.58,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":8.0,"E24TRASLADO_DENTRO_FAENA":5.25,"E25DETENIDO_POR_FALTA_DE_MADEREO":7.0,"E26CAMBIO_DE_CADENA_O_ESPADA":5.26,"E27MEDICI_N_DE_LARGO_DE_TROZOS":5.5,"E99OTROS":0.0},{"FAENA":"Mec 4","ANIO":2025,"MES":2,"TOC":30.68,"TOB":85.09,"N_ARBOLES":15932.0,"HRS_OP":279.0,"M3":7328.72,"FD":0.695,"FE":0.8418,"FP":0,"OEE":0.5851,"VMA":0.46,"REND":26.2678,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":18.0,"F5ATOCHAMIENTO_EN_CANCHA":4.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.33,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.5,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":2.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":2.25,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":6.82,"E10PUESTA_EN_MARCHA":1.7,"E11BA_O_OPERADOR":1.22,"E12MANTENCI_N_PROGRAMADA":2.57,"E13CARGA_COMBUSTIBLE_O_ACEITE":0.25,"E14FALLA_EQUIPO":11.0,"E15TRASLADO_DE_FUNDO":0.83,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":4.9,"E24TRASLADO_DENTRO_FAENA":5.15,"E25DETENIDO_POR_FALTA_DE_MADEREO":12.1,"E26CAMBIO_DE_CADENA_O_ESPADA":5.54,"E27MEDICI_N_DE_LARGO_DE_TROZOS":4.93,"E99OTROS":1.0},{"FAENA":"Mec 4","ANIO":2025,"MES":3,"TOC":61.85,"TOB":82.85,"N_ARBOLES":15198.0,"HRS_OP":300.0,"M3":6991.08,"FD":0.7238,"FE":0.7152,"FP":0,"OEE":0.5177,"VMA":0.46,"REND":23.3036,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":25.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":3.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":2.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":3.27,"E10PUESTA_EN_MARCHA":0.95,"E11BA_O_OPERADOR":1.09,"E12MANTENCI_N_PROGRAMADA":1.5,"E13CARGA_COMBUSTIBLE_O_ACEITE":1.5,"E14FALLA_EQUIPO":8.35,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":4.61,"E25DETENIDO_POR_FALTA_DE_MADEREO":18.83,"E26CAMBIO_DE_CADENA_O_ESPADA":6.34,"E27MEDICI_N_DE_LARGO_DE_TROZOS":5.07,"E99OTROS":1.34},{"FAENA":"Mec 4","ANIO":2025,"MES":4,"TOC":62.38,"TOB":60.02,"N_ARBOLES":14130.0,"HRS_OP":277.0,"M3":7081.14,"FD":0.7833,"FE":0.7125,"FP":0,"OEE":0.5581,"VMA":0.501,"REND":25.5637,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":3.6,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":4.75,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":1.5,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":2.09,"E10PUESTA_EN_MARCHA":0.65,"E11BA_O_OPERADOR":0.75,"E12MANTENCI_N_PROGRAMADA":4.5,"E13CARGA_COMBUSTIBLE_O_ACEITE":0.25,"E14FALLA_EQUIPO":7.0,"E15TRASLADO_DE_FUNDO":0.5,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":4.08,"E24TRASLADO_DENTRO_FAENA":4.75,"E25DETENIDO_POR_FALTA_DE_MADEREO":14.25,"E26CAMBIO_DE_CADENA_O_ESPADA":6.23,"E27MEDICI_N_DE_LARGO_DE_TROZOS":4.12,"E99OTROS":1.0},{"FAENA":"Mec 4","ANIO":2025,"MES":5,"TOC":67.78,"TOB":106.78,"N_ARBOLES":12000.0,"HRS_OP":300.0,"M3":6200.67,"FD":0.6441,"FE":0.6492,"FP":0,"OEE":0.4181,"VMA":0.517,"REND":20.6689,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":8.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":4.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":1.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":6.73,"E10PUESTA_EN_MARCHA":2.0,"E11BA_O_OPERADOR":0.75,"E12MANTENCI_N_PROGRAMADA":9.5,"E13CARGA_COMBUSTIBLE_O_ACEITE":0.5,"E14FALLA_EQUIPO":16.0,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":4.0,"E24TRASLADO_DENTRO_FAENA":4.91,"E25DETENIDO_POR_FALTA_DE_MADEREO":39.5,"E26CAMBIO_DE_CADENA_O_ESPADA":5.64,"E27MEDICI_N_DE_LARGO_DE_TROZOS":4.25,"E99OTROS":0.0},{"FAENA":"Mec 4","ANIO":2025,"MES":6,"TOC":108.88,"TOB":48.21,"N_ARBOLES":15728.0,"HRS_OP":302.0,"M3":5224.81,"FD":0.8404,"FE":0.571,"FP":0,"OEE":0.4798,"VMA":0.332,"REND":17.3007,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":1.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":1.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":6.74,"E10PUESTA_EN_MARCHA":2.25,"E11BA_O_OPERADOR":0.75,"E12MANTENCI_N_PROGRAMADA":6.0,"E13CARGA_COMBUSTIBLE_O_ACEITE":0.25,"E14FALLA_EQUIPO":7.5,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":1.0,"E24TRASLADO_DENTRO_FAENA":4.75,"E25DETENIDO_POR_FALTA_DE_MADEREO":8.5,"E26CAMBIO_DE_CADENA_O_ESPADA":5.28,"E27MEDICI_N_DE_LARGO_DE_TROZOS":3.19,"E99OTROS":0.0},{"FAENA":"Mec 4","ANIO":2025,"MES":7,"TOC":67.43,"TOB":117.36,"N_ARBOLES":17957.0,"HRS_OP":313.0,"M3":2875.65,"FD":0.625,"FE":0.6553,"FP":0,"OEE":0.4096,"VMA":0.16,"REND":9.1874,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":6.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":4.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":2.25,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":7.99,"E10PUESTA_EN_MARCHA":2.75,"E11BA_O_OPERADOR":2.25,"E12MANTENCI_N_PROGRAMADA":28.25,"E13CARGA_COMBUSTIBLE_O_ACEITE":1.75,"E14FALLA_EQUIPO":38.0,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":6.0,"E24TRASLADO_DENTRO_FAENA":1.5,"E25DETENIDO_POR_FALTA_DE_MADEREO":1.5,"E26CAMBIO_DE_CADENA_O_ESPADA":6.11,"E27MEDICI_N_DE_LARGO_DE_TROZOS":3.01,"E99OTROS":6.0},{"FAENA":"Mec 4","ANIO":2025,"MES":8,"TOC":72.94,"TOB":103.21,"N_ARBOLES":15886.0,"HRS_OP":296.0,"M3":2769.05,"FD":0.6513,"FE":0.6217,"FP":0,"OEE":0.4049,"VMA":0.174,"REND":9.3549,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":1.5,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":1.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":2.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":1.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":8.65,"E10PUESTA_EN_MARCHA":2.0,"E11BA_O_OPERADOR":1.25,"E12MANTENCI_N_PROGRAMADA":3.5,"E13CARGA_COMBUSTIBLE_O_ACEITE":0.5,"E14FALLA_EQUIPO":62.25,"E15TRASLADO_DE_FUNDO":4.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.5,"E24TRASLADO_DENTRO_FAENA":1.5,"E25DETENIDO_POR_FALTA_DE_MADEREO":3.0,"E26CAMBIO_DE_CADENA_O_ESPADA":5.39,"E27MEDICI_N_DE_LARGO_DE_TROZOS":3.67,"E99OTROS":1.5},{"FAENA":"Mec 4","ANIO":2025,"MES":9,"TOC":56.53,"TOB":81.39,"N_ARBOLES":21629.0,"HRS_OP":275.0,"M3":4921.21,"FD":0.704,"FE":0.708,"FP":0,"OEE":0.4985,"VMA":0.228,"REND":17.8953,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":4.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":7.42,"E10PUESTA_EN_MARCHA":2.0,"E11BA_O_OPERADOR":1.25,"E12MANTENCI_N_PROGRAMADA":15.25,"E13CARGA_COMBUSTIBLE_O_ACEITE":1.0,"E14FALLA_EQUIPO":32.0,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":2.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":1.0,"E25DETENIDO_POR_FALTA_DE_MADEREO":5.0,"E26CAMBIO_DE_CADENA_O_ESPADA":4.2,"E27MEDICI_N_DE_LARGO_DE_TROZOS":2.27,"E99OTROS":4.0},{"FAENA":"Mec 4","ANIO":2025,"MES":10,"TOC":64.83,"TOB":60.75,"N_ARBOLES":18273.0,"HRS_OP":293.2,"M3":5949.49,"FD":0.7928,"FE":0.7211,"FP":0,"OEE":0.5718,"VMA":0.326,"REND":20.2888,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.75,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":4.75,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":4.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":6.4,"E10PUESTA_EN_MARCHA":3.5,"E11BA_O_OPERADOR":3.0,"E12MANTENCI_N_PROGRAMADA":2.0,"E13CARGA_COMBUSTIBLE_O_ACEITE":0.25,"E14FALLA_EQUIPO":11.18,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":2.75,"E25DETENIDO_POR_FALTA_DE_MADEREO":10.25,"E26CAMBIO_DE_CADENA_O_ESPADA":7.78,"E27MEDICI_N_DE_LARGO_DE_TROZOS":3.64,"E99OTROS":0.5},{"FAENA":"Mec 4","ANIO":2025,"MES":11,"TOC":81.84,"TOB":120.48,"N_ARBOLES":18801.0,"HRS_OP":360.0,"M3":4398.17,"FD":0.6653,"FE":0.6583,"FP":0,"OEE":0.438,"VMA":0.234,"REND":12.2171,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":3.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":2.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.5,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":33.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":6.6,"E10PUESTA_EN_MARCHA":2.25,"E11BA_O_OPERADOR":1.25,"E12MANTENCI_N_PROGRAMADA":13.25,"E13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"E14FALLA_EQUIPO":9.25,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":11.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":1.83,"E25DETENIDO_POR_FALTA_DE_MADEREO":3.5,"E26CAMBIO_DE_CADENA_O_ESPADA":7.47,"E27MEDICI_N_DE_LARGO_DE_TROZOS":4.58,"E99OTROS":21.0},{"FAENA":"Mec 4","ANIO":2025,"MES":12,"TOC":78.61,"TOB":118.56,"N_ARBOLES":11815.0,"HRS_OP":327.0,"M3":6432.62,"FD":0.6374,"FE":0.6229,"FP":0,"OEE":0.397,"VMA":0.544,"REND":19.6716,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":53.67,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.75,"E5ATOCHAMIENTO_EN_CANCHA":1.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":6.38,"E10PUESTA_EN_MARCHA":0.75,"E11BA_O_OPERADOR":0.25,"E12MANTENCI_N_PROGRAMADA":2.0,"E13CARGA_COMBUSTIBLE_O_ACEITE":0.45,"E14FALLA_EQUIPO":9.5,"E15TRASLADO_DE_FUNDO":30.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":0.0,"E25DETENIDO_POR_FALTA_DE_MADEREO":2.0,"E26CAMBIO_DE_CADENA_O_ESPADA":5.32,"E27MEDICI_N_DE_LARGO_DE_TROZOS":1.49,"E99OTROS":5.0},{"FAENA":"Mec 4","ANIO":2026,"MES":1,"TOC":96.89,"TOB":122.25,"N_ARBOLES":11241.0,"HRS_OP":357.5,"M3":8069.0,"FD":0.658,"FE":0.5881,"FP":0,"OEE":0.387,"VMA":0.718,"REND":22.5706,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":6.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":56.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":2.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":7.66,"E10PUESTA_EN_MARCHA":2.25,"E11BA_O_OPERADOR":0.0,"E12MANTENCI_N_PROGRAMADA":0.0,"E13CARGA_COMBUSTIBLE_O_ACEITE":1.0,"E14FALLA_EQUIPO":29.0,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":2.5,"E25DETENIDO_POR_FALTA_DE_MADEREO":3.5,"E26CAMBIO_DE_CADENA_O_ESPADA":9.01,"E27MEDICI_N_DE_LARGO_DE_TROZOS":3.33,"E99OTROS":0.0},{"FAENA":"Mec 4","ANIO":2026,"MES":2,"TOC":78.03,"TOB":80.82,"N_ARBOLES":12313.0,"HRS_OP":310.0,"M3":8928.43,"FD":0.7393,"FE":0.6595,"FP":0,"OEE":0.4876,"VMA":0.725,"REND":28.8014,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":1.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":5.75,"E10PUESTA_EN_MARCHA":2.0,"E11BA_O_OPERADOR":0.45,"E12MANTENCI_N_PROGRAMADA":0.4,"E13CARGA_COMBUSTIBLE_O_ACEITE":1.65,"E14FALLA_EQUIPO":45.5,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":1.55,"E25DETENIDO_POR_FALTA_DE_MADEREO":11.0,"E26CAMBIO_DE_CADENA_O_ESPADA":8.36,"E27MEDICI_N_DE_LARGO_DE_TROZOS":3.16,"E99OTROS":0.0},{"FAENA":"Mec 4","ANIO":2026,"MES":3,"TOC":86.13,"TOB":165.62,"N_ARBOLES":9499.0,"HRS_OP":377.0,"M3":8762.78,"FD":0.5607,"FE":0.5925,"FP":0,"OEE":0.3322,"VMA":0.922,"REND":23.2434,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":1.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":1.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":7.91,"E10PUESTA_EN_MARCHA":1.0,"E11BA_O_OPERADOR":1.95,"E12MANTENCI_N_PROGRAMADA":8.0,"E13CARGA_COMBUSTIBLE_O_ACEITE":0.55,"E14FALLA_EQUIPO":94.5,"E15TRASLADO_DE_FUNDO":16.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":4.5,"E24TRASLADO_DENTRO_FAENA":0.0,"E25DETENIDO_POR_FALTA_DE_MADEREO":16.0,"E26CAMBIO_DE_CADENA_O_ESPADA":9.55,"E27MEDICI_N_DE_LARGO_DE_TROZOS":3.66,"E99OTROS":0.0},{"FAENA":"Mec 4","ANIO":2026,"MES":4,"TOC":39.96,"TOB":33.3,"N_ARBOLES":3894.0,"HRS_OP":121.0,"M3":2725.8,"FD":0.7248,"FE":0.5444,"FP":0,"OEE":0.3945,"VMA":0.7,"REND":22.5273,"F1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"F2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"F3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"F4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"F5ATOCHAMIENTO_EN_CANCHA":0.0,"F6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"F7CONTROL_A_FAENA":0.0,"F8FALTA_DE_PERSONAL":0.0,"F9CHARLA__CAPACITACIONES_O_REUNIONES":0.0,"F10PUESTA_EN_MARCHA":0.0,"F11BA_O_OPERADOR":0.0,"F12MANTENCI_N_PROGRAMADA":0.0,"F13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"F14FALLA_EQUIPO":0.0,"F15TRASLADO_DE_FUNDO":0.0,"F16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"F17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"F24TRASLADO_DENTRO_FAENA":0.0,"F25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"F26CAMBIO_DE_CADENA_O_ESPADA":0.0,"F27MEDICI_N_DE_LARGO_DE_TROZOS":0.0,"F99OTROS":0.0,"E1MONITOREO_Y_O_PARALIZACI_N_FORMIN":0.0,"E2DETENIDO_POR_PASO_DE_VEH_CULOS":0.0,"E3DETENIDO_POR_CARGU_O_DE_CAMIONES":0.0,"E4CLIMA_Y_O_INCENDIO_DETIENE_OPERACI_N":0.0,"E5ATOCHAMIENTO_EN_CANCHA":0.0,"E6ATRASO_INICIO_O_SALIDA_TEMPRANA_DE_FAENA":0.0,"E7CONTROL_A_FAENA":0.0,"E8FALTA_DE_PERSONAL":0.0,"E9CHARLA__CAPACITACIONES_O_REUNIONES":3.73,"E10PUESTA_EN_MARCHA":0.0,"E11BA_O_OPERADOR":0.0,"E12MANTENCI_N_PROGRAMADA":0.5,"E13CARGA_COMBUSTIBLE_O_ACEITE":0.0,"E14FALLA_EQUIPO":23.0,"E15TRASLADO_DE_FUNDO":0.0,"E16DETENIDO_POR_FALTA_DE_VOLTEO":0.0,"E17DETENIDO_POR_FALTA_DE_ORDENAMIENTO":0.0,"E24TRASLADO_DENTRO_FAENA":0.5,"E25DETENIDO_POR_FALTA_DE_MADEREO":0.0,"E26CAMBIO_DE_CADENA_O_ESPADA":4.07,"E27MEDICI_N_DE_LARGO_DE_TROZOS":1.5,"E99OTROS":0.0}];
-const OEE_CORE = {toc:'TOC',tob:'TOB',n_arboles:'N_ARBOLES',hrs_op:'HRS_OP',m3:'M3',fd:'FD',fe:'FE',fp:'FP',oee:'OEE',vma:'VMA',rend:'REND'};
-function oeeRowToRAW(x){
-  const o={FAENA:x.faena, ANIO:parseInt(x.anio), MES:parseInt(x.mes)};
-  Object.keys(OEE_CORE).forEach(function(k){
-    const v=parseFloat(x[k])||0;
-    // FD/FE/FP/OEE son derivadas: si no vienen (0), se omiten y la app las calcula
-    if((k==='fd'||k==='fe'||k==='fp'||k==='oee')&&v===0) return;
-    o[OEE_CORE[k]]=v;
-  });
-  const f=x.factores||{};
-  Object.keys(f).forEach(function(k){ o[k]=parseFloat(f[k])||0; });
-  return o;
-}
-// GET: devuelve el RAW (array de registros mensuales por faena)
-app.get('/api/prod/oee', auth, async(req,res)=>{
-  try{
-    const r=await pool.query('SELECT * FROM prod_oee_registros ORDER BY faena, anio, mes');
-    res.json({rows:r.rows.map(oeeRowToRAW), total:r.rows.length});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-// POST: importar/actualizar registros (upsert por faena+año+mes). Recibe array RAW desde el frontend.
-app.post('/api/prod/oee/import', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    const rows=Array.isArray(req.body.rows)?req.body.rows:[];
-    if(!rows.length) throw new Error('No se recibieron filas');
-    const modo=(req.body.modo==='reemplazar')?'reemplazar':'upsert';
-    await client.query('BEGIN');
-    if(modo==='reemplazar') await client.query('TRUNCATE prod_oee_registros RESTART IDENTITY');
-    let n=0, errores=[];
-    for(let i=0;i<rows.length;i++){
-      const r=rows[i]||{};
-      const faena=String(r.FAENA||r.faena||'').trim();
-      const anio=parseInt(r.ANIO||r.anio); const mes=parseInt(r.MES||r.mes);
-      if(!faena||!anio||!mes){ errores.push('Fila '+(i+1)+': faltan FAENA/ANIO/MES (columnas detectadas: '+Object.keys(r).slice(0,8).join(', ')+')'); continue; }
-      const num=function(k){ var v=r[k]; if(v===''||v===null||v===undefined) return 0; v=parseFloat(String(v).replace(',','.')); return isNaN(v)?0:v; };
-      const fact={}; Object.keys(r).forEach(function(k){ if(/^[FE]\d/.test(k)) fact[k]=num(k); });
-      await client.query(`INSERT INTO prod_oee_registros(faena,anio,mes,toc,tob,n_arboles,hrs_op,m3,fd,fe,fp,oee,vma,rend,factores,actualizado_en)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW())
-        ON CONFLICT(faena,anio,mes) DO UPDATE SET
-          toc=EXCLUDED.toc,tob=EXCLUDED.tob,n_arboles=EXCLUDED.n_arboles,hrs_op=EXCLUDED.hrs_op,m3=EXCLUDED.m3,
-          fd=EXCLUDED.fd,fe=EXCLUDED.fe,fp=EXCLUDED.fp,oee=EXCLUDED.oee,vma=EXCLUDED.vma,rend=EXCLUDED.rend,
-          factores=EXCLUDED.factores,actualizado_en=NOW()`,
-        [faena,anio,mes,num('TOC'),num('TOB'),num('N_ARBOLES'),num('HRS_OP'),num('M3'),num('FD'),num('FE'),num('FP'),num('OEE'),num('VMA'),num('REND'),JSON.stringify(fact)]);
-      n++;
-    }
-    await client.query('COMMIT');
-    res.json({ok:true, importados:n, errores:errores});
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
-});
-
-// ── Datasets auxiliares del OEE (Best Diario / Producción Diaria) ──
-// Se guardan como JSONB por clave: best_daily, prod_rodal, oferta_rodal, faja_daily
-app.get('/api/prod/oee/datasets', auth, async(req,res)=>{
-  try{
-    await pool.query(`CREATE TABLE IF NOT EXISTS prod_oee_datasets (clave VARCHAR(40) PRIMARY KEY, valor JSONB DEFAULT '{}'::jsonb, actualizado_en TIMESTAMP DEFAULT NOW())`);
-    const r=await pool.query('SELECT clave, valor FROM prod_oee_datasets');
-    const out={best_daily:{},prod_rodal:{},oferta_rodal:[],faja_daily:{},informe_hrs:[],oper_data:[],grafx:{},diesel:[],ofsnap:{},causas_hperd:{},diesel_detalle:{}};
-    r.rows.forEach(function(x){ out[x.clave]=x.valor; });
-    res.json(out);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-app.post('/api/prod/oee/datasets', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await client.query(`CREATE TABLE IF NOT EXISTS prod_oee_datasets (clave VARCHAR(40) PRIMARY KEY, valor JSONB DEFAULT '{}'::jsonb, actualizado_en TIMESTAMP DEFAULT NOW())`);
-    const b=req.body||{};
-    const map={best_daily:b.best_daily, prod_rodal:b.prod_rodal, oferta_rodal:b.oferta_rodal, faja_daily:b.faja_daily, informe_hrs:b.informe_hrs, oper_data:b.oper_data, grafx:b.grafx, diesel:b.diesel, ofsnap:b.ofsnap, causas_hperd:b.causas_hperd, diesel_detalle:b.diesel_detalle};
-    await client.query('BEGIN');
-    let n=0, resumen={};
-    for(const clave of Object.keys(map)){
-      if(map[clave]===undefined||map[clave]===null) continue;
-      const val=map[clave];
-      resumen[clave]=Array.isArray(val)?val.length:Object.keys(val||{}).length;
-      await client.query(`INSERT INTO prod_oee_datasets(clave,valor,actualizado_en) VALUES($1,$2,NOW())
-        ON CONFLICT(clave) DO UPDATE SET valor=EXCLUDED.valor, actualizado_en=NOW()`,[clave,JSON.stringify(val)]);
-      n++;
-    }
-    await client.query('COMMIT');
-    res.json({ok:true, guardados:n, resumen:resumen});
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
-});
-
-// ═══════════════════════════════════════════════════════════════════
-// ASISTENTE IA — consulta en lenguaje natural sobre la base (Anthropic API + tool use)
-// ═══════════════════════════════════════════════════════════════════
-const IA_MODEL_HAIKU = process.env.IA_MODEL_HAIKU || 'claude-haiku-4-5-20251001';
-const IA_MODEL_SONNET = process.env.IA_MODEL_SONNET || 'claude-sonnet-4-6';
-let _iaSchemaCache = null, _iaSchemaTs = 0;
-
-// Construye (y cachea 10 min) un resumen del esquema desde information_schema
-async function iaGetSchema(){
-  if(_iaSchemaCache && (Date.now()-_iaSchemaTs)<600000) return _iaSchemaCache;
-  const r=await pool.query(`SELECT table_name, column_name, data_type
-    FROM information_schema.columns
-    WHERE table_schema='public'
-    ORDER BY table_name, ordinal_position`);
-  const tablas={};
-  r.rows.forEach(function(x){ (tablas[x.table_name]=tablas[x.table_name]||[]).push(x.column_name+' '+x.data_type); });
-  let txt='';
-  Object.keys(tablas).sort().forEach(function(t){ txt+=t+'('+tablas[t].join(', ')+')\n'; });
-  _iaSchemaCache=txt; _iaSchemaTs=Date.now();
-  return txt;
-}
-
-// Glosario de negocio para mejorar la calidad de las consultas
-const IA_GLOSARIO = `CONTEXTO DE NEGOCIO (Empresas Poo — empresas forestales Leonidas Poo Zenteno "LPZ" y Emprecon):
-- Numéricos pueden venir como texto: usa CAST cuando sea necesario.
-- ordenes_compra = órdenes de compra (OC); su estado y numero_documento (folio factura al cerrar).
-- comb_movimientos = movimientos de combustible; tipo DISTRIBUCION = consumo/entrega a equipos.
-- terreno_registros = lecturas diarias de terreno por equipo (horas trabajadas/perdidas, horómetro).
-- terreno_tob_detalle = desglose de tiempos perdidos por categoría (clasificación E/F).
-- prod_oee_registros = indicadores OEE mensuales por faena (toc,tob,fd,fe,oee,vma,rend,m3).
-- solicitudes = solicitudes internas; estado pendiente/en_curso/completada/rechazada; dirigida_a_id = responsable; creado_en = fecha.
-- personal = trabajadores (incluye sueldos/remuneraciones y finiquitos). DATO SENSIBLE: úsalo solo si la pregunta lo requiere.
-- equipos.tipo_cargo clasifica el equipo (maquinaria, camioneta, camion, etc.); faenas = obras/faenas.
-- empresa_id distingue LPZ vs Emprecon. faena_id ubica la faena.
-Responde SIEMPRE en español, con cifras claras (separador de miles chileno) y conciso. Si la consulta SQL no devuelve filas, dilo. Nunca inventes datos: si no están en la base, indícalo.
-
-CÁLCULO DEL COSTO TOTAL DE UNA MÁQUINA/EQUIPO EN UN PERÍODO (regla de negocio importante):
-El costo total de un equipo en un mes = (A) compras directas por OC + (B) consumo de combustible + (C) consumo de insumos de inventario. NO uses el módulo de mantención (mant_ot.costo_total) para esto.
-Identifica el equipo por equipos.codigo o equipos.nombre con ILIKE. Usa rango de fechas del mes (ej. mayo 2026: fecha >= '2026-05-01' AND fecha < '2026-06-01'). Calcula los tres componentes y súmalos (A+B+C), idealmente en UNA sola consulta con subconsultas:
-
-(A) Compras directas por OC = líneas de OC asignadas al equipo que NO ingresan a bodega:
-  SELECT COALESCE(SUM(d.total_linea),0) FROM ordenes_compra_detalle d
-  JOIN ordenes_compra o ON d.oc_id=o.oc_id JOIN equipos e ON d.equipo_id=e.equipo_id
-  WHERE (e.codigo ILIKE '%MAQ%' OR e.nombre ILIKE '%MAQ%') AND o.anulado_en IS NULL
-    AND o.fecha_emision >= INI AND o.fecha_emision < FIN AND d.ingresa_bodega = false;
-(B) Consumo de combustible = comb_movimientos del equipo, tipo_mov='DISTRIBUCION', estado='ACTIVO':
-  SELECT COALESCE(SUM(cm.costo_total),0) FROM comb_movimientos cm JOIN equipos e ON cm.equipo_id=e.equipo_id
-  WHERE (e.codigo ILIKE '%MAQ%' OR e.nombre ILIKE '%MAQ%') AND cm.tipo_mov='DISTRIBUCION' AND cm.estado='ACTIVO'
-    AND cm.fecha >= INI AND cm.fecha < FIN;
-(C) Consumo de insumos de inventario = movimiento_detalle de movimientos asignados al equipo con tipo_movimiento en ('DISTRIBUCION','SALIDA'), estado='ACTIVO':
-  SELECT COALESCE(SUM(md.costo_total),0) FROM movimiento_detalle md
-  JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id JOIN equipos e ON me.equipo_id=e.equipo_id
-  WHERE (e.codigo ILIKE '%MAQ%' OR e.nombre ILIKE '%MAQ%') AND me.tipo_movimiento IN ('DISTRIBUCION','SALIDA') AND me.estado='ACTIVO'
-    AND me.fecha >= INI AND me.fecha < FIN;
-Importante: en (A) excluye ingresa_bodega=true (esas entran a inventario y se cuentan en (C) al consumirse) para no duplicar. Presenta el desglose A/B/C y el total.`;
-
-const IA_SYSTEM = `Eres el asistente de datos del ERP "Empresas Poo". Respondes preguntas consultando una base PostgreSQL mediante la herramienta consultar_sql (solo lectura).
-Reglas:
-- Genera consultas SELECT de PostgreSQL válidas y eficientes. Usa JOINs y nombres de columnas exactos del esquema.
-- Para nombres/textos usa ILIKE con comodines. Para fechas usa el formato de la columna.
-- Si necesitas varios datos, puedes llamar la herramienta varias veces.
-- Para CONTAR, TOTALIZAR o PROMEDIAR usa COUNT(), SUM(), AVG() con GROUP BY directamente en el SQL. NUNCA cuentes manualmente las filas devueltas: los resultados vienen limitados (máx. 120 filas) y "total_filas" indica el verdadero total.
-- Antes de consultar, fíjate en el ESQUEMA: usa exactamente los nombres de tablas y columnas que existen. Si una consulta falla o devuelve algo inesperado, corrige el SQL y reintenta (tienes varios intentos).
-- MEMORIA: esta es una conversación continua. Si el usuario hace una pregunta de seguimiento ("¿y el mes pasado?", "desglósalo por faena", "¿y en Emprecon?"), reutiliza el contexto de los mensajes anteriores (faena, mes, empresa, métrica) para construir la nueva consulta.
-- Tras obtener resultados, responde en lenguaje natural, claro y breve. No muestres el SQL salvo que te lo pidan.
-- Nunca intentes modificar datos (solo SELECT).`;
-
-// Valida y normaliza una consulta para que sea SOLO LECTURA
-function iaSanitizeSQL(sql){
-  if(!sql || typeof sql!=='string') throw new Error('Consulta vacía');
-  let q=sql.trim().replace(/;\s*$/,''); // quita ; final
-  if(q.indexOf(';')>=0) throw new Error('Solo se permite una sentencia');
-  const low=q.toLowerCase();
-  if(!/^(select|with)\b/.test(low)) throw new Error('Solo se permiten consultas SELECT');
-  if(/\b(insert|update|delete|drop|alter|create|truncate|grant|revoke|copy|merge|call|do|vacuum|reindex|comment|lock|set\s|begin|commit|rollback)\b/.test(low))
-    throw new Error('Operación no permitida (solo lectura)');
-  if(!/\blimit\b/.test(low)) q+=' LIMIT 1000';
-  return q;
-}
-
-// Ejecuta SQL dentro de una transacción READ ONLY con timeout (doble seguridad)
-async function iaRunSQL(sql){
-  const q=iaSanitizeSQL(sql);
-  const client=await pool.connect();
-  try{
-    await client.query('BEGIN');
-    await client.query('SET TRANSACTION READ ONLY');
-    await client.query("SET LOCAL statement_timeout='8000'");
-    const r=await client.query(q);
-    await client.query('ROLLBACK');
-    return { columns:r.fields?r.fields.map(function(f){return f.name;}):[], rows:r.rows, total:r.rows.length };
-  }catch(e){
-    try{await client.query('ROLLBACK');}catch(_){}
-    throw e;
-  }finally{ client.release(); }
-}
-
-// Llamada a la API de Anthropic (Messages)
-async function iaCallAnthropic(body){
-  const key=process.env.ANTHROPIC_API_KEY;
-  if(!key) throw new Error('NO_API_KEY');
-  const resp=await fetch('https://api.anthropic.com/v1/messages',{
-    method:'POST',
-    headers:{ 'content-type':'application/json', 'x-api-key':key, 'anthropic-version':'2023-06-01' },
-    body:JSON.stringify(body)
-  });
-  if(!resp.ok){ const t=await resp.text(); throw new Error('API '+resp.status+': '+t.slice(0,300)); }
-  return resp.json();
-}
-
-// Endpoint del chat
-// Crea (si no existen) las tablas de historial del asistente
-let _iaTablasOk=false;
-async function iaEnsureTablas(){
-  if(_iaTablasOk) return;
-  await pool.query(`CREATE TABLE IF NOT EXISTS ia_conversaciones (
-    conv_id SERIAL PRIMARY KEY,
-    usuario_id INT NOT NULL,
-    titulo VARCHAR(180),
-    creado_en TIMESTAMP DEFAULT NOW(),
-    actualizado_en TIMESTAMP DEFAULT NOW()
-  )`);
-  await pool.query(`CREATE TABLE IF NOT EXISTS ia_mensajes (
-    msg_id SERIAL PRIMARY KEY,
-    conv_id INT NOT NULL REFERENCES ia_conversaciones(conv_id) ON DELETE CASCADE,
-    usuario_id INT NOT NULL,
-    rol VARCHAR(12) NOT NULL,
-    contenido TEXT,
-    sql_text TEXT,
-    modelo VARCHAR(40),
-    creado_en TIMESTAMP DEFAULT NOW()
-  )`);
-  try{await pool.query('CREATE INDEX IF NOT EXISTS idx_ia_conv_user ON ia_conversaciones(usuario_id, actualizado_en DESC)');}catch(e){}
-  try{await pool.query('CREATE INDEX IF NOT EXISTS idx_ia_msg_conv ON ia_mensajes(conv_id, msg_id)');}catch(e){}
-  _iaTablasOk=true;
-}
-
-app.post('/api/ia/chat', auth, async(req,res)=>{
-  try{
-    // Permiso: admin o módulo 'ia'
-    const permitido = req.user && (req.user.es_admin || (Array.isArray(req.user.modulos)&&req.user.modulos.indexOf('ia')>=0));
-    if(!permitido) return res.status(403).json({error:'No tienes permiso para usar el Asistente IA'});
-    if(!process.env.ANTHROPIC_API_KEY) return res.status(400).json({error:'El Asistente IA no está configurado: falta ANTHROPIC_API_KEY en el servidor.'});
-
-    const incoming = Array.isArray(req.body.messages) ? req.body.messages : [];
-    // Sanitizar historial: solo roles user/assistant con content texto
-    let msgs = incoming.filter(function(m){return m&&(m.role==='user'||m.role==='assistant')&&m.content;})
-      .map(function(m){return {role:m.role, content: typeof m.content==='string'?m.content:JSON.stringify(m.content)};});
-    if(!msgs.length) return res.status(400).json({error:'Sin mensajes'});
-
-    const model = req.body.usar_sonnet ? IA_MODEL_SONNET : IA_MODEL_HAIKU;
-    const schema = await iaGetSchema();
-    const tools=[{
-      name:'consultar_sql',
-      description:'Ejecuta una consulta SQL de SOLO LECTURA (SELECT) sobre la base PostgreSQL del ERP y devuelve las filas. Úsala para responder cualquier pregunta sobre los datos.',
-      input_schema:{ type:'object', properties:{ query:{ type:'string', description:'Consulta SELECT válida de PostgreSQL' } }, required:['query'] }
-    }];
-    const system=[
-      { type:'text', text:IA_SYSTEM },
-      { type:'text', text:IA_GLOSARIO+'\n\nESQUEMA DE LA BASE (tabla(columna tipo, ...)):\n'+schema, cache_control:{type:'ephemeral'} }
-    ];
-
-    const sqlEjecutado=[];
-    let respuesta='';
-    for(let paso=0; paso<8; paso++){
-      const data=await iaCallAnthropic({ model, max_tokens:4096, system, messages:msgs, tools });
-      if(data.stop_reason==='tool_use'){
-        msgs.push({role:'assistant', content:data.content});
-        const toolResults=[];
-        for(const block of data.content){
-          if(block.type==='tool_use' && block.name==='consultar_sql'){
-            let out;
-            try{
-              const q=block.input&&block.input.query; sqlEjecutado.push(q);
-              const r=await iaRunSQL(q);
-              const MAXROWS=120;
-              out={ columnas:r.columns, total_filas:r.total, mostrando:Math.min(r.total,MAXROWS), filas:r.rows.slice(0,MAXROWS) };
-              if(r.total>MAXROWS) out.nota='Se muestran las primeras '+MAXROWS+' filas de '+r.total+'. Para totales usa COUNT()/SUM()/AVG() en el SQL, no cuentes las filas devueltas.';
-            }
-            catch(e){ out={error:e.message, sugerencia:'Revisa nombres de columnas/tablas del esquema y reintenta.'}; }
-            let payload=JSON.stringify(out);
-            if(payload.length>40000) payload=payload.slice(0,40000)+'…(resultado largo truncado; agrega filtros o agrega/totaliza en el SQL)';
-            toolResults.push({ type:'tool_result', tool_use_id:block.id, content:payload });
-          }
-        }
-        msgs.push({role:'user', content:toolResults});
-        continue;
-      }
-      respuesta=(data.content||[]).filter(function(b){return b.type==='text';}).map(function(b){return b.text;}).join('\n').trim();
-      break;
-    }
-    if(!respuesta) respuesta='No pude completar la consulta (demasiados pasos). Intenta reformular la pregunta.';
-
-    // ── Persistir en el historial (identificado por usuario) ──
-    let convId = parseInt(req.body.conv_id)||null;
-    let titulo = null;
-    try{
-      await iaEnsureTablas();
-      // Última pregunta del usuario en este turno
-      const ultimaUser = msgs.slice().reverse().find(function(m){return m.role==='user' && typeof m.content==='string';});
-      const preguntaTxt = ultimaUser ? ultimaUser.content : (incoming.length?String(incoming[incoming.length-1].content):'');
-      // Validar propiedad de la conversación si vino conv_id
-      if(convId){
-        const chk=await pool.query('SELECT usuario_id, titulo FROM ia_conversaciones WHERE conv_id=$1',[convId]);
-        if(!chk.rows.length || chk.rows[0].usuario_id!==req.user.id){ convId=null; }
-        else { titulo=chk.rows[0].titulo; }
-      }
-      // Crear conversación si no existe
-      if(!convId){
-        titulo = (preguntaTxt||'Consulta').replace(/\s+/g,' ').trim().slice(0,160);
-        const ins=await pool.query('INSERT INTO ia_conversaciones(usuario_id,titulo) VALUES($1,$2) RETURNING conv_id',[req.user.id,titulo]);
-        convId=ins.rows[0].conv_id;
-      }
-      // Guardar el turno (pregunta + respuesta)
-      await pool.query('INSERT INTO ia_mensajes(conv_id,usuario_id,rol,contenido) VALUES($1,$2,$3,$4)',[convId,req.user.id,'user',preguntaTxt]);
-      await pool.query('INSERT INTO ia_mensajes(conv_id,usuario_id,rol,contenido,sql_text,modelo) VALUES($1,$2,$3,$4,$5,$6)',[convId,req.user.id,'assistant',respuesta,JSON.stringify(sqlEjecutado||[]),model]);
-      await pool.query('UPDATE ia_conversaciones SET actualizado_en=NOW() WHERE conv_id=$1',[convId]);
-    }catch(ePersist){ console.warn('IA persist:', ePersist.message); }
-
-    res.json({ respuesta, sql:sqlEjecutado, modelo:model, conv_id:convId, titulo:titulo });
-  }catch(e){
-    if(e.message==='NO_API_KEY') return res.status(400).json({error:'Falta ANTHROPIC_API_KEY en el servidor.'});
-    res.status(500).json({error:e.message});
-  }
-});
-
-// Helper de permiso IA
-function iaPermitido(req){ return req.user && (req.user.es_admin || (Array.isArray(req.user.modulos)&&req.user.modulos.indexOf('ia')>=0)); }
-
-// Listar conversaciones del usuario (admin puede ver todas con ?todos=1)
-app.get('/api/ia/conversaciones', auth, async(req,res)=>{
-  try{
-    if(!iaPermitido(req)) return res.status(403).json({error:'Sin permiso'});
-    await iaEnsureTablas();
-    const verTodos = req.user.es_admin && (req.query.todos==='1'||req.query.todos==='true');
-    let r;
-    if(verTodos){
-      r=await pool.query(`SELECT c.conv_id, c.titulo, c.usuario_id, u.nombre AS usuario_nombre, c.actualizado_en,
-        (SELECT COUNT(*) FROM ia_mensajes m WHERE m.conv_id=c.conv_id) AS mensajes
-        FROM ia_conversaciones c LEFT JOIN usuarios u ON c.usuario_id=u.usuario_id
-        ORDER BY c.actualizado_en DESC LIMIT 200`);
-    }else{
-      r=await pool.query(`SELECT c.conv_id, c.titulo, c.usuario_id, c.actualizado_en,
-        (SELECT COUNT(*) FROM ia_mensajes m WHERE m.conv_id=c.conv_id) AS mensajes
-        FROM ia_conversaciones c WHERE c.usuario_id=$1
-        ORDER BY c.actualizado_en DESC LIMIT 200`,[req.user.id]);
-    }
-    res.json({conversaciones:r.rows, es_admin:!!req.user.es_admin});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// Abrir una conversación (mensajes)
-app.get('/api/ia/conversaciones/:id', auth, async(req,res)=>{
-  try{
-    if(!iaPermitido(req)) return res.status(403).json({error:'Sin permiso'});
-    await iaEnsureTablas();
-    const id=parseInt(req.params.id);
-    const c=await pool.query('SELECT conv_id, usuario_id, titulo FROM ia_conversaciones WHERE conv_id=$1',[id]);
-    if(!c.rows.length) return res.status(404).json({error:'No encontrada'});
-    if(c.rows[0].usuario_id!==req.user.id && !req.user.es_admin) return res.status(403).json({error:'No autorizado'});
-    const m=await pool.query('SELECT rol, contenido, sql_text, modelo, creado_en FROM ia_mensajes WHERE conv_id=$1 ORDER BY msg_id',[id]);
-    const mensajes=m.rows.map(function(x){
-      var o={role:x.rol, content:x.contenido, modelo:x.modelo, creado_en:x.creado_en};
-      if(x.sql_text){ try{o.sql=JSON.parse(x.sql_text);}catch(_){o.sql=[];} }
-      return o;
-    });
-    res.json({conv_id:id, titulo:c.rows[0].titulo, mensajes:mensajes});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// Borrar una conversación (dueño o admin)
-app.delete('/api/ia/conversaciones/:id', auth, async(req,res)=>{
-  try{
-    if(!iaPermitido(req)) return res.status(403).json({error:'Sin permiso'});
-    await iaEnsureTablas();
-    const id=parseInt(req.params.id);
-    const c=await pool.query('SELECT usuario_id FROM ia_conversaciones WHERE conv_id=$1',[id]);
-    if(!c.rows.length) return res.status(404).json({error:'No encontrada'});
-    if(c.rows[0].usuario_id!==req.user.id && !req.user.es_admin) return res.status(403).json({error:'No autorizado'});
-    await pool.query('DELETE FROM ia_conversaciones WHERE conv_id=$1',[id]);
-    res.json({ok:true});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-app.get('/api/terreno/tiempos-proceso', auth, async(req,res)=>{
-  try{
-    const{desde,hasta,empresa_id}=req.query;
-    if(!desde||!hasta) return res.status(400).json({error:'Rango de fechas requerido (desde, hasta)'});
-    const vals=[desde,hasta];
-    let wEmp='';
-    if(empresa_id){vals.push(empresa_id);wEmp=' AND e.empresa_id=$3';}
-    const r=await pool.query(`
-      SELECT tr.faena_id, f.nombre AS faena_nombre, f.nombre_linea,
-             e.equipo_id, e.codigo AS equipo_codigo, e.nombre AS equipo_nombre, e.numero_equipo,
-             COALESCE(NULLIF(e.proceso_productivo,''),'(sin proceso)') AS proceso,
-             COALESCE(SUM(tr.horas_trabajadas),0) AS horas,
-             COALESCE(SUM(tr.horas_perdidas),0) AS horas_perdidas,
-             COUNT(*) AS dias,
-             MIN(tr.fecha) AS primera, MAX(tr.fecha) AS ultima
-      FROM terreno_registros tr
-      JOIN equipos e ON tr.equipo_id=e.equipo_id
-      LEFT JOIN faenas f ON tr.faena_id=f.faena_id
-      WHERE tr.fecha BETWEEN $1 AND $2 AND e.tipo_cargo='maquinaria'${wEmp}
-      GROUP BY tr.faena_id, f.nombre, f.nombre_linea, e.equipo_id, e.codigo, e.nombre, e.numero_equipo, e.proceso_productivo
-      ORDER BY f.nombre NULLS LAST, COALESCE(NULLIF(e.proceso_productivo,''),'zzz'), e.codigo`, vals);
-    const rows=r.rows.map(function(x){
-      const horas=Math.round((parseFloat(x.horas)||0)*10)/10;
-      const dias=parseInt(x.dias)||0;
-      return{
-        faena_id:x.faena_id, faena_nombre:x.faena_nombre||'Sin faena', nombre_linea:x.nombre_linea||'',
-        equipo_id:x.equipo_id, equipo_codigo:x.equipo_codigo, equipo_nombre:x.equipo_nombre, numero_equipo:x.numero_equipo||'',
-        proceso:x.proceso,
-        horas:horas, horas_perdidas:Math.round((parseFloat(x.horas_perdidas)||0)*10)/10,
-        dias:dias, prom_dia:dias>0?Math.round(horas/dias*10)/10:0,
-        primera:x.primera, ultima:x.ultima
-      };
-    });
-    res.json({desde,hasta,rows});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// Desglose de TIEMPOS PERDIDOS por categoría para un equipo (clic en "Hrs perdidas")
-app.get('/api/terreno/tiempos-perdidos-detalle', auth, async(req,res)=>{
-  try{
-    const{equipo_id,faena_id,desde,hasta}=req.query;
-    if(!equipo_id||!desde||!hasta) return res.status(400).json({error:'equipo_id, desde y hasta requeridos'});
-    const vals=[equipo_id,desde,hasta];
-    let wFaena='';
-    if(faena_id){vals.push(faena_id);wFaena=' AND tr.faena_id=$4';}
-    const r=await pool.query(`
-      SELECT c.tob_cat_id, c.causa, c.codigo,
-             COALESCE(NULLIF(d.clasificacion,''),c.clasificacion) AS clasificacion,
-             COALESCE(SUM(d.horas),0) AS horas,
-             COUNT(DISTINCT tr.registro_id) AS dias
-      FROM terreno_tob_detalle d
-      JOIN terreno_registros tr ON d.registro_id=tr.registro_id
-      JOIN terreno_tob_categorias c ON d.tob_cat_id=c.tob_cat_id
-      WHERE tr.equipo_id=$1 AND tr.fecha BETWEEN $2 AND $3${wFaena}
-      GROUP BY c.tob_cat_id, c.causa, c.codigo, COALESCE(NULLIF(d.clasificacion,''),c.clasificacion)
-      HAVING COALESCE(SUM(d.horas),0) > 0
-      ORDER BY horas DESC`, vals);
-    const rows=r.rows.map(function(x){return{
-      causa:x.causa, codigo:x.codigo||'', clasificacion:x.clasificacion||'E',
-      horas:Math.round((parseFloat(x.horas)||0)*10)/10, dias:parseInt(x.dias)||0
-    };});
-    const total=Math.round(rows.reduce(function(s,x){return s+x.horas;},0)*10)/10;
-    res.json({rows:rows, total:total});
-  }catch(e){res.status(500).json({error:e.message});}
+  try{const r=await pool.query('SELECT horometro_final FROM terreno_registros WHERE equipo_id=$1 ORDER BY fecha DESC, registro_id DESC LIMIT 1',[req.params.equipo_id]);
+  res.json({horometro_final:r.rows.length?parseFloat(r.rows[0].horometro_final):null});}catch(e){res.status(500).json({error:e.message});}
 });
 
 // ═══════════════════════════════════════════════════════════════════
@@ -9366,43 +8220,12 @@ app.get('/api/terreno/tiempos-perdidos-detalle', auth, async(req,res)=>{
 // Identifica equipos sin reporte de terreno, y discrepancias entre
 // litros distribuidos en comb_movimientos y litros informados en terreno
 // ═══════════════════════════════════════════════════════════════════
-// MÁQUINAS SIN REGISTRO DIARIO (solo maquinaria, NO vehículos): días del rango en que
-// una máquina activa no tiene ningún registro de terreno. Alimenta la alerta del módulo.
-app.get('/api/terreno/sin-registro', auth, async(req,res)=>{
-  try{
-    const hoy=new Date();
-    const ayer=new Date(hoy.getTime()-86400000).toISOString().slice(0,10);
-    const hace7=new Date(hoy.getTime()-7*86400000).toISOString().slice(0,10);
-    const desde=/^\d{4}-\d{2}-\d{2}$/.test(req.query.desde||'')?req.query.desde:hace7;
-    const hasta=/^\d{4}-\d{2}-\d{2}$/.test(req.query.hasta||'')?req.query.hasta:ayer;
-    const vals=[desde,hasta];
-    const wM=["e.activo=true","COALESCE(e.tipo_cargo,'maquinaria')='maquinaria'"];
-    // Scoping por faena del usuario (misma regla que registros/informe); admin puede filtrar por query
-    const userFaena=await terrenoUserScope(pool,req.user.id);
-    const fFaena=userFaena||(req.query.faena_id&&!isNaN(parseInt(req.query.faena_id))?parseInt(req.query.faena_id):null);
-    if(fFaena){vals.push(fFaena);wM.push('(e.faena_id=$'+vals.length+' OR e.faena_id IS NULL)');}
-    if(req.query.empresa_id&&!isNaN(parseInt(req.query.empresa_id))){vals.push(parseInt(req.query.empresa_id));wM.push('e.empresa_id=$'+vals.length);}
-    const r=await pool.query(`
-      WITH dias AS (SELECT generate_series($1::date,$2::date,'1 day')::date AS fecha),
-      maqs AS (SELECT equipo_id,codigo,nombre,faena_id FROM equipos e WHERE ${wM.join(' AND ')})
-      SELECT m.equipo_id, m.codigo, m.nombre, m.faena_id, f.nombre AS faena_nombre,
-             to_char(d.fecha,'YYYY-MM-DD') AS fecha
-      FROM maqs m CROSS JOIN dias d
-      LEFT JOIN terreno_registros tr ON tr.equipo_id=m.equipo_id AND tr.fecha=d.fecha
-      LEFT JOIN faenas f ON m.faena_id=f.faena_id
-      WHERE tr.registro_id IS NULL
-      ORDER BY m.codigo, d.fecha`,vals);
-    res.json({desde:desde,hasta:hasta,rows:r.rows});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
 app.get('/api/terreno/auditoria-diaria', auth, async(req,res)=>{
   try{
     // Acepta `desde` y `hasta` (rango). Compatibilidad: si viene solo `fecha`, se trata como día único.
     var desde=req.query.desde||req.query.fecha||new Date().toISOString().slice(0,10);
     var hasta=req.query.hasta||req.query.fecha||desde;
     var empresaFiltro=req.query.empresa_id?'AND e.empresa_id='+parseInt(req.query.empresa_id):'';
-    var faenaFiltro=req.query.faena_id?'AND e.faena_id='+parseInt(req.query.faena_id):'';
     // ─── 1) Cruce por (equipo, fecha) en el rango ───
     var sqlCruce=`
       WITH dist_dia AS (
@@ -9452,7 +8275,7 @@ app.get('/api/terreno/auditoria-diaria', auth, async(req,res)=>{
       LEFT JOIN terr_dia t ON t.equipo_id=p.equipo_id AND t.fecha=p.fecha
       LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
       LEFT JOIN faenas f ON t.faena_id=f.faena_id
-      WHERE 1=1 ${empresaFiltro} ${faenaFiltro}
+      WHERE 1=1 ${empresaFiltro}
       ORDER BY p.fecha DESC, e.codigo`;
     var cruce=await pool.query(sqlCruce,[desde,hasta]);
     // ─── 2) Equipos activos sin NINGÚN registro en TODO el rango ───
@@ -9465,7 +8288,7 @@ app.get('/api/terreno/auditoria-diaria', auth, async(req,res)=>{
       WHERE e.activo=true 
         AND NOT EXISTS (SELECT 1 FROM terreno_registros tr WHERE tr.equipo_id=e.equipo_id AND tr.fecha BETWEEN $1 AND $2)
         AND NOT EXISTS (SELECT 1 FROM comb_movimientos cm WHERE cm.equipo_id=e.equipo_id AND cm.fecha BETWEEN $1 AND $2 AND cm.estado='ACTIVO')
-        ${empresaFiltro} ${faenaFiltro}
+        ${empresaFiltro}
       ORDER BY e.codigo`;
     var sinRegistro=await pool.query(sqlSinRegistro,[desde,hasta]);
     var sinTerreno=cruce.rows.filter(function(r){return r.estado==='sin_terreno';});
@@ -9494,7 +8317,7 @@ app.get('/api/terreno/auditoria-diaria', auth, async(req,res)=>{
 // Endpoint ligero para obtener resumen de pendientes dirigidas al usuario actual
 // Usado por la alerta del dashboard
 // ─── Contratos a plazo fijo próximos a vencer (alerta de renovación / finiquito) ───
-app.get('/api/contratos/por-vencer', auth, requireModulo('contratos'), async(req,res)=>{
+app.get('/api/contratos/por-vencer', auth, async(req,res)=>{
   try{
     const dias=Math.max(1,Math.min(parseInt(req.query.dias)||30,180));
     // Fuente: personal activo con fecha de término (contrato a plazo fijo / obra), excluyendo indefinidos.
@@ -10285,7 +9108,7 @@ async function setupFacturaGuias(q){
 }
 
 // Listar OCs con guía de despacho pendientes de facturar
-app.get('/api/oc-guias/pendientes', auth, requireModulo('ordenes'), async(req,res)=>{
+app.get('/api/oc-guias/pendientes', auth, async(req,res)=>{
   try{
     const{proveedor_id,empresa_id}=req.query;
     let w=["oc.estado='CERRADA'","oc.factura_guia_id IS NULL"],v=[];
@@ -10340,7 +9163,7 @@ app.get('/api/oc-guias/pendientes', auth, requireModulo('ordenes'), async(req,re
 });
 
 // Listar proveedores que tienen guías pendientes
-app.get('/api/oc-guias/proveedores-pendientes', auth, requireModulo('ordenes'), async(req,res)=>{
+app.get('/api/oc-guias/proveedores-pendientes', auth, async(req,res)=>{
   try{
     const r=await pool.query(`SELECT DISTINCT pr.proveedor_id,pr.nombre,pr.rut,COUNT(oc.oc_id) AS guias_pendientes,SUM(oc.total) AS monto_total
       FROM ordenes_compra oc
@@ -10355,7 +9178,7 @@ app.get('/api/oc-guias/proveedores-pendientes', auth, requireModulo('ordenes'), 
 });
 
 // Crear factura asociando guías + recalcular combustible por categoría
-app.post('/api/oc-guias/facturar', auth, requireModulo('ordenes'), async(req,res)=>{
+app.post('/api/oc-guias/facturar', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
@@ -10455,7 +9278,7 @@ app.post('/api/oc-guias/facturar', auth, requireModulo('ordenes'), async(req,res
 });
 
 // Listar facturas de guías
-app.get('/api/oc-guias/facturas', auth, requireModulo('ordenes'), async(req,res)=>{
+app.get('/api/oc-guias/facturas', auth, async(req,res)=>{
   try{
     const{proveedor_id,buscar,fecha_desde,fecha_hasta,empresa_id}=req.query;
     let w=['1=1'],v=[];
@@ -10481,7 +9304,7 @@ app.get('/api/oc-guias/facturas', auth, requireModulo('ordenes'), async(req,res)
 });
 
 // ─── GET: detalle de una factura con todas las OC y guías asociadas ───
-app.get('/api/oc-guias/facturas/:id', auth, requireModulo('ordenes'), async(req,res)=>{
+app.get('/api/oc-guias/facturas/:id', auth, async(req,res)=>{
   try{
     const head=await pool.query(`
       SELECT f.*, pr.nombre AS proveedor_nombre, pr.rut AS proveedor_rut, 
@@ -10514,17 +9337,12 @@ app.get('/api/oc-guias/facturas/:id', auth, requireModulo('ordenes'), async(req,
 });
 
 // Eliminar factura de guías (desasocia las OCs)
-app.delete('/api/oc-guias/facturas/:id', auth, requireModulo('ordenes'), async(req,res)=>{
+app.delete('/api/oc-guias/facturas/:id', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
-    // AUDITADO (2026-08): snapshot del cierre + OCs asociadas antes de borrar
-    const snap=(await client.query(`SELECT f.*, (SELECT json_agg(json_build_object('oc_id',o.oc_id,'numero_oc',o.numero_oc,'total',o.total)) FROM ordenes_compra o WHERE o.factura_guia_id=f.factura_id) AS ocs
-      FROM oc_factura_guias f WHERE f.factura_id=$1`,[req.params.id])).rows[0]||null;
     await client.query('UPDATE ordenes_compra SET factura_guia_id=NULL WHERE factura_guia_id=$1',[req.params.id]);
     await client.query('DELETE FROM oc_factura_guias WHERE factura_id=$1',[req.params.id]);
-    try{await client.query('INSERT INTO auditoria(tabla_afectada,registro_id,accion,datos_anteriores,usuario,ip_origen) VALUES($1,$2,$3,$4,$5,$6)',
-      ['oc_factura_guias',parseInt(req.params.id),'DELETE',snap?JSON.stringify(snap):null,req.user.email,reqIp(req)]);}catch(e){console.error('audit guias:',e.message);}
     await client.query('COMMIT');
     res.json({ok:true});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
@@ -10537,23 +9355,20 @@ app.get('/manifest.json', (req,res)=>{
     name:'Empresas Poo',short_name:'EP Gestión',description:'Sistema de Gestión Forestal',
     start_url:'/',display:'standalone',orientation:'portrait',
     background_color:'#1E3A2D',theme_color:'#1E3A2D',
-    icons:[]
+    icons:[{src:'/icon-192.png',sizes:'192x192',type:'image/png'},{src:'/icon-512.png',sizes:'512x512',type:'image/png'}]
   });
 });
 app.get('/sw.js', (req,res)=>{
   res.setHeader('Content-Type','application/javascript');
-  res.setHeader('Cache-Control','no-cache, no-store, must-revalidate');
-  // Service worker AUTO-DESTRUCTIVO: se desinstala, borra cachés y recarga las pestañas.
   res.send(`
-    self.addEventListener('install',function(e){ self.skipWaiting(); });
-    self.addEventListener('activate',function(e){
-      e.waitUntil((async function(){
-        try{ var ks=await caches.keys(); await Promise.all(ks.map(function(k){return caches.delete(k);})); }catch(err){}
-        try{ await self.registration.unregister(); }catch(err){}
-        try{ var cs=await self.clients.matchAll({type:'window'}); cs.forEach(function(c){ try{ c.navigate(c.url); }catch(e){} }); }catch(err){}
-      })());
+    const CACHE='ep-v1';
+    self.addEventListener('install',e=>{self.skipWaiting();});
+    self.addEventListener('activate',e=>{e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==CACHE).map(k=>caches.delete(k)))));});
+    self.addEventListener('fetch',e=>{
+      if(e.request.method!=='GET')return;
+      if(e.request.url.includes('/api/'))return;
+      e.respondWith(fetch(e.request).then(r=>{if(r.ok){const c=r.clone();caches.open(CACHE).then(ca=>ca.put(e.request,c));}return r;}).catch(()=>caches.match(e.request)));
     });
-    // Sin manejador 'fetch': el navegador usa la red normalmente.
   `);
 });
 // Generar íconos PWA dinámicamente como SVG→PNG (fallback SVG)
@@ -10697,7 +9512,7 @@ app.get('/api/contratos', auth, async(req,res)=>{
     const{persona_id}=req.query;
     let w=['1=1'],v=[];
     if(persona_id){v.push(persona_id);w.push(`c.persona_id=$${v.length}`);}
-    const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut AS persona_rut,p.cargo,p.faena_id,fa.nombre AS faena_nombre,e.razon_social AS empresa_nombre FROM contratos c JOIN personal p ON c.persona_id=p.persona_id LEFT JOIN faenas fa ON p.faena_id=fa.faena_id JOIN empresas e ON c.empresa_id=e.empresa_id WHERE ${w.join(' AND ')} ORDER BY c.fecha_contrato DESC,c.contrato_id DESC`,v);
+    const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut AS persona_rut,p.cargo,e.razon_social AS empresa_nombre FROM contratos c JOIN personal p ON c.persona_id=p.persona_id JOIN empresas e ON c.empresa_id=e.empresa_id WHERE ${w.join(' AND ')} ORDER BY c.fecha_contrato DESC,c.contrato_id DESC`,v);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -10745,27 +9560,6 @@ app.post('/api/contratos', auth, async(req,res)=>{
     await pool.query(`UPDATE personal SET sueldo_base=$1,bono_responsabilidad=$2,bono_produccion_fijo=$3,bono_produccion_variable=$4,bono_produccion_tarifa=$5,bono_produccion_detalle=$6,semana_corrida=$7,asig_colacion=$8,asig_movilizacion=$9,asig_viatico=$10,tiene_alimentacion=$11,alimentacion_detalle=$12,funcion_contrato=COALESCE(funcion_contrato,$13) WHERE persona_id=$14`,
       [parseFloat(b.sueldo_base)||0,parseFloat(b.bono_responsabilidad)||0,parseFloat(b.bono_produccion_fijo)||0,b.bono_produccion_variable||false,parseFloat(b.bono_produccion_tarifa)||0,b.bono_produccion_detalle||null,b.semana_corrida||false,parseFloat(b.asig_colacion)||0,parseFloat(b.asig_movilizacion)||0,parseFloat(b.asig_viatico)||0,b.tiene_alimentacion||false,b.alimentacion_detalle||null,b.funcion_texto,b.persona_id]);
     res.status(201).json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
-});
-app.put('/api/contratos/:id', auth, async(req,res)=>{
-  try{
-    const b=req.body; const id=parseInt(req.params.id);
-    if(!b.tipo_contrato||!b.fecha_contrato||!b.fecha_inicio||!b.funcion_texto){
-      return res.status(400).json({error:'Tipo, fechas y función son obligatorios'});
-    }
-    if(b.tipo_contrato==='plazo_fijo'&&!b.fecha_termino){
-      return res.status(400).json({error:'Contrato a plazo fijo requiere fecha de término'});
-    }
-    const r=await pool.query(`UPDATE contratos SET tipo_contrato=$1,es_actualizacion=$2,fecha_contrato=$3,fecha_inicio=$4,fecha_termino=$5,lugar_firma=$6,funcion_texto=$7,jornada_tipo=$8,jornada_horas=$9,jornada_texto=$10,lugar_prestacion=$11,sueldo_base=$12,bono_responsabilidad=$13,bono_produccion_fijo=$14,bono_produccion_variable=$15,bono_produccion_tarifa=$16,bono_produccion_detalle=$17,semana_corrida=$18,asig_colacion=$19,asig_movilizacion=$20,asig_viatico=$21,tiene_alimentacion=$22,alimentacion_detalle=$23,otros_beneficios=$24,observaciones=$25 WHERE contrato_id=$26 RETURNING *`,
-      [b.tipo_contrato,b.es_actualizacion||false,b.fecha_contrato,b.fecha_inicio,b.fecha_termino||null,b.lugar_firma||'Nacimiento',b.funcion_texto,b.jornada_tipo||'normal',parseInt(b.jornada_horas)||44,b.jornada_texto||null,b.lugar_prestacion||null,parseFloat(b.sueldo_base)||0,parseFloat(b.bono_responsabilidad)||0,parseFloat(b.bono_produccion_fijo)||0,b.bono_produccion_variable||false,parseFloat(b.bono_produccion_tarifa)||0,b.bono_produccion_detalle||null,b.semana_corrida||false,parseFloat(b.asig_colacion)||0,parseFloat(b.asig_movilizacion)||0,parseFloat(b.asig_viatico)||0,b.tiene_alimentacion||false,b.alimentacion_detalle||null,b.otros_beneficios||null,b.observaciones||null,id]);
-    if(!r.rows.length) return res.status(404).json({error:'Contrato no encontrado'});
-    const cc=r.rows[0];
-    // Sincronizar la ficha del trabajador con los datos del contrato editado (igual que al crear)
-    await pool.query('UPDATE personal SET tipo_contrato=$1,fecha_termino=$2 WHERE persona_id=$3',
-      [({plazo_fijo:'A Plazo',indefinido:'Indefinido',obra_servicio:'Por Obra'})[b.tipo_contrato]||'Indefinido', b.fecha_termino||null, cc.persona_id]);
-    await pool.query(`UPDATE personal SET sueldo_base=$1,bono_responsabilidad=$2,bono_produccion_fijo=$3,bono_produccion_variable=$4,bono_produccion_tarifa=$5,bono_produccion_detalle=$6,semana_corrida=$7,asig_colacion=$8,asig_movilizacion=$9,asig_viatico=$10,tiene_alimentacion=$11,alimentacion_detalle=$12,funcion_contrato=$13 WHERE persona_id=$14`,
-      [parseFloat(b.sueldo_base)||0,parseFloat(b.bono_responsabilidad)||0,parseFloat(b.bono_produccion_fijo)||0,b.bono_produccion_variable||false,parseFloat(b.bono_produccion_tarifa)||0,b.bono_produccion_detalle||null,b.semana_corrida||false,parseFloat(b.asig_colacion)||0,parseFloat(b.asig_movilizacion)||0,parseFloat(b.asig_viatico)||0,b.tiene_alimentacion||false,b.alimentacion_detalle||null,b.funcion_texto,cc.persona_id]);
-    res.json(cc);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.delete('/api/contratos/:id', auth, async(req,res)=>{
@@ -10975,13 +9769,12 @@ app.get('/api/finiquitos', auth, async(req,res)=>{
     const{persona_id}=req.query;
     let w=['1=1'],v=[];
     if(persona_id){v.push(persona_id);w.push(`f.persona_id=$${v.length}`);}
-    const r=await pool.query(`SELECT f.*,p.nombre_completo,p.rut,p.cargo,p.fecha_ingreso,p.faena_id,fa.nombre AS faena_nombre,
+    const r=await pool.query(`SELECT f.*,p.nombre_completo,p.rut,p.cargo,p.fecha_ingreso,
       e.razon_social AS empresa_nombre,e.rut AS empresa_rut,e.direccion AS empresa_direccion,
       e.comuna AS empresa_comuna,e.region AS empresa_region,
       e.representante_nombre,e.representante_rut,e.logo_base64,e.firma_representante,e.timbre_empresa
       FROM finiquitos f
       JOIN personal p ON f.persona_id=p.persona_id
-      LEFT JOIN faenas fa ON p.faena_id=fa.faena_id
       JOIN empresas e ON f.empresa_id=e.empresa_id
       WHERE ${w.join(' AND ')}
       ORDER BY f.creado_en DESC`,v);
@@ -11082,7 +9875,6 @@ app.put('/api/finiquitos/:id', auth, async(req,res)=>{
 // Indicadores económicos chilenos (UF y sueldo mínimo)
 // UF: mindicador.cl (Banco Central) — Sueldo Mínimo: tabla legal histórica (Ley 21.751 y anteriores)
 const SUELDO_MINIMO_HIST=[
-  {desde:'2026-05-01',valor:553553,ley:'Ley 21.751'},
   {desde:'2026-01-01',valor:539000,ley:'Ley 21.751'},
   {desde:'2025-05-01',valor:529000,ley:'Ley 21.751'},
   {desde:'2025-01-01',valor:510000,ley:'Ley 21.578'},
@@ -11121,254 +9913,6 @@ app.get('/api/indicadores-cl', auth, async(req,res)=>{
       sueldo_minimo:sm.valor,sueldo_minimo_fecha:sm.desde,sueldo_minimo_ley:sm.ley,sueldo_minimo_fuente:'Tabla legal interna ('+sm.ley+')'
     });
   }catch(e){res.status(500).json({error:e.message});}
-});
-
-// ── Lector del PDF oficial de indicadores previsionales de Previred ──
-const PREVIRED_MESES=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
-function previredURLs(anio,mes){
-  const mm=String(mes).padStart(2,'0');
-  const nom=(PREVIRED_MESES[mes-1]||'').replace(/^./,function(c){return c.toUpperCase();});
-  const base='https://www.previred.com/wp-content/uploads/'+anio+'/'+mm+'/Indicadores-Previsionales-Previred-'+nom+'-'+anio;
-  return [base+'.pdf', base+'-1.pdf', base+'-2.pdf', base+'-2-1.pdf', base+'-1-1.pdf'];
-}
-async function previredFetchTexto(anio,mes){
-  if(!pdfParse) throw new Error('pdf-parse no disponible en el servidor');
-  const urls=previredURLs(anio,mes);
-  let lastErr=null;
-  for(const url of urls){
-    try{
-      const r=await fetch(url,{redirect:'follow'});
-      if(!r.ok){ lastErr='HTTP '+r.status; continue; }
-      const ab=await r.arrayBuffer();
-      const parsed=await pdfParse(Buffer.from(ab));
-      if(parsed && parsed.text && /Previsionales/i.test(parsed.text)) return {texto:parsed.text, url:url};
-      lastErr='PDF sin el contenido esperado';
-    }catch(e){ lastErr=e.message; }
-  }
-  throw new Error('No se pudo descargar/leer el PDF ('+(lastErr||'desconocido')+')');
-}
-function previredParse(texto){
-  const out={faltantes:[]};
-  const num=function(s){ return parseFloat(String(s).replace(/\./g,'').replace(',','.')); };
-  let m;
-  m=texto.match(/Al\s+\d{1,2}\s+de\s+\w+\s+del\s+\d{4}:\s*\$\s*([\d.]+)\s*\$\s*([\d.]+)/i);
-  if(m){ out.utm=num(m[1]); out.uta=num(m[2]); } else out.faltantes.push('UTM/UTA');
-  m=texto.match(/\$\s*(\d{2}\.\d{3},\d{2})/);
-  if(m){ out.uf=num(m[1]); } else out.faltantes.push('UF');
-  m=texto.match(/afiliados a una AFP\s*\((\d+(?:,\d+)?)\s*UF\)/i);
-  if(m){ out.tope_afp_uf=num(m[1]); } else out.faltantes.push('Tope imponible AFP (UF)');
-  m=texto.match(/Seguro de Cesant[ií]a\s*\((\d+(?:,\d+)?)\s*UF\)/i);
-  if(m){ out.tope_cesantia_uf=num(m[1]); } else out.faltantes.push('Tope Cesantía (UF)');
-  const afps=['Capital','Cuprum','Habitat','PlanVital','Provida','Modelo','Uno'];
-  out.afp=[];
-  afps.forEach(function(n){
-    const mm2=texto.match(new RegExp(n+'\\s+(\\d+,\\d+)%\\s+(\\d+,\\d+)%\\s+(\\d+,\\d+)%\\s+(\\d+,\\d+)%','i'));
-    if(mm2) out.afp.push({nombre:n, trabajador:num(mm2[1]), empleador:num(mm2[2]), total:num(mm2[3]), total_con_sis:num(mm2[4])});
-  });
-  if(!out.afp.length) out.faltantes.push('Tasas AFP');
-  return out;
-}
-app.get('/api/previred/indicadores-pdf', auth, async(req,res)=>{
-  try{
-    const anio=parseInt(req.query.anio), mes=parseInt(req.query.mes);
-    if(!anio||!mes||mes<1||mes>12) return res.status(400).json({error:'Indica año y mes válidos'});
-    const r=await previredFetchTexto(anio,mes);
-    const valores=previredParse(r.texto);
-    res.json({ ok:true, periodo:{anio,mes}, fuente:r.url, valores:valores, faltantes:valores.faltantes,
-      nota:'Datos extraídos del PDF oficial de Previred. Revisa los valores antes de aplicarlos.' });
-  }catch(e){ res.status(502).json({error:e.message, sugerencia:'No se pudo leer el PDF de Previred. Ingresa los valores manualmente.'}); }
-});
-
-// ═══ COSTO DE REMUNERACIONES (libro de remuneraciones → costo por faena/centro de costo) ═══
-let _finRemuOk=false;
-async function finRemuEnsure(){
-  if(_finRemuOk)return;
-  await pool.query(`CREATE TABLE IF NOT EXISTS fin_remu_periodo (
-    periodo_id SERIAL PRIMARY KEY, empresa_id INT, anio SMALLINT NOT NULL, mes SMALLINT NOT NULL,
-    total_haberes NUMERIC(14,2) DEFAULT 0, total_asig_familiar NUMERIC(14,2) DEFAULT 0,
-    total_aporte NUMERIC(14,2) DEFAULT 0, costo_total NUMERIC(14,2) DEFAULT 0,
-    n_trabajadores INT DEFAULT 0, n_sin_match INT DEFAULT 0, creado_en TIMESTAMP DEFAULT NOW(),
-    UNIQUE(empresa_id,anio,mes))`);
-  await pool.query(`CREATE TABLE IF NOT EXISTS fin_remu_detalle (
-    detalle_id SERIAL PRIMARY KEY, periodo_id INT NOT NULL REFERENCES fin_remu_periodo(periodo_id) ON DELETE CASCADE,
-    rut VARCHAR(20), nombre VARCHAR(160), persona_id INT, faena_id INT, faena_nombre VARCHAR(120), centro_costo VARCHAR(120), cargo VARCHAR(120),
-    t_haberes NUMERIC(14,2) DEFAULT 0, c_familiar NUMERIC(14,2) DEFAULT 0, aporte NUMERIC(14,2) DEFAULT 0, costo NUMERIC(14,2) DEFAULT 0)`);
-  try{await pool.query('CREATE INDEX IF NOT EXISTS idx_finremu_det ON fin_remu_detalle(periodo_id)');}catch(e){}
-  try{await pool.query('ALTER TABLE fin_remu_detalle ADD COLUMN IF NOT EXISTS cargo VARCHAR(120)');}catch(e){}
-  try{await pool.query('ALTER TABLE fin_remu_detalle ADD COLUMN IF NOT EXISTS faena_manual BOOLEAN DEFAULT false');}catch(e){}
-  _finRemuOk=true;
-}
-function finRemuNormRut(r){ return String(r||'').toUpperCase().replace(/[^0-9K]/g,'').replace(/^0+/,''); }
-async function finRemuResumen(periodo_id){
-  const tot=await pool.query('SELECT * FROM fin_remu_periodo WHERE periodo_id=$1',[periodo_id]);
-  const faena=await pool.query("SELECT COALESCE(faena_nombre,'(Sin faena asignada)') AS faena, COUNT(*)::int n, SUM(costo) costo FROM fin_remu_detalle WHERE periodo_id=$1 GROUP BY COALESCE(faena_nombre,'(Sin faena asignada)') ORDER BY SUM(costo) DESC",[periodo_id]);
-  const centro=await pool.query("SELECT COALESCE(NULLIF(centro_costo,''),'(Sin centro de costo)') AS centro, COUNT(*)::int n, SUM(costo) costo FROM fin_remu_detalle WHERE periodo_id=$1 GROUP BY COALESCE(NULLIF(centro_costo,''),'(Sin centro de costo)') ORDER BY SUM(costo) DESC",[periodo_id]);
-  const cargo=await pool.query("SELECT COALESCE(NULLIF(cargo,''),'(Sin cargo)') AS cargo, COUNT(*)::int n, SUM(costo) costo FROM fin_remu_detalle WHERE periodo_id=$1 GROUP BY COALESCE(NULLIF(cargo,''),'(Sin cargo)') ORDER BY SUM(costo) DESC",[periodo_id]);
-  const sin=await pool.query('SELECT rut,nombre,costo FROM fin_remu_detalle WHERE periodo_id=$1 AND persona_id IS NULL ORDER BY nombre',[periodo_id]);
-  const det=await pool.query('SELECT detalle_id,rut,nombre,faena_id,faena_nombre,faena_manual,centro_costo,cargo,t_haberes,c_familiar,aporte,costo,persona_id FROM fin_remu_detalle WHERE periodo_id=$1 ORDER BY costo DESC',[periodo_id]);
-  return {periodo:tot.rows[0], por_faena:faena.rows, por_centro:centro.rows, por_cargo:cargo.rows, sin_match:sin.rows, detalle:det.rows};
-}
-app.post('/api/fin/remuneraciones/importar', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await finRemuEnsure();
-    const{empresa_id,anio,mes,filas}=req.body;
-    if(!anio||!mes) return res.status(400).json({error:'Indica año y mes del período'});
-    if(!Array.isArray(filas)||!filas.length) return res.status(400).json({error:'No se recibieron filas del libro de remuneraciones'});
-    const per=await client.query("SELECT p.persona_id,p.rut,p.faena_id,p.centro_costo,p.cargo,p.nombre_completo,f.nombre AS faena_nombre FROM personal p LEFT JOIN faenas f ON p.faena_id=f.faena_id");
-    const mapa={}; per.rows.forEach(function(x){ mapa[finRemuNormRut(x.rut)]=x; });
-    await client.query('BEGIN');
-    const eId=empresa_id?parseInt(empresa_id):null;
-    let pe;
-    if(eId===null){
-      const ex=await client.query('SELECT periodo_id FROM fin_remu_periodo WHERE empresa_id IS NULL AND anio=$1 AND mes=$2',[anio,mes]);
-      if(ex.rows.length){ pe={rows:[{periodo_id:ex.rows[0].periodo_id}]}; }
-      else pe=await client.query('INSERT INTO fin_remu_periodo(empresa_id,anio,mes) VALUES(NULL,$1,$2) RETURNING periodo_id',[anio,mes]);
-    }else{
-      pe=await client.query('INSERT INTO fin_remu_periodo(empresa_id,anio,mes) VALUES($1,$2,$3) ON CONFLICT(empresa_id,anio,mes) DO UPDATE SET creado_en=NOW() RETURNING periodo_id',[eId,anio,mes]);
-    }
-    const periodo_id=pe.rows[0].periodo_id;
-    // Preservar reasignaciones MANUALES de faena del período: sobreviven a la recarga del libro
-    const ovrR=await client.query('SELECT rut, faena_id, faena_nombre FROM fin_remu_detalle WHERE periodo_id=$1 AND faena_manual=true',[periodo_id]);
-    const ovr={}; ovrR.rows.forEach(function(x){ ovr[finRemuNormRut(x.rut)]={faena_id:x.faena_id,faena_nombre:x.faena_nombre}; });
-    await client.query('DELETE FROM fin_remu_detalle WHERE periodo_id=$1',[periodo_id]);
-    let tH=0,tF=0,tA=0,tC=0,nT=0,nSin=0;
-    for(const f of filas){
-      const th=parseFloat(f.t_haberes)||0, cf=parseFloat(f.c_familiar)||0, ap=parseFloat(f.aporte)||0;
-      const costo=th-cf+ap;
-      const m=mapa[finRemuNormRut(f.rut)]||null;
-      const o=ovr[finRemuNormRut(f.rut)]||null;
-      await client.query('INSERT INTO fin_remu_detalle(periodo_id,rut,nombre,persona_id,faena_id,faena_nombre,centro_costo,cargo,t_haberes,c_familiar,aporte,costo,faena_manual) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',
-        [periodo_id,f.rut||null,(m?m.nombre_completo:f.nombre)||null,m?m.persona_id:null,
-         o?o.faena_id:(m?m.faena_id:null),o?o.faena_nombre:(m?m.faena_nombre:null),
-         m?m.centro_costo:null,m?m.cargo:null,th,cf,ap,costo,!!o]);
-      tH+=th;tF+=cf;tA+=ap;tC+=costo;nT++; if(!m)nSin++;
-    }
-    await client.query('UPDATE fin_remu_periodo SET total_haberes=$1,total_asig_familiar=$2,total_aporte=$3,costo_total=$4,n_trabajadores=$5,n_sin_match=$6 WHERE periodo_id=$7',[tH,tF,tA,tC,nT,nSin,periodo_id]);
-    await client.query('COMMIT');
-    res.json({ok:true, periodo_id:periodo_id, resumen:await finRemuResumen(periodo_id)});
-  }catch(e){ try{await client.query('ROLLBACK');}catch(_){}; res.status(400).json({error:e.message}); }
-  finally{ client.release(); }
-});
-// PUT: reasignar la faena de un trabajador SOLO para este período (no toca el maestro de personal)
-// body {faena_id} asigna manualmente; {restaurar:true} vuelve a la faena del maestro
-app.put('/api/fin/remuneraciones/detalle/:id', auth, async(req,res)=>{
-  try{
-    await finRemuEnsure();
-    var b=req.body||{};
-    if(b.restaurar){
-      var r0=await pool.query(`UPDATE fin_remu_detalle d SET faena_id=p.faena_id, faena_nombre=f.nombre, faena_manual=false
-        FROM personal p LEFT JOIN faenas f ON p.faena_id=f.faena_id
-        WHERE d.detalle_id=$1 AND d.persona_id=p.persona_id RETURNING d.*`,[req.params.id]);
-      if(!r0.rows.length)return res.status(404).json({error:'Detalle no encontrado o sin cruce con el maestro de personal'});
-      return res.json(r0.rows[0]);
-    }
-    var fid=b.faena_id?parseInt(b.faena_id):null;
-    var fnom=null;
-    if(fid){
-      var fr=await pool.query('SELECT nombre FROM faenas WHERE faena_id=$1',[fid]);
-      if(!fr.rows.length)return res.status(404).json({error:'Faena no encontrada'});
-      fnom=fr.rows[0].nombre;
-    }
-    var r=await pool.query('UPDATE fin_remu_detalle SET faena_id=$1, faena_nombre=$2, faena_manual=true WHERE detalle_id=$3 RETURNING *',[fid,fnom,req.params.id]);
-    if(!r.rows.length)return res.status(404).json({error:'Detalle no encontrado'});
-    res.json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
-});
-
-app.get('/api/fin/remuneraciones', auth, async(req,res)=>{
-  try{
-    await finRemuEnsure();
-    const{empresa_id,anio,mes}=req.query;
-    if(!anio||!mes) return res.status(400).json({error:'Indica año y mes'});
-    let q='SELECT periodo_id FROM fin_remu_periodo WHERE anio=$1 AND mes=$2'; const v=[anio,mes];
-    if(empresa_id){ q+=' AND empresa_id=$3'; v.push(parseInt(empresa_id)); } else { q+=' AND empresa_id IS NULL'; }
-    const r=await pool.query(q,v);
-    if(!r.rows.length) return res.json({existe:false});
-    res.json({existe:true, resumen:await finRemuResumen(r.rows[0].periodo_id)});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-// ═══ PREVENCIÓN DE RIESGOS — Registro de Entrega de EPP ═══
-let _prevEppOk=false;
-async function prevEppEnsure(){
-  if(_prevEppOk)return;
-  await pool.query(`CREATE TABLE IF NOT EXISTS prev_epp_entregas (
-    entrega_id SERIAL PRIMARY KEY,
-    empresa_id INT NOT NULL,
-    persona_id INT NOT NULL,
-    prevencionista_id INT,
-    prevencionista_inscripcion VARCHAR(60),
-    fecha DATE NOT NULL,
-    items JSONB NOT NULL DEFAULT '[]',
-    observaciones TEXT,
-    creado_en TIMESTAMP DEFAULT NOW())`);
-  _prevEppOk=true;
-}
-app.post('/api/prevencion/epp', auth, async(req,res)=>{
-  try{
-    await prevEppEnsure();
-    const b=req.body;
-    if(!b.empresa_id||!b.persona_id) return res.status(400).json({error:'Empresa y trabajador son obligatorios'});
-    if(!b.fecha) return res.status(400).json({error:'Indica la fecha de entrega'});
-    if(!Array.isArray(b.items)||!b.items.length) return res.status(400).json({error:'Selecciona al menos un elemento de protección'});
-    if(!b.prevencionista_id) return res.status(400).json({error:'Selecciona el prevencionista de riesgos'});
-    const r=await pool.query('INSERT INTO prev_epp_entregas(empresa_id,persona_id,prevencionista_id,prevencionista_inscripcion,fecha,items,observaciones) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING entrega_id',
-      [b.empresa_id,b.persona_id,b.prevencionista_id,b.prevencionista_inscripcion||null,b.fecha,JSON.stringify(b.items),b.observaciones||null]);
-    res.json({ok:true,entrega_id:r.rows[0].entrega_id});
-  }catch(e){res.status(400).json({error:e.message});}
-});
-app.get('/api/prevencion/epp', auth, async(req,res)=>{
-  try{
-    await prevEppEnsure();
-    const r=await pool.query(`SELECT ep.entrega_id,ep.empresa_id,ep.persona_id,ep.prevencionista_id,ep.prevencionista_inscripcion,ep.fecha,ep.items,ep.creado_en,
-      p.nombre_completo,p.rut,p.cargo,p.faena_id,fa.nombre AS faena_nombre,
-      pr.nombre_completo AS prevencionista_nombre,
-      e.razon_social AS empresa_nombre
-      FROM prev_epp_entregas ep
-      JOIN personal p ON ep.persona_id=p.persona_id
-      LEFT JOIN faenas fa ON p.faena_id=fa.faena_id
-      LEFT JOIN personal pr ON ep.prevencionista_id=pr.persona_id
-      JOIN empresas e ON ep.empresa_id=e.empresa_id
-      ORDER BY ep.fecha DESC, ep.entrega_id DESC LIMIT 500`);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-app.get('/api/prevencion/epp/:id', auth, async(req,res)=>{
-  try{
-    await prevEppEnsure();
-    const r=await pool.query(`SELECT ep.*,
-      p.nombre_completo,p.rut,p.cargo,
-      pr.nombre_completo AS prevencionista_nombre,
-      e.razon_social AS empresa_nombre,e.rut AS empresa_rut,e.logo_base64
-      FROM prev_epp_entregas ep
-      JOIN personal p ON ep.persona_id=p.persona_id
-      LEFT JOIN personal pr ON ep.prevencionista_id=pr.persona_id
-      JOIN empresas e ON ep.empresa_id=e.empresa_id
-      WHERE ep.entrega_id=$1`,[req.params.id]);
-    if(!r.rows.length)return res.status(404).json({error:'Registro no encontrado'});
-    res.json(r.rows[0]);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-app.delete('/api/prevencion/epp/:id', auth, async(req,res)=>{
-  try{ await prevEppEnsure(); await pool.query('DELETE FROM prev_epp_entregas WHERE entrega_id=$1',[req.params.id]); res.json({ok:true}); }
-  catch(e){res.status(400).json({error:e.message});}
-});
-
-app.get('/api/fin/remuneraciones/periodos', auth, async(req,res)=>{
-  try{
-    await finRemuEnsure();
-    const r=await pool.query("SELECT pr.periodo_id,pr.anio,pr.mes,pr.empresa_id,e.razon_social AS empresa,pr.costo_total,pr.n_trabajadores,pr.n_sin_match FROM fin_remu_periodo pr LEFT JOIN empresas e ON pr.empresa_id=e.empresa_id ORDER BY pr.anio DESC,pr.mes DESC LIMIT 60");
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-app.delete('/api/fin/remuneraciones/periodos/:id', auth, async(req,res)=>{
-  try{
-    await finRemuEnsure();
-    const id=parseInt(req.params.id);
-    if(!id) return res.status(400).json({error:'ID no válido'});
-    await pool.query('DELETE FROM fin_remu_periodo WHERE periodo_id=$1',[id]); // cascade borra el detalle
-    res.json({ok:true});
-  }catch(e){res.status(400).json({error:e.message});}
 });
 
 // Feriados de Chile — fuente oficial: apis.digital.gob.cl
@@ -11426,12 +9970,11 @@ app.get('/api/cartas-termino', auth, async(req,res)=>{
     const{persona_id}=req.query;
     let w=['1=1'],v=[];
     if(persona_id){v.push(persona_id);w.push(`c.persona_id=$${v.length}`);}
-    const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut,p.cargo,p.direccion AS persona_direccion,p.comuna AS persona_comuna,p.faena_id,fa.nombre AS faena_nombre,
+    const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut,p.cargo,p.direccion AS persona_direccion,p.comuna AS persona_comuna,
       e.razon_social AS empresa_nombre,e.rut AS empresa_rut,
       e.representante_nombre,e.representante_rut,e.logo_base64,e.firma_representante,e.timbre_empresa
       FROM cartas_termino c
       JOIN personal p ON c.persona_id=p.persona_id
-      LEFT JOIN faenas fa ON p.faena_id=fa.faena_id
       JOIN empresas e ON c.empresa_id=e.empresa_id
       WHERE ${w.join(' AND ')}
       ORDER BY c.fecha_carta DESC,c.carta_id DESC`,v);
@@ -11556,7 +10099,7 @@ app.post('/api/admin/wipe-transacciones', auth, async(req,res)=>{
 // ═══════════════════════════════════════════════════════════════
 
 // GET: lista de DTE recibidos con filtros + estado de vinculación calculado
-app.get('/api/dte-recibidos', auth, requireModulo('ordenes'), async(req,res)=>{
+app.get('/api/dte-recibidos', auth, async(req,res)=>{
   try{
     var w=[];var p=[];var i=1;
     if(req.query.tipo_dte){w.push('d.tipo_dte=$'+i);p.push(req.query.tipo_dte);i++;}
@@ -11588,7 +10131,7 @@ app.get('/api/dte-recibidos', auth, requireModulo('ordenes'), async(req,res)=>{
 });
 
 // GET: detalle de un DTE con líneas y OCs vinculadas
-app.get('/api/dte-recibidos/:id', auth, requireModulo('ordenes'), async(req,res)=>{
+app.get('/api/dte-recibidos/:id', auth, async(req,res)=>{
   try{
     var d=await pool.query('SELECT d.*, p.nombre AS proveedor_nombre_match, e.razon_social AS empresa_razon_social FROM dte_recibidos d LEFT JOIN proveedores p ON d.proveedor_id=p.proveedor_id LEFT JOIN empresas e ON d.empresa_id=e.empresa_id WHERE d.dte_id=$1',[req.params.id]);
     if(!d.rows.length)return res.status(404).json({error:'No encontrado'});
@@ -11607,22 +10150,20 @@ app.get('/api/dte-recibidos/:id', auth, requireModulo('ordenes'), async(req,res)
 });
 
 // POST: importar lote de DTE desde el parser del frontend
-app.post('/api/dte-recibidos/import', auth, requireModulo('ordenes'), async(req,res)=>{
+app.post('/api/dte-recibidos/import', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
     var dtes=Array.isArray(req.body.dtes)?req.body.dtes:[];
-    var resumen={importados:0,duplicados:0,ya_en_oc:0,vinculados:0,errores:0,detalles:[]};
+    var resumen={importados:0,duplicados:0,ya_en_oc:0,errores:0,detalles:[]};
     for(var i=0;i<dtes.length;i++){
       var d=dtes[i];
       try{
         // ❶ Verificar duplicado dentro de dte_recibidos (folio+proveedor+tipo)
         var dup=await client.query('SELECT dte_id FROM dte_recibidos WHERE proveedor_rut=$1 AND tipo_dte=$2 AND folio=$3',[d.proveedor_rut,d.tipo_dte,String(d.folio)]);
         if(dup.rows.length){resumen.duplicados++;resumen.detalles.push({folio:d.folio,status:'duplicado',dte_id:dup.rows[0].dte_id});continue;}
-        // ❷ Detectar si ese folio ya está asignado a una OC del mismo proveedor.
-        //    CAMBIO (2026-08 a pedido del usuario): ya NO se bloquea la importación — la bandeja
-        //    es el repositorio de TODOS los DTE recibidos para consulta. El DTE se importa igual
-        //    y se AUTO-VINCULA a esa OC (dte_oc) para que aparezca de inmediato como asignado.
+        // ❷ Verificar si ese folio ya está asignado a una OC del mismo proveedor (caso clave)
+        //    Compara por proveedor_id + numero_documento + tipo_doc (vía tipos_documento.codigo)
         var ocAsignada=null;
         if(d.proveedor_id){
           var qOc=await client.query(
@@ -11639,14 +10180,24 @@ app.post('/api/dte-recibidos/import', auth, requireModulo('ordenes'), async(req,
           );
           if(qOc.rows.length) ocAsignada=qOc.rows[0];
         }
-        // ❸ Insertar SIEMPRE (aunque tenga OC asignada — se auto-vincula más abajo)
+        if(ocAsignada){
+          resumen.ya_en_oc++;
+          resumen.detalles.push({
+            folio:d.folio,
+            status:'ya_en_oc',
+            oc_id:ocAsignada.oc_id,
+            numero_oc:ocAsignada.numero_oc,
+            estado_oc:ocAsignada.estado
+          });
+          continue;  // NO importar: el DTE ya está asignado a una OC del sistema
+        }
+        // ❸ Si pasa los dos filtros → insertar normalmente
         var ins=await client.query(`INSERT INTO dte_recibidos
           (tipo_dte,tipo_doc,folio,fecha_emision,proveedor_rut,proveedor_nombre,proveedor_giro,proveedor_direccion,proveedor_id,
-           cliente_rut,cliente_nombre,empresa_id,neto,iva,total,xml_completo,importado_por,ref_tipo_dte,ref_folio,ref_razon)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20) RETURNING dte_id`,
+           cliente_rut,cliente_nombre,empresa_id,neto,iva,total,xml_completo,importado_por)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING dte_id`,
           [d.tipo_dte,d.tipo_doc,String(d.folio),d.fecha_emision||null,d.proveedor_rut,d.proveedor_nombre,d.proveedor_giro,d.proveedor_direccion,d.proveedor_id||null,
-           d.cliente_rut,d.cliente_nombre,d.empresa_id||null,parseFloat(d.neto)||0,parseFloat(d.iva)||0,parseFloat(d.total)||0,d.xml_completo||null,req.user.email,
-           d.ref_tipo_dte||null,d.ref_folio||null,d.ref_razon||null]);
+           d.cliente_rut,d.cliente_nombre,d.empresa_id||null,parseFloat(d.neto)||0,parseFloat(d.iva)||0,parseFloat(d.total)||0,d.xml_completo||null,req.user.email]);
         var dteId=ins.rows[0].dte_id;
         if(Array.isArray(d.lineas)){
           for(var j=0;j<d.lineas.length;j++){
@@ -11656,25 +10207,7 @@ app.post('/api/dte-recibidos/import', auth, requireModulo('ordenes'), async(req,
           }
         }
         resumen.importados++;
-        // ❹ Auto-vinculación: si el folio coincidía con una OC del proveedor, dejarlo asignado.
-        // Incluye NOTAS DE CRÉDITO (61): la práctica es crear la OC de la NC en negativo con el
-        // folio de la NC, así que el calce por folio es igual de seguro. Montos en valor absoluto
-        // (la OC de NC tiene total negativo; dte_oc.monto_aplicado es siempre positivo).
-        if(ocAsignada){
-          try{
-            var mVinc=Math.min(Math.abs(parseFloat(d.total)||0),Math.abs(parseFloat(ocAsignada.total)||0));
-            if(mVinc>1){
-              await client.query('INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5) ON CONFLICT(dte_id,oc_id) DO NOTHING',
-                [dteId,ocAsignada.oc_id,mVinc,'Vinculación automática al importar (folio coincide con la OC)',req.user.email]);
-              resumen.vinculados++;
-              resumen.detalles.push({folio:d.folio,status:'importado_vinculado',dte_id:dteId,oc_id:ocAsignada.oc_id,numero_oc:ocAsignada.numero_oc});
-            }else{
-              resumen.detalles.push({folio:d.folio,status:'importado',dte_id:dteId});
-            }
-          }catch(eV){resumen.detalles.push({folio:d.folio,status:'importado',dte_id:dteId,warn:'vinculación automática falló: '+eV.message});}
-        }else{
-          resumen.detalles.push({folio:d.folio,status:'importado',dte_id:dteId});
-        }
+        resumen.detalles.push({folio:d.folio,status:'importado',dte_id:dteId});
       }catch(ex){
         resumen.errores++;
         resumen.detalles.push({folio:d.folio,status:'error',mensaje:ex.message});
@@ -11720,7 +10253,7 @@ app.post('/api/dte-recibidos/import', auth, requireModulo('ordenes'), async(req,
             AND ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.05
             AND dte.fecha_emision >= oc.fecha_emision
             AND dte.fecha_emision <= oc.fecha_emision + INTERVAL '180 days'
-          WHERE dte.dte_id = ANY($1) AND dte.tipo_dte<>'61'
+          WHERE dte.dte_id = ANY($1)
           GROUP BY dte.dte_id, dte.folio, dte.tipo_dte, dte.fecha_emision, dte.total, pr.nombre, emp.razon_social
           ORDER BY dte.fecha_emision DESC NULLS LAST`, [idsImportados]);
         resumen.dtes_con_candidatos=cand.rows;
@@ -11733,7 +10266,7 @@ app.post('/api/dte-recibidos/import', auth, requireModulo('ordenes'), async(req,
 });
 
 // PUT: actualizar metadatos de un DTE
-app.put('/api/dte-recibidos/:id', auth, requireModulo('ordenes'), async(req,res)=>{
+app.put('/api/dte-recibidos/:id', auth, async(req,res)=>{
   try{
     var b=req.body;
     var r=await pool.query(`UPDATE dte_recibidos SET
@@ -11748,27 +10281,14 @@ app.put('/api/dte-recibidos/:id', auth, requireModulo('ordenes'), async(req,res)
 });
 
 // POST: agregar una vinculación DTE→OC con monto
-app.post('/api/dte-recibidos/:id/oc', auth, requireModulo('ordenes'), async(req,res)=>{
+app.post('/api/dte-recibidos/:id/oc', auth, async(req,res)=>{
   try{
     if(!req.body.oc_id)return res.status(400).json({error:'oc_id requerido'});
     var monto=parseFloat(req.body.monto_aplicado);
     if(!monto||monto<=0)return res.status(400).json({error:'monto_aplicado debe ser mayor a 0'});
-    // Verificar que la OC exista y esté vigente
-    var oc=await pool.query(`SELECT oc_id, total, estado,
-        COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.oc_id=ordenes_compra.oc_id),0) AS facturado
-      FROM ordenes_compra WHERE oc_id=$1`,[req.body.oc_id]);
+    // Verificar que la OC exista
+    var oc=await pool.query('SELECT oc_id, total FROM ordenes_compra WHERE oc_id=$1',[req.body.oc_id]);
     if(!oc.rows.length)return res.status(404).json({error:'OC no encontrada'});
-    if(oc.rows[0].estado==='ANULADA'||oc.rows[0].estado==='CANCELADA')return res.status(400).json({error:'No se puede vincular una OC anulada'});
-    // Saldo sin asignar del DTE: no sobre-asignar la factura
-    var dq=await pool.query(`SELECT d.total,
-        COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.dte_id=d.dte_id),0) AS asignado
-      FROM dte_recibidos d WHERE d.dte_id=$1`,[req.params.id]);
-    if(!dq.rows.length)return res.status(404).json({error:'DTE no encontrado'});
-    var restanteDte=(parseFloat(dq.rows[0].total)||0)-(parseFloat(dq.rows[0].asignado)||0);
-    if(monto>restanteDte+1)return res.status(400).json({error:'El monto excede el saldo sin asignar del DTE ($'+Math.round(restanteDte)+')'});
-    // Saldo por facturar de la OC: no sobre-facturar la OC
-    var saldoOc=(parseFloat(oc.rows[0].total)||0)-(parseFloat(oc.rows[0].facturado)||0);
-    if(monto>saldoOc+1)return res.status(400).json({error:'El monto excede el saldo por facturar de la OC ($'+Math.round(saldoOc)+')'});
     var r=await pool.query(`INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5) RETURNING *`,
       [req.params.id,req.body.oc_id,monto,req.body.observacion||null,req.user.email]);
     res.json(r.rows[0]);
@@ -11784,7 +10304,7 @@ app.post('/api/dte-recibidos/:id/oc', auth, requireModulo('ordenes'), async(req,
 //   Tier 2 (monto): total ≈ total, mismo proveedor, ventana de fecha, candidata única
 // modo:'preview' (default) solo propone; modo:'aplicar' inserta las vinculaciones.
 // ═══════════════════════════════════════════════════════════════
-app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), async(req,res)=>{
+app.post('/api/dte-recibidos/cruce-automatico', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     const modo=(req.body.modo==='aplicar')?'aplicar':'preview';
@@ -11795,12 +10315,10 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
     await client.query('BEGIN');
 
     // DTE no asignados completamente (sin asignar o parciales)
-    // Notas de crédito (61) SÍ entran al cruce (2026-08), pero SOLO por folio exacto (Tier B):
-    // con vinculación manual y registro del documento de referencia (ref_folio)
     const w=['1=1'];const pv=[];
     if(empresa_id){pv.push(empresa_id);w.push('d.empresa_id=$'+pv.length);}
     const dtes=(await client.query(`
-      SELECT d.dte_id, d.folio, d.tipo_dte, d.total, d.proveedor_id, d.proveedor_rut, d.proveedor_nombre, d.fecha_emision,
+      SELECT d.dte_id, d.folio, d.total, d.proveedor_id, d.proveedor_rut, d.proveedor_nombre, d.fecha_emision,
              COALESCE(SUM(do2.monto_aplicado),0) AS asignado
       FROM dte_recibidos d
       LEFT JOIN dte_oc do2 ON d.dte_id=do2.dte_id
@@ -11809,13 +10327,11 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
       HAVING COALESCE(SUM(do2.monto_aplicado),0) < d.total - 1
       ORDER BY d.fecha_emision DESC NULLS LAST`,pv)).rows;
 
-    const detalles=[]; let porFolio=0, porMonto=0, porFacturaGuias=0, insertadas=0, yaExistian=0;
+    const detalles=[]; let porFolio=0, porMonto=0, porFacturaGuias=0;
     for(const d of dtes){
       const total=parseFloat(d.total)||0;
       const restante=total-(parseFloat(d.asignado)||0);
       if(restante<=1) continue;
-      // NC (61): solo calce por FOLIO EXACTO — los tiers por monto o cierre de guías no aplican
-      const esNC=String(d.tipo_dte)==='61';
       // Resolver proveedor (id directo o por RUT)
       const provCond = d.proveedor_id
         ? 'oc.proveedor_id=$1'
@@ -11833,7 +10349,7 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
       // ── Tier A: FACTURA POR CIERRE DE GUÍAS ──
       // El folio del DTE corresponde al numero_factura de oc_factura_guias (que agrupa varias OC).
       // Se vincula el DTE a TODAS las OC de esa factura.
-      let faci=esNC?null:(await client.query(`
+      let faci=(await client.query(`
         SELECT f.factura_id, f.numero_factura, f.total
         FROM oc_factura_guias f
         WHERE ${provCondF}
@@ -11841,7 +10357,7 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
           AND regexp_replace(f.numero_factura,'^0+','')=regexp_replace($2,'^0+','')
         ORDER BY ABS(f.total - $3) ASC LIMIT 1`,[provVal,normFolio(d.folio),total])).rows[0];
       let critFac='factura_guias';
-      if(!faci&&!esNC){
+      if(!faci){
         // por monto: factura de guías única cuyo total calza con el DTE
         const fcands=(await client.query(`
           SELECT f.factura_id, f.numero_factura, f.total
@@ -11855,7 +10371,6 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
           SELECT oc.oc_id, oc.numero_oc, oc.total, oc.numero_documento
           FROM ordenes_compra oc
           WHERE oc.factura_guia_id=$1
-            AND oc.estado NOT IN ('ANULADA','CANCELADA')
             AND NOT EXISTS (SELECT 1 FROM dte_oc x WHERE x.oc_id=oc.oc_id)
           ORDER BY oc.total DESC`,[faci.factura_id])).rows;
         let rem=restante;
@@ -11878,11 +10393,11 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
             AND regexp_replace(oc.numero_documento,'^0+','')=regexp_replace($2,'^0+','')
             AND NOT EXISTS (SELECT 1 FROM dte_oc x WHERE x.oc_id=oc.oc_id)
           ORDER BY ABS(oc.total - $3) ASC LIMIT 1`,[provVal,normFolio(d.folio),total])).rows[0];
-        if(oc){matches.push({oc_id:oc.oc_id,oc_numero:oc.numero_oc,oc_total:parseFloat(oc.total)||0,numero_documento:oc.numero_documento,criterio:esNC?'folio_nc':'folio',monto:Math.min(Math.abs(parseFloat(oc.total)||0),restante)});}
+        if(oc){matches.push({oc_id:oc.oc_id,oc_numero:oc.numero_oc,oc_total:parseFloat(oc.total)||0,numero_documento:oc.numero_documento,criterio:'folio',monto:Math.min(parseFloat(oc.total)||0,restante)});}
       }
 
-      // ── Tier C: monto cercano, OC CERRADA candidata única (NO aplica a NC) ──
-      if(matches.length===0&&!esNC){
+      // ── Tier C: monto cercano, OC CERRADA candidata única ──
+      if(matches.length===0){
         const cands=(await client.query(`
           SELECT oc.oc_id, oc.numero_oc, oc.total, oc.numero_documento, oc.fecha_emision
           FROM ordenes_compra oc
@@ -11904,47 +10419,28 @@ app.post('/api/dte-recibidos/cruce-automatico', auth, requireModulo('ordenes'), 
           oc_documento:mt.numero_documento, factura:mt.factura||null, criterio:mt.criterio, monto:Math.round(mt.monto)
         });
         if(mt.criterio.indexOf('factura_guias')===0)porFacturaGuias++;
-        else if(mt.criterio==='folio'||mt.criterio==='folio_nc')porFolio++;
+        else if(mt.criterio==='folio')porFolio++;
         else porMonto++;
         if(modo==='aplicar'){
-          // Verificación explícita en vez de ON CONFLICT: funciona aunque la restricción única
-          // no exista todavía en la BD, y permite contar cuántas se insertaron de verdad
-          const ya=await client.query('SELECT rel_id FROM dte_oc WHERE dte_id=$1 AND oc_id=$2',[d.dte_id,mt.oc_id]);
-          if(ya.rows.length){yaExistian++;}
-          else{
-            await client.query(
-              `INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5)`,
-              [d.dte_id,mt.oc_id,mt.monto,'Cruce automático ('+mt.criterio+')',req.user.email]);
-            insertadas++;
-          }
+          await client.query(
+            `INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por)
+             VALUES($1,$2,$3,$4,$5) ON CONFLICT(dte_id,oc_id) DO NOTHING`,
+            [d.dte_id,mt.oc_id,mt.monto,'Cruce automático ('+mt.criterio+')',req.user.email]);
         }
       }
     }
 
     if(modo==='aplicar') await client.query('COMMIT'); else await client.query('ROLLBACK');
-    res.json({modo:modo, procesados:dtes.length, vinculados:detalles.length, insertadas:insertadas, ya_existian:yaExistian, por_folio:porFolio, por_monto:porMonto, por_factura_guias:porFacturaGuias, detalles:detalles});
+    res.json({modo:modo, procesados:dtes.length, vinculados:detalles.length, por_folio:porFolio, por_monto:porMonto, por_factura_guias:porFacturaGuias, detalles:detalles});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
 
 // PUT: actualizar monto de una vinculación
-app.put('/api/dte-oc/:relId', auth, requireModulo('ordenes'), async(req,res)=>{
+app.put('/api/dte-oc/:relId', auth, async(req,res)=>{
   try{
     var monto=parseFloat(req.body.monto_aplicado);
     if(!monto||monto<=0)return res.status(400).json({error:'monto_aplicado debe ser mayor a 0'});
-    var rel=await pool.query('SELECT dte_id, oc_id FROM dte_oc WHERE rel_id=$1',[req.params.relId]);
-    if(!rel.rows.length)return res.status(404).json({error:'No encontrado'});
-    // Saldos excluyendo esta misma vinculación (se está reemplazando su monto)
-    var dq=await pool.query(`SELECT d.total,
-        COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.dte_id=d.dte_id AND x.rel_id<>$2),0) AS asignado
-      FROM dte_recibidos d WHERE d.dte_id=$1`,[rel.rows[0].dte_id,req.params.relId]);
-    var restanteDte=(parseFloat(dq.rows[0].total)||0)-(parseFloat(dq.rows[0].asignado)||0);
-    if(monto>restanteDte+1)return res.status(400).json({error:'El monto excede el saldo sin asignar del DTE ($'+Math.round(restanteDte)+')'});
-    var oq=await pool.query(`SELECT total,
-        COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.oc_id=$1 AND x.rel_id<>$2),0) AS facturado
-      FROM ordenes_compra WHERE oc_id=$1`,[rel.rows[0].oc_id,req.params.relId]);
-    var saldoOc=(parseFloat(oq.rows[0].total)||0)-(parseFloat(oq.rows[0].facturado)||0);
-    if(monto>saldoOc+1)return res.status(400).json({error:'El monto excede el saldo por facturar de la OC ($'+Math.round(saldoOc)+')'});
     var r=await pool.query(`UPDATE dte_oc SET monto_aplicado=$1, observacion=$2 WHERE rel_id=$3 RETURNING *`,
       [monto,req.body.observacion||null,req.params.relId]);
     if(!r.rows.length)return res.status(404).json({error:'No encontrado'});
@@ -11953,7 +10449,7 @@ app.put('/api/dte-oc/:relId', auth, requireModulo('ordenes'), async(req,res)=>{
 });
 
 // DELETE: quitar una vinculación específica DTE-OC
-app.delete('/api/dte-oc/:relId', auth, requireModulo('ordenes'), async(req,res)=>{
+app.delete('/api/dte-oc/:relId', auth, async(req,res)=>{
   try{
     var r=await pool.query('DELETE FROM dte_oc WHERE rel_id=$1 RETURNING *',[req.params.relId]);
     if(!r.rows.length)return res.status(404).json({error:'No encontrado'});
@@ -11962,7 +10458,7 @@ app.delete('/api/dte-oc/:relId', auth, requireModulo('ordenes'), async(req,res)=
 });
 
 // DELETE: eliminar DTE de la bandeja
-app.delete('/api/dte-recibidos/:id', auth, requireModulo('ordenes'), async(req,res)=>{
+app.delete('/api/dte-recibidos/:id', auth, async(req,res)=>{
   try{
     await pool.query('DELETE FROM dte_recibidos WHERE dte_id=$1',[req.params.id]);
     res.json({ok:true});
@@ -12014,7 +10510,6 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
         AND dte.fecha_emision <= oc.fecha_emision + INTERVAL '180 days'
       WHERE NOT EXISTS (SELECT 1 FROM dte_oc WHERE dte_id=dte.dte_id)
         AND (dte.observaciones IS NULL OR dte.observaciones NOT LIKE '%[GASTO SIN OC]%')
-        AND dte.tipo_dte<>'61'
       GROUP BY dte.dte_id, dte.folio, dte.tipo_dte, dte.fecha_emision, dte.total, dte.proveedor_id, dte.empresa_id, pr.nombre, emp.razon_social
       ORDER BY dte.fecha_emision DESC NULLS LAST
       LIMIT 200`;
@@ -12056,12 +10551,12 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
       LEFT JOIN empresas emp ON dte.empresa_id=emp.empresa_id
       WHERE NOT EXISTS (SELECT 1 FROM dte_oc WHERE dte_id=dte.dte_id)
         AND (dte.observaciones IS NULL OR dte.observaciones NOT LIKE '%[GASTO SIN OC]%')
-        AND (dte.tipo_dte='61' OR NOT EXISTS (
+        AND NOT EXISTS (
           SELECT 1 FROM ordenes_compra oc
           WHERE oc.proveedor_id=dte.proveedor_id AND oc.estado='PENDIENTE'
             AND ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.05
             AND dte.fecha_emision BETWEEN oc.fecha_emision AND oc.fecha_emision + INTERVAL '180 days'
-        ))
+        )
       ORDER BY dte.fecha_emision DESC NULLS LAST
       LIMIT 300`;
     var r3 = await pool.query(sql3);
@@ -12094,22 +10589,11 @@ app.post('/api/bandeja-dte-oc/vincular', auth, async(req,res)=>{
         await client.query('ROLLBACK');
         return res.status(400).json({error:'Cada vinculo requiere oc_id y monto_aplicado > 0'});
       }
-      // Verificar OC vigente y que no esté ya vinculada a este DTE
-      var oc=await client.query(`SELECT oc_id, total, estado,
-          COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.oc_id=ordenes_compra.oc_id),0) AS facturado
-        FROM ordenes_compra WHERE oc_id=$1`,[v.oc_id]);
+      // Verificar OC y que no esté ya vinculada a este DTE
+      var oc=await client.query('SELECT oc_id, total FROM ordenes_compra WHERE oc_id=$1',[v.oc_id]);
       if(!oc.rows.length){await client.query('ROLLBACK');return res.status(404).json({error:'OC '+v.oc_id+' no existe'});}
-      if(oc.rows[0].estado==='ANULADA'||oc.rows[0].estado==='CANCELADA'){await client.query('ROLLBACK');return res.status(400).json({error:'OC '+v.oc_id+' está anulada'});}
       var dup=await client.query('SELECT rel_id FROM dte_oc WHERE dte_id=$1 AND oc_id=$2',[b.dte_id,v.oc_id]);
       if(dup.rows.length){await client.query('ROLLBACK');return res.status(400).json({error:'OC '+v.oc_id+' ya está vinculada a este DTE'});}
-      // Saldos: la consulta corre dentro de la transacción, así que ve los vínculos ya insertados en este mismo loop
-      var dq2=await client.query(`SELECT d.total,
-          COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.dte_id=d.dte_id),0) AS asignado
-        FROM dte_recibidos d WHERE d.dte_id=$1`,[b.dte_id]);
-      var restanteDte2=(parseFloat(dq2.rows[0].total)||0)-(parseFloat(dq2.rows[0].asignado)||0);
-      if(parseFloat(v.monto_aplicado)>restanteDte2+1){await client.query('ROLLBACK');return res.status(400).json({error:'El monto para OC '+v.oc_id+' excede el saldo sin asignar del DTE ($'+Math.round(restanteDte2)+')'});}
-      var saldoOc2=(parseFloat(oc.rows[0].total)||0)-(parseFloat(oc.rows[0].facturado)||0);
-      if(parseFloat(v.monto_aplicado)>saldoOc2+1){await client.query('ROLLBACK');return res.status(400).json({error:'El monto excede el saldo por facturar de la OC '+v.oc_id+' ($'+Math.round(saldoOc2)+')'});}
       var ins=await client.query(
         'INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5) RETURNING *',
         [b.dte_id, v.oc_id, parseFloat(v.monto_aplicado), v.observacion||'Vinculación desde bandeja', req.user.email]
@@ -12144,7 +10628,7 @@ app.post('/api/bandeja-dte-oc/marcar-sin-oc', auth, async(req,res)=>{
 });
 
 // POST: re-detectar empresa de DTEs por RUT del receptor (útil para DTEs ya importados sin empresa)
-app.post('/api/dte-recibidos/redetectar-empresa', auth, requireModulo('ordenes'), async(req,res)=>{
+app.post('/api/dte-recibidos/redetectar-empresa', auth, async(req,res)=>{
   try{
     // Trae todas las empresas activas
     var emps=await pool.query("SELECT empresa_id, rut FROM empresas WHERE activo=true OR activo IS NULL");
@@ -12172,7 +10656,7 @@ app.post('/api/dte-recibidos/redetectar-empresa', auth, requireModulo('ordenes')
 });
 
 // POST: eliminar múltiples DTE de la bandeja en una sola operación
-app.post('/api/dte-recibidos/bulk-delete', auth, requireModulo('ordenes'), async(req,res)=>{
+app.post('/api/dte-recibidos/bulk-delete', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
     var ids=Array.isArray(req.body.ids)?req.body.ids.map(function(i){return parseInt(i);}).filter(function(i){return !isNaN(i);}):[];
@@ -12186,7 +10670,7 @@ app.post('/api/dte-recibidos/bulk-delete', auth, requireModulo('ordenes'), async
 });
 
 // GET: OCs candidatas para vincular a un DTE (mismo proveedor preferentemente)
-app.get('/api/dte-recibidos/:id/ocs-candidatas', auth, requireModulo('ordenes'), async(req,res)=>{
+app.get('/api/dte-recibidos/:id/ocs-candidatas', auth, async(req,res)=>{
   try{
     var dte=await pool.query('SELECT proveedor_id FROM dte_recibidos WHERE dte_id=$1',[req.params.id]);
     if(!dte.rows.length)return res.status(404).json({error:'DTE no encontrado'});
@@ -12207,1118 +10691,6 @@ app.get('/api/dte-recibidos/:id/ocs-candidatas', auth, requireModulo('ordenes'),
 });
 
 
-
-// ════════════════════════════════════════════════════════════════════
-// FINANZAS — LIQUIDACIONES DE PRODUCCIÓN (ingresos del mandante)
-// Registro simplificado: encabezado por período + líneas por equipo/fundo/tipo.
-// tipo: 'PRODUCCION' (boletines P×Q) o 'PE' (partidas especiales: ajustes/multas/premios).
-// ════════════════════════════════════════════════════════════════════
-let _finLiqOk=false;
-async function finLiqEnsure(){
-  if(_finLiqOk)return;
-  await pool.query(`CREATE TABLE IF NOT EXISTS fin_liquidaciones (
-    liq_id SERIAL PRIMARY KEY,
-    empresa_id INT REFERENCES empresas(empresa_id),
-    mandante VARCHAR(120),
-    periodo VARCHAR(7) NOT NULL,
-    numero_ref VARCHAR(40),
-    fecha_recepcion DATE,
-    observaciones TEXT,
-    usuario VARCHAR(100),
-    creado_en TIMESTAMP DEFAULT NOW()
-  )`);
-  await pool.query(`CREATE TABLE IF NOT EXISTS fin_liquidacion_lineas (
-    linea_id SERIAL PRIMARY KEY,
-    liq_id INT NOT NULL REFERENCES fin_liquidaciones(liq_id) ON DELETE CASCADE,
-    equipo_contrato VARCHAR(30),
-    fundo_codigo VARCHAR(20),
-    fundo_nombre VARCHAR(120),
-    faena_id INT REFERENCES faenas(faena_id),
-    tipo VARCHAR(20) NOT NULL DEFAULT 'PRODUCCION',
-    concepto VARCHAR(200),
-    volumen_m3 NUMERIC(14,3) DEFAULT 0,
-    monto NUMERIC(14,2) NOT NULL DEFAULT 0
-  )`);
-  _finLiqOk=true;
-}
-
-// GET: lista con totales por liquidación
-app.get('/api/fin/liquidaciones', auth, async(req,res)=>{
-  try{
-    await finLiqEnsure();
-    var w=['1=1'],v=[];
-    if(req.query.empresa_id){v.push(req.query.empresa_id);w.push('l.empresa_id=$'+v.length);}
-    if(req.query.anio){v.push(req.query.anio+'-%');w.push('l.periodo LIKE $'+v.length);}
-    var r=await pool.query(`
-      SELECT l.*, e.razon_social AS empresa_nombre,
-        COALESCE(SUM(d.monto) FILTER (WHERE d.tipo='PRODUCCION'),0) AS total_produccion,
-        COALESCE(SUM(d.monto) FILTER (WHERE d.tipo<>'PRODUCCION'),0) AS total_pe,
-        COALESCE(SUM(d.monto),0) AS total_neto,
-        COALESCE(SUM(d.volumen_m3) FILTER (WHERE d.tipo='PRODUCCION'),0) AS volumen_m3,
-        COUNT(d.linea_id) AS n_lineas
-      FROM fin_liquidaciones l
-      LEFT JOIN empresas e ON l.empresa_id=e.empresa_id
-      LEFT JOIN fin_liquidacion_lineas d ON d.liq_id=l.liq_id
-      WHERE ${w.join(' AND ')}
-      GROUP BY l.liq_id, e.razon_social
-      ORDER BY l.periodo DESC, l.liq_id DESC LIMIT 300`,v);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// GET: producción anual en m³, mes a mes, desglosada por faena (para el gráfico)
-app.get('/api/fin/liquidaciones/grafico/anual', auth, async(req,res)=>{
-  try{
-    await finLiqEnsure();
-    const anio=/^\d{4}$/.test(req.query.anio||'')?req.query.anio:String(new Date().getFullYear());
-    const vals=[anio+'-%'];
-    let wEmp='';
-    if(req.query.empresa_id&&!isNaN(parseInt(req.query.empresa_id))){vals.push(parseInt(req.query.empresa_id));wEmp=' AND l.empresa_id=$2';}
-    const r=await pool.query(`
-      SELECT l.periodo, d.faena_id, COALESCE(f.nombre,'Sin faena asignada') AS faena_nombre,
-             SUM(d.volumen_m3) AS m3
-      FROM fin_liquidacion_lineas d
-      JOIN fin_liquidaciones l ON d.liq_id=l.liq_id
-      LEFT JOIN faenas f ON d.faena_id=f.faena_id
-      WHERE d.tipo='PRODUCCION' AND l.periodo LIKE $1${wEmp}
-      GROUP BY l.periodo, d.faena_id, f.nombre
-      ORDER BY l.periodo`,vals);
-    res.json({anio:anio,rows:r.rows});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// GET: detalle con líneas
-app.get('/api/fin/liquidaciones/:id', auth, async(req,res)=>{
-  try{
-    await finLiqEnsure();
-    var hR=await pool.query('SELECT l.*, e.razon_social AS empresa_nombre FROM fin_liquidaciones l LEFT JOIN empresas e ON l.empresa_id=e.empresa_id WHERE l.liq_id=$1',[req.params.id]);
-    if(!hR.rows.length)return res.status(404).json({error:'Liquidación no encontrada'});
-    var lR=await pool.query('SELECT d.*, f.nombre AS faena_nombre FROM fin_liquidacion_lineas d LEFT JOIN faenas f ON d.faena_id=f.faena_id WHERE d.liq_id=$1 ORDER BY d.tipo, d.equipo_contrato, d.fundo_codigo, d.linea_id',[req.params.id]);
-    var out=hR.rows[0];out.lineas=lR.rows;
-    res.json(out);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// POST: crear (manual o importada). Duplicado por empresa+período requiere force:true
-app.post('/api/fin/liquidaciones', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await finLiqEnsure();
-    var b=req.body||{};
-    if(!b.periodo||!/^\d{4}-\d{2}$/.test(b.periodo))return res.status(400).json({error:'Período requerido (formato AAAA-MM)'});
-    if(!b.empresa_id)return res.status(400).json({error:'Empresa requerida'});
-    var lineas=Array.isArray(b.lineas)?b.lineas.filter(function(l){return l&&(parseFloat(l.monto)||0)!==0;}):[];
-    if(!lineas.length)return res.status(400).json({error:'Debe ingresar al menos una línea con monto'});
-    if(!b.force){
-      var dup=await client.query('SELECT liq_id FROM fin_liquidaciones WHERE empresa_id=$1 AND periodo=$2',[b.empresa_id,b.periodo]);
-      if(dup.rows.length)return res.status(400).json({error:'Ya existe una liquidación de esta empresa para el período '+b.periodo+'. Elimina la anterior o marca "permitir período repetido".'});
-    }
-    await client.query('BEGIN');
-    var ins=await client.query(`INSERT INTO fin_liquidaciones(empresa_id,mandante,periodo,numero_ref,fecha_recepcion,observaciones,usuario)
-      VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING liq_id`,
-      [b.empresa_id,b.mandante||null,b.periodo,b.numero_ref||null,b.fecha_recepcion||null,b.observaciones||null,req.user.email]);
-    var liqId=ins.rows[0].liq_id;
-    for(var i=0;i<lineas.length;i++){
-      var l=lineas[i];
-      await client.query(`INSERT INTO fin_liquidacion_lineas(liq_id,equipo_contrato,fundo_codigo,fundo_nombre,faena_id,tipo,concepto,volumen_m3,monto)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [liqId,String(l.equipo_contrato||'').trim()||null,String(l.fundo_codigo||'').trim()||null,l.fundo_nombre||null,l.faena_id||null,
-         l.tipo==='PE'?'PE':'PRODUCCION',l.concepto||null,parseFloat(l.volumen_m3)||0,parseFloat(l.monto)||0]);
-    }
-    await client.query('COMMIT');
-    res.status(201).json({ok:true,liq_id:liqId,lineas:lineas.length});
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
-});
-
-// PUT: actualizar encabezado y reemplazar líneas
-app.put('/api/fin/liquidaciones/:id', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await finLiqEnsure();
-    var b=req.body||{};
-    if(b.periodo&&!/^\d{4}-\d{2}$/.test(b.periodo))return res.status(400).json({error:'Período inválido (formato AAAA-MM)'});
-    await client.query('BEGIN');
-    var up=await client.query(`UPDATE fin_liquidaciones SET
-      empresa_id=COALESCE($1,empresa_id),mandante=$2,periodo=COALESCE($3,periodo),numero_ref=$4,fecha_recepcion=$5,observaciones=$6
-      WHERE liq_id=$7 RETURNING liq_id`,
-      [b.empresa_id||null,b.mandante||null,b.periodo||null,b.numero_ref||null,b.fecha_recepcion||null,b.observaciones||null,req.params.id]);
-    if(!up.rows.length){await client.query('ROLLBACK');return res.status(404).json({error:'Liquidación no encontrada'});}
-    if(Array.isArray(b.lineas)){
-      var lineas=b.lineas.filter(function(l){return l&&(parseFloat(l.monto)||0)!==0;});
-      if(!lineas.length){await client.query('ROLLBACK');return res.status(400).json({error:'Debe quedar al menos una línea con monto'});}
-      await client.query('DELETE FROM fin_liquidacion_lineas WHERE liq_id=$1',[req.params.id]);
-      for(var i=0;i<lineas.length;i++){
-        var l=lineas[i];
-        await client.query(`INSERT INTO fin_liquidacion_lineas(liq_id,equipo_contrato,fundo_codigo,fundo_nombre,faena_id,tipo,concepto,volumen_m3,monto)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-          [req.params.id,String(l.equipo_contrato||'').trim()||null,String(l.fundo_codigo||'').trim()||null,l.fundo_nombre||null,l.faena_id||null,
-           l.tipo==='PE'?'PE':'PRODUCCION',l.concepto||null,parseFloat(l.volumen_m3)||0,parseFloat(l.monto)||0]);
-      }
-    }
-    await client.query('COMMIT');
-    res.json({ok:true});
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
-});
-
-// DELETE: eliminar liquidación (líneas caen por CASCADE)
-app.delete('/api/fin/liquidaciones/:id', auth, async(req,res)=>{
-  try{
-    await finLiqEnsure();
-    var r=await pool.query('DELETE FROM fin_liquidaciones WHERE liq_id=$1 RETURNING liq_id',[req.params.id]);
-    if(!r.rows.length)return res.status(404).json({error:'Liquidación no encontrada'});
-    res.json({ok:true});
-  }catch(e){res.status(400).json({error:e.message});}
-});
-
-// ════════════════════════════════════════════════════════════════════
-// FINANZAS — HONORARIOS (BHE recibidas y BTE emitidas a terceros)
-// BHE: boleta de honorarios electrónica emitida por el prestador (informe mensual SII).
-// BTE: boleta de prestación de servicios de terceros emitida por la empresa a personas
-//      sin inicio de actividades (planilla SII bte_indiv_cons).
-// Importación desde las planillas HTML/.xls del SII + asignación de faena por boleta.
-// ════════════════════════════════════════════════════════════════════
-let _finHonOk=false;
-async function finHonEnsure(){
-  if(_finHonOk)return;
-  await pool.query(`CREATE TABLE IF NOT EXISTS fin_honorarios (
-    hon_id SERIAL PRIMARY KEY,
-    empresa_id INT REFERENCES empresas(empresa_id),
-    tipo VARCHAR(3) NOT NULL DEFAULT 'BHE',
-    periodo VARCHAR(7) NOT NULL,
-    numero VARCHAR(20) NOT NULL,
-    fecha DATE,
-    estado VARCHAR(12) NOT NULL DEFAULT 'VIGENTE',
-    fecha_anulacion DATE,
-    prestador_rut VARCHAR(15) NOT NULL DEFAULT '',
-    prestador_nombre VARCHAR(150),
-    soc_prof BOOLEAN DEFAULT false,
-    bruto NUMERIC(14,2) DEFAULT 0,
-    retencion NUMERIC(14,2) DEFAULT 0,
-    pagado NUMERIC(14,2) DEFAULT 0,
-    faena_id INT REFERENCES faenas(faena_id),
-    observaciones TEXT,
-    usuario VARCHAR(100),
-    creado_en TIMESTAMP DEFAULT NOW(),
-    UNIQUE(empresa_id,tipo,numero,prestador_rut)
-  )`);
-  _finHonOk=true;
-}
-
-// GET: listado con filtros
-app.get('/api/fin/honorarios', auth, async(req,res)=>{
-  try{
-    await finHonEnsure();
-    var w=['1=1'],v=[];
-    if(req.query.empresa_id){v.push(req.query.empresa_id);w.push('h.empresa_id=$'+v.length);}
-    if(req.query.tipo){v.push(req.query.tipo);w.push('h.tipo=$'+v.length);}
-    if(req.query.periodo){v.push(req.query.periodo);w.push('h.periodo=$'+v.length);}
-    if(req.query.anio){v.push(req.query.anio+'-%');w.push('h.periodo LIKE $'+v.length);}
-    if(req.query.faena_id==='sin'){w.push('h.faena_id IS NULL');}
-    else if(req.query.faena_id){v.push(req.query.faena_id);w.push('h.faena_id=$'+v.length);}
-    if(req.query.estado){v.push(req.query.estado);w.push('h.estado=$'+v.length);}
-    var r=await pool.query(`
-      SELECT h.*, e.razon_social AS empresa_nombre, f.nombre AS faena_nombre
-      FROM fin_honorarios h
-      LEFT JOIN empresas e ON h.empresa_id=e.empresa_id
-      LEFT JOIN faenas f ON h.faena_id=f.faena_id
-      WHERE ${w.join(' AND ')}
-      ORDER BY h.periodo DESC, h.tipo, h.fecha DESC NULLS LAST, h.hon_id DESC LIMIT 1000`,v);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// POST: importar boletas parseadas de la planilla SII (dedup por empresa+tipo+número+RUT prestador)
-app.post('/api/fin/honorarios/import', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await finHonEnsure();
-    var b=req.body||{};
-    if(!b.empresa_id)return res.status(400).json({error:'Empresa requerida'});
-    if(!b.periodo||!/^\d{4}-\d{2}$/.test(b.periodo))return res.status(400).json({error:'Período requerido (formato AAAA-MM)'});
-    var tipo=b.tipo==='BTE'?'BTE':'BHE';
-    var boletas=Array.isArray(b.boletas)?b.boletas:[];
-    if(!boletas.length)return res.status(400).json({error:'Sin boletas para importar'});
-    await client.query('BEGIN');
-    var importadas=0,duplicadas=0,errores=[];
-    for(var i=0;i<boletas.length;i++){
-      var x=boletas[i];
-      try{
-        var ins=await client.query(`INSERT INTO fin_honorarios(empresa_id,tipo,periodo,numero,fecha,estado,fecha_anulacion,prestador_rut,prestador_nombre,soc_prof,bruto,retencion,pagado,faena_id,usuario)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
-          ON CONFLICT(empresa_id,tipo,numero,prestador_rut) DO NOTHING RETURNING hon_id`,
-          [b.empresa_id,tipo,b.periodo,String(x.numero||'').trim(),x.fecha||null,x.estado==='ANULADA'?'ANULADA':'VIGENTE',x.fecha_anulacion||null,
-           String(x.prestador_rut||'').trim(),x.prestador_nombre||null,!!x.soc_prof,
-           parseFloat(x.bruto)||0,parseFloat(x.retencion)||0,parseFloat(x.pagado)||0,x.faena_id||null,req.user.email]);
-        if(ins.rows.length)importadas++;else duplicadas++;
-      }catch(ex){errores.push('Boleta '+(x.numero||'?')+': '+ex.message);}
-    }
-    await client.query('COMMIT');
-    res.json({ok:true,importadas:importadas,duplicadas:duplicadas,errores:errores});
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
-});
-
-// PUT: asignar faena / observaciones de una boleta
-app.put('/api/fin/honorarios/:id', auth, async(req,res)=>{
-  try{
-    await finHonEnsure();
-    var b=req.body||{};
-    var r=await pool.query(`UPDATE fin_honorarios SET
-      faena_id=$1, observaciones=COALESCE($2,observaciones)
-      WHERE hon_id=$3 RETURNING *`,
-      [b.faena_id||null,b.observaciones!==undefined?b.observaciones:null,req.params.id]);
-    if(!r.rows.length)return res.status(404).json({error:'Boleta no encontrada'});
-    res.json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
-});
-
-// POST: asignación masiva de faena a varias boletas
-app.post('/api/fin/honorarios/asignar-faena', auth, async(req,res)=>{
-  try{
-    await finHonEnsure();
-    var b=req.body||{};
-    if(!Array.isArray(b.ids)||!b.ids.length)return res.status(400).json({error:'Seleccione al menos una boleta'});
-    var r=await pool.query('UPDATE fin_honorarios SET faena_id=$1 WHERE hon_id=ANY($2::int[]) RETURNING hon_id',[b.faena_id||null,b.ids]);
-    res.json({ok:true,actualizadas:r.rows.length});
-  }catch(e){res.status(400).json({error:e.message});}
-});
-
-// DELETE: eliminar boleta
-app.delete('/api/fin/honorarios/:id', auth, async(req,res)=>{
-  try{
-    await finHonEnsure();
-    var r=await pool.query('DELETE FROM fin_honorarios WHERE hon_id=$1 RETURNING hon_id',[req.params.id]);
-    if(!r.rows.length)return res.status(404).json({error:'Boleta no encontrada'});
-    res.json({ok:true});
-  }catch(e){res.status(400).json({error:e.message});}
-});
-
-// ════════════════════════════════════════════════════════════════════
-// FINANZAS — ESTADO DE RESULTADOS (consolidado / por empresa / por faena)
-// Ingresos: liquidaciones de producción. Costos: compras directas (OC sin bodega),
-// salidas de inventario, combustible (distribuciones), rendiciones, remuneraciones (fin-remu),
-// honorarios (BHE+BTE vigentes). Los costos cargados a cargos de ADMINISTRACIÓN/TALLER
-// forman un pool global que se distribuye por % configurable entre empresas y en partes
-// iguales entre las faenas activas de cada empresa.
-// ════════════════════════════════════════════════════════════════════
-const EERR_TIPOS_INDIRECTOS=['administracion','taller','equipos_taller'];
-let _finEerrOk=false;
-async function finEerrEnsure(){
-  if(_finEerrOk)return;
-  await pool.query(`CREATE TABLE IF NOT EXISTS fin_eerr_config (clave VARCHAR(40) PRIMARY KEY, valor JSONB DEFAULT '{}'::jsonb, actualizado_en TIMESTAMP DEFAULT NOW())`);
-  _finEerrOk=true;
-}
-
-// GET: estado de resultados para un rango de meses (desde/hasta = AAAA-MM)
-app.get('/api/fin/eerr', auth, async(req,res)=>{
-  try{
-    await finEerrEnsure();
-    try{await finLiqEnsure();}catch(e){}
-    try{await finHonEnsure();}catch(e){}
-    const{desde,hasta}=req.query;
-    if(!desde||!/^\d{4}-\d{2}$/.test(desde)||!hasta||!/^\d{4}-\d{2}$/.test(hasta))
-      return res.status(400).json({error:'Rango de meses requerido (desde, hasta en formato AAAA-MM)'});
-    // Límites de fecha: [primer día desde, primer día del mes SIGUIENTE a hasta)
-    const d1=desde+'-01';
-    const hy=parseInt(hasta.slice(0,4)),hm=parseInt(hasta.slice(5,7));
-    const d2=(hm===12?(hy+1)+'-01':hy+'-'+('0'+(hm+1)).slice(-2))+'-01';
-    const pDesde=parseInt(desde.replace('-','')),pHasta=parseInt(hasta.replace('-',''));
-    const IND=`('${EERR_TIPOS_INDIRECTOS.join("','")}')`;
-    const warn=[];
-    async function q2(label,sql,vals){
-      try{const r=await pool.query(sql,vals);return r.rows;}
-      catch(e){warn.push(label+': '+e.message);return [];}
-    }
-    // Config primero: la lista de proveedores excluidos (financiamiento) afecta la consulta de compras
-    const cfgR=await pool.query("SELECT valor FROM fin_eerr_config WHERE clave='distribucion'");
-    const config=cfgR.rows.length?(cfgR.rows[0].valor||{}):{};
-    const exclProv=(Array.isArray(config.proveedores_excluidos)?config.proveedores_excluidos:[]).map(function(x){return parseInt(x);}).filter(function(x){return !isNaN(x);});
-    // ── Ingresos: liquidaciones de producción (incluye partidas especiales) ──
-    const ingresos=await q2('liquidaciones',`
-      SELECT l.empresa_id, d.faena_id, SUM(d.monto) AS monto
-      FROM fin_liquidacion_lineas d JOIN fin_liquidaciones l ON d.liq_id=l.liq_id
-      WHERE l.periodo>=$1 AND l.periodo<=$2
-      GROUP BY l.empresa_id, d.faena_id`,[desde,hasta]);
-    // ── Compras directas: líneas de OC que NO ingresan a bodega (neto) ──
-    const compras=await q2('compras directas',`
-      SELECT oc.empresa_id, d.faena_id,
-             COALESCE(eq.tipo_cargo,'') IN ${IND} AS indirecto,
-             COALESCE(sc.nombre,'Sin subcategoría') AS sub,
-             SUM(d.cantidad*d.precio_unitario) AS monto
-      FROM ordenes_compra_detalle d
-      JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
-      LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
-      LEFT JOIN subcategorias sc ON d.subcategoria_id=sc.subcategoria_id
-      WHERE oc.estado='CERRADA' AND NOT COALESCE(d.ingresa_bodega,false)
-        AND oc.fecha_emision>=$1::date AND oc.fecha_emision<$2::date
-        AND (oc.proveedor_id IS NULL OR NOT (oc.proveedor_id = ANY($3::int[])))
-        AND NOT EXISTS (SELECT 1 FROM comb_movimientos cm WHERE cm.tipo_mov='INGRESO_STOCK' AND cm.estado='ACTIVO' AND cm.oc_referencia=oc.numero_oc)
-      GROUP BY 1,2,3,4`,[d1,d2,exclProv]);
-    // ── Salidas de inventario: valorizadas al costo unitario del movimiento ──
-    const inventario=await q2('salidas inventario',`
-      SELECT COALESCE(eq.empresa_id,f2.empresa_id) AS empresa_id, me.faena_id,
-             COALESCE(eq.tipo_cargo,'') IN ${IND} AS indirecto,
-             SUM(md.cantidad*COALESCE(md.costo_unitario,0)) AS monto
-      FROM movimiento_detalle md
-      JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
-      LEFT JOIN equipos eq ON me.equipo_id=eq.equipo_id
-      LEFT JOIN faenas f2 ON me.faena_id=f2.faena_id
-      WHERE me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'
-        AND me.fecha>=$1::date AND me.fecha<$2::date
-      GROUP BY 1,2,3`,[d1,d2]);
-    // ── Combustible: distribuciones a equipos (costo por CPP) ──
-    const combustible=await q2('combustible',`
-      SELECT COALESCE(m.empresa_id,eq.empresa_id) AS empresa_id, m.faena_id,
-             COALESCE(eq.tipo_cargo,'') IN ${IND} AS indirecto,
-             SUM(COALESCE(m.costo_total,0)) AS monto
-      FROM comb_movimientos m
-      LEFT JOIN equipos eq ON m.equipo_id=eq.equipo_id
-      WHERE m.tipo_mov='DISTRIBUCION' AND m.estado='ACTIVO'
-        AND m.fecha>=$1::date AND m.fecha<$2::date
-      GROUP BY 1,2,3`,[d1,d2]);
-    // ── Rendiciones de gasto (todas menos rechazadas) ──
-    const rendiciones=await q2('rendiciones',`
-      SELECT g.empresa_id, g.faena_id,
-             COALESCE(eq.tipo_cargo,'') IN ${IND} AS indirecto,
-             SUM(g.monto) AS monto
-      FROM rend_gastos g
-      LEFT JOIN equipos eq ON g.equipo_id=eq.equipo_id
-      WHERE g.fecha_gasto>=$1::date AND g.fecha_gasto<$2::date
-        AND COALESCE(g.estado,'pendiente')!='rechazado'
-      GROUP BY 1,2,3`,[d1,d2]);
-    // ── Remuneraciones (fin-remu): costo empresa; admin/taller por categoría del personal o texto del centro de costo ──
-    const remuneraciones=await q2('remuneraciones',`
-      SELECT p.empresa_id, d.faena_id,
-             (COALESCE(pe.categoria,'')='administracion'
-              OR COALESCE(d.faena_nombre,'') ILIKE '%ADMIN%' OR COALESCE(d.faena_nombre,'') ILIKE '%TALLER%'
-              OR COALESCE(d.centro_costo,'') ILIKE '%ADMIN%' OR COALESCE(d.centro_costo,'') ILIKE '%TALLER%') AS indirecto,
-             SUM(COALESCE(d.costo,0)) AS monto
-      FROM fin_remu_detalle d
-      JOIN fin_remu_periodo p ON d.periodo_id=p.periodo_id
-      LEFT JOIN personal pe ON d.persona_id=pe.persona_id
-      WHERE (p.anio*100+p.mes)>=$1 AND (p.anio*100+p.mes)<=$2
-      GROUP BY 1,2,3`,[pDesde,pHasta]);
-    // ── Honorarios (BHE + BTE vigentes, costo = bruto) ──
-    const honorarios=await q2('honorarios',`
-      SELECT h.empresa_id, h.faena_id, false AS indirecto, SUM(h.bruto) AS monto
-      FROM fin_honorarios h
-      WHERE h.estado='VIGENTE' AND h.periodo>=$1 AND h.periodo<=$2
-      GROUP BY 1,2`,[desde,hasta]);
-    // ── Catálogos (faenas con ROL: ADM=Administración/Taller, TRANS=Transporte) + km + montos excluidos ──
-    const empR=await pool.query('SELECT empresa_id, razon_social FROM empresas WHERE activo=true ORDER BY empresa_id');
-    const faeR=await pool.query(`SELECT faena_id, nombre, empresa_id,
-        CASE WHEN nombre ILIKE '%admin%' OR nombre ILIKE '%taller%' THEN 'ADM'
-             WHEN nombre ILIKE '%transport%' THEN 'TRANS' ELSE NULL END AS rol
-      FROM faenas WHERE activo=true ORDER BY empresa_id, nombre`);
-    const kmsRows=await q2('kms transporte',`
-      SELECT empresa_id, SUM(km_total) AS km FROM trans_traslados
-      WHERE fecha>=$1::date AND fecha<$2::date AND COALESCE(estado,'finalizado')!='anulado'
-      GROUP BY empresa_id`,[d1,d2]);
-    const exclFin=await q2('excluidos financiamiento',`
-      SELECT COALESCE(SUM(d.cantidad*d.precio_unitario),0) AS m
-      FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
-      WHERE oc.estado='CERRADA' AND NOT COALESCE(d.ingresa_bodega,false)
-        AND oc.fecha_emision>=$1::date AND oc.fecha_emision<$2::date
-        AND oc.proveedor_id = ANY($3::int[])`,[d1,d2,exclProv]);
-    const exclComb=await q2('excluidos combustible estanque',`
-      SELECT COALESCE(SUM(d.cantidad*d.precio_unitario),0) AS m
-      FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
-      WHERE oc.estado='CERRADA' AND NOT COALESCE(d.ingresa_bodega,false)
-        AND oc.fecha_emision>=$1::date AND oc.fecha_emision<$2::date
-        AND (oc.proveedor_id IS NULL OR NOT (oc.proveedor_id = ANY($3::int[])))
-        AND EXISTS (SELECT 1 FROM comb_movimientos cm WHERE cm.tipo_mov='INGRESO_STOCK' AND cm.estado='ACTIVO' AND cm.oc_referencia=oc.numero_oc)`,[d1,d2,exclProv]);
-    // Empaquetar: directos / pool Adm-Taller / pool Transporte (por tipo de cargo indirecto o por ROL de la faena)
-    // El pool TRANSPORTE se compone SOLO de compras directas, salidas de inventario y combustible de la faena
-    // Transporte (no se usa el costo valorizado del módulo de transporte — de ahí solo salen los km).
-    // Las demás categorías cargadas a esa faena (rendiciones, remuneraciones, honorarios) van al pool Adm/Taller.
-    const rolFaena={};faeR.rows.forEach(function(f){if(f.rol)rolFaena[f.faena_id]=f.rol;});
-    const CATS_TRANS=['compras','inventario','combustible'];
-    function partir(rows,cat){
-      const dir=[],adm=[],trans=[];
-      rows.forEach(function(r){
-        const fila={cat:cat,empresa_id:r.empresa_id,faena_id:r.faena_id,monto:parseFloat(r.monto)||0};
-        if(r.sub!==undefined)fila.sub=r.sub;
-        const rol=r.faena_id?rolFaena[r.faena_id]:null;
-        if(rol==='TRANS'&&CATS_TRANS.indexOf(cat)>=0)trans.push(fila);
-        else if(r.indirecto===true||rol==='ADM'||rol==='TRANS')adm.push(fila);
-        else dir.push(fila);
-      });
-      return{dir:dir,adm:adm,trans:trans};
-    }
-    const pc=partir(compras,'compras'),pi=partir(inventario,'inventario'),pb=partir(combustible,'combustible'),
-          pr=partir(rendiciones,'rendiciones'),pm=partir(remuneraciones,'remuneraciones'),ph=partir(honorarios,'honorarios');
-    const kms={};kmsRows.forEach(function(r){kms[r.empresa_id]=parseFloat(r.km)||0;});
-    res.json({
-      desde:desde,hasta:hasta,
-      config:config,
-      empresas:empR.rows,faenas:faeR.rows,
-      kms:kms,
-      ingresos:ingresos.map(function(r){return{empresa_id:r.empresa_id,faena_id:r.faena_id,monto:parseFloat(r.monto)||0};}),
-      costos:[].concat(pc.dir,pi.dir,pb.dir,pr.dir,pm.dir,ph.dir),
-      pool:[].concat(pc.adm,pi.adm,pb.adm,pr.adm,pm.adm,ph.adm),
-      pool_trans:[].concat(pc.trans,pi.trans,pb.trans,pr.trans,pm.trans,ph.trans),
-      excluidos:{financiamiento:parseFloat(((exclFin[0]||{}).m))||0,combustible_estanque:parseFloat(((exclComb[0]||{}).m))||0},
-      advertencias:warn
-    });
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// POST: guardar configuración de distribución de gastos admin/taller
-app.post('/api/fin/eerr/config', auth, async(req,res)=>{
-  try{
-    await finEerrEnsure();
-    var b=req.body||{};
-    if(!b.empresa_pcts||typeof b.empresa_pcts!=='object')return res.status(400).json({error:'empresa_pcts requerido'});
-    var suma=Object.values(b.empresa_pcts).reduce(function(s,v){return s+(parseFloat(v)||0);},0);
-    if(Math.abs(suma-100)>0.5)return res.status(400).json({error:'Los porcentajes deben sumar 100 (actual: '+suma+')'});
-    var provsEx=Array.isArray(b.proveedores_excluidos)?b.proveedores_excluidos.map(function(x){return parseInt(x);}).filter(function(x){return !isNaN(x);}):[];
-    await pool.query(`INSERT INTO fin_eerr_config(clave,valor,actualizado_en) VALUES('distribucion',$1,NOW())
-      ON CONFLICT(clave) DO UPDATE SET valor=EXCLUDED.valor, actualizado_en=NOW()`,[JSON.stringify({empresa_pcts:b.empresa_pcts,proveedores_excluidos:provsEx})]);
-    res.json({ok:true});
-  }catch(e){res.status(400).json({error:e.message});}
-});
-
-// ════════════════════════════════════════════════════════════════════
-// FINANZAS — FORMULARIO 29 (declaración mensual de IVA, PDF del SII)
-// Se sube el PDF, el servidor extrae con pdf-parse: folio [07], RUT [03], período [15]
-// y todas las líneas "código glosa valor". Valida RUT vs empresa y período vs selección.
-// ════════════════════════════════════════════════════════════════════
-let _finF29Ok=false;
-async function finF29Ensure(){
-  if(_finF29Ok)return;
-  await pool.query(`CREATE TABLE IF NOT EXISTS fin_f29 (
-    f29_id SERIAL PRIMARY KEY,
-    empresa_id INT REFERENCES empresas(empresa_id),
-    periodo VARCHAR(7) NOT NULL,
-    folio VARCHAR(20) NOT NULL,
-    tipo_declaracion VARCHAR(60),
-    total_debitos NUMERIC(14,2) DEFAULT 0,
-    total_creditos NUMERIC(14,2) DEFAULT 0,
-    iva_determinado NUMERIC(14,2) DEFAULT 0,
-    ppm NUMERIC(14,2) DEFAULT 0,
-    total_pagar NUMERIC(14,2) DEFAULT 0,
-    fecha_presentacion DATE,
-    codigos JSONB DEFAULT '[]'::jsonb,
-    usuario VARCHAR(100),
-    creado_en TIMESTAMP DEFAULT NOW(),
-    UNIQUE(empresa_id,periodo,folio)
-  )`);
-  // Retenciones declaradas en el F29 (se pagan junto con el IVA/PPM)
-  try{await pool.query('ALTER TABLE fin_f29 ADD COLUMN IF NOT EXISTS ret_imp_unico NUMERIC(14,2) DEFAULT 0');}catch(e){}
-  try{await pool.query('ALTER TABLE fin_f29 ADD COLUMN IF NOT EXISTS ret_honorarios NUMERIC(14,2) DEFAULT 0');}catch(e){}
-  // Backfill: los F29 importados antes de agregar las columnas quedaron en 0, pero el JSONB
-  // codigos guarda TODOS los códigos extraídos del PDF → recalcular 048/151 desde ahí.
-  // Idempotente: solo toca filas con ambas retenciones en 0 (si el mes no tenía, recalcula 0 de nuevo).
-  try{await pool.query(`UPDATE fin_f29 SET
-    ret_imp_unico=COALESCE((SELECT REPLACE(REPLACE(c->>'valor','.',''),',','.')::numeric
-      FROM jsonb_array_elements(codigos) c WHERE c->>'codigo'='048' AND (c->>'valor') NOT LIKE '%/%' LIMIT 1),0),
-    ret_honorarios=COALESCE((SELECT REPLACE(REPLACE(c->>'valor','.',''),',','.')::numeric
-      FROM jsonb_array_elements(codigos) c WHERE c->>'codigo'='151' AND (c->>'valor') NOT LIKE '%/%' LIMIT 1),0)
-    WHERE COALESCE(ret_imp_unico,0)=0 AND COALESCE(ret_honorarios,0)=0
-      AND jsonb_typeof(codigos)='array'`);}catch(e){console.error('backfill ret F29:',e.message);}
-  _finF29Ok=true;
-}
-function f29NormRut(s){return String(s||'').replace(/\./g,'').replace(/\s/g,'').toLowerCase();}
-function f29ParseTexto(txt){
-  const num=function(s){const n=parseFloat(String(s||'').replace(/\./g,'').replace(',','.'));return isNaN(n)?0:n;};
-  const folio=(txt.match(/FOLIO\s*\[07\]\s*(\d+)/)||[])[1]||'';
-  const rut=(txt.match(/RUT\s*\[03\]\s*([\d\.]+\-[\dkK])/)||[])[1]||'';
-  const perRaw=(txt.match(/PERIODO\s*\[15\]\s*(\d{6})/)||[])[1]||'';
-  const periodo=perRaw?(perRaw.slice(0,4)+'-'+perRaw.slice(4,6)):'';
-  // Líneas "código glosa valor". pdf-parse suele pegar todo SIN espacios
-  // (ej: "538TOTAL DÉBITOS71.451.776"), así que la glosa debe partir con letra
-  // y el valor es el último token numérico (o fecha dd/mm/aaaa) de la línea.
-  const codigos=[];
-  txt.split(/\r?\n/).forEach(function(l){
-    const m=l.trim().match(/^(\d{2,4})\s*([A-ZÁÉÍÓÚÜÑ(].*?)\s*((?:\d{1,2}\/\d{1,2}\/\d{4})|(?:\d{1,3}(?:\.\d{3})+(?:,\d+)?)|(?:\d+(?:[\.,]\d+)?))$/);
-    if(m&&m[2].length>3)codigos.push({codigo:m[1],glosa:m[2].trim(),valor:m[3]});
-  });
-  const cod=function(c){const x=codigos.find(function(k){return k.codigo===c;});return x?num(x.valor):0;};
-  const totalPagar=num((txt.match(/TOTAL A PAGAR DENTRO DEL PLAZO LEGAL\s*91\s*([\d\.]+)/)||[])[1])||cod('91');
-  const fpRaw=(txt.match(/9906\s*FECHA PRESENTACION[^\d]*(\d{2})\/(\d{2})\/(\d{4})/)||null);
-  const fechaPres=fpRaw?(fpRaw[3]+'-'+fpRaw[2]+'-'+fpRaw[1]):null;
-  const tipoDecl=(txt.match(/(Modificatoria[^\n\d]*|Primitiva[^\n\d]*)/)||[])[1]||null;
-  return{folio:folio,rut:rut,periodo:periodo,codigos:codigos,
-    total_debitos:cod('538'),total_creditos:cod('537'),iva_determinado:cod('089'),
-    ppm:cod('062'),
-    ret_imp_unico:cod('048'),   // RET. IMP. ÚNICO TRAB. ART. 74 N°1 LIR
-    ret_honorarios:cod('151'),  // RETENCIÓN TASA LEY 21.133 SOBRE RENTAS (honorarios)
-    total_pagar:totalPagar,fecha_presentacion:fechaPres,tipo_declaracion:tipoDecl?tipoDecl.trim():null};
-}
-
-// POST: parsear el PDF del F29 (no guarda; devuelve extracción para preview)
-app.post('/api/fin/f29/parse', auth, async(req,res)=>{
-  try{
-    if(!pdfParse)return res.status(500).json({error:'Lector PDF no disponible en el servidor'});
-    var b64=(req.body&&req.body.pdf_base64)||'';
-    if(!b64)return res.status(400).json({error:'pdf_base64 requerido'});
-    const buf=Buffer.from(b64.replace(/^data:[^;]+;base64,/,''),'base64');
-    const parsed=await pdfParse(buf);
-    const out=f29ParseTexto(parsed.text||'');
-    if(!out.folio&&!out.periodo)return res.status(400).json({error:'El PDF no parece un Formulario 29 del SII (no se encontró folio ni período)'});
-    res.json(out);
-  }catch(e){res.status(400).json({error:'Error leyendo el PDF: '+e.message});}
-});
-
-// POST: guardar el F29 (con validación de RUT y período contra la selección)
-app.post('/api/fin/f29/import', auth, async(req,res)=>{
-  try{
-    await finF29Ensure();
-    var b=req.body||{};
-    if(!b.empresa_id)return res.status(400).json({error:'Selecciona primero la empresa'});
-    if(!b.periodo||!/^\d{4}-\d{2}$/.test(b.periodo))return res.status(400).json({error:'Selecciona el período (AAAA-MM)'});
-    var emp=await pool.query('SELECT rut FROM empresas WHERE empresa_id=$1',[b.empresa_id]);
-    if(!emp.rows.length)return res.status(404).json({error:'Empresa no encontrada'});
-    if(b.rut&&f29NormRut(emp.rows[0].rut)!==f29NormRut(b.rut))
-      return res.status(400).json({error:'El RUT del formulario ('+b.rut+') no corresponde a la empresa seleccionada ('+emp.rows[0].rut+')'});
-    if(b.periodo_pdf&&b.periodo_pdf!==b.periodo)
-      return res.status(400).json({error:'El período del formulario ('+b.periodo_pdf+') no coincide con el período seleccionado ('+b.periodo+')'});
-    var r=await pool.query(`INSERT INTO fin_f29(empresa_id,periodo,folio,tipo_declaracion,total_debitos,total_creditos,iva_determinado,ppm,ret_imp_unico,ret_honorarios,total_pagar,fecha_presentacion,codigos,usuario)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
-      ON CONFLICT(empresa_id,periodo,folio) DO UPDATE SET tipo_declaracion=EXCLUDED.tipo_declaracion,total_debitos=EXCLUDED.total_debitos,total_creditos=EXCLUDED.total_creditos,iva_determinado=EXCLUDED.iva_determinado,ppm=EXCLUDED.ppm,ret_imp_unico=EXCLUDED.ret_imp_unico,ret_honorarios=EXCLUDED.ret_honorarios,total_pagar=EXCLUDED.total_pagar,fecha_presentacion=EXCLUDED.fecha_presentacion,codigos=EXCLUDED.codigos,usuario=EXCLUDED.usuario
-      RETURNING *`,
-      [b.empresa_id,b.periodo,String(b.folio||'').trim()||('SF-'+b.periodo),b.tipo_declaracion||null,
-       parseFloat(b.total_debitos)||0,parseFloat(b.total_creditos)||0,parseFloat(b.iva_determinado)||0,
-       parseFloat(b.ppm)||0,parseFloat(b.ret_imp_unico)||0,parseFloat(b.ret_honorarios)||0,
-       parseFloat(b.total_pagar)||0,b.fecha_presentacion||null,
-       JSON.stringify(b.codigos||[]),req.user.email]);
-    res.json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
-});
-
-// GET: F29 registrados
-app.get('/api/fin/f29', auth, async(req,res)=>{
-  try{
-    await finF29Ensure();
-    var w=['1=1'],v=[];
-    if(req.query.empresa_id){v.push(req.query.empresa_id);w.push('f.empresa_id=$'+v.length);}
-    if(req.query.anio){v.push(req.query.anio+'-%');w.push('f.periodo LIKE $'+v.length);}
-    var r=await pool.query(`SELECT f.*, e.razon_social AS empresa_nombre FROM fin_f29 f
-      LEFT JOIN empresas e ON f.empresa_id=e.empresa_id
-      WHERE ${w.join(' AND ')} ORDER BY f.periodo DESC, e.razon_social`,v);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-app.delete('/api/fin/f29/:id', auth, async(req,res)=>{
-  try{
-    await finF29Ensure();
-    var r=await pool.query('DELETE FROM fin_f29 WHERE f29_id=$1 RETURNING f29_id',[req.params.id]);
-    if(!r.rows.length)return res.status(404).json({error:'F29 no encontrado'});
-    res.json({ok:true});
-  }catch(e){res.status(400).json({error:e.message});}
-});
-
-// ════════════════════════════════════════════════════════════════════
-// FINANZAS — IMPOSICIONES (planillas de cotizaciones Previred, PDF)
-// El paquete PDF trae un comprobante por institución (AFPs, ISAPREs, CCAF, Mutual).
-// Se extraen institución, folio, período, fecha de pago, renta imponible, trabajadores
-// y los TOTAL A PAGAR (las AFP suman pensiones + cesantía).
-// ════════════════════════════════════════════════════════════════════
-let _finImpOk=false;
-async function finImpEnsure(){
-  if(_finImpOk)return;
-  await pool.query(`CREATE TABLE IF NOT EXISTS fin_imposiciones (
-    imp_id SERIAL PRIMARY KEY,
-    empresa_id INT REFERENCES empresas(empresa_id),
-    periodo VARCHAR(7) NOT NULL,
-    institucion VARCHAR(90) NOT NULL,
-    tipo VARCHAR(10) NOT NULL DEFAULT 'OTRA',
-    folio VARCHAR(30) NOT NULL DEFAULT '',
-    monto NUMERIC(14,2) DEFAULT 0,
-    renta_imponible NUMERIC(14,2) DEFAULT 0,
-    n_trabajadores INT DEFAULT 0,
-    fecha_pago DATE,
-    detalle JSONB DEFAULT '[]'::jsonb,
-    usuario VARCHAR(100),
-    creado_en TIMESTAMP DEFAULT NOW(),
-    UNIQUE(empresa_id,periodo,institucion,folio)
-  )`);
-  // Desglose del comprobante AFP: fondo de pensiones y seguro de cesantía (AFC) se pagan juntos
-  try{await pool.query('ALTER TABLE fin_imposiciones ADD COLUMN IF NOT EXISTS monto_pensiones NUMERIC(14,2) DEFAULT 0');}catch(e){}
-  try{await pool.query('ALTER TABLE fin_imposiciones ADD COLUMN IF NOT EXISTS monto_cesantia NUMERIC(14,2) DEFAULT 0');}catch(e){}
-  _finImpOk=true;
-}
-const IMP_MESES={enero:1,febrero:2,marzo:3,abril:4,mayo:5,junio:6,julio:7,agosto:8,septiembre:9,octubre:10,noviembre:11,diciembre:12};
-function impParseTexto(txt){
-  const num=function(s){const n=parseFloat(String(s||'').replace(/\./g,'').replace(',','.'));return isNaN(n)?0:n;};
-  const rutEmp=(txt.match(/([\d]{1,2}\.\d{3}\.\d{3}\-[\dkK]|78\d{6}\-[\dkK]|\d{7,8}\-[\dkK])/)||[])[1]||'';
-  // Además del comprobante estándar, Previred emite dos planillas con encabezado propio y
-  // rótulo "MONTO PAGADO" (no "TOTAL A PAGAR"): Seguro Social (ISL) y FONASA/IPS.
-  const bloques=txt.split(/(?=COMPROBANTE DE PAGO|FORMULARIO DE COTIZACIONES PREVISIONALES|PLANILLA DE DECLARACION Y PAGO SIMULTANEO)/)
-    .filter(function(x){return /^(COMPROBANTE DE PAGO|FORMULARIO DE COTIZACIONES PREVISIONALES|PLANILLA DE DECLARACION Y PAGO SIMULTANEO)/.test(x);});
-  const comprobantes=[];
-  bloques.forEach(function(bl){
-    var nombre=null,tipo=null;
-    if(/^FORMULARIO DE COTIZACIONES PREVISIONALES/.test(bl)&&/SEGURO SOCIAL/i.test(bl)){
-      nombre='Seguro Social Previsional (ISL)';tipo='ISL';
-    }else if(/^PLANILLA DE DECLARACION Y PAGO SIMULTANEO/.test(bl)&&/FONASA/i.test(bl)){
-      nombre='FONASA';tipo='FONASA';
-    }else{
-      const inst=(bl.match(/^(AFP [^\n]+|ISAPRE [^\n]+|Caja de Compensaci[oó]n [^\n]+|Asociaci[oó]n Chilena de Seguridad[^\n]*|Mutual[^\n]*|Instituto de Seguridad[^\n]*|Instituto de Previsi[oó]n Social[^\n]*|IPS[^\n]*|Fonasa[^\n]*)$/mi)||[])[1];
-      if(!inst)return;
-      nombre=inst.trim();
-      tipo=/^AFP/i.test(nombre)?'AFP':(/^ISAPRE/i.test(nombre)?'ISAPRE':(/^Caja/i.test(nombre)?'CCAF':(/Seguridad|Mutual/i.test(nombre)?'MUTUAL':'OTRA')));
-    }
-    const folio=(bl.match(/N[uú]mero de Folio:\s*(\d+)/i)||[])[1]||'';
-    // Período: "Periodo 01/2026" (AFP) o "Enero 2026" (ISAPRE/CCAF)
-    var periodo='';
-    var m1=bl.match(/Periodo\s+(\d{1,2})\/(\d{4})/i);
-    if(m1)periodo=m1[2]+'-'+('0'+parseInt(m1[1])).slice(-2);
-    else{
-      var m2=bl.match(/(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Septiembre|Octubre|Noviembre|Diciembre)\s+(\d{4})/i);
-      if(m2)periodo=m2[2]+'-'+('0'+IMP_MESES[m2[1].toLowerCase()]).slice(-2);
-    }
-    var fp=bl.match(/Fecha Pago\s*:?\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i)||bl.match(/Pago Electr[oó]nico\s*\n?\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i);
-    const fechaPago=fp?(fp[3]+'-'+('0'+parseInt(fp[2])).slice(-2)+'-'+('0'+parseInt(fp[1])).slice(-2)):null;
-    // Totales "TOTAL A PAGAR ..." (AFP: pensiones + cesantía; otras: uno).
-    // pdf-parse deja el monto en la LÍNEA SIGUIENTE al rótulo; también se soporta en la misma línea.
-    const detalle=[];var monto=0;
-    const lineasBl=bl.split(/\r?\n/);
-    for(var li=0;li<lineasBl.length;li++){
-      var lnT=lineasBl[li];
-      if(!/TOTAL A PAGAR/i.test(lnT))continue;
-      var mismo=lnT.match(/TOTAL A PAGAR(.*?)([\d][\d\.]*)\s*$/i);
-      var label,v2;
-      if(mismo&&num(mismo[2])>0){label=('TOTAL A PAGAR'+mismo[1]).trim();v2=num(mismo[2]);}
-      else{
-        var nx=(lineasBl[li+1]||'').trim();
-        var mSig=nx.match(/^([\d][\d\.]*)$/);
-        if(!mSig)continue;
-        label=lnT.trim();v2=num(mSig[1]);
-      }
-      detalle.push({concepto:label,monto:v2});
-      monto+=v2;
-    }
-    // Planillas ISL/FONASA: no traen "TOTAL A PAGAR" sino "MONTO PAGADO" (a veces con "=" antes del valor)
-    if(monto===0){
-      for(var lj=0;lj<lineasBl.length;lj++){
-        if(!/MONTO PAGADO/i.test(lineasBl[lj]))continue;
-        var mSame=lineasBl[lj].match(/MONTO PAGADO\s*=?\s*([\d][\d\.]*)\s*$/i);
-        if(mSame&&num(mSame[1])>0){detalle.push({concepto:'MONTO PAGADO',monto:num(mSame[1])});monto=num(mSame[1]);break;}
-        for(var lk=lj+1;lk<Math.min(lj+5,lineasBl.length);lk++){
-          var cand=(lineasBl[lk]||'').trim();
-          if(cand===''||cand==='=')continue;
-          var mNum=cand.match(/^([\d][\d\.]*)$/);
-          if(mNum&&num(mNum[1])>0){detalle.push({concepto:'MONTO PAGADO',monto:num(mNum[1])});monto=num(mNum[1]);}
-          break;
-        }
-        if(monto>0)break;
-      }
-    }
-    const renta=num((bl.match(/Renta Imponible\s*\n?\s*([\d\.]+)/i)||[])[1]);
-    var nT=parseInt((bl.match(/FDO\.?\s*PENSIONES\s+(\d+)/i)||[])[1]||0)
-        ||parseInt((bl.match(/N[°º] de Afiliados Informados\s*\n?\s*(\d+)/i)||[])[1]||0);
-    // Desglose: el comprobante AFP trae fondo de pensiones + seguro de cesantía (AFC) en un mismo pago
-    var mCes=detalle.reduce(function(s,d){return s+(/CESANT/i.test(d.concepto)?d.monto:0);},0);
-    comprobantes.push({institucion:nombre,tipo:tipo,folio:folio,periodo:periodo,fecha_pago:fechaPago,
-      monto:monto,monto_cesantia:mCes,monto_pensiones:monto-mCes,
-      renta_imponible:renta,n_trabajadores:nT,detalle:detalle});
-  });
-  return{rut_empresa:rutEmp,comprobantes:comprobantes};
-}
-
-// POST: parsear el PDF de imposiciones (no guarda)
-app.post('/api/fin/imposiciones/parse', auth, async(req,res)=>{
-  try{
-    if(!pdfParse)return res.status(500).json({error:'Lector PDF no disponible en el servidor'});
-    var b64=(req.body&&req.body.pdf_base64)||'';
-    if(!b64)return res.status(400).json({error:'pdf_base64 requerido'});
-    const buf=Buffer.from(b64.replace(/^data:[^;]+;base64,/,''),'base64');
-    const parsed=await pdfParse(buf);
-    const out=impParseTexto(parsed.text||'');
-    if(!out.comprobantes.length)return res.status(400).json({error:'No se encontraron comprobantes de cotizaciones en el PDF (¿es la planilla de Previred?)'});
-    res.json(out);
-  }catch(e){res.status(400).json({error:'Error leyendo el PDF: '+e.message});}
-});
-
-// POST: guardar imposiciones (valida RUT y período contra la selección)
-app.post('/api/fin/imposiciones/import', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await finImpEnsure();
-    var b=req.body||{};
-    if(!b.empresa_id)return res.status(400).json({error:'Selecciona primero la empresa'});
-    if(!b.periodo||!/^\d{4}-\d{2}$/.test(b.periodo))return res.status(400).json({error:'Selecciona el período (AAAA-MM)'});
-    var emp=await client.query('SELECT rut FROM empresas WHERE empresa_id=$1',[b.empresa_id]);
-    if(!emp.rows.length)return res.status(404).json({error:'Empresa no encontrada'});
-    if(b.rut&&f29NormRut(emp.rows[0].rut)!==f29NormRut(b.rut))
-      return res.status(400).json({error:'El RUT de la planilla ('+b.rut+') no corresponde a la empresa seleccionada ('+emp.rows[0].rut+')'});
-    var comps=Array.isArray(b.comprobantes)?b.comprobantes:[];
-    if(!comps.length)return res.status(400).json({error:'Sin comprobantes para importar'});
-    var malPeriodo=comps.filter(function(c){return c.periodo&&c.periodo!==b.periodo;});
-    if(malPeriodo.length&&!b.forzar_periodo)
-      return res.status(400).json({error:malPeriodo.length+' comprobante(s) tienen período distinto al seleccionado ('+b.periodo+'): '+malPeriodo.map(function(c){return c.institucion+'='+c.periodo;}).slice(0,3).join(', ')});
-    await client.query('BEGIN');
-    if(b.reemplazar)await client.query('DELETE FROM fin_imposiciones WHERE empresa_id=$1 AND periodo=$2',[b.empresa_id,b.periodo]);
-    var importados=0,duplicados=0;
-    for(var i=0;i<comps.length;i++){
-      var c=comps[i];
-      var ins=await client.query(`INSERT INTO fin_imposiciones(empresa_id,periodo,institucion,tipo,folio,monto,monto_pensiones,monto_cesantia,renta_imponible,n_trabajadores,fecha_pago,detalle,usuario)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-        ON CONFLICT(empresa_id,periodo,institucion,folio) DO NOTHING RETURNING imp_id`,
-        [b.empresa_id,b.periodo,String(c.institucion||'').slice(0,90),c.tipo||'OTRA',String(c.folio||''),
-         parseFloat(c.monto)||0,parseFloat(c.monto_pensiones)||0,parseFloat(c.monto_cesantia)||0,
-         parseFloat(c.renta_imponible)||0,parseInt(c.n_trabajadores)||0,c.fecha_pago||null,
-         JSON.stringify(c.detalle||[]),req.user.email]);
-      if(ins.rows.length)importados++;else duplicados++;
-    }
-    await client.query('COMMIT');
-    res.json({ok:true,importados:importados,duplicados:duplicados});
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
-});
-
-// GET: imposiciones registradas
-app.get('/api/fin/imposiciones', auth, async(req,res)=>{
-  try{
-    await finImpEnsure();
-    var w=['1=1'],v=[];
-    if(req.query.empresa_id){v.push(req.query.empresa_id);w.push('i.empresa_id=$'+v.length);}
-    if(req.query.periodo){v.push(req.query.periodo);w.push('i.periodo=$'+v.length);}
-    if(req.query.anio){v.push(req.query.anio+'-%');w.push('i.periodo LIKE $'+v.length);}
-    var r=await pool.query(`SELECT i.*, e.razon_social AS empresa_nombre FROM fin_imposiciones i
-      LEFT JOIN empresas e ON i.empresa_id=e.empresa_id
-      WHERE ${w.join(' AND ')} ORDER BY i.periodo DESC, e.razon_social, i.tipo, i.institucion`,v);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-app.delete('/api/fin/imposiciones/:id', auth, async(req,res)=>{
-  try{
-    await finImpEnsure();
-    var r=await pool.query('DELETE FROM fin_imposiciones WHERE imp_id=$1 RETURNING imp_id',[req.params.id]);
-    if(!r.rows.length)return res.status(404).json({error:'Registro no encontrado'});
-    res.json({ok:true});
-  }catch(e){res.status(400).json({error:e.message});}
-});
-
-// ════════════════════════════════════════════════════════════════════
-// FINANZAS — LIBRO DE COMPRAS Y VENTAS (RCV del SII)
-// Importa los CSV oficiales del Registro de Compras y Ventas (RCV_COMPRA_REGISTRO_* y
-// RCV_VENTA_*). Las notas de crédito (61) restan en los totales; las filas de
-// continuación del CSV (sin Nro, con otro código de impuesto) se fusionan al documento.
-// ════════════════════════════════════════════════════════════════════
-let _finRcvOk=false;
-async function finRcvEnsure(){
-  if(_finRcvOk)return;
-  await pool.query(`CREATE TABLE IF NOT EXISTS fin_rcv (
-    rcv_id SERIAL PRIMARY KEY,
-    empresa_id INT REFERENCES empresas(empresa_id),
-    libro VARCHAR(6) NOT NULL,
-    periodo VARCHAR(7) NOT NULL,
-    tipo_dte VARCHAR(4),
-    tipo_operacion VARCHAR(30),
-    rut_contraparte VARCHAR(15) NOT NULL DEFAULT '',
-    razon_social VARCHAR(160),
-    folio VARCHAR(20) NOT NULL,
-    fecha_docto DATE,
-    exento NUMERIC(14,2) DEFAULT 0,
-    neto NUMERIC(14,2) DEFAULT 0,
-    iva NUMERIC(14,2) DEFAULT 0,
-    iva_no_rec NUMERIC(14,2) DEFAULT 0,
-    total NUMERIC(14,2) DEFAULT 0,
-    neto_activo_fijo NUMERIC(14,2) DEFAULT 0,
-    iva_activo_fijo NUMERIC(14,2) DEFAULT 0,
-    otros_imp NUMERIC(14,2) DEFAULT 0,
-    usuario VARCHAR(100),
-    creado_en TIMESTAMP DEFAULT NOW(),
-    UNIQUE(empresa_id,libro,periodo,tipo_dte,folio,rut_contraparte)
-  )`);
-  // Clasificación MANUAL (2026-08): 'Activo Fijo' | 'Del Giro' — prevalece sobre tipo_operacion del SII.
-  // Uso: ventas de activo fijo (maquinaria, vehículos) que el SII marca "Del Giro" y distorsionan el EBITDA.
-  try{await pool.query('ALTER TABLE fin_rcv ADD COLUMN IF NOT EXISTS clasif_manual VARCHAR(20)');}catch(e){}
-  _finRcvOk=true;
-}
-
-// PATCH: clasificar manualmente un documento como Activo Fijo / Del Giro (null = volver al SII)
-app.patch('/api/fin/rcv/:id/clasificar', auth, async(req,res)=>{
-  try{
-    await finRcvEnsure();
-    const v=req.body&&req.body.activo_fijo;
-    const val=v===true?'Activo Fijo':(v===false?'Del Giro':null);
-    const r=await pool.query('UPDATE fin_rcv SET clasif_manual=$1 WHERE rcv_id=$2 RETURNING rcv_id,clasif_manual,tipo_operacion',[val,req.params.id]);
-    if(!r.rows.length)return res.status(404).json({error:'Documento no encontrado'});
-    res.json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
-});
-
-// GET: documentos del libro con filtros
-app.get('/api/fin/rcv', auth, async(req,res)=>{
-  try{
-    await finRcvEnsure();
-    var w=['1=1'],v=[];
-    if(req.query.empresa_id){v.push(req.query.empresa_id);w.push('r.empresa_id=$'+v.length);}
-    if(req.query.libro){v.push(req.query.libro);w.push('r.libro=$'+v.length);}
-    if(req.query.periodo){v.push(req.query.periodo);w.push('r.periodo=$'+v.length);}
-    if(req.query.anio){v.push(req.query.anio+'-%');w.push('r.periodo LIKE $'+v.length);}
-    var r=await pool.query(`
-      SELECT r.*, e.razon_social AS empresa_nombre
-      FROM fin_rcv r LEFT JOIN empresas e ON r.empresa_id=e.empresa_id
-      WHERE ${w.join(' AND ')}
-      ORDER BY r.periodo, r.libro, r.fecha_docto ASC NULLS LAST, r.rcv_id ASC LIMIT 3000`,v);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// GET: períodos cargados (resumen por empresa+libro+período, con signo NC)
-app.get('/api/fin/rcv/periodos', auth, async(req,res)=>{
-  try{
-    await finRcvEnsure();
-    var r=await pool.query(`
-      SELECT r.empresa_id, e.razon_social AS empresa_nombre, r.libro, r.periodo,
-             COUNT(*)::int AS docs,
-             SUM(CASE WHEN r.tipo_dte='61' THEN -r.neto ELSE r.neto END) AS neto,
-             SUM(CASE WHEN r.tipo_dte='61' THEN -r.iva ELSE r.iva END) AS iva,
-             SUM(CASE WHEN r.tipo_dte='61' THEN -r.total ELSE r.total END) AS total
-      FROM fin_rcv r LEFT JOIN empresas e ON r.empresa_id=e.empresa_id
-      GROUP BY r.empresa_id, e.razon_social, r.libro, r.periodo
-      ORDER BY r.periodo DESC, e.razon_social, r.libro`);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// POST: importar documentos parseados del CSV RCV (dedup por UNIQUE; reemplazar=true borra el período antes)
-app.post('/api/fin/rcv/import', auth, async(req,res)=>{
-  const client=await pool.connect();
-  try{
-    await finRcvEnsure();
-    var b=req.body||{};
-    if(!b.empresa_id)return res.status(400).json({error:'Empresa requerida'});
-    if(!b.periodo||!/^\d{4}-\d{2}$/.test(b.periodo))return res.status(400).json({error:'Período requerido (AAAA-MM)'});
-    var libro=b.libro==='VENTA'?'VENTA':'COMPRA';
-    var docs=Array.isArray(b.docs)?b.docs:[];
-    if(!docs.length)return res.status(400).json({error:'Sin documentos para importar'});
-    await client.query('BEGIN');
-    // Preservar las clasificaciones MANUALES (activo fijo) al reemplazar el período
-    var manuales=[];
-    if(b.reemplazar){
-      manuales=(await client.query('SELECT tipo_dte,folio,rut_contraparte,clasif_manual FROM fin_rcv WHERE empresa_id=$1 AND libro=$2 AND periodo=$3 AND clasif_manual IS NOT NULL',[b.empresa_id,libro,b.periodo])).rows;
-      await client.query('DELETE FROM fin_rcv WHERE empresa_id=$1 AND libro=$2 AND periodo=$3',[b.empresa_id,libro,b.periodo]);
-    }
-    var importados=0,duplicados=0,errores=[];
-    for(var i=0;i<docs.length;i++){
-      var d=docs[i];
-      try{
-        var ins=await client.query(`INSERT INTO fin_rcv(empresa_id,libro,periodo,tipo_dte,tipo_operacion,rut_contraparte,razon_social,folio,fecha_docto,exento,neto,iva,iva_no_rec,total,neto_activo_fijo,iva_activo_fijo,otros_imp,usuario)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
-          ON CONFLICT(empresa_id,libro,periodo,tipo_dte,folio,rut_contraparte) DO NOTHING RETURNING rcv_id`,
-          [b.empresa_id,libro,b.periodo,String(d.tipo_dte||'').trim(),d.tipo_operacion||null,String(d.rut||'').trim(),d.razon_social||null,String(d.folio||'').trim(),d.fecha_docto||null,
-           parseFloat(d.exento)||0,parseFloat(d.neto)||0,parseFloat(d.iva)||0,parseFloat(d.iva_no_rec)||0,parseFloat(d.total)||0,
-           parseFloat(d.neto_activo_fijo)||0,parseFloat(d.iva_activo_fijo)||0,parseFloat(d.otros_imp)||0,req.user.email]);
-        if(ins.rows.length)importados++;else duplicados++;
-      }catch(ex){errores.push('Folio '+(d.folio||'?')+': '+ex.message);}
-    }
-    for(const mcl of manuales){
-      try{await client.query('UPDATE fin_rcv SET clasif_manual=$1 WHERE empresa_id=$2 AND libro=$3 AND periodo=$4 AND tipo_dte=$5 AND folio=$6 AND rut_contraparte=$7',[mcl.clasif_manual,b.empresa_id,libro,b.periodo,mcl.tipo_dte,mcl.folio,mcl.rut_contraparte]);}catch(e){}
-    }
-    await client.query('COMMIT');
-    res.json({ok:true,importados:importados,duplicados:duplicados,errores:errores,clasif_restauradas:manuales.length});
-  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
-  finally{client.release();}
-});
-
-// DELETE: eliminar un documento
-app.delete('/api/fin/rcv/:id', auth, async(req,res)=>{
-  try{
-    await finRcvEnsure();
-    var r=await pool.query('DELETE FROM fin_rcv WHERE rcv_id=$1 RETURNING rcv_id',[req.params.id]);
-    if(!r.rows.length)return res.status(404).json({error:'Documento no encontrado'});
-    res.json({ok:true});
-  }catch(e){res.status(400).json({error:e.message});}
-});
-
-// ════════════════════════════════════════════════════════════════════
-// FINANZAS — RESULTADO DEL AÑO (consolidado mensual, mes a mes)
-// Ítems: ventas y compras (fin_rcv, NC restadas), remuneraciones líquidas
-// (costo fin_remu − imposiciones − ret. imp. único F29), imposiciones (Previred),
-// honorarios (BHE+BTE brutos vigentes).
-// ════════════════════════════════════════════════════════════════════
-app.get('/api/fin/resultado-anual', auth, async(req,res)=>{
-  try{
-    try{await finRcvEnsure();}catch(e){}
-    try{await finRemuEnsure();}catch(e){}
-    try{await finImpEnsure();}catch(e){}
-    try{await finF29Ensure();}catch(e){}
-    try{await finHonEnsure();}catch(e){}
-    const anio=parseInt(req.query.anio)||2026;
-    const emp=req.query.empresa_id||null;
-    const like=anio+'-%';
-    const warn=[];
-    async function q2(label,sql,vals){try{const r=await pool.query(sql,vals);return r.rows;}catch(e){warn.push(label+': '+e.message);return[];}}
-    // Compras separadas: del giro (gasto del mes) vs activo fijo (inversión, NO resta del resultado)
-    const rcv=await q2('libro compra/venta',`
-      SELECT periodo, libro,
-             (COALESCE(clasif_manual,tipo_operacion,'') ILIKE '%activo%') AS af,
-             SUM(CASE WHEN tipo_dte='61' THEN -(COALESCE(neto,0)+COALESCE(exento,0)) ELSE (COALESCE(neto,0)+COALESCE(exento,0)) END) AS neto
-      FROM fin_rcv WHERE periodo LIKE $1 ${emp?'AND empresa_id=$2':''}
-      GROUP BY periodo, libro, 3`,emp?[like,emp]:[like]);
-    const remu=await q2('remuneraciones',`
-      SELECT (p.anio||'-'||LPAD(p.mes::text,2,'0')) AS periodo, SUM(p.costo_total) AS monto
-      FROM fin_remu_periodo p WHERE p.anio=$1 ${emp?'AND p.empresa_id=$2':''}
-      GROUP BY p.anio,p.mes`,emp?[anio,emp]:[anio]);
-    const impos=await q2('imposiciones',`
-      SELECT periodo, SUM(monto) AS monto FROM fin_imposiciones
-      WHERE periodo LIKE $1 ${emp?'AND empresa_id=$2':''} GROUP BY periodo`,emp?[like,emp]:[like]);
-    const f29r=await q2('f29',`
-      SELECT periodo, SUM(COALESCE(ret_imp_unico,0)) AS ret FROM fin_f29
-      WHERE periodo LIKE $1 ${emp?'AND empresa_id=$2':''} GROUP BY periodo`,emp?[like,emp]:[like]);
-    const hon=await q2('honorarios',`
-      SELECT periodo, SUM(bruto) AS monto FROM fin_honorarios
-      WHERE estado='VIGENTE' AND periodo LIKE $1 ${emp?'AND empresa_id=$2':''} GROUP BY periodo`,emp?[like,emp]:[like]);
-    const meses={};
-    const M=function(p){if(!meses[p])meses[p]={ventas:0,ventas_af:0,compras:0,compras_af:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};return meses[p];};
-    // Ventas y compras de ACTIVO FIJO quedan FUERA del resultado operacional (EBITDA): solo informativas
-    rcv.forEach(function(r){const m=M(r.periodo);const v=parseFloat(r.neto)||0;
-      if(r.libro==='VENTA'){if(r.af===true)m.ventas_af+=v;else m.ventas+=v;}
-      else{if(r.af===true)m.compras_af+=v;else m.compras+=v;}});
-    remu.forEach(function(r){M(r.periodo).remu_costo+=parseFloat(r.monto)||0;});
-    impos.forEach(function(r){M(r.periodo).imposiciones+=parseFloat(r.monto)||0;});
-    f29r.forEach(function(r){M(r.periodo).ret_imp_unico+=parseFloat(r.ret)||0;});
-    hon.forEach(function(r){M(r.periodo).honorarios+=parseFloat(r.monto)||0;});
-    res.json({anio:anio,meses:meses,advertencias:warn});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// ════════════════════════════════════════════════════════════════════
-// LIBRO MAYOR DE PRODUCTOS — consumo por subcategoría/producto, 2° nivel cargo
-// Une compras directas (líneas de OC con equipo) y salidas de bodega valorizadas.
-// Filtros: período, empresa, faena, cargo, subcategoría. Ruta plana (sin /api/oc/:id).
-// ════════════════════════════════════════════════════════════════════
-app.get('/api/oc-libro-productos', auth, requireModulo('ordenes'), async(req,res)=>{
-  try{
-    const{desde,hasta,empresa_id,faena_id,equipo_id,subcategoria_id,solo_cerradas}=req.query;
-    const soloCerr=solo_cerradas!=='0';
-    const warn=[];
-    async function q2(label,sql,vals){try{const r=await pool.query(sql,vals);return r.rows;}catch(e){warn.push(label+': '+e.message);return[];}}
-    // ── Compras directas: líneas de OC ──
-    let wc=["oc.anulado_en IS NULL","oc.estado<>'ANULADA'"],vc=[];
-    if(soloCerr)wc.push("oc.estado='CERRADA'");
-    if(desde){vc.push(desde);wc.push('oc.fecha_emision>=$'+vc.length+'::date');}
-    if(hasta){vc.push(hasta);wc.push('oc.fecha_emision<=$'+vc.length+'::date');}
-    if(empresa_id){vc.push(parseInt(empresa_id));wc.push('oc.empresa_id=$'+vc.length);}
-    if(faena_id){vc.push(parseInt(faena_id));wc.push('d.faena_id=$'+vc.length);}
-    if(equipo_id){vc.push(parseInt(equipo_id));wc.push('d.equipo_id=$'+vc.length);}
-    if(subcategoria_id){vc.push(parseInt(subcategoria_id));wc.push('d.subcategoria_id=$'+vc.length);}
-    const compras=await q2('compras',`
-      SELECT to_char(oc.fecha_emision,'YYYY-MM-DD') AS fecha, 'COMPRA' AS origen,
-             'OC '||oc.numero_oc AS ref, oc.estado AS detalle_origen,
-             pr.nombre AS tercero,
-             d.subcategoria_id, COALESCE(sc.nombre,'Sin subcategoría') AS subcat,
-             COALESCE(NULLIF(TRIM(d.descripcion),''),'(sin detalle)') AS producto,
-             d.equipo_id, COALESCE(eq.codigo||' — '||eq.nombre,'Sin cargo') AS cargo,
-             f.nombre AS faena, oc.empresa_id,
-             d.cantidad, d.precio_unitario AS costo_unit,
-             d.cantidad*d.precio_unitario AS total
-      FROM ordenes_compra_detalle d
-      JOIN ordenes_compra oc ON d.oc_id=oc.oc_id
-      LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
-      LEFT JOIN subcategorias sc ON d.subcategoria_id=sc.subcategoria_id
-      LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
-      LEFT JOIN faenas f ON d.faena_id=f.faena_id
-      WHERE ${wc.join(' AND ')}`,vc);
-    // ── Salidas de bodega: valorizadas al costo del movimiento (CPP) ──
-    let ws=["me.tipo_movimiento='SALIDA'","me.estado='ACTIVO'"],vs=[];
-    if(desde){vs.push(desde);ws.push('me.fecha>=$'+vs.length+'::date');}
-    if(hasta){vs.push(hasta);ws.push('me.fecha<=$'+vs.length+'::date');}
-    if(empresa_id){vs.push(parseInt(empresa_id));ws.push('COALESCE(eq.empresa_id,f.empresa_id)=$'+vs.length);}
-    if(faena_id){vs.push(parseInt(faena_id));ws.push('me.faena_id=$'+vs.length);}
-    if(equipo_id){vs.push(parseInt(equipo_id));ws.push('me.equipo_id=$'+vs.length);}
-    if(subcategoria_id){vs.push(parseInt(subcategoria_id));ws.push('p.subcategoria_id=$'+vs.length);}
-    const salidas=await q2('salidas bodega',`
-      SELECT to_char(me.fecha,'YYYY-MM-DD') AS fecha, 'BODEGA' AS origen,
-             'MOV '||me.movimiento_id AS ref, COALESCE(mot.nombre,'Salida') AS detalle_origen,
-             b.nombre AS tercero,
-             p.subcategoria_id, COALESCE(sc.nombre,'Sin subcategoría') AS subcat,
-             p.codigo||' — '||p.nombre AS producto,
-             me.equipo_id, COALESCE(eq.codigo||' — '||eq.nombre,'Sin cargo') AS cargo,
-             f.nombre AS faena, COALESCE(eq.empresa_id,f.empresa_id) AS empresa_id,
-             md.cantidad, COALESCE(md.costo_unitario,0) AS costo_unit,
-             md.cantidad*COALESCE(md.costo_unitario,0) AS total
-      FROM movimiento_detalle md
-      JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id
-      JOIN productos p ON md.producto_id=p.producto_id
-      LEFT JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id
-      LEFT JOIN equipos eq ON me.equipo_id=eq.equipo_id
-      LEFT JOIN bodegas b ON me.bodega_id=b.bodega_id
-      LEFT JOIN faenas f ON me.faena_id=f.faena_id
-      LEFT JOIN motivos_movimiento mot ON me.motivo_id=mot.motivo_id
-      WHERE ${ws.join(' AND ')}`,vs);
-    res.json({rows:compras.concat(salidas),advertencias:warn});
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// ════════════════════════════════════════════════════════════════════
-// MANTENCIÓN — VENCIMIENTOS DOCUMENTALES (revisión técnica y acreditación)
-// Vehículos/camiones: revisión técnica + acreditación. Maquinaria: SOLO acreditación.
-// ════════════════════════════════════════════════════════════════════
-const MANT_TIPOS_VEHICULO=['camioneta','camion','camion_estanque','camion_cama_baja','camion_mantencion','furgon'];
-let _mantDocsOk=false;
-async function mantDocsEnsure(){
-  if(_mantDocsOk)return;
-  await pool.query(`CREATE TABLE IF NOT EXISTS equipo_documentos (
-    doc_id SERIAL PRIMARY KEY,
-    equipo_id INT NOT NULL REFERENCES equipos(equipo_id) ON DELETE CASCADE,
-    tipo_doc VARCHAR(20) NOT NULL,
-    fecha_vencimiento DATE NOT NULL,
-    observaciones TEXT,
-    usuario VARCHAR(100),
-    actualizado_en TIMESTAMP DEFAULT NOW(),
-    UNIQUE(equipo_id,tipo_doc)
-  )`);
-  _mantDocsOk=true;
-}
-
-// GET: equipos activos (vehículos y maquinaria) con sus vencimientos y días restantes
-app.get('/api/mant/doc-vencimientos', auth, async(req,res)=>{
-  try{
-    await mantDocsEnsure();
-    var w=['eq.activo=true'],v=[];
-    v.push(MANT_TIPOS_VEHICULO);
-    w.push("(eq.tipo_cargo = ANY($1::text[]) OR COALESCE(eq.tipo_cargo,'maquinaria')='maquinaria')");
-    if(req.query.empresa_id){v.push(req.query.empresa_id);w.push('eq.empresa_id=$'+v.length);}
-    if(req.query.faena_id){v.push(req.query.faena_id);w.push('(eq.faena_id=$'+v.length+' OR eq.faena_id IS NULL)');} // cargo sin faena = común
-    var r=await pool.query(`
-      SELECT eq.equipo_id, eq.codigo, eq.nombre, eq.tipo_cargo, eq.placa_patente, eq.empresa_id, eq.faena_id,
-             e.razon_social AS empresa_nombre, f.nombre AS faena_nombre,
-             rt.fecha_vencimiento AS rt_vence, rt.observaciones AS rt_obs,
-             ac.fecha_vencimiento AS acred_vence, ac.observaciones AS acred_obs,
-             (rt.fecha_vencimiento - CURRENT_DATE) AS rt_dias,
-             (ac.fecha_vencimiento - CURRENT_DATE) AS acred_dias
-      FROM equipos eq
-      LEFT JOIN empresas e ON eq.empresa_id=e.empresa_id
-      LEFT JOIN faenas f ON eq.faena_id=f.faena_id
-      LEFT JOIN equipo_documentos rt ON rt.equipo_id=eq.equipo_id AND rt.tipo_doc='REVISION_TECNICA'
-      LEFT JOIN equipo_documentos ac ON ac.equipo_id=eq.equipo_id AND ac.tipo_doc='ACREDITACION'
-      WHERE ${w.join(' AND ')}
-      ORDER BY LEAST(COALESCE(rt.fecha_vencimiento,'9999-12-31'::date),COALESCE(ac.fecha_vencimiento,'9999-12-31'::date)), eq.codigo`,v);
-    res.json(r.rows);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// POST: guardar/actualizar un vencimiento (fecha vacía = borrar el registro de ese documento)
-app.post('/api/mant/doc-vencimientos', auth, async(req,res)=>{
-  try{
-    await mantDocsEnsure();
-    var b=req.body||{};
-    if(!b.equipo_id)return res.status(400).json({error:'equipo_id requerido'});
-    var tipo=b.tipo_doc==='REVISION_TECNICA'?'REVISION_TECNICA':(b.tipo_doc==='ACREDITACION'?'ACREDITACION':null);
-    if(!tipo)return res.status(400).json({error:'tipo_doc debe ser REVISION_TECNICA o ACREDITACION'});
-    var eq=await pool.query('SELECT tipo_cargo FROM equipos WHERE equipo_id=$1',[b.equipo_id]);
-    if(!eq.rows.length)return res.status(404).json({error:'Equipo no encontrado'});
-    var esVeh=MANT_TIPOS_VEHICULO.indexOf((eq.rows[0].tipo_cargo||'maquinaria').toLowerCase())>=0;
-    if(tipo==='REVISION_TECNICA'&&!esVeh)return res.status(400).json({error:'La revisión técnica solo aplica a vehículos y camiones (las máquinas solo llevan acreditación)'});
-    if(!b.fecha_vencimiento){
-      await pool.query('DELETE FROM equipo_documentos WHERE equipo_id=$1 AND tipo_doc=$2',[b.equipo_id,tipo]);
-      return res.json({ok:true,eliminado:true});
-    }
-    var r=await pool.query(`INSERT INTO equipo_documentos(equipo_id,tipo_doc,fecha_vencimiento,observaciones,usuario,actualizado_en)
-      VALUES($1,$2,$3,$4,$5,NOW())
-      ON CONFLICT(equipo_id,tipo_doc) DO UPDATE SET fecha_vencimiento=EXCLUDED.fecha_vencimiento, observaciones=EXCLUDED.observaciones, usuario=EXCLUDED.usuario, actualizado_en=NOW()
-      RETURNING *`,[b.equipo_id,tipo,b.fecha_vencimiento,b.observaciones||null,req.user.email]);
-    res.json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
-});
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Empresas Poo
