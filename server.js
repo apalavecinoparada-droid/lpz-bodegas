@@ -2720,6 +2720,26 @@ app.get('/api/reportes/ingresos', auth, async(req,res)=>{
 
 // ORDENES DE COMPRA
 const ocR=express.Router();
+// ── Anti-duplicados de compra (2026-08): busca otra OC VIGENTE del mismo proveedor
+// (mismo RUT — cubre proveedores duplicados en el maestro) con el mismo folio normalizado.
+// Devuelve {numero_oc} o null. excluirOcId omite la propia OC (ediciones).
+async function ocFolioDuplicado(q,proveedorId,folio,excluirOcId){
+  try{
+    if(!proveedorId||!folio)return null;
+    const vals=[String(folio),proveedorId];
+    let ex='';
+    if(excluirOcId){vals.push(excluirOcId);ex=' AND oc.oc_id<>$3';}
+    const r=await q.query(`SELECT oc.numero_oc, oc.estado FROM ordenes_compra oc
+      WHERE oc.estado<>'ANULADA' AND oc.numero_documento IS NOT NULL AND oc.numero_documento<>''
+        AND regexp_replace(oc.numero_documento,'^0+','')=regexp_replace($1,'^0+','')
+        AND oc.proveedor_id IN (
+          SELECT p2.proveedor_id FROM proveedores p2
+          JOIN proveedores p1 ON LOWER(REPLACE(REPLACE(COALESCE(p1.rut,''),'.',''),'-',''))=LOWER(REPLACE(REPLACE(COALESCE(p2.rut,''),'.',''),'-',''))
+          WHERE p1.proveedor_id=$2 AND COALESCE(p1.rut,'')<>'' )
+        ${ex} LIMIT 1`,vals);
+    return r.rows[0]||null;
+  }catch(e){return null;}
+}
 // Scoping por empresa del usuario (auditoría 2026-08): usuario no-admin con empresa
 // asignada en el maestro SOLO ve las OCs de su empresa; el filtro del query se ignora.
 async function ocUserEmpresa(userId){
@@ -3577,6 +3597,37 @@ app.post('/api/import/proveedores-xml', auth, async(req,res)=>{
 });
 
 // ══ IMPORTACIÓN MASIVA DE OC DESDE XML (ZIP Facto) ══
+// PRE-CHECK del import Facto (2026-08): informa QUÉ folios ya existen como OC (o como
+// cierre de guías) ANTES de importar. Regla de negocio: una factura PUEDE respaldar varias
+// OC (legítimo), pero lo habitual es 1 orden = 1 factura → el usuario decide con el aviso.
+app.post('/api/import/bulk-oc/precheck', auth, requireModulo('ordenes'), async(req,res)=>{
+  try{
+    const items=Array.isArray(req.body&&req.body.items)?req.body.items:[];
+    const out=[];
+    for(const it of items.slice(0,500)){
+      const folio=String(it.folio||'').trim();
+      const rNorm=String(it.proveedor_rut||'').replace(/[\.\-]/g,'').toLowerCase();
+      if(!folio||!rNorm){out.push({folio:it.folio,proveedor_rut:it.proveedor_rut,existe:false});continue;}
+      const ocs=(await pool.query(`SELECT oc.numero_oc, oc.estado, oc.total FROM ordenes_compra oc
+        WHERE oc.estado<>'ANULADA' AND oc.numero_documento IS NOT NULL AND oc.numero_documento<>''
+          AND regexp_replace(oc.numero_documento,'^0+','')=regexp_replace($1,'^0+','')
+          AND oc.proveedor_id IN (SELECT proveedor_id FROM proveedores WHERE LOWER(REPLACE(REPLACE(COALESCE(rut,''),'.',''),'-',''))=$2)
+        ORDER BY oc.oc_id DESC LIMIT 5`,[folio,rNorm])).rows;
+      const guia=(await pool.query(`SELECT f.numero_factura,
+          (SELECT string_agg(o2.numero_oc,', ') FROM ordenes_compra o2 WHERE o2.factura_guia_id=f.factura_id) AS ocs
+        FROM oc_factura_guias f
+        WHERE f.numero_factura IS NOT NULL AND f.numero_factura<>''
+          AND regexp_replace(f.numero_factura,'^0+','')=regexp_replace($1,'^0+','')
+          AND f.proveedor_id IN (SELECT proveedor_id FROM proveedores WHERE LOWER(REPLACE(REPLACE(COALESCE(rut,''),'.',''),'-',''))=$2)
+        LIMIT 1`,[folio,rNorm])).rows[0]||null;
+      out.push({folio:folio,proveedor_rut:it.proveedor_rut,existe:(ocs.length>0||!!guia),
+        ocs:ocs.map(function(o){return{numero_oc:o.numero_oc,estado:o.estado,total:parseFloat(o.total)||0};}),
+        cierre_guias:guia?{numero_factura:guia.numero_factura,ocs:guia.ocs||''}:null});
+    }
+    res.json({items:out});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 app.post('/api/import/bulk-oc', auth, requireModulo('ordenes'), async(req,res)=>{
   const client=await pool.connect();
   try{
@@ -3589,7 +3640,7 @@ app.post('/api/import/bulk-oc', auth, requireModulo('ordenes'), async(req,res)=>
       let prov_id=null;
       if(item.proveedor_rut){
         const rNorm=item.proveedor_rut.replace(/[\.\-]/g,'').toLowerCase();
-        const prov=await client.query("SELECT proveedor_id FROM proveedores WHERE REPLACE(REPLACE(rut,'.',''),'-','')=$1 LIMIT 1",[rNorm]);
+        const prov=await client.query("SELECT proveedor_id FROM proveedores WHERE LOWER(REPLACE(REPLACE(rut,'.',''),'-',''))=LOWER($1) ORDER BY proveedor_id LIMIT 1",[rNorm]);
         if(prov.rows.length){
           prov_id=prov.rows[0].proveedor_id;
         }else{
@@ -3607,17 +3658,22 @@ app.post('/api/import/bulk-oc', auth, requireModulo('ordenes'), async(req,res)=>
         const emp=await client.query("SELECT empresa_id FROM empresas WHERE REPLACE(REPLACE(rut,'.',''),'-','')=$1 LIMIT 1",[eNorm]);
         if(emp.rows.length) emp_id=emp.rows[0].empresa_id;
       }
-      // Check duplicate by numero_documento (normalizando ceros a la izquierda: '03957868' == '3957868')
-      if(item.folio){
-        const dup=await client.query("SELECT oc_id,numero_oc FROM ordenes_compra WHERE proveedor_id=$2 AND numero_documento IS NOT NULL AND regexp_replace(numero_documento,'^0+','')=regexp_replace($1,'^0+','') AND estado<>'ANULADA' LIMIT 1",[String(item.folio),prov_id]);
-        if(dup.rows.length){results.push({folio:item.folio,error:'Ya existe como '+dup.rows[0].numero_oc,oc_id:dup.rows[0].oc_id});continue;}
+      // Check duplicate by numero_documento (normaliza ceros; compara por RUT del proveedor,
+      // no por proveedor_id — cubre proveedores duplicados en el maestro)
+      if(item.folio&&item.forzar!==true){
+        const dup=await ocFolioDuplicado(client,prov_id,String(item.folio),null);
+        if(dup){results.push({folio:item.folio,error:'Ya existe como '+dup.numero_oc+' ('+dup.estado+')'});continue;}
         // La factura pudo entrar como CIERRE DE GUÍAS: su folio queda en oc_factura_guias.numero_factura
         // (no en numero_documento de la OC, que guarda el n° de la guía) → sin este chequeo se duplicaba la compra
         const dupF=await client.query(`SELECT f.factura_id, f.numero_factura,
             (SELECT string_agg(oc2.numero_oc,', ') FROM ordenes_compra oc2 WHERE oc2.factura_guia_id=f.factura_id) AS ocs
           FROM oc_factura_guias f
-          WHERE f.proveedor_id=$2 AND f.numero_factura IS NOT NULL AND f.numero_factura<>''
+          WHERE f.numero_factura IS NOT NULL AND f.numero_factura<>''
             AND regexp_replace(f.numero_factura,'^0+','')=regexp_replace($1,'^0+','')
+            AND f.proveedor_id IN (
+              SELECT p2.proveedor_id FROM proveedores p2
+              JOIN proveedores p1 ON LOWER(REPLACE(REPLACE(COALESCE(p1.rut,''),'.',''),'-',''))=LOWER(REPLACE(REPLACE(COALESCE(p2.rut,''),'.',''),'-',''))
+              WHERE p1.proveedor_id=$2 AND COALESCE(p1.rut,'')<>'' )
           LIMIT 1`,[String(item.folio),prov_id]);
         if(dupF.rows.length){results.push({folio:item.folio,error:'Ya existe: factura '+dupF.rows[0].numero_factura+' aplicada como cierre de guía(s) de despacho'+(dupF.rows[0].ocs?(' — OC '+dupF.rows[0].ocs):'')});continue;}
       }
