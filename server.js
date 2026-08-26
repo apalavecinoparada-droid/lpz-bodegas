@@ -1775,10 +1775,11 @@ app.use('/api/productos', prR);
 const mvR=express.Router();
 mvR.get('/', auth, async(req,res)=>{
   try{
-    const{tipo,bodega_id,faena_id,equipo_id,desde,hasta}=req.query;
+    const{tipo,bodega_id,bodega_destino_id,faena_id,equipo_id,desde,hasta}=req.query;
     let where=['1=1'],vals=[];
     if(tipo){vals.push(tipo);where.push(`me.tipo_movimiento=$${vals.length}`);}
     if(bodega_id){vals.push(bodega_id);where.push(`me.bodega_id=$${vals.length}`);}
+    if(bodega_destino_id){vals.push(bodega_destino_id);where.push(`me.bodega_destino_id=$${vals.length}`);}
     if(faena_id){vals.push(faena_id);where.push(`me.faena_id=$${vals.length}`);}
     if(equipo_id){vals.push(equipo_id);where.push(`me.equipo_id=$${vals.length}`);}
     if(desde){vals.push(desde);where.push(`me.fecha>=$${vals.length}`);}
