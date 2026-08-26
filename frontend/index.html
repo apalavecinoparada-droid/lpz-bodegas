@@ -1702,6 +1702,14 @@ function SalidaView(p){
     api('/mant/ot','GET',null,p.tok).then(function(r){setOtsAbiertas(Array.isArray(r)?r.filter(function(o){return o.estado==='abierta'||o.estado==='en_ejecucion'||o.estado==='programada';}):[]); }).catch(function(){});
   }
   useEffect(function(){load();},[p.tok,filtFaena,filtEquipo,filtDesde,filtHasta]);
+  // Filtros en cliente: subcategoría (nombre) y detalle de producto — sobre los textos agregados de cada salida
+  const[filtSubcatS,setFiltSubcatS]=useState('');
+  const[filtDetS,setFiltDetS]=useState('');
+  var movsFiltS=movs.filter(function(r){
+    if(filtSubcatS&&((r.subcategorias||'').toLowerCase().indexOf(filtSubcatS.toLowerCase())<0))return false;
+    if(filtDetS&&(((r.detalle_productos||'')+' '+(r.subcategorias||'')).toLowerCase().indexOf(filtDetS.toLowerCase())<0))return false;
+    return true;
+  });
   // Permiso para editar/anular: requiere módulo 'inventario-editar' o ser admin
   function canEditInv(){
     if(!p.user)return false;
@@ -1741,7 +1749,7 @@ function SalidaView(p){
       h(Btn,{onClick:function(){setErr('');setEditMov(null);setForm(blank);setModal(true);}},'+ Nueva Salida'),
       h(Btn,{v:'g',onClick:function(){
         // Export DETALLADO: una fila por PRODUCTO de cada salida (subcategoría + producto + cantidad)
-        var ordenadas=movs.slice().sort(function(a,b){var fa=(a.fecha||'').slice(0,10),fb=(b.fecha||'').slice(0,10);if(fa!==fb)return fa<fb?-1:1;return (a.movimiento_id||a.mov_id||0)-(b.movimiento_id||b.mov_id||0);});
+        var ordenadas=movsFiltS.slice().sort(function(a,b){var fa=(a.fecha||'').slice(0,10),fb=(b.fecha||'').slice(0,10);if(fa!==fb)return fa<fb?-1:1;return (a.movimiento_id||a.mov_id||0)-(b.movimiento_id||b.mov_id||0);});
         if(!ordenadas.length){alert('No hay salidas para exportar con el filtro actual');return;}
         Promise.all(ordenadas.map(function(mv){return api('/movimientos/'+mv.movimiento_id+'/detalles','GET',null,p.tok).then(function(ls){return{mv:mv,lineas:Array.isArray(ls)?ls:[]};}).catch(function(){return{mv:mv,lineas:[]};});}))
           .then(function(res){
@@ -1785,8 +1793,12 @@ function SalidaView(p){
       h('input',{type:'date',value:filtDesde,onChange:function(e){setFiltDesde(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,fontWeight:filtDesde?600:400,background:filtDesde?'#EFF6FF':'#fff'}}),
       h('label',{style:{fontSize:11,color:'#64748B'}},'Hasta:'),
       h('input',{type:'date',value:filtHasta,onChange:function(e){setFiltHasta(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,fontWeight:filtHasta?600:400,background:filtHasta?'#EFF6FF':'#fff'}}),
-      (filtFaena||filtEquipo||filtDesde||filtHasta)&&h('button',{onClick:function(){setFiltFaena('');setFiltEquipo('');setFiltDesde('');setFiltHasta('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
-      h('span',{style:{fontSize:11,color:'#64748B',marginLeft:'auto',fontWeight:600}},movs.length+' salida(s)')
+      h('select',{value:filtSubcatS,onChange:function(e){setFiltSubcatS(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:160,width:'auto',fontWeight:filtSubcatS?600:400,background:filtSubcatS?'#F5F3FF':'#fff'}},
+        h('option',{value:''},'Todas las subcategorías'),
+        (p.m&&p.m.subcats||[]).filter(function(s){return s.activo!==false;}).sort(function(a,b){return (a.nombre||'').localeCompare(b.nombre||'');}).map(function(s){return h('option',{key:s.subcategoria_id,value:s.nombre},s.nombre);})),
+      h('input',{value:filtDetS,onChange:function(e){setFiltDetS(e.target.value);},placeholder:'🔍 Detalle / producto...',style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,width:180,fontWeight:filtDetS?600:400,background:filtDetS?'#FFFBEB':'#fff'}}),
+      (filtFaena||filtEquipo||filtDesde||filtHasta||filtSubcatS||filtDetS)&&h('button',{onClick:function(){setFiltFaena('');setFiltEquipo('');setFiltDesde('');setFiltHasta('');setFiltSubcatS('');setFiltDetS('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
+      h('span',{style:{fontSize:11,color:'#64748B',marginLeft:'auto',fontWeight:600}},movsFiltS.length+' salida(s)')
     ),
     h('div',{className:'card'},h(TBL,{cols:[
       {lbl:'N°',k:'movimiento_id',w:50},{lbl:'Fecha',render:function(r){return fmtD(r.fecha);}},{lbl:'Bodega',k:'bodega_nombre'},
@@ -1820,7 +1832,7 @@ function SalidaView(p){
         r.estado==='ACTIVO'&&canEditInv()&&h('button',{className:'btn btn-blue btn-xs',onClick:function(){setEditMov(r);},title:'Editar fecha, faena, equipo, motivo u observaciones'},'✏'),
         r.estado==='ACTIVO'&&canEditInv()&&h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular')
       )}
-    ],rows:movs,empty:'Sin salidas'})),
+    ],rows:movsFiltS,empty:'Sin salidas'})),
     verDetalle&&h(MovDetalleModal,{tok:p.tok,user:p.user,mov:verDetalle,onClose:function(){setVerDetalle(null);load();}}),
     editMov&&h(MovEditModal,{tok:p.tok,m:p.m,mov:editMov,onClose:function(){setEditMov(null);},onSave:function(){setEditMov(null);load();}}),
     anularId&&h(AnularMovModal,{tok:p.tok,movId:anularId,onClose:function(){setAnularId(null);},onDone:function(){load();p.onMov&&p.onMov();}}),
