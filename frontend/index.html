@@ -1901,11 +1901,26 @@ function TraspasoView(p){
   const[verDetalle,setVerDetalle]=useState(null);
   const blank={fecha:TODAY,bodega_origen_id:'',bodega_destino_id:'',re:'',rr:'',obs:'',lineas:[{prod_id:'',qty:'1'}]};
   const[form,setForm]=useState(blank);
+  // Filtros del listado
+  const[filtOrigen,setFiltOrigen]=useState('');
+  const[filtDestino,setFiltDestino]=useState('');
+  const[filtDesde,setFiltDesde]=useState('');
+  const[filtHasta,setFiltHasta]=useState('');
+  const[filtProd,setFiltProd]=useState('');
   function load(){
-    api('/movimientos?tipo=TRASPASO_SALIDA','GET',null,p.tok).then(function(r){setMovs(Array.isArray(r)?r:[]);}).catch(function(){});
+    var qs='?tipo=TRASPASO_SALIDA';
+    if(filtOrigen)qs+='&bodega_id='+filtOrigen;
+    if(filtDestino)qs+='&bodega_destino_id='+filtDestino;
+    if(filtDesde)qs+='&desde='+filtDesde;
+    if(filtHasta)qs+='&hasta='+filtHasta;
+    api('/movimientos'+qs,'GET',null,p.tok).then(function(r){setMovs(Array.isArray(r)?r:[]);}).catch(function(){});
     api('/stock','GET',null,p.tok).then(function(rows){var m={};(rows||[]).forEach(function(r){m[r.producto_id+'_'+r.bodega_id]={q:parseFloat(r.cantidad_disponible),cpp:parseFloat(r.costo_promedio_actual)};});setStock(m);}).catch(function(){});
   }
-  useEffect(function(){load();},[p.tok]);
+  useEffect(function(){load();},[p.tok,filtOrigen,filtDestino,filtDesde,filtHasta]);
+  // Búsqueda de producto/subcategoría en cliente (sobre el texto agregado de cada traspaso)
+  var movsFilt=filtProd?movs.filter(function(r){
+    return ((r.detalle_productos||'')+' '+(r.subcategorias||'')).toLowerCase().indexOf(filtProd.toLowerCase())>=0;
+  }):movs;
   // Permiso para editar/anular: requiere módulo 'inventario-editar' o ser admin
   function canEditInv(){
     if(!p.user)return false;
@@ -1957,10 +1972,27 @@ function TraspasoView(p){
   return h('div',null,
     h('div',{className:'tb'},
       h(Btn,{onClick:function(){setErr('');setForm(blank);setModal(true);}},'+ Nuevo Traspaso'),
-      h(Btn,{v:'g',onClick:function(){exportXLSX(movs,[{header:'N°',value:r=>r.movimiento_id},{header:'Fecha',value:r=>r.fecha},{header:'Bodega Origen',value:r=>r.bodega_nombre},{header:'Total CPP',value:r=>r.total},{header:'Usuario',value:r=>r.usuario_nombre||r.usuario},{header:'Estado',value:r=>r.estado}],'traspasos');}},null,'Exportar Excel')
+      h(Btn,{v:'g',onClick:function(){exportXLSX(movsFilt,[{header:'N°',value:r=>r.movimiento_id},{header:'Fecha',value:r=>r.fecha},{header:'Bodega Origen',value:r=>r.bodega_nombre},{header:'Bodega Destino',value:r=>r.bodega_destino_nombre},{header:'Subcategoría',value:r=>r.subcategorias||''},{header:'Detalle',value:r=>r.detalle_productos||''},{header:'Total CPP',value:r=>r.total},{header:'Usuario',value:r=>r.usuario_nombre||r.usuario},{header:'Estado',value:r=>r.estado}],'traspasos');}},null,'Exportar Excel')
     ),
     h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:5,padding:'8px 12px',marginBottom:10,fontSize:11,color:'#1E40AF'}},
       '💡 El traspaso entre bodegas registra automáticamente una salida en la bodega de origen y un ingreso equivalente en la bodega destino, manteniendo el costo promedio del producto.'
+    ),
+    // ── Barra de filtros ──
+    h('div',{style:{display:'flex',gap:8,marginBottom:10,padding:10,background:'#F8FAFC',borderRadius:6,flexWrap:'wrap',alignItems:'center'}},
+      h('span',{style:{fontSize:11,fontWeight:600,color:'#475569'}},'🔍 Filtros:'),
+      h('select',{value:filtOrigen,onChange:function(e){setFiltOrigen(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:170,width:'auto',fontWeight:filtOrigen?600:400,background:filtOrigen?'#EFF6FF':'#fff'}},
+        h('option',{value:''},'Bodega origen: todas'),
+        bodegas.map(function(b){return h('option',{key:b.bodega_id,value:b.bodega_id},b.codigo+' — '+b.nombre);})),
+      h('select',{value:filtDestino,onChange:function(e){setFiltDestino(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:170,width:'auto',fontWeight:filtDestino?600:400,background:filtDestino?'#F0FDF4':'#fff'}},
+        h('option',{value:''},'Bodega destino: todas'),
+        bodegas.map(function(b){return h('option',{key:b.bodega_id,value:b.bodega_id},b.codigo+' — '+b.nombre);})),
+      h('label',{style:{fontSize:11,color:'#64748B',marginBottom:0}},'Desde:'),
+      h('input',{type:'date',value:filtDesde,onChange:function(e){setFiltDesde(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,width:'auto',fontWeight:filtDesde?600:400,background:filtDesde?'#EFF6FF':'#fff'}}),
+      h('label',{style:{fontSize:11,color:'#64748B',marginBottom:0}},'Hasta:'),
+      h('input',{type:'date',value:filtHasta,onChange:function(e){setFiltHasta(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,width:'auto',fontWeight:filtHasta?600:400,background:filtHasta?'#EFF6FF':'#fff'}}),
+      h('input',{value:filtProd,onChange:function(e){setFiltProd(e.target.value);},placeholder:'🔍 Producto o subcategoría...',style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,width:190,fontWeight:filtProd?600:400,background:filtProd?'#F5F3FF':'#fff'}}),
+      (filtOrigen||filtDestino||filtDesde||filtHasta||filtProd)&&h('button',{onClick:function(){setFiltOrigen('');setFiltDestino('');setFiltDesde('');setFiltHasta('');setFiltProd('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
+      h('span',{style:{fontSize:11,color:'#64748B',marginLeft:'auto',fontWeight:600}},movsFilt.length+' traspaso(s)')
     ),
     h('div',{className:'card'},h(TBL,{cols:[
       {lbl:'N°',k:'movimiento_id',w:50},
@@ -1977,7 +2009,7 @@ function TraspasoView(p){
         r.estado==='ACTIVO'&&canEditInv()&&h('button',{className:'btn btn-blue btn-xs',onClick:function(){setEditMov(r);},title:'Editar fecha y observaciones'},'✏'),
         r.estado==='ACTIVO'&&canEditInv()&&h('button',{className:'btn btn-d btn-xs',onClick:function(){setAnularId(r.movimiento_id);}},null,'Anular')
       )}
-    ],rows:movs,empty:'Sin traspasos registrados'})),
+    ],rows:movsFilt,empty:'Sin traspasos registrados'})),
     editMov&&h(MovEditModal,{tok:p.tok,m:p.m,mov:editMov,onClose:function(){setEditMov(null);},onSave:function(){setEditMov(null);load();}}),
     verDetalle&&h(MovDetalleModal,{tok:p.tok,user:p.user,mov:verDetalle,onClose:function(){setVerDetalle(null);load();}}),
     anularId&&h(AnularMovModal,{tok:p.tok,movId:anularId,onClose:function(){setAnularId(null);},onDone:function(){load();p.onMov&&p.onMov();}}),
