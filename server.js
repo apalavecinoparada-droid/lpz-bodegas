@@ -7966,14 +7966,26 @@ app.delete('/api/fin/cuentas/:id', auth, async(req,res)=>{
 });
 app.get('/api/fin/cheques', auth, async(req,res)=>{
   try{
-    const{empresa_id,cuenta_id,estado,desde,hasta}=req.query;
+    const{empresa_id,cuenta_id,estado,desde,hasta,beneficiario,campo_fecha}=req.query;
+    // campo_fecha: 'emision' filtra por fecha_emision; por defecto (compatibilidad) fecha_cobro
+    const fcol=campo_fecha==='emision'?'ch.fecha_emision':'ch.fecha_cobro';
     let w=['1=1'],v=[];
     if(empresa_id){v.push(empresa_id);w.push(`ch.empresa_id=$${v.length}`);}
     if(cuenta_id){v.push(cuenta_id);w.push(`ch.cuenta_id=$${v.length}`);}
     if(estado){v.push(estado);w.push(`ch.estado=$${v.length}`);}
-    if(desde){v.push(desde);w.push(`ch.fecha_cobro>=$${v.length}`);}
-    if(hasta){v.push(hasta);w.push(`ch.fecha_cobro<=$${v.length}`);}
+    if(desde){v.push(desde);w.push(`${fcol}>=$${v.length}`);}
+    if(hasta){v.push(hasta);w.push(`${fcol}<=$${v.length}`);}
+    if(beneficiario){v.push(beneficiario);w.push(`COALESCE(p.nombre,ch.beneficiario_nombre,'') ILIKE $${v.length}`);}
     const r=await pool.query(`SELECT ch.*,c.banco,c.numero_cuenta,e.razon_social AS empresa_nombre,p.nombre AS proveedor_nombre FROM fin_cheques ch JOIN fin_cuentas_bancarias c ON ch.cuenta_id=c.cuenta_id JOIN empresas e ON ch.empresa_id=e.empresa_id LEFT JOIN proveedores p ON ch.proveedor_id=p.proveedor_id WHERE ${w.join(' AND ')} ORDER BY ch.fecha_cobro ASC, ch.cheque_id DESC`,v);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/fin/cheques/beneficiarios', auth, async(req,res)=>{
+  try{
+    const r=await pool.query(`SELECT COALESCE(p.nombre,ch.beneficiario_nombre) AS nombre,COUNT(*) AS cantidad
+      FROM fin_cheques ch LEFT JOIN proveedores p ON ch.proveedor_id=p.proveedor_id
+      WHERE COALESCE(p.nombre,ch.beneficiario_nombre) IS NOT NULL
+      GROUP BY 1 ORDER BY 1`);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
