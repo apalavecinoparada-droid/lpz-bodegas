@@ -5500,6 +5500,22 @@ function FinChequesView(p){
   var emptyForm={cuenta_id:'',numero_cheque:'',fecha_emision:new Date().toISOString().slice(0,10),fecha_cobro:'',monto:'',tipo_beneficiario:'proveedor',proveedor_id:'',beneficiario_nombre:'',concepto:'pago_factura',concepto_detalle:'',observaciones:''};
   var[form,setForm]=useState(emptyForm);
   var[detMes,setDetMes]=useState(null); // {mes,empresa_id,razon_social,loading,cheques,error}
+  // ── Informe por beneficiario ──
+  var[infBen,setInfBen]=useState('');var[infDesde,setInfDesde]=useState('');var[infHasta,setInfHasta]=useState('');
+  var[infCampo,setInfCampo]=useState('emision');var[infEstado,setInfEstado]=useState('');
+  var[infRows,setInfRows]=useState(null);var[infLoading,setInfLoading]=useState(false);var[benList,setBenList]=useState([]);
+  useEffect(function(){if(tab==='informe'&&!benList.length){api('/fin/cheques/beneficiarios','GET',null,p.tok).then(function(r){setBenList(Array.isArray(r)?r:[]);}).catch(function(){});}},[tab]);
+  function generarInforme(benOverride){
+    var ben=typeof benOverride==='string'?benOverride:infBen;
+    setInfLoading(true);
+    var qs='?campo_fecha='+infCampo;
+    if(ben)qs+='&beneficiario='+encodeURIComponent(ben);
+    if(infDesde)qs+='&desde='+infDesde;
+    if(infHasta)qs+='&hasta='+infHasta;
+    if(infEstado)qs+='&estado='+infEstado;
+    if(filtEmpresa)qs+='&empresa_id='+filtEmpresa;
+    api('/fin/cheques'+qs,'GET',null,p.tok).then(function(r){setInfRows(Array.isArray(r)?r:[]);setInfLoading(false);}).catch(function(e){alert(e.message);setInfLoading(false);});
+  }
   function abrirDetalleMes(r){
     var mp=String(r.mes).split('-'); var y=parseInt(mp[0]), mo=parseInt(mp[1]);
     var desde=r.mes+'-01';
@@ -5630,7 +5646,7 @@ function FinChequesView(p){
     }
   }
   function eliminarCta(id){if(!confirm('Eliminar esta cuenta bancaria?'))return;api('/fin/cuentas/'+id,'DELETE',null,p.tok).then(function(){loadCuentas();setMsg('Cuenta eliminada');}).catch(function(e){alert(e.message);});}
-  var tabs=[{k:'dashboard',l:'📊 Dashboard'},{k:'registro',l:'📝 Registro'},{k:'cuentas',l:'🏦 Cuentas'}];
+  var tabs=[{k:'dashboard',l:'📊 Dashboard'},{k:'registro',l:'📝 Registro'},{k:'informe',l:'🧾 Informe'},{k:'cuentas',l:'🏦 Cuentas'}];
   function imprimirCheque(ch){
     var cta=cuentas.find(function(c){return c.cuenta_id===ch.cuenta_id;})||{};
     var conceptoLabel=conceptoL[ch.concepto]||(ch.concepto_detalle||ch.concepto);
@@ -5686,6 +5702,70 @@ function FinChequesView(p){
     imprimirHTMLViaIframe(html,'Comprobante de cheques');
   }
   var tot=dash&&dash.totales?dash.totales:{};
+  // Totales e informe agrupado por beneficiario (anulados no suman al total)
+  var infTot={cant:0,total:0,pend:0,pag:0,anul:0,cantAnul:0};
+  if(infRows)infRows.forEach(function(c){var m=parseFloat(c.monto)||0;infTot.cant++;if(c.estado==='anulado'){infTot.anul+=m;infTot.cantAnul++;}else{infTot.total+=m;if(c.estado==='emitido')infTot.pend+=m;else if(c.estado==='pagado')infTot.pag+=m;}});
+  var infResumen=null;
+  if(infRows&&!infBen){
+    var _g={};infRows.forEach(function(c){var n=c.proveedor_nombre||c.beneficiario_nombre||'—';if(!_g[n])_g[n]={nombre:n,cantidad:0,total:0};_g[n].cantidad++;if(c.estado!=='anulado')_g[n].total+=parseFloat(c.monto)||0;});
+    infResumen=Object.keys(_g).map(function(k){return _g[k];}).sort(function(a,b){return b.total-a.total;});
+  }
+  function imprimirInforme(){
+    if(!infRows||!infRows.length){alert('Genere el informe primero');return;}
+    var campoLbl=infCampo==='emision'?'fecha de emisión':'fecha de cobro';
+    var rango=(infDesde?fmtDC(infDesde):'inicio')+' al '+(infHasta?fmtDC(infHasta):'hoy');
+    var empSel=empresas.find(function(e){return String(e.empresa_id)===String(filtEmpresa);});
+    var logoInf=(empSel&&empSel.logo_base64)?'<img src="'+empSel.logo_base64+'" style="max-height:80px;max-width:200px;margin-bottom:6px;display:block">':'<img src="https://serviciosforestalespoo.cl/wp-content/uploads/2025/09/Logo.svg" style="max-height:50px;max-width:160px;margin-bottom:6px;display:block">';
+    var css='body{font-family:Arial,sans-serif;font-size:12px;color:#1E293B;margin:24px}'+
+      '.header{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #1E3A2D;padding-bottom:14px;margin-bottom:16px}'+
+      '.empresa{font-size:12px;line-height:1.7} .empresa strong{font-size:15px;color:#0F172A}'+
+      '.title-box{text-align:right} .title-box h2{font-size:20px;color:#1E3A2D;margin:0 0 3px}'+
+      '.subtitle{font-size:13px;color:#475569}'+
+      '.meta{display:grid;grid-template-columns:1fr 1fr;gap:6px;background:#F8FAFC;padding:12px;border-radius:6px;margin-bottom:16px;font-size:12px}'+
+      '.mi{display:flex;gap:4px} .ml{color:#64748B;min-width:120px} .mv{font-weight:600}'+
+      'table{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:12px}'+
+      'th{background:#1E3A2D;color:#fff;padding:6px 8px;text-align:left;font-weight:600}'+
+      'td{padding:6px 8px;border-bottom:1px solid #E2E8F0;vertical-align:top}'+
+      'tr:nth-child(even) td{background:#F8FAFC}'+
+      '.est{display:inline-block;padding:1px 8px;border-radius:10px;font-size:9px;font-weight:700}'+
+      '.est-emitido{background:#FEF3C7;color:#92400E}.est-pagado{background:#DCFCE7;color:#166534}.est-anulado{background:#FEE2E2;color:#991B1B}'+
+      '.monto-box{text-align:center;padding:20px;background:#F0FDF4;border:2px solid #1E3A2D;border-radius:8px;margin:16px 0}'+
+      '.monto-box .label{font-size:12px;color:#64748B;margin-bottom:4px}.monto-box .valor{font-size:28px;font-weight:700;color:#1E3A2D}'+
+      '.monto-box .cant{font-size:12px;color:#475569;margin-top:4px}'+
+      '.footer{margin-top:30px;padding-top:10px;border-top:1px solid #E2E8F0;font-size:10px;color:#94A3B8;text-align:center}'+
+      '@media print{button{display:none}}';
+    var html='<!DOCTYPE html><html><head><meta charset="UTF-8"><style>'+css+'</style></head><body>'+
+      '<div class="header">'+
+      '<div class="empresa">'+logoInf+'<br><strong>'+(empSel?empSel.razon_social:'Empresas Poo')+'</strong></div>'+
+      '<div class="title-box"><h2>INFORME DE CHEQUES</h2><div class="subtitle">'+(infBen?'Beneficiario: '+infBen:'Todos los beneficiarios')+'</div></div>'+
+      '</div>'+
+      '<div class="meta">'+
+      '<div class="mi"><span class="ml">Período:</span><span class="mv">'+rango+'</span></div>'+
+      '<div class="mi"><span class="ml">Filtrado por:</span><span class="mv">'+campoLbl+'</span></div>'+
+      '<div class="mi"><span class="ml">Estado:</span><span class="mv">'+(infEstado||'Todos')+'</span></div>'+
+      '<div class="mi"><span class="ml">Empresa:</span><span class="mv">'+(empSel?empSel.razon_social:'Todas')+'</span></div>'+
+      '</div>'+
+      '<table><thead><tr>'+
+      '<th>N° Cheque</th><th>Empresa</th><th>Banco</th><th>Emisión</th><th>Cobro</th><th>Beneficiario</th><th>Concepto</th><th>Estado</th><th style="text-align:right">Monto</th>'+
+      '</tr></thead><tbody>'+
+      infRows.map(function(c){return '<tr>'+
+        '<td style="font-family:monospace;font-weight:600">'+c.numero_cheque+'</td>'+
+        '<td>'+(c.empresa_nombre||'')+'</td>'+
+        '<td>'+(c.banco||'')+'</td>'+
+        '<td>'+fmtDC(c.fecha_emision)+'</td>'+
+        '<td>'+fmtDC(c.fecha_cobro)+'</td>'+
+        '<td>'+(c.proveedor_nombre||c.beneficiario_nombre||'—')+'</td>'+
+        '<td>'+(conceptoL[c.concepto]||c.concepto||'')+(c.concepto_detalle?'<br><span style="font-size:9px;color:#64748B">'+c.concepto_detalle+'</span>':'')+'</td>'+
+        '<td><span class="est est-'+c.estado+'">'+String(c.estado).toUpperCase()+'</span></td>'+
+        '<td style="text-align:right;font-weight:600">'+CLP(Math.round(parseFloat(c.monto)||0))+'</td>'+
+        '</tr>';}).join('')+
+      '</tbody></table>'+
+      '<div class="monto-box"><div class="label">MONTO TOTAL'+(infTot.cantAnul?' (excluye anulados)':'')+'</div><div class="valor">'+CLP(Math.round(infTot.total))+'</div>'+
+      '<div class="cant">'+infTot.cant+' documento'+(infTot.cant>1?'s':'')+(infTot.cantAnul?' · '+infTot.cantAnul+' anulado'+(infTot.cantAnul>1?'s':'')+' por '+CLP(Math.round(infTot.anul)):'')+'</div></div>'+
+      '<div class="footer">Documento generado el '+new Date().toLocaleDateString('es-CL')+' | Empresas Poo — Sistema de Gestión</div>'+
+      '</body></html>';
+    imprimirHTMLViaIframe(html,'Informe de cheques');
+  }
   return h('div',null,
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,flexWrap:'wrap',gap:8}},
       h('div',{style:{display:'flex',gap:4}},tabs.map(function(t){return h('button',{key:t.k,onClick:function(){setTab(t.k);},style:{padding:'6px 14px',borderRadius:5,fontSize:12,cursor:'pointer',border:'1px solid #CBD5E1',background:tab===t.k?'#1E3A2D':'#F8FAFC',color:tab===t.k?'#fff':'#475569',fontWeight:tab===t.k?600:400}},t.l);})),
@@ -5831,6 +5911,95 @@ function FinChequesView(p){
           h('button',{onClick:function(){eliminar(r.cheque_id);},style:{color:'#94A3B8',background:'none',border:'none',cursor:'pointer',fontSize:10}},'🗑')
         );}}
       ],rows:chequesFilt,empty:'Sin cheques registrados'}))
+    ),
+    // ── INFORME POR BENEFICIARIO ──
+    tab==='informe'&&h('div',null,
+      h('div',{className:'card',style:{marginBottom:12}},
+        h('div',{style:{fontWeight:600,fontSize:13,marginBottom:10}},'🧾 Informe de cheques por beneficiario'),
+        h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end'}},
+          h('div',null,
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Beneficiario'),
+            h('select',{value:infBen,onChange:function(e){setInfBen(e.target.value);},style:Object.assign({},inpS,{width:280,fontWeight:infBen?600:400,background:infBen?'#F0FDF4':'#fff'})},
+              h('option',{value:''},'Todos los beneficiarios'),
+              benList.map(function(b){return h('option',{key:b.nombre,value:b.nombre},b.nombre+' ('+b.cantidad+')');}))
+          ),
+          h('div',null,
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Filtrar por'),
+            h('select',{value:infCampo,onChange:function(e){setInfCampo(e.target.value);},style:Object.assign({},inpS,{width:150})},
+              h('option',{value:'emision'},'Fecha emisión'),
+              h('option',{value:'cobro'},'Fecha cobro'))
+          ),
+          h('div',null,
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Desde'),
+            h('input',{type:'date',value:infDesde,onChange:function(e){setInfDesde(e.target.value);},style:Object.assign({},inpS,{width:140})})
+          ),
+          h('div',null,
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Hasta'),
+            h('input',{type:'date',value:infHasta,onChange:function(e){setInfHasta(e.target.value);},style:Object.assign({},inpS,{width:140})})
+          ),
+          h('div',null,
+            h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Estado'),
+            h('select',{value:infEstado,onChange:function(e){setInfEstado(e.target.value);},style:Object.assign({},inpS,{width:130})},
+              h('option',{value:''},'Todos'),
+              h('option',{value:'emitido'},'Emitido'),
+              h('option',{value:'pagado'},'Pagado'),
+              h('option',{value:'anulado'},'Anulado'))
+          ),
+          h(Btn,{onClick:function(){generarInforme();}},'🔍 Generar')
+        ),
+        h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:6}},'El filtro de empresa de la barra superior también aplica al informe. Los cheques anulados se listan pero no suman al total.')
+      ),
+      infLoading&&h('div',{className:'spin'},'Generando informe...'),
+      infRows&&!infLoading&&infRows.length===0&&h('div',{className:'al al-i'},'No se encontraron cheques con esos criterios.'),
+      infRows&&!infLoading&&infRows.length>0&&h('div',null,
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,marginBottom:12}},
+          h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #1E3A2D'}},h('div',{style:{fontSize:18,fontWeight:700,color:'#1E3A2D'}},CLP(Math.round(infTot.total))),h('div',{style:{fontSize:11,color:'#64748B'}},'Monto total ('+(infTot.cant-infTot.cantAnul)+' doc.)')),
+          h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #F59E0B'}},h('div',{style:{fontSize:18,fontWeight:700,color:'#F59E0B'}},CLP(Math.round(infTot.pend))),h('div',{style:{fontSize:11,color:'#64748B'}},'Pendiente (emitidos)')),
+          h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #10B981'}},h('div',{style:{fontSize:18,fontWeight:700,color:'#10B981'}},CLP(Math.round(infTot.pag))),h('div',{style:{fontSize:11,color:'#64748B'}},'Pagado')),
+          h('div',{className:'card',style:{textAlign:'center',borderLeft:'4px solid #EF4444'}},h('div',{style:{fontSize:18,fontWeight:700,color:'#EF4444'}},CLP(Math.round(infTot.anul))),h('div',{style:{fontSize:11,color:'#64748B'}},infTot.cantAnul+' anulado(s)'))
+        ),
+        h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}},
+          h('span',{style:{fontSize:12,color:'#64748B'}},infRows.length+' cheque(s)'),
+          h('div',{style:{display:'flex',gap:6}},
+            h('button',{onClick:imprimirInforme,style:{padding:'6px 12px',background:'#6366F1',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:600}},'🖨 Imprimir / PDF'),
+            h('button',{onClick:function(){exportXLSX(infRows,[
+              {header:'N° Cheque',value:function(r){return r.numero_cheque;}},
+              {header:'Empresa',value:function(r){return r.empresa_nombre;}},
+              {header:'Banco',value:function(r){return r.banco;}},
+              {header:'N° Cuenta',value:function(r){return r.numero_cuenta;}},
+              {header:'Fecha Emisión',value:function(r){return r.fecha_emision?r.fecha_emision.slice(0,10):'';}},
+              {header:'Fecha Cobro',value:function(r){return r.fecha_cobro?r.fecha_cobro.slice(0,10):'';}},
+              {header:'Monto',value:function(r){return parseFloat(r.monto)||0;}},
+              {header:'Beneficiario',value:function(r){return r.proveedor_nombre||r.beneficiario_nombre||'';}},
+              {header:'Concepto',value:function(r){return conceptoL[r.concepto]||r.concepto;}},
+              {header:'Detalle',value:function(r){return r.concepto_detalle||'';}},
+              {header:'Estado',value:function(r){return r.estado;}},
+              {header:'Fecha Pago',value:function(r){return r.fecha_pago?r.fecha_pago.slice(0,10):'';}},
+              {header:'Observaciones',value:function(r){return r.observaciones||'';}}
+            ],'informe_cheques_'+(infBen?infBen.replace(/[^A-Za-z0-9]+/g,'_').slice(0,30)+'_':'')+new Date().toISOString().slice(0,10));},style:{padding:'6px 12px',background:'#059669',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:600}},'⬇ Excel')
+          )
+        ),
+        infResumen&&infResumen.length>1&&h('div',{className:'card',style:{marginBottom:12}},
+          h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Resumen por beneficiario ',h('span',{style:{fontWeight:400,fontSize:11,color:'#94A3B8'}},'— clic en una fila para ver solo ese beneficiario')),
+          h(TBL,{onRowClick:function(r){setInfBen(r.nombre);generarInforme(r.nombre);},cols:[
+            {lbl:'Beneficiario',render:function(r){return h('span',{style:{color:'#1E40AF',fontWeight:600,fontSize:12}},r.nombre);}},
+            {lbl:'Documentos',r:true,render:function(r){return r.cantidad;}},
+            {lbl:'Monto Total',r:true,render:function(r){return h('strong',null,CLP(Math.round(r.total)));}}
+          ],rows:infResumen})
+        ),
+        h('div',{className:'card'},h(TBL,{cols:[
+          {lbl:'N°',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.numero_cheque);}},
+          {lbl:'Empresa',render:function(r){return h('span',{style:{fontSize:11}},r.empresa_nombre);}},
+          {lbl:'Banco',render:function(r){return h('span',{style:{fontSize:11}},r.banco);}},
+          {lbl:'Emisión',render:function(r){return fmtD(r.fecha_emision);}},
+          {lbl:'Cobro',render:function(r){return fmtD(r.fecha_cobro);}},
+          {lbl:'Beneficiario',render:function(r){return h('div',null,h('div',{style:{fontSize:11}},r.proveedor_nombre||r.beneficiario_nombre||'—'),h('div',{style:{fontSize:9,color:'#94A3B8'}},r.tipo_beneficiario==='proveedor'?'Proveedor':'Acreedor'));}},
+          {lbl:'Concepto',render:function(r){return h('div',null,h('span',{style:{fontSize:11}},conceptoL[r.concepto]||r.concepto),r.concepto_detalle?h('div',{style:{fontSize:9,color:'#64748B'}},r.concepto_detalle):null);}},
+          {lbl:'Estado',render:function(r){return h(Bg,{c:estadoC[r.estado]||'gray'},r.estado);}},
+          {lbl:'Monto',r:true,render:function(r){return h('strong',{style:{textDecoration:r.estado==='anulado'?'line-through':'none',color:r.estado==='anulado'?'#94A3B8':'inherit'}},CLP(Math.round(parseFloat(r.monto)||0)));}}
+        ],rows:infRows,empty:'Sin cheques'}))
+      ),
+      !infRows&&!infLoading&&h('div',{className:'al al-i'},'Seleccione los criterios y presione Generar para consultar los cheques registrados.')
     ),
     // ── CUENTAS BANCARIAS ──
     tab==='cuentas'&&h('div',null,
