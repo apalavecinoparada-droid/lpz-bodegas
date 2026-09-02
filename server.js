@@ -9043,7 +9043,7 @@ app.get('/api/prod/oee/datasets', auth, async(req,res)=>{
   try{
     await pool.query(`CREATE TABLE IF NOT EXISTS prod_oee_datasets (clave VARCHAR(40) PRIMARY KEY, valor JSONB DEFAULT '{}'::jsonb, actualizado_en TIMESTAMP DEFAULT NOW())`);
     const r=await pool.query('SELECT clave, valor FROM prod_oee_datasets');
-    const out={best_daily:{},prod_rodal:{},oferta_rodal:[],faja_daily:{},informe_hrs:[],oper_data:[],grafx:{},diesel:[],ofsnap:{},causas_hperd:{},diesel_detalle:{},vma_mix:{},vma_dia:{},vma_rod:{},bht_dias:[],prod_faena_mes:{}};
+    const out={best_daily:{},prod_rodal:{},oferta_rodal:[],faja_daily:{},informe_hrs:[],oper_data:[],grafx:{},diesel:[],ofsnap:{},causas_hperd:{},diesel_detalle:{},vma_mix:{},vma_dia:{},vma_rod:{},bht_dias:[],prod_faena_mes:{},hperd_unif:{},wa_det:[],oper_data_bd:[]};
     r.rows.forEach(function(x){ out[x.clave]=x.valor; });
     res.json(out);
   }catch(e){res.status(500).json({error:e.message});}
@@ -9053,7 +9053,7 @@ app.post('/api/prod/oee/datasets', auth, async(req,res)=>{
   try{
     await client.query(`CREATE TABLE IF NOT EXISTS prod_oee_datasets (clave VARCHAR(40) PRIMARY KEY, valor JSONB DEFAULT '{}'::jsonb, actualizado_en TIMESTAMP DEFAULT NOW())`);
     const b=req.body||{};
-    const map={best_daily:b.best_daily, prod_rodal:b.prod_rodal, oferta_rodal:b.oferta_rodal, faja_daily:b.faja_daily, informe_hrs:b.informe_hrs, oper_data:b.oper_data, grafx:b.grafx, diesel:b.diesel, ofsnap:b.ofsnap, causas_hperd:b.causas_hperd, diesel_detalle:b.diesel_detalle, vma_mix:b.vma_mix, vma_dia:b.vma_dia, vma_rod:b.vma_rod, bht_dias:b.bht_dias, prod_faena_mes:b.prod_faena_mes};
+    const map={best_daily:b.best_daily, prod_rodal:b.prod_rodal, oferta_rodal:b.oferta_rodal, faja_daily:b.faja_daily, informe_hrs:b.informe_hrs, oper_data:b.oper_data, grafx:b.grafx, diesel:b.diesel, ofsnap:b.ofsnap, causas_hperd:b.causas_hperd, diesel_detalle:b.diesel_detalle, vma_mix:b.vma_mix, vma_dia:b.vma_dia, vma_rod:b.vma_rod, bht_dias:b.bht_dias, prod_faena_mes:b.prod_faena_mes, hperd_unif:b.hperd_unif, wa_det:b.wa_det, oper_data_bd:b.oper_data_bd};
     await client.query('BEGIN');
     let n=0, resumen={};
     for(const clave of Object.keys(map)){
