@@ -649,6 +649,29 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
         <table><thead><tr><th style="width:5%">#</th><th style="width:43%">Causa</th><th id="th1">&#8212;</th><th id="th2">&#8212;</th><th id="th3">&#8212;</th><th id="th4">&#8212;</th><th>Total</th></tr></thead>
         <tbody id="tob-tbody"></tbody></table>
       </div>
+      <div class="card" style="margin-top:14px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
+          <div>
+            <div class="ct" style="margin:0;">&#128269; Detalle de causas &mdash; nuestra versi&oacute;n</div>
+            <div style="font-size:10px;color:#888;margin-top:2px;">
+              Los gr&aacute;ficos de arriba son la versi&oacute;n <b>Formin</b>, la que debe cuadrar con Mininco.
+              Esto de ac&aacute; es lo que realmente pas&oacute; en faena, con todo el detalle disponible.
+              <span id="dc-pista" style="color:#1a6b3a;font-weight:700;">Elige una fuente aqu&iacute; al lado
+              para ver el detalle. &#10230;</span>
+            </div>
+          </div>
+          <div style="display:flex;gap:0;border:1px solid #1a6b3a;border-radius:6px;overflow:hidden;">
+            <button id="dc-btn-todas" onclick="dcSetFuente('todas')"
+              style="border:0;padding:7px 14px;font-size:11px;font-weight:700;cursor:pointer;background:#fff;color:#1a6b3a;">
+              Todas las Fuentes</button>
+            <button id="dc-btn-wa" onclick="dcSetFuente('wa')"
+              style="border:0;padding:7px 14px;font-size:11px;font-weight:700;cursor:pointer;background:#fff;color:#1a6b3a;">
+              Fuente WhatsApp</button>
+          </div>
+        </div>
+        <div id="dc-filtros" style="margin-top:10px;"></div>
+        <div id="dc-body" style="margin-top:10px;"></div>
+      </div>
     </div>
 
     <!-- PANEL ASERV: Asertividad Oferta por Rodal -->
@@ -1385,7 +1408,7 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
         <div style="font-size:11px;color:#8b949e;">Mes:</div>
         <select id="stdreal-mes" onchange="renderStdReal()" style="background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:5px;padding:4px 10px;font-size:12px;"></select>
         <span id="stdreal-vma-badge" style="font-size:11px;background:#21262d;border:1px solid #30363d;border-radius:12px;padding:3px 12px;color:#e3b341;"></span>
-        <span style="font-size:9px;color:#8b949e;">m³/hr Real = Producción faena-mes (hoja <b>produc</b>) ÷ Hrs trabajadas del proceso &nbsp;|&nbsp; Hrs trabajadas: <b>BaseHorasTrab</b> (hasta jul-2026, InformeHrsProc) &nbsp;|&nbsp; Hrs perdidas: <b>BaseHorasPer</b> &nbsp;|&nbsp; Estándar según VMA promedio del mes (Base datos)</span>
+        <span style="font-size:9px;color:#8b949e;">m³/hr Real = Producción faena-mes (hoja <b>produc</b>) ÷ Hrs trabajadas del proceso &nbsp;|&nbsp; Hrs trabajadas: <b>BaseHorasTrab</b> (hasta jul-2026, InformeHrsProc) &nbsp;|&nbsp; Hrs perdidas: <b>BaseHorasPerdUnif</b> (Mininco + BaseHorasTrab/Per + WhatsApp) &nbsp;|&nbsp; Estándar según VMA promedio del mes (Base datos)</span>
       </div>
       <div id="stdreal-body"></div>
     </div>
@@ -3310,7 +3333,8 @@ function renderStdReal(){
     '<th style="'+thS+'text-align:left;">Máq. Estándar</th>' +
     '<th style="'+thS+'">N° Máq.</th>' +
     '<th style="'+thS+'">Hrs Trab.<br>Total</th>' +
-    '<th style="'+thS+'" title="Horas perdidas del mes (BaseHorasPer)">Hrs<br>Perd</th>' +
+    '<th style="'+thS+'" title="Horas perdidas del mes · hoja BaseHorasPerdUnif: por día se toma la mayor de Mininco, BaseHorasTrab/Per y WhatsApp. Toca el botón ? para ver el detalle.">Hrs<br>Perd</th>' +
+    '<th style="'+thS+'" title="Producción del mes según cartolas (hoja produc). Por máquina se reparte proporcional a los árboles informados; si no hay árboles, proporcional a las horas.">m³</th>' +
     '<th style="'+thS+'">Hrs/mes<br>Estándar</th>' +
     '<th style="'+thS+'" title="Hrs reales totales − Hrs estándar del proceso">Δ Hrs<br>(Real−Std)</th>' +
     '<th style="'+thS+'">Cumpl.<br>Hrs %</th>' +
@@ -3340,7 +3364,8 @@ function renderStdReal(){
     if (factHrs){
       maqs = maqs.map(r=>{
         const f = facMaq(r);
-        return Object.assign({}, r, {hrs: r.hrs*f, hrsPerd: (r.hrsPerd||0)*f, _fac: f});
+        return Object.assign({}, r, {hrs: r.hrs*f, hrsPerd: (r.hrsPerd||0)*f,
+                                     arb: (r.arb||0)*f, m3: (r.m3||0)*f, _fac: f});
       }).filter(r=>r._fac > 0.0005);
       if (!maqs.length) return;                 // esta máquina no trabajó en el tramo
     }
@@ -3403,6 +3428,26 @@ function renderStdReal(){
     const vHoraTxt = vHora !== null ? ' title="Valor hora c/comb: '+fmtCLP(vHora)+'/hr"' : '';
     const tdS = 'padding:7px 9px;font-size:11px;color:#e6edf3;text-align:right;border-bottom:1px solid #21262d;';
     const totHrsPerd = maqs.reduce((a,r)=>a+(r.hrsPerd||0),0);
+
+    // ---- m³ por máquina ----
+    // La producción del mes la manda la cartola (hoja produc) = m3Mes, y la suma de las
+    // máquinas del proceso tiene que dar ese valor. Si BaseHorasTrab ya trae el m³ por
+    // equipo y cuadra con la cartola, se usa tal cual; si no, se reparte m3Mes proporcional
+    // a los árboles informados por máquina (hoja Base datos Procesador Mecaniz) y, a falta
+    // de árboles, proporcional a las horas trabajadas.
+    const totArbP = maqs.reduce((a,r)=>a+(r.arb||0),0);
+    const sumM3Maq = maqs.reduce((a,r)=>a+(r.m3||0),0);
+    const m3Cuadra = sumM3Maq > 0 && m3Mes > 0 && Math.abs(sumM3Maq - m3Mes) <= m3Mes*0.02;
+    const m3DeMaq = function(r){
+      if (!(m3Mes > 0)) return null;
+      if (m3Cuadra) return r.m3 || 0;
+      if (totArbP > 0) return m3Mes * ((r.arb||0)/totArbP);
+      if (totHrs > 0)  return m3Mes * (r.hrs/totHrs);
+      return null;
+    };
+    const m3Txt = function(v){
+      return v === null ? '—' : Math.round(v).toLocaleString('es-CL');
+    };
     granHrs += totHrs; granHrsPerd += totHrsPerd; granMaq += nMaq;
     h += '<tr>' +
       '<td style="'+tdS+'text-align:left;font-weight:600;"'+vHoraTxt+'>'+pr+'</td>' +
@@ -3410,6 +3455,7 @@ function renderStdReal(){
       '<td style="'+tdS+'">'+nMaq+'</td>' +
       '<td style="'+tdS+'font-weight:600;">'+totHrs.toFixed(0)+'</td>' +
       '<td style="'+tdS+'color:'+(totHrsPerd>0?'#f85149':'#8b949e')+';">'+(totHrsPerd>0?totHrsPerd.toFixed(0):'0')+'</td>' +
+      '<td style="'+tdS+'font-weight:600;color:#79c0ff;" title="Producción del mes (cartolas)">'+m3Txt(m3Mes>0?m3Mes:null)+'</td>' +
       '<td style="'+tdS+'color:#8b949e;"'+(diaCorte!==null && stdHrsMesFull!==null?' title="Mes completo: '+stdHrsMesFull.toFixed(1)+' hrs × '+diaCorte+'/'+diasMesR+' días"':'')+'>'+(stdHrs!==null?stdHrs.toFixed(1)+(diaCorte!==null?'<br><span style=\'font-size:8px;color:#6e7681;\'>(al '+diaCorte+')</span>':''):'—')+'</td>' +
       '<td style="'+tdS+'font-weight:700;color:'+(dHrs===null?'#8b949e':(dHrs>0?'#f85149':'#3fb950'))+';">'+(dHrs!==null?(dHrs>0?'+':'')+dHrs.toFixed(1):'—')+'</td>' +
       pctCellC(cumplHrs, cHrsColor) +
@@ -3429,12 +3475,18 @@ function renderStdReal(){
       const kCausa = maqName + '|' + fBD + '|' + mes;
       const tieneCausas = maqHP > 0 && window.CAUSAS_HPERD && CAUSAS_HPERD[kCausa] && CAUSAS_HPERD[kCausa].length > 0;
       const hpBtn = maqHP > 0 ? ' <button onclick="kpiCausasPopup(\''+kCausa.replace(/'/g,"\\'")+'\')" style="background:#f85149;color:#fff;border:none;border-radius:3px;padding:1px 5px;font-size:9px;font-weight:700;cursor:pointer;margin-left:3px;" title="Ver causas horas perdidas">?</button>' : '';
+      const m3Maq = m3DeMaq(r);
+      const m3TitMaq = m3Maq === null ? '' :
+        ' title="' + (m3Cuadra ? 'm³ del equipo en BaseHorasTrab'
+          : (totArbP > 0 ? 'Cartola del mes repartida por árboles: ' + Math.round(r.arb||0).toLocaleString('es-CL') + ' de ' + Math.round(totArbP).toLocaleString('es-CL') + ' árboles del proceso'
+                         : 'Cartola del mes repartida por horas trabajadas')) + '"';
       h += '<tr>' +
         '<td style="padding:3px 9px 3px 26px;font-size:10px;color:#8b949e;text-align:left;border-bottom:1px solid #1c2128;">↳ '+maqName+'</td>' +
         '<td style="padding:3px 9px;font-size:10px;color:#6e7681;text-align:left;border-bottom:1px solid #1c2128;">'+(t||'—')+'</td>' +
         '<td style="border-bottom:1px solid #1c2128;"></td>' +
         '<td style="padding:3px 9px;font-size:10px;color:#8b949e;text-align:right;border-bottom:1px solid #1c2128;">'+r.hrs.toFixed(0)+'</td>' +
         '<td style="padding:3px 9px;font-size:10px;color:'+(maqHP>0?'#f85149':'#6e7681')+';text-align:right;border-bottom:1px solid #1c2128;">'+(maqHP>0?maqHP.toFixed(0):'0')+hpBtn+'</td>' +
+        '<td style="padding:3px 9px;font-size:10px;color:#79c0ff;text-align:right;border-bottom:1px solid #1c2128;"'+m3TitMaq+'>'+m3Txt(m3Maq)+'</td>' +
         '<td style="padding:3px 9px;font-size:9px;color:#6e7681;text-align:right;border-bottom:1px solid #1c2128;">'+(aporte!==null?aporte.toFixed(0)+'% del proceso':'')+'</td>' +
         '<td style="border-bottom:1px solid #1c2128;"></td>' +
         '<td style="border-bottom:1px solid #1c2128;"></td><td style="border-bottom:1px solid #1c2128;"></td>' +
@@ -3450,13 +3502,15 @@ function renderStdReal(){
     '<td style="'+tdTot+'color:#e6edf3;">'+granMaq+'</td>' +
     '<td style="'+tdTot+'color:#58a6ff;">'+granHrs.toFixed(0)+'</td>' +
     '<td style="'+tdTot+'color:'+(granHrsPerd>0?'#f85149':'#8b949e')+';">'+granHrsPerd.toFixed(0)+'</td>' +
+    '<td style="'+tdTot+'color:#79c0ff;" title="Producción del mes según cartolas (hoja produc). No es la suma de los procesos: los mismos m³ pasan por volteo, madereo, procesado y clasificado.">'+(m3Mes>0?Math.round(m3Mes).toLocaleString('es-CL'):'—')+'</td>' +
     '<td colspan="8" style="'+tdTot+'font-weight:400;font-size:9px;color:#6e7681;text-align:left;">'
-      + 'Hrs trabajadas y perdidas por equipo &middot; ' + (srDesdeBHT ? 'BaseHorasTrab + BaseHorasPer' : 'InformeHrsProc') + '</td>' +
+      + 'Hrs trabajadas: ' + (srDesdeBHT ? 'BaseHorasTrab' : 'InformeHrsProc') + ' &middot; Hrs perdidas: ' + (Object.keys(window.HPERD_UNIF||{}).length ? 'BaseHorasPerdUnif (3 fuentes)' : 'BaseHorasPer')
+      + ' &middot; m³ del mes: cartolas (produc)</td>' +
     '</tr>';
   // TOTALES de sobrecostos
   const totGral = totCostoHrs + totCostoRend;
   h += '<tr style="border-top:2px solid #30363d;">' +
-    '<td colspan="8" style="padding:8px 9px;font-size:11px;font-weight:700;color:#e6edf3;text-align:right;">TOTAL SOBRECOSTOS DEL MES:</td>' +
+    '<td colspan="9" style="padding:8px 9px;font-size:11px;font-weight:700;color:#e6edf3;text-align:right;">TOTAL SOBRECOSTOS DEL MES:</td>' +
     '<td style="padding:8px 9px;font-size:11px;font-weight:700;text-align:right;color:'+(totCostoHrs>0?'#f85149':'#3fb950')+';">'+(totCostoHrs>0?fmtCLP(totCostoHrs):'$0')+'</td>' +
     '<td colspan="3"></td>' +
     '<td style="padding:8px 9px;font-size:11px;font-weight:700;text-align:right;color:'+(totCostoRend>0?'#f85149':'#3fb950')+';">'+(totCostoRend>0?fmtCLP(totCostoRend):'$0')+'</td>' +
@@ -4033,6 +4087,7 @@ function showPanel(id, btn) {
     bestUpdate();
   }, 50); }
   if(id==='proddia') { setTimeout(buildProdDiaria, 50); }
+  if(id==='tob') { setTimeout(function(){ try{ renderDetalleCausas(); }catch(e){ console.warn('[DC]', e.message); } }, 50); }
   if(id==='poli') {
     if(!POLI_AUTH) {
       document.getElementById('poli-lock').style.display = '';
@@ -4045,6 +4100,361 @@ function showPanel(id, btn) {
       setTimeout(function(){ poliLoadSaved(); poliInitHist(); poliRenderBases(); }, 50);
     }
   }
+}
+
+
+/* ============================================================
+   DETALLE DE CAUSAS  ·  ficha Tiempos Perdidos
+   Dos versiones con propositos distintos:
+     - "Todas las Fuentes": hoja BaseHorasPerdUnif, que combina Mininco +
+       BaseHorasTrab/Per + BaseProductibTorre + BaseProductibSk + WhatsApp con la
+       regla de la cascada (por equipo-dia manda la mayor, no la suma).
+     - "Fuente WhatsApp": hoja BaseWhatsApp, lo que reporta la faena por el chat.
+   Los graficos de arriba NO se tocan: esos son la version Formin, la que tiene
+   que cuadrar con Mininco.
+   ============================================================ */
+/* '' = plegado: solo se ve el titulo con los dos botones */
+var DC_FUENTE = '';
+
+function dcPintaBotones(){
+  var a = document.getElementById('dc-btn-todas'), b = document.getElementById('dc-btn-wa');
+  if (a && b){
+    a.style.background = (DC_FUENTE === 'todas') ? '#1a6b3a' : '#fff';
+    a.style.color      = (DC_FUENTE === 'todas') ? '#fff' : '#1a6b3a';
+    b.style.background = (DC_FUENTE === 'wa') ? '#1a6b3a' : '#fff';
+    b.style.color      = (DC_FUENTE === 'wa') ? '#fff' : '#1a6b3a';
+  }
+  var p = document.getElementById('dc-pista');
+  if (p) p.style.display = DC_FUENTE ? 'none' : 'inline';
+}
+
+function dcSetFuente(f){
+  /* apretar la fuente que ya esta abierta la vuelve a plegar */
+  DC_FUENTE = (DC_FUENTE === f) ? '' : f;
+  dcPintaBotones();
+  renderDetalleCausas();
+  if (DC_FUENTE){
+    var box = document.getElementById('dc-filtros');
+    if (box && box.scrollIntoView) box.scrollIntoView({behavior:'smooth', block:'nearest'});
+  }
+}
+
+/* ---- Filtros propios de esta seccion: faena y mes, como en el informe ---- */
+var DC_SEL = {faena:'all', mes:'all'};
+var DC_MESNOM = ['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio',
+                 'Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+
+function dcFiltro(){ return {faena: DC_SEL.faena, ym: DC_SEL.mes}; }
+function dcEnRango(ym, fl){
+  if (!ym || ym.length < 7) return false;
+  return fl.ym === 'all' || ym === fl.ym;
+}
+
+/* Que faenas y que meses hay realmente en la fuente elegida */
+function dcOpciones(){
+  var fa = {}, ms = {};
+  if (DC_FUENTE === 'wa'){
+    (WA_DET || []).forEach(function(d){
+      if (d.faena) fa[d.faena] = 1;
+      if (d.ym) ms[d.ym] = 1;
+    });
+  } else {
+    Object.keys(HPERD_UNIF || {}).forEach(function(k){
+      var p = k.split('|');
+      if (p.length < 3) return;
+      if (p[1]) fa[p[1]] = 1;
+      if (p[2]) ms[p[2]] = 1;
+    });
+  }
+  return {faenas: Object.keys(fa).sort(), meses: Object.keys(ms).sort()};
+}
+
+function dcBtn(txt, on, fn, val, acento){
+  var bg = on ? (acento || '#1a6b3a') : '#fff';
+  var co = on ? '#fff' : '#555';
+  var bo = on ? (acento || '#1a6b3a') : '#ccc';
+  return '<button type="button" onclick="' + fn + '(\'' + val + '\')" ' +
+    'style="font-size:10.5px;letter-spacing:.03em;padding:5px 12px;border-radius:3px;' +
+    'cursor:pointer;background:' + bg + ';color:' + co + ';border:1px solid ' + bo + ';' +
+    'font-weight:' + (on ? '700' : '500') + ';">' + txt + '</button>';
+}
+
+function dcPintaFiltros(){
+  var box = document.getElementById('dc-filtros');
+  if (!box) return;
+  var op = dcOpciones();
+  if (!op.meses.length && !op.faenas.length){ box.innerHTML = ''; return; }
+  var variosAnios = op.meses.length &&
+    op.meses[0].substring(0,4) !== op.meses[op.meses.length-1].substring(0,4);
+  var h = '<div style="background:#f4f6f4;border:1px solid #e0e4e0;border-radius:5px;' +
+          'padding:8px 11px;display:grid;gap:7px;">';
+  h += '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">' +
+       '<span style="font-size:9.5px;letter-spacing:.12em;color:#888;text-transform:uppercase;' +
+       'min-width:52px;">Faena</span>' +
+       dcBtn('Todas', DC_SEL.faena === 'all', 'dcSetFaena', 'all') +
+       op.faenas.map(function(f){
+         return dcBtn(f, DC_SEL.faena === f, 'dcSetFaena', f);
+       }).join('') + '</div>';
+  h += '<div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap;">' +
+       '<span style="font-size:9.5px;letter-spacing:.12em;color:#888;text-transform:uppercase;' +
+       'min-width:52px;">Per&iacute;odo</span>' +
+       dcBtn('Todo', DC_SEL.mes === 'all', 'dcSetMes', 'all', '#2c3e50') +
+       op.meses.map(function(m){
+         var t = DC_MESNOM[parseInt(m.substring(5,7))];
+         if (variosAnios) t += ' ' + m.substring(2,4);
+         return dcBtn(t, DC_SEL.mes === m, 'dcSetMes', m, '#2c3e50');
+       }).join('') + '</div>';
+  h += '<div style="font-size:9px;color:#999;">Estos dos selectores son solo de esta ' +
+       'secci&oacute;n: los gr&aacute;ficos Formin de arriba siguen con los filtros de la ' +
+       'cabecera.</div>';
+  box.innerHTML = h + '</div>';
+}
+
+function dcSetFaena(f){ DC_SEL.faena = f; renderDetalleCausas(); }
+function dcSetMes(m){ DC_SEL.mes = m; renderDetalleCausas(); }
+function dcMismaFaena(f1, fl){
+  if (fl.faena === 'all') return true;
+  return String(f1 || '').toLowerCase() === String(fl.faena).toLowerCase();
+}
+function dcNum(n, d){ return n.toLocaleString('es-CL', {maximumFractionDigits: (d === undefined ? 1 : d)}); }
+
+var DC_CATCOLOR = {
+  'FALLA EQUIPO':'#c0392b', 'ESPERA / FALTA DE MADERA':'#e67e22',
+  'DETENIDO POR FALTA DE MADEREO':'#e67e22', 'DETENIDO POR FALTA DE VOLTEO':'#d35400',
+  'ATOCHAMIENTO EN CANCHA':'#e59866', 'CLIMA':'#2980b9',
+  'CLIMA Y/O INCENDIO DETIENE OPERACION':'#2980b9', 'MANTENCION PROGRAMADA':'#27ae60',
+  'DISTANCIA DE SEGURIDAD':'#7f8c8d', 'ASISTENCIA / PERDIDA DE SENAL':'#8e44ad',
+  'CHARLA, CAPACITACIONES O REUNIONES':'#95a5a6', 'CHARLA Y PUESTA EN MARCHA':'#95a5a6',
+  'CARGA COMBUSTIBLE O ACEITE':'#b7950b', 'TRASLADO DE SECTOR':'#a0845c',
+  'TRASLADO DE FUNDO':'#a0845c', 'OTROS':'#8c9389', 'FALLA DE CARRO':'#a93226'
+};
+function dcColor(c){ return DC_CATCOLOR[String(c || '').toUpperCase()] || '#8c9389'; }
+
+/* Arma los datos segun la fuente elegida: {equipos:[], causas:[], tot, aporte:{}} */
+function dcDatos(){
+  var fl = dcFiltro();
+  var eq = {}, cau = {}, tot = 0, aporte = {}, nEq = 0;
+
+  if (DC_FUENTE === 'wa'){
+    (WA_DET || []).forEach(function(d){
+      if (!dcEnRango(d.ym, fl) || !dcMismaFaena(d.faena, fl)) return;
+      var k = d.faena + ' · ' + d.equipo;
+      if (!eq[k]) eq[k] = {faena:d.faena, equipo:d.equipo, proceso:d.proceso,
+                           hrs:0, hFalla:0, cau:{}, dias:{}, det:[]};
+      var g = eq[k];
+      g.hrs += d.hrs; g.dias[d.f] = 1;
+      g.cau[d.causa] = (g.cau[d.causa] || 0) + d.hrs;
+      if (String(d.causa).toUpperCase().indexOf('FALLA') >= 0) g.hFalla += d.hrs;
+      g.det.push({f:d.f, hrs:d.hrs, causa:d.causa, txt:d.motivo, quien:d.quien});
+      cau[d.causa] = (cau[d.causa] || 0) + d.hrs;
+      tot += d.hrs;
+    });
+    aporte = {'WhatsApp': tot};
+  } else {
+    Object.keys(HPERD_UNIF || {}).forEach(function(k){
+      var p = k.split('|');                       // EQUIPO|FAENA|YYYY-MM
+      if (p.length < 3) return;
+      var equipo = p[0], faena = p[1], ym = p[2];
+      if (!dcEnRango(ym, fl) || !dcMismaFaena(faena, fl)) return;
+      var u = HPERD_UNIF[k];
+      var kk = faena + ' · ' + equipo;
+      if (!eq[kk]) eq[kk] = {faena:faena, equipo:equipo, proceso:'',
+                             hrs:0, hFalla:0, cau:{}, dias:{}, det:[], nf:{}};
+      var g = eq[kk];
+      (u.dias || []).forEach(function(d){
+        if (!(d.hrs > 0) && !d.txt) return;
+        g.hrs += (d.hrs || 0); g.hFalla += (d.hFalla || 0); g.dias[d.fecha] = 1;
+        var c = d.causa || 'OTROS';
+        g.cau[c] = (g.cau[c] || 0) + (d.hrs || 0);
+        cau[c] = (cau[c] || 0) + (d.hrs || 0);
+        tot += (d.hrs || 0);
+        if (d.fuente) aporte[d.fuente] = (aporte[d.fuente] || 0) + (d.hrs || 0);
+        g.nf[d.nf >= 3 ? '3' : (d.nf === 2 ? '2' : '1')] =
+          (g.nf[d.nf >= 3 ? '3' : (d.nf === 2 ? '2' : '1')] || 0) + 1;
+        g.det.push({f:d.fecha, hrs:d.hrs, causa:c, txt:d.txt || d.obs || '',
+                    fuente:d.fuente, nf:d.nf, comp:d.comp, queFallo:d.queFallo,
+                    hFalla:d.hFalla});
+      });
+    });
+  }
+  var lstEq = Object.keys(eq).map(function(k){
+    var g = eq[k]; g.nDias = Object.keys(g.dias).length; return g;
+  }).filter(function(g){ return g.hrs > 0 || g.det.length; })
+    .sort(function(a, b){ return b.hrs - a.hrs; });
+  var lstCau = Object.keys(cau).map(function(c){ return {c:c, h:cau[c]}; })
+    .sort(function(a, b){ return b.h - a.h; });
+  return {equipos:lstEq, causas:lstCau, tot:tot, aporte:aporte, filtro:fl};
+}
+
+function renderDetalleCausas(){
+  var body = document.getElementById('dc-body');
+  if (!body) return;
+  var caja = document.getElementById('dc-filtros');
+  dcPintaBotones();
+  if (!DC_FUENTE){                       // plegado
+    body.innerHTML = '';
+    if (caja) caja.innerHTML = '';
+    return;
+  }
+  var op = dcOpciones();
+  if (DC_SEL.faena !== 'all' && op.faenas.indexOf(DC_SEL.faena) < 0) DC_SEL.faena = 'all';
+  if (DC_SEL.mes !== 'all' && op.meses.indexOf(DC_SEL.mes) < 0) DC_SEL.mes = 'all';
+  dcPintaFiltros();
+  var D = dcDatos();
+  console.log('[DC] fuente=' + DC_FUENTE + ' · WA_DET=' + (WA_DET||[]).length +
+              ' · UNIF=' + Object.keys(HPERD_UNIF||{}).length +
+              ' · equipos=' + D.equipos.length + ' · hrs=' + Math.round(D.tot));
+  var esWA = (DC_FUENTE === 'wa');
+
+  if (!D.equipos.length){
+    // Diagnostico: decir por que no hay nada, en vez de dejar la pantalla muda
+    var diag = '';
+    if (esWA){
+      var nTot = (WA_DET || []).length;
+      if (!nTot){
+        diag = 'La hoja <b>BaseWhatsApp</b> no está cargada. Aprieta <b>"Cargar Excel"</b> otra vez: ' +
+               'esa hoja se lee al procesar el archivo, no al restaurar del caché.';
+      } else {
+        var fa = {}, ms = {};
+        WA_DET.forEach(function(d){ fa[d.faena] = 1; if (d.ym) ms[d.ym] = 1; });
+        var lm = Object.keys(ms).sort();
+        diag = 'Hay <b>' + nTot + '</b> detenciones cargadas, pero ninguna calza con este filtro.<br>' +
+               'Faenas disponibles: <b>' + Object.keys(fa).join(', ') + '</b><br>' +
+               'Meses disponibles: <b>' + (lm.length ? lm[0] + ' a ' + lm[lm.length-1] : 'ninguno') + '</b><br>' +
+               'Filtro actual: faena <b>' + D.filtro.faena + '</b>, per&iacute;odo <b>' +
+               D.filtro.ym + '</b>';
+      }
+    } else {
+      var nU = Object.keys(HPERD_UNIF || {}).length;
+      diag = nU ? ('Hay <b>' + nU + '</b> claves cargadas pero ninguna calza con este filtro.')
+                : ('La hoja <b>BaseHorasPerdUnif</b> no está cargada. Aprieta <b>"Cargar Excel"</b> otra vez.');
+    }
+    body.innerHTML = '<div style="padding:14px;color:#666;font-size:11px;line-height:1.6;' +
+      'background:#fff8e1;border-left:3px solid #e67e22;">' + diag + '</div>';
+    return;
+  }
+
+  var h = '';
+  // --- resumen ---
+  var nFallaH = D.equipos.reduce(function(a, g){ return a + (g.hFalla || 0); }, 0);
+  h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">';
+  h += '<div style="flex:1;min-width:150px;background:#f4f8f5;border-left:3px solid #1a6b3a;padding:8px 12px;">' +
+       '<div style="font-size:10px;color:#666;text-transform:uppercase;">Horas perdidas</div>' +
+       '<div style="font-size:22px;font-weight:800;color:#1a6b3a;">' + dcNum(D.tot, 0) + '</div>' +
+       '<div style="font-size:10px;color:#888;">' + D.equipos.length + ' equipos</div></div>';
+  h += '<div style="flex:1;min-width:150px;background:#fdecea;border-left:3px solid #c0392b;padding:8px 12px;">' +
+       '<div style="font-size:10px;color:#666;text-transform:uppercase;">De ellas, falla de equipo</div>' +
+       '<div style="font-size:22px;font-weight:800;color:#c0392b;">' + dcNum(nFallaH, 0) + '</div>' +
+       '<div style="font-size:10px;color:#888;">' + (D.tot > 0 ? Math.round(100 * nFallaH / D.tot) : 0) + '% del total</div></div>';
+  if (D.causas.length){
+    h += '<div style="flex:1.4;min-width:200px;background:#fff8e1;border-left:3px solid #e67e22;padding:8px 12px;">' +
+         '<div style="font-size:10px;color:#666;text-transform:uppercase;">Mayor causa</div>' +
+         '<div style="font-size:13px;font-weight:800;color:#b9770e;line-height:1.2;margin-top:3px;">' + D.causas[0].c + '</div>' +
+         '<div style="font-size:10px;color:#888;">' + dcNum(D.causas[0].h, 0) + ' hrs · ' +
+         (D.tot > 0 ? Math.round(100 * D.causas[0].h / D.tot) : 0) + '%</div></div>';
+  }
+  h += '</div>';
+
+  // --- de donde sale el numero (solo en "todas") ---
+  if (!esWA){
+    var ap = Object.keys(D.aporte).sort(function(a, b){ return D.aporte[b] - D.aporte[a]; });
+    if (ap.length){
+      h += '<div style="background:#e8f4fd;border-left:3px solid #2980b9;padding:7px 12px;margin-bottom:10px;font-size:11px;color:#1a5276;">' +
+           '<b>De dónde sale este total:</b> ' +
+           ap.map(function(f){ return f + ' <b>' + dcNum(D.aporte[f], 0) + ' h</b>'; }).join(' · ') +
+           '. Por cada equipo y día se toma la fuente que más horas declara, no la suma.</div>';
+    }
+  } else {
+    h += '<div style="background:#eafaf1;border-left:3px solid #1a6b3a;padding:7px 12px;margin-bottom:10px;font-size:11px;color:#145a32;">' +
+         '<b>Solo lo reportado por WhatsApp.</b> Son las detenciones que el jefe de turno escribió en el grupo de la faena, ' +
+         'con su motivo textual. No incluye Mininco ni la planilla.</div>';
+  }
+
+  // --- ranking de causas ---
+  var mx = D.causas.length ? D.causas[0].h : 1;
+  h += '<div style="font-size:11px;font-weight:700;color:#555;margin:4px 0 6px;">POR QUÉ SE DETIENEN</div>';
+  h += '<div style="display:grid;gap:5px;margin-bottom:12px;">';
+  D.causas.slice(0, 12).forEach(function(c){
+    h += '<div>' +
+      '<div style="display:flex;justify-content:space-between;font-size:11px;">' +
+      '<span>' + c.c + '</span>' +
+      '<span style="font-family:monospace;">' + dcNum(c.h, 0) + ' h · ' +
+      (D.tot > 0 ? (100 * c.h / D.tot).toFixed(1) : 0) + '%</span></div>' +
+      '<div style="height:7px;background:#e8e8e8;border-radius:3px;overflow:hidden;margin-top:2px;">' +
+      '<div style="width:' + (100 * c.h / mx).toFixed(1) + '%;height:100%;background:' + dcColor(c.c) + ';"></div>' +
+      '</div></div>';
+  });
+  h += '</div>';
+
+  // --- equipo por equipo ---
+  h += '<div style="font-size:11px;font-weight:700;color:#555;margin:10px 0 6px;">EQUIPO POR EQUIPO</div>';
+  h += '<div style="display:grid;gap:8px;">';
+  D.equipos.forEach(function(g, gi){
+    var cs = Object.keys(g.cau).map(function(c){ return {c:c, h:g.cau[c]}; })
+              .sort(function(a, b){ return b.h - a.h; });
+    var mxe = cs.length ? cs[0].h : 1;
+    var resp = '';
+    if (!esWA && g.nf){
+      var n3 = g.nf['3'] || 0, n2 = g.nf['2'] || 0, n1 = g.nf['1'] || 0;
+      resp = '<span style="font-size:10px;margin-left:8px;">' +
+        (n3 ? '<span style="color:#1a6b3a;">&#9679; ' + n3 + '</span> ' : '') +
+        (n2 ? '<span style="color:#b8860b;">&#9679; ' + n2 + '</span> ' : '') +
+        (n1 ? '<span style="color:#c0392b;">&#9679; ' + n1 + '</span>' : '') + '</span>';
+    }
+    h += '<div style="border:1px solid #e0e0e0;border-radius:6px;padding:9px 12px;background:#fff;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;">' +
+      '<div><b style="font-size:13px;">' + g.equipo + '</b>' +
+      '<span style="font-size:10px;color:#888;margin-left:6px;">' + g.faena +
+      ' · ' + g.nDias + ' días</span>' + resp + '</div>' +
+      '<div style="font-family:monospace;font-size:13px;font-weight:700;color:#c0392b;">' +
+      dcNum(g.hrs, 0) + ' h</div></div>';
+    // barra apilada de causas
+    h += '<div style="display:flex;height:14px;border-radius:3px;overflow:hidden;margin:6px 0 4px;background:#eee;">';
+    cs.forEach(function(c){
+      if (g.hrs > 0) h += '<div title="' + c.c + ': ' + dcNum(c.h, 1) + ' h" style="width:' +
+        (100 * c.h / g.hrs).toFixed(2) + '%;background:' + dcColor(c.c) + ';"></div>';
+    });
+    h += '</div>';
+    // causas
+    h += '<div style="display:flex;flex-wrap:wrap;gap:4px 10px;font-size:10px;color:#555;margin-bottom:4px;">';
+    cs.slice(0, 6).forEach(function(c){
+      h += '<span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' +
+           dcColor(c.c) + ';margin-right:3px;"></span>' + c.c + ' <b>' + dcNum(c.h, 1) + '</b></span>';
+    });
+    h += '</div>';
+    // cascada: que fallo
+    var conFalla = g.det.filter(function(d){ return (d.hFalla > 0) || d.queFallo ||
+                    (esWA && String(d.causa).toUpperCase().indexOf('FALLA') >= 0); });
+    if (conFalla.length){
+      h += '<details style="margin-top:5px;"><summary style="cursor:pointer;font-size:11px;color:#c0392b;font-weight:700;">' +
+           '&#128295; Qué falló (' + conFalla.length + ' ' + (conFalla.length === 1 ? 'día' : 'días') + ')</summary>' +
+           '<table style="width:100%;border-collapse:collapse;font-size:10px;margin-top:5px;">';
+      conFalla.sort(function(a, b){ return a.f < b.f ? -1 : 1; }).forEach(function(d, i){
+        var texto = d.queFallo || d.txt || '<span style="color:#aaa;">no quedó anotado qué falló</span>';
+        h += '<tr style="background:' + (i % 2 ? '#fdf3f2' : '#fff') + ';vertical-align:top;">' +
+          '<td style="padding:3px 6px;border-bottom:1px solid #f1d5d2;white-space:nowrap;width:56px;">' +
+          String(d.f || '').substring(5) + '</td>' +
+          '<td style="padding:3px 6px;border-bottom:1px solid #f1d5d2;text-align:right;width:46px;font-weight:700;color:#922b21;">' +
+          ((d.hFalla || d.hrs) ? dcNum(d.hFalla || d.hrs, 1) + ' h' : '—') + '</td>' +
+          (esWA ? '' : '<td style="padding:3px 6px;border-bottom:1px solid #f1d5d2;width:140px;color:#7b241c;">' +
+            (d.comp || '<span style="color:#aaa;">sin identificar</span>') + '</td>') +
+          '<td style="padding:3px 6px;border-bottom:1px solid #f1d5d2;color:#444;line-height:1.35;">' +
+          texto + '</td></tr>';
+      });
+      h += '</table></details>';
+    }
+    h += '</div>';
+  });
+  h += '</div>';
+
+  // --- pie ---
+  h += '<div style="font-size:9px;color:#999;margin-top:8px;">' +
+    (esWA ? 'Hoja <b>BaseWhatsApp</b> · lo que reporta la faena por el chat, sin combinar con otras fuentes.'
+          : 'Hoja <b>BaseHorasPerdUnif</b> · Mininco + BaseHorasTrab/Per + BaseProductibTorre + BaseProductibSk + WhatsApp. ' +
+            'Los puntos de color indican cuántas fuentes respaldan cada día: verde 3 o más, ámbar 2, rojo una sola.') +
+    '</div>';
+
+  body.innerHTML = h;
 }
 
 function applyFilters() {
@@ -4064,6 +4474,10 @@ function applyFilters() {
 
   document.getElementById('filter-info').textContent = 
     data.length + ' registros • ' + faenaLabel + ' • ' + ML3[mesIni] + '–' + ML3[mesFin] + ' ' + anioLabel;
+
+  // el detalle de causas sigue los mismos filtros de arriba
+  try { if (document.getElementById('dc-body')) renderDetalleCausas(); }
+  catch(edc) { console.warn('[DC]', edc.message); }
 
   if (!data.length) {
     // Limpiar TODOS los KPIs y gráficos al no haber datos
@@ -6011,6 +6425,8 @@ function loadExcel(input) {
       var COL_M3BD   = C(['VOL_REAL','VOLREAL','VOLUMEN_REAL','M3_REAL','M3','PRODUCCION'], 89);
       var COL_OPER   = C(['NOMBREOPERADOR','NOMBRE_OPERADOR','OPERADOR','OPERATOR'], 95);
       var COL_HRT    = C(['HRT','HR_T','HRS_TURNO_OP','HRTURNO','HR/T'], 93);
+      // N° de maquina (columna N): sirve para cruzar con Tabla38 y resolver operadores
+      var COL_EQUIPO = C(['EQUIPO'], 13);
       // Mezcla de VMA por rodal: O = Fundo, P = Fundo nombre, Q = Rodal,
       // Z = Volumen árbol, AF = N° árboles.
       // El rodal NO identifica solo: dos fundos distintos pueden traer el mismo número de
@@ -6209,6 +6625,91 @@ function loadExcel(input) {
         bd.E26+=parseFloat(row[cE(26,81)])||0; bd.E27+=parseFloat(row[cE(27,82)])||0;
         bd.E99+=parseFloat(row[cE(99,83)])||0;
       }
+      /* === Nombres de operador que Formin deja en blanco ===
+         "Base datos Procesador Mecaniz" trae 134 filas (24%) con el operador en "—",
+         pero con turno, horas y producción: 32.242 m³ que quedaban sin asignar a nadie.
+         La hoja Tabla38 es espejo fila a fila de esa hoja y sí resuelve el nombre,
+         aplicando la regla de "Personal por faena". Acá se leen esos nombres.
+         El cruce es por posición (Tabla38 usa INDICE(Tabla3;FILA()-4)), y se valida
+         contra faena y día antes de usarlo: si no calzan, no se toca la fila. */
+      // limpieza propia: gxClean se define mas abajo y aca todavia no existe
+      function t38Clean(v){
+        return String(v == null ? '' : v)
+          .replace(/[\u00A0\u200B\uFEFF\u2007\u202F\u2060\u3000]/g, ' ')
+          .replace(/\s+/g, ' ').trim();
+      }
+      function sinNombre(o){
+        var z = t38Clean(o);
+        return !z || z === '0' || z === '-' || z === '\u2014' || z === '(Sin nombre)';
+      }
+
+      /* === Nombres de operador que Formin deja en blanco ===
+         "Base datos Procesador Mecaniz" trae 134 filas (24%) con el operador en "—",
+         pero con turno, horas y produccion: 32.242 m3 que quedaban sin asignar a nadie.
+         Tabla38 es espejo de esa hoja y si resuelve el nombre con la regla de
+         "Personal por faena". Se cruza por faena + fecha + N° de maquina; cuando un dia
+         tiene los dos turnos con la misma maquina, se van tomando en orden. */
+      var T38IDX = {}, T38N = 0;
+      try {
+        var ws38 = wb.Sheets['Tabla38'];
+        if (ws38) {
+          var r38 = XLSX.utils.sheet_to_json(ws38, {header:1, defval:null, raw:true});
+          var h38 = -1;
+          for (var q = 0; q < Math.min(10, r38.length); q++) {
+            var fl = (r38[q] || []).map(function(c){ return t38Clean(c).toLowerCase(); });
+            if (fl.indexOf('nombre operador') >= 0) { h38 = q; break; }
+          }
+          if (h38 >= 0) {
+            var i38 = {};
+            (r38[h38] || []).forEach(function(c, j){
+              var n = t38Clean(c).toLowerCase().replace(/\s+/g, ' ');
+              if (n && i38[n] === undefined) i38[n] = j;
+            });
+            var c38o = i38['nombre operador'], c38f = i38['faenas'],
+                c38m = i38['mes'], c38d = i38['dia'], c38q = i38['n°maquina'];
+            if (c38q === undefined) c38q = i38['n maquina'];
+            if (c38q === undefined) c38q = i38['nmaquina'];
+            for (var q2 = h38 + 1; q2 < r38.length; q2++) {
+              var rr = r38[q2];
+              if (!rr) continue;
+              var op = c38o !== undefined ? t38Clean(rr[c38o]) : '';
+              if (sinNombre(op)) continue;
+              var fa = c38f !== undefined ? t38Clean(rr[c38f]) : '';
+              var me = c38m !== undefined ? t38Clean(rr[c38m]).replace('/', '-') : '';
+              var di = c38d !== undefined ? t38Clean(rr[c38d]) : '';
+              var mq = c38q !== undefined ? t38Clean(rr[c38q]) : '';
+              if (!fa || !me || !di) continue;
+              if (di.length < 2) di = '0' + di;
+              var k38 = fa.toLowerCase() + '|' + me + '-' + di + '|' + mq;
+              if (!T38IDX[k38]) T38IDX[k38] = [];
+              T38IDX[k38].push(op);
+              T38N++;
+            }
+            console.log('[T38] Tabla38: ' + T38N + ' operadores indexados en ' +
+                        Object.keys(T38IDX).length + ' claves faena-dia-maquina');
+          } else {
+            console.warn('[T38] no encontre la fila de encabezados en Tabla38');
+          }
+        } else {
+          console.log('[T38] hoja Tabla38 no encontrada');
+        }
+      } catch(e38) { console.warn('[T38] error leyendo Tabla38:', e38.message); T38IDX = {}; }
+
+      var T38USO = {};
+      /* Operador que dice Tabla38 para esta faena + dia + maquina. */
+      function operDeT38(faenaBD, fechaStr, maq){
+        if (!T38N || !faenaBD || !fechaStr) return '';
+        var k = String(faenaBD).toLowerCase() + '|' + String(fechaStr).substring(0, 10) +
+                '|' + t38Clean(maq);
+        var lista = T38IDX[k];
+        if (!lista || !lista.length) return '';
+        var u = T38USO[k] || 0;
+        var val = lista[u < lista.length ? u : lista.length - 1];
+        T38USO[k] = u + 1;
+        return val || '';
+      }
+      var _t38ok = 0, _t38no = 0;
+
       // === Agregación por Operador (para vista Rend Operadores) ===
       var operGrouped = {};
       for (var i = dataStart; i < rows1.length; i++) {
@@ -6222,7 +6723,11 @@ function loadExcel(input) {
         var mes  = parseInt(anioMes.substring(4,6));
         if (!anio || !mes) continue;
         var oper = String(row[COL_OPER]||'').trim();
-        if (!oper || oper === '0') oper = '(Sin nombre)';
+        if (sinNombre(oper)) {
+          var _res = operDeT38(faena, excelDateToStr(row[COL_FECHA]), row[COL_EQUIPO]);
+          if (_res) { oper = _res; _t38ok++; } else { _t38no++; }
+        }
+        if (sinNombre(oper)) oper = '(Sin nombre)';
         var hrs = parseFloat(row[COL_HRT])||0;
         var m3v = parseFloat(row[COL_M3BD])||0;
         var narb = parseFloat(row[COL_NARB])||0;
@@ -6235,10 +6740,18 @@ function loadExcel(input) {
         // Detalle día por día, para el botón de la columna "Hrs turno"
         og.DET.push({f: excelDateToStr(row[COL_FECHA]), h: hrs, m3: m3v, n: narb, v: vmaRow});
       }
+      if (_t38ok || _t38no) console.log('[T38] operadores resueltos con Tabla38: ' + _t38ok +
+                  ' · sin resolver: ' + _t38no);
       window.OPER_DATA = Object.values(operGrouped).filter(function(r){ return r.HRS > 0 || r.M3 > 0; }).map(function(r){
         r.VMA = r.VMA_cnt > 0 ? r.VMA_sum / r.VMA_cnt : 0;
         return r;
       });
+      /* Copia de lo que dice Base datos Procesador Mecaniz (Formin), con su detalle día
+         por día. BaseHorasTrab reemplaza a OPER_DATA desde agosto, pero hay días que la
+         planilla no tiene y Formin sí (Mec 3: 2, 5 y 30 de agosto). Con esta copia se
+         pueden rescatar esos turnos en vez de perder la producción de esos días. */
+      window.OPER_DATA_BD = JSON.parse(JSON.stringify(window.OPER_DATA));
+      console.log('[BD] OPER_DATA_BD (Formin) guardado: ' + window.OPER_DATA_BD.length + ' operador-mes');
 
       // === Mezcla de VMA por faena+mes (para el recuadro "VMA real del período") ===
       // Un mes puede trabajarse en varios rodales a la vez, cada uno con su propio VMA,
@@ -6463,7 +6976,7 @@ function loadExcel(input) {
             });
           }
         }
-        INFORME_HRS = newIHRS;
+        INFORME_HRS = sinFaenasFuera(newIHRS);
         console.log('[IHP] InformeHrsProc: ' + newIHRS.length + ' registros máquina-mes cargados');
       } else {
         INFORME_HRS = [];
@@ -7029,7 +7542,7 @@ function loadExcel(input) {
                     rodal: htRodal !== undefined ? gxClean(rb2[htRodal]) : ''
                   });
                 }
-                BHT_DIAS = bhtDias;
+                BHT_DIAS = sinFaenasFuera(bhtDias);
                 console.log('[BHT] ' + BHT_DIAS.length + ' registros operador-día desde ' + BHT_DESDE);
                 var eqSinProc = Object.keys(bhtSinProc);
                 if (eqSinProc.length) console.warn('[BHT] Equipos sin proceso en BaseHorasTrab (ni deducible por nombre): ' + eqSinProc.join(', '));
@@ -7224,6 +7737,151 @@ function loadExcel(input) {
                 }
               }
             }
+            // 8d) BaseHorasPerdUnif → horas perdidas ya combinadas (Mininco + planilla + WhatsApp)
+            //     La hoja trae el titulo en la fila 1 y los encabezados en la fila 3.
+            try {
+              HPERD_UNIF = {};
+              var wsUN = wb.Sheets['BaseHorasPerdUnif'];
+              if (wsUN) {
+                var rwsUN = XLSX.utils.sheet_to_json(wsUN, {header:1, defval:null, raw:true});
+                var unHdr = -1;
+                for (var uh = 0; uh < Math.min(8, rwsUN.length); uh++) {
+                  var fila = (rwsUN[uh] || []).map(function(c){ return gxClean(c).toLowerCase(); });
+                  if (fila.indexOf('equipo') >= 0 && fila.indexOf('faena') >= 0) { unHdr = uh; break; }
+                }
+                if (unHdr >= 0) {
+                  var uH = rwsUN[unHdr], uIdx = {};
+                  for (var ui = 0; ui < uH.length; ui++) {
+                    var un = gxClean(uH[ui]).toLowerCase().replace(/\s+/g,' ');
+                    if (un && uIdx[un] === undefined) uIdx[un] = ui;
+                  }
+                  var cFe = uIdx['fecha'], cFa = uIdx['faena'], cEq = uIdx['equipo'];
+                  var cMes = uIdx['añomes']; if (cMes === undefined) cMes = uIdx['anomes'];
+                  var cHrs = uIdx['horas perdidas'];
+                  var cSrc = uIdx['la aporta'], cNf = uIdx['n° fuentes'];
+                  if (cNf === undefined) cNf = uIdx['n fuentes'];
+                  var cCau = uIdx['causa principal'];
+                  var cDFO = uIdx['causas mininco'], cDBP = uIdx['causas basehorasper'];
+                  var cObs = uIdx['observación planilla'];
+                  if (cObs === undefined) cObs = uIdx['observacion planilla'];
+                  var cTxt = uIdx['detalle whatsapp'];
+                  var cHF = uIdx['hrs falla equipo'];
+                  var cCmp = uIdx['componente que falló'];
+                  if (cCmp === undefined) cCmp = uIdx['componente que fallo'];
+                  var cQF = uIdx['qué falló'];
+                  if (cQF === undefined) cQF = uIdx['que fallo'];
+                  if (cEq !== undefined && cFa !== undefined && cHrs !== undefined && cMes !== undefined) {
+                    var nUn = 0;
+                    for (var ur = unHdr + 1; ur < rwsUN.length; ur++) {
+                      var rU = rwsUN[ur]; if (!rU) continue;
+                      var eqU = gxClean(rU[cEq]); if (!eqU) continue;
+                      var faU = gxClean(rU[cFa]); if (!faU) continue;
+                      var ymU = parseFloat(rU[cMes]); if (!isFinite(ymU)) continue;
+                      var ymS = String(Math.round(ymU));
+                      if (ymS.length < 6) continue;
+                      var mesU = ymS.substring(0,4) + '-' + ymS.substring(4,6);
+                      var mFa = faU.match(/Mec\D*(\d)/i);
+                      var faSh = mFa ? 'Mec ' + mFa[1] : faU;
+                      var kU = kUnif(eqU, faSh, mesU);
+                      if (!HPERD_UNIF[kU]) HPERD_UNIF[kU] = {hrs: 0, dias: []};
+                      var hU = parseFloat(rU[cHrs]) || 0;
+                      HPERD_UNIF[kU].hrs += hU;
+                      HPERD_UNIF[kU].hFalla = (HPERD_UNIF[kU].hFalla || 0) +
+                        (cHF !== undefined ? (parseFloat(rU[cHF]) || 0) : 0);
+                      HPERD_UNIF[kU].dias.push({
+                        fecha: cFe !== undefined ? excelDateToStr(rU[cFe]) : '',
+                        hrs: hU,
+                        fuente: cSrc !== undefined ? (gxClean(rU[cSrc]) || '') : '',
+                        nf: cNf !== undefined ? (parseFloat(rU[cNf]) || 0) : 0,
+                        causa: cCau !== undefined ? (gxClean(rU[cCau]) || '') : '',
+                        detFO: cDFO !== undefined ? (gxClean(rU[cDFO]) || '') : '',
+                        detBP: cDBP !== undefined ? (gxClean(rU[cDBP]) || '') : '',
+                        obs:   cObs !== undefined ? (gxClean(rU[cObs]) || '') : '',
+                        txt:   cTxt !== undefined ? (gxClean(rU[cTxt]) || '') : '',
+                        hFalla: cHF !== undefined ? (parseFloat(rU[cHF]) || 0) : 0,
+                        comp:   cCmp !== undefined ? (gxClean(rU[cCmp]) || '') : '',
+                        queFallo: cQF !== undefined ? (gxClean(rU[cQF]) || '') : ''
+                      });
+                      nUn++;
+                    }
+                    Object.keys(HPERD_UNIF).forEach(function(k){
+                      HPERD_UNIF[k].hrs = Math.round(HPERD_UNIF[k].hrs * 100) / 100;
+                      HPERD_UNIF[k].hFalla = Math.round((HPERD_UNIF[k].hFalla || 0) * 100) / 100;
+                      HPERD_UNIF[k].dias.sort(function(a,b){ return a.fecha < b.fecha ? -1 : 1; });
+                    });
+                    console.log('[UNIF] BaseHorasPerdUnif: ' + nUn + ' filas equipo-día · ' +
+                                Object.keys(HPERD_UNIF).length + ' claves equipo-mes');
+                  } else {
+                    console.warn('[UNIF] Faltan columnas en BaseHorasPerdUnif');
+                  }
+                } else {
+                  console.warn('[UNIF] No encontré la fila de encabezados en BaseHorasPerdUnif');
+                }
+              } else {
+                console.log('[UNIF] Hoja BaseHorasPerdUnif no encontrada: se usa BaseHorasPer');
+              }
+            } catch(eun) {
+              console.warn('[UNIF] Error leyendo BaseHorasPerdUnif:', eun.message);
+              HPERD_UNIF = {};
+            }
+
+            // 8e) BaseWhatsApp → detenciones tal cual las reporta la faena por el chat
+            try {
+              WA_DET = [];
+              var wsWA = wb.Sheets['BaseWhatsApp'];
+              if (wsWA) {
+                var rwsWA = XLSX.utils.sheet_to_json(wsWA, {header:1, defval:null, raw:true});
+                var waHdr = -1;
+                for (var wh = 0; wh < Math.min(8, rwsWA.length); wh++) {
+                  var fw = (rwsWA[wh] || []).map(function(c){ return gxClean(c).toLowerCase(); });
+                  if (fw.indexOf('equipo') >= 0 && fw.indexOf('causa') >= 0) { waHdr = wh; break; }
+                }
+                if (waHdr >= 0) {
+                  var wI = {};
+                  (rwsWA[waHdr] || []).forEach(function(c, j){
+                    var n = gxClean(c).toLowerCase().replace(/\s+/g, ' ');
+                    if (n && wI[n] === undefined) wI[n] = j;
+                  });
+                  var wFe = wI['fecha'], wFa = wI['faena'], wEq = wI['equipo'],
+                      wPr = wI['proceso'], wHr = wI['horas'], wCa = wI['causa'],
+                      wTi = wI['tipo'], wMo = wI['motivo textual'], wQu = wI['reportó'];
+                  if (wQu === undefined) wQu = wI['reporto'];
+                  var wYm = wI['añomes']; if (wYm === undefined) wYm = wI['anomes'];
+                  if (wFe !== undefined && wEq !== undefined && wCa !== undefined) {
+                    for (var wr = waHdr + 1; wr < rwsWA.length; wr++) {
+                      var rw = rwsWA[wr];
+                      if (!rw) continue;
+                      var eqw = gxClean(rw[wEq]); if (!eqw) continue;
+                      var faw = wFa !== undefined ? gxClean(rw[wFa]) : '';
+                      var ymw = wYm !== undefined ? (parseFloat(rw[wYm]) || 0) : 0;
+                      var ymS = String(Math.round(ymw));
+                      WA_DET.push({
+                        f: excelDateToStr(rw[wFe]),
+                        ym: ymS.length >= 6 ? ymS.substring(0,4) + '-' + ymS.substring(4,6) : '',
+                        faena: faw, equipo: eqw,
+                        proceso: wPr !== undefined ? gxClean(rw[wPr]) : '',
+                        hrs: wHr !== undefined ? (parseFloat(rw[wHr]) || 0) : 0,
+                        causa: gxClean(rw[wCa]),
+                        tipo: wTi !== undefined ? gxClean(rw[wTi]) : '',
+                        motivo: wMo !== undefined ? gxClean(rw[wMo]) : '',
+                        quien: wQu !== undefined ? gxClean(rw[wQu]) : ''
+                      });
+                    }
+                    console.log('[WA] BaseWhatsApp: ' + WA_DET.length + ' detenciones del chat');
+                  } else {
+                    console.warn('[WA] faltan columnas en BaseWhatsApp');
+                  }
+                } else {
+                  console.warn('[WA] no encontré la fila de encabezados en BaseWhatsApp');
+                }
+              } else {
+                console.log('[WA] hoja BaseWhatsApp no encontrada');
+              }
+            } catch(ewa) {
+              console.warn('[WA] error leyendo BaseWhatsApp:', ewa.message);
+              WA_DET = [];
+            }
+
             // Poblar CAUSAS_HPERD con claves compatibles con INFORME_HRS (equipo|Mec N|YYYY-MM)
             CAUSAS_HPERD = {};
             Object.keys(dieselCausas).forEach(function(k){
@@ -7325,9 +7983,12 @@ function loadExcel(input) {
         faja_daily: (typeof FAJA_DAILY!=='undefined'?FAJA_DAILY:{}),
         informe_hrs: (typeof INFORME_HRS!=='undefined'?INFORME_HRS:[]),
         oper_data: (typeof OPER_DATA!=='undefined'?OPER_DATA:(window.OPER_DATA||[])),
+        oper_data_bd: (window.OPER_DATA_BD||[]),
         grafx: (typeof GRAFX!=='undefined'&&GRAFX?GRAFX:{}),
         diesel: (typeof DIESEL_DATA!=='undefined'&&DIESEL_DATA?DIESEL_DATA:[]),
         causas_hperd: (typeof CAUSAS_HPERD!=='undefined'?CAUSAS_HPERD:{}),
+        hperd_unif: (typeof HPERD_UNIF!=='undefined'?HPERD_UNIF:{}),
+        wa_det: (typeof WA_DET!=='undefined'?WA_DET:[]),
         diesel_detalle: (typeof DIESEL_DETALLE!=='undefined'?DIESEL_DETALLE:{}),
         vma_mix: (typeof VMA_MIX!=='undefined'?VMA_MIX:{}),
         vma_dia: (typeof VMA_DIA!=='undefined'?VMA_DIA:{}),
@@ -7799,6 +8460,18 @@ var BEST_DAILY = {"Mec 2": {"2025-01-01": {"m3": 0.0, "hrs": 0.0, "tob": 0.0, "t
 
 var FAJA_DAILY = {}; // {dateStr: m3} producción diaria de fajas
 var OFERTA_RODAL = []; // [{faena,mes,fundo,rodal,vma,days:{day:m3},total}] oferta x rodal
+// Faenas que NO entran en la ficha de KPIs. La Faja no es cosecha mecanizada: no tiene
+// estándar por VMA ni máquinas comparables, así que ensucia horas, rendimientos y costos.
+// Ojo: FAJA_DAILY y BEST_DAILY quedan intactos — el panel de producción diaria sí la muestra.
+var FAENAS_FUERA_KPI = ['faja'];
+function sinFaenasFuera(arr){
+  if (!arr || !arr.length) return arr || [];
+  return arr.filter(function(r){
+    var f = String((r && (r.faena || r.FAENA)) || '').toLowerCase();
+    return !FAENAS_FUERA_KPI.some(function(x){ return f.indexOf(x) >= 0; });
+  });
+}
+
 var INFORME_HRS = [];  // [{mes:'YYYY-MM',faena:'Mec 3',proceso,codigo,maquina,hrs,hrsPerd,dias}] hoja InformeHrsProc
 // "Mec 5|202608" -> [{fundo,fundoNom,rodal,vma,arb,m3}] ordenado por m³ desc.
 // m³ = VMA × N° árboles (columnas Z × AF). Clave de agrupación: fundo + rodal + VMA.
@@ -7843,6 +8516,9 @@ function bhtProcPorEquipo(equipo) {
    botón "?"). Si para ese equipo/mes no hay ni una fila de causas, se cae a la columna
    "Hrs perdidas" de BaseHorasTrab para no mostrar 0 cuando sí hubo detención. */
 function hperdEquipoMes(equipo, faenaShort, mes, fallbackBHT) {
+  // 1º la hoja unificada, que ya combinó las tres fuentes
+  var u = (window.HPERD_UNIF || {})[kUnif(equipo, faenaShort, mes)];
+  if (u && u.hrs > 0) return u.hrs;
   var arr = (window.CAUSAS_HPERD || {})[equipo + '|' + faenaShort + '|' + mes];
   if (arr && arr.length) {
     var s = 0;
@@ -7906,6 +8582,31 @@ function bhtFundoCod(fundo){
    así que sirve de respaldo para el filtro por rodal de Rend Operadores.
    Si un día tocó más de un rodal, se toma el de mayor producción. */
 var PROD_ROD_DIA = null;
+/* m³ de la cartola (hoja produc) por faena y día.
+   El panel Rend Estándar vs Real usa la cartola; el de operadores usaba la columna
+   "m³ producidos" de BaseHorasTrab, que trae menos (Mec 3 agosto: 22.747 contra 27.569).
+   Con esto la producción repartida entre operadores cuadra con la cartola, que es la
+   regla de la casa: manda produc. */
+var PROD_M3_DIA = null;
+function prodM3Dia(){
+  if (PROD_M3_DIA) return PROD_M3_DIA;
+  PROD_M3_DIA = {};
+  var PR = window.PROD_RODAL || {};
+  Object.keys(PR).forEach(function(k){
+    var p = k.split('|');                       // faena|cancha|rodal
+    if (!p.length) return;
+    var fa = p[0];
+    Object.keys(PR[k]).forEach(function(fecha){
+      var m3 = PR[k][fecha] || 0;
+      if (!(m3 > 0)) return;
+      var kk = fa + '|' + fecha;
+      PROD_M3_DIA[kk] = (PROD_M3_DIA[kk] || 0) + m3;
+    });
+  });
+  console.log('[M3] cartola por faena-dia desde produc: ' + Object.keys(PROD_M3_DIA).length + ' dias');
+  return PROD_M3_DIA;
+}
+
 function prodRodalDia(){
   if (PROD_ROD_DIA) return PROD_ROD_DIA;
   PROD_ROD_DIA = {};
@@ -7985,17 +8686,81 @@ function bhtAplicarAOperadores(){
     if (ym < BHT_DESDE) return true;                  // histórico: intacto
     return !cob[r.FAENA + '|' + ym];                  // sin datos en BaseHorasTrab: se mantiene
   });
-  var grp = {};
+  // Árboles y m³ de BaseHorasTrab por faena+día (solo Procesado), para repartir la cartola
+  var pm3 = prodM3Dia();
+  var totDia = {};
   BHT_DIAS.forEach(function(d){
+    if (!/^procesad/i.test(d.proceso)) return;
+    var kd = d.faena + '|' + d.fecha;
+    if (!totDia[kd]) totDia[kd] = {arb: 0, hrs: 0, m3: 0};
+    totDia[kd].arb += (d.arb || 0);
+    totDia[kd].hrs += (d.hrs || 0);
+    totDia[kd].m3  += (d.m3  || 0);
+  });
+  /* m³ del día para este registro, ajustado a la cartola.
+     Se reparte proporcional a los árboles informados (si no hay árboles, por horas),
+     igual que la columna m3Ajustado del Excel. Si ese día no hay cartola, se deja el
+     m³ de BaseHorasTrab tal cual. */
+  function m3Cartola(d){
+    var kd = d.faena + '|' + d.fecha;
+    var cart = pm3[kd] || 0;
+    var t = totDia[kd];
+    if (!(cart > 0) || !t) return d.m3 || 0;
+    if (t.arb > 0) return cart * ((d.arb || 0) / t.arb);
+    if (t.hrs > 0) return cart * ((d.hrs || 0) / t.hrs);
+    return d.m3 || 0;
+  }
+  var _ajusteN = 0, _ajusteM3 = 0;
+
+  /* Días de Procesado que BaseHorasTrab NO trae y Formin sí. Regla de la casa: cuando
+     falta el turno en BaseHorasTrab se usa Base datos Procesador Mecaniz. Sin esto la
+     producción de esos días queda sin repartir entre los operadores. */
+  var diasBHT = {};
+  BHT_DIAS.forEach(function(d){
+    if (/^procesad/i.test(d.proceso)) diasBHT[d.faena + '|' + d.fecha] = true;
+  });
+  var RESCATE = [];
+  (window.OPER_DATA_BD || []).forEach(function(r){
+    var ym = r.ANIO * 100 + r.MES;
+    if (ym < BHT_DESDE) return;                       // antes de agosto ya se usa Formin
+    if (!cob[r.FAENA + '|' + ym]) return;             // faena-mes que igual sale de Formin
+    (r.DET || []).forEach(function(dd){
+      if (!dd || !dd.f) return;
+      var kd = r.FAENA + '|' + dd.f;
+      if (diasBHT[kd]) return;                        // ese día sí está en la planilla
+      if (!(dd.h > 0) && !(dd.n > 0)) return;
+      RESCATE.push({faena: r.FAENA, fecha: dd.f, ym: ym, proceso: 'Procesado',
+                    oper: r.OPER, hrs: dd.h || 0, arb: dd.n || 0, m3: dd.m3 || 0,
+                    vma: dd.v || 0, equipo: '', rodal: '', fundo: '', _bd: true});
+    });
+  });
+  if (RESCATE.length){
+    var _dR = {}, _hR = 0;
+    RESCATE.forEach(function(x){ _dR[x.faena + '|' + x.fecha] = 1; _hR += x.hrs; });
+    console.log('[BD] rescatados de Formin: ' + RESCATE.length + ' registros en ' +
+                Object.keys(_dR).length + ' días que BaseHorasTrab no tiene (' +
+                Math.round(_hR) + ' hrs)');
+  }
+  // los días rescatados también cuentan para repartir la cartola
+  RESCATE.forEach(function(d){
+    var kd = d.faena + '|' + d.fecha;
+    if (!totDia[kd]) totDia[kd] = {arb: 0, hrs: 0, m3: 0};
+    totDia[kd].arb += d.arb; totDia[kd].hrs += d.hrs; totDia[kd].m3 += d.m3;
+  });
+
+  var grp = {};
+  BHT_DIAS.concat(RESCATE).forEach(function(d){
     if (!/^procesad/i.test(d.proceso)) return;
     var anio = Math.floor(d.ym/100), mes = d.ym % 100;
     var k = d.faena + '|' + anio + '|' + mes + '|' + d.oper;
     if (!grp[k]) grp[k] = {FAENA:d.faena, ANIO:anio, MES:mes, OPER:d.oper,
                            M3:0, HRS:0, NARB:0, DIAS:0, VMA_sum:0, VMA_cnt:0, DET:[]};
     var g = grp[k];
-    g.M3 += d.m3; g.HRS += d.hrs; g.NARB += d.arb; g.DIAS++;
+    var _m3 = m3Cartola(d);
+    if (Math.abs(_m3 - (d.m3 || 0)) > 0.01){ _ajusteN++; _ajusteM3 += _m3 - (d.m3 || 0); }
+    g.M3 += _m3; g.HRS += d.hrs; g.NARB += d.arb; g.DIAS++;
     // VMA del día resuelto contra "Base datos" (ver bhtVmaResolver)
-    var vr = bhtVmaResolver(d);
+    var vr = d._bd ? {vma: d.vma || 0, src: 'bd', bht: 0} : bhtVmaResolver(d);
     if (vr.vma > 0){ g.VMA_sum += vr.vma; g.VMA_cnt++; }
     // Rodal y fundo: los de la fila si vienen; si no, los que dice "produc" ese día.
     var _k = d.faena + '|' + d.fecha;
@@ -8003,9 +8768,13 @@ function bhtAplicarAOperadores(){
     if (!_ro){ _ro = prd[_k] || ''; if (_ro) _rs = 'p'; }
     var _fu = d.fundo || '';
     if (!_fu) _fu = pfd[_k] || '';
-    g.DET.push({f:d.fecha, h:d.hrs, m3:d.m3, n:d.arb, v:vr.vma, vs:vr.src, vb:vr.bht,
+    g.DET.push({f:d.fecha, h:d.hrs, m3:_m3, n:d.arb, v:vr.vma, vs:vr.src, vb:vr.bht,
                 ro:_ro, fu:_fu, fc:fundoCorto(_fu), rs:_rs});
   });
+  if (_ajusteN > 0){
+    console.log('[M3] ' + _ajusteN + ' registros de operador ajustados a la cartola (' +
+                (_ajusteM3 > 0 ? '+' : '') + Math.round(_ajusteM3) + ' m³)');
+  }
   var nuevos = Object.keys(grp).map(function(k){
     var r = grp[k];
     r.VMA = r.VMA_cnt > 0 ? r.VMA_sum/r.VMA_cnt : 0;
@@ -8074,7 +8843,29 @@ var OFERTA_FECHA_ACT = ''; // fecha_actualizacion más reciente (frescura del da
 var PROD_RODAL = {};   // {"faena|cancha|rodal": {"YYYY-MM-DD": m3}} produc x rodal
 var GRAFX = null;      // datos hoja Tablaparametros para gráficos Rendimiento m³ / Combustible (hoja "Graficos" del Excel)
 var DIESEL_DATA = null; // datos panel "Combustible Consumido vs Programado" (replica TabladinamicaDiesel), array de {equipo,faena,ym,empresa,tipo,cod,lts,hrs,hperd,rendAct,rendStd,difLts,mesTxt}
+/* Sello de version: se imprime en la consola al abrir. Si el numero que aparece
+   no es el ultimo, el navegador esta sirviendo una copia vieja del archivo. */
+var APP_BUILD = '02-09-2026 brechas';
+console.log('%c[APP] build ' + APP_BUILD, 'background:#1a6b3a;color:#fff;padding:2px 6px;');
+
 var CAUSAS_HPERD = {}; // key equipo|faenaShort|YYYY-MM → [{causa, hrs, obs}] (BaseHorasPer)
+
+/* Horas perdidas UNIFICADAS (hoja BaseHorasPerdUnif del Best 2025).
+   Combina Mininco + BaseHorasTrab/Per + WhatsApp: por equipo-día se queda la mayor de las
+   tres, porque las tres miden lo mismo con distinta completitud. Rescata los días de paro
+   total que solo registra Mininco y las detenciones que solo quedaron en el WhatsApp.
+   key equipo|faenaShort|YYYY-MM → {hrs, dias:[{fecha,hrs,fuente,nf,causa,detFO,detBP,obs,txt}]} */
+var HPERD_UNIF = {};
+
+/* Detenciones tal como las reporta el WhatsApp de faena (hoja BaseWhatsApp).
+   Es la versión "cruda" del chat, sin combinar con Mininco ni con la planilla:
+   la usa el detalle de causas cuando se elige "Fuente WhatsApp".
+   [{f, ym, faena, equipo, proceso, hrs, causa, tipo, motivo, quien}] */
+var WA_DET = [];
+function kUnif(equipo, faenaShort, mes){
+  return String(equipo||'').trim().toUpperCase() + '|' +
+         String(faenaShort||'').trim().toUpperCase() + '|' + String(mes||'').trim();
+}
 var DIESEL_DETALLE = {}; // key equipo|faena|ym → {fuel:[{litros,total,equipo}], hours:[{hrs,hperd}]}
 var DIAS_SEM = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
 var BEST_METAS = {
@@ -9338,8 +10129,11 @@ function guardarEnCache(filename, aniosTxt, minMes, maxMes) {
       st.put({id: 'grafx', data: GRAFX});
       st.put({id: 'diesel', data: DIESEL_DATA});
       st.put({id: 'causashp', data: CAUSAS_HPERD});
+      st.put({id: 'hperdunif', data: HPERD_UNIF});
+      st.put({id: 'wadet', data: WA_DET});
       st.put({id: 'dieseldet', data: DIESEL_DETALLE});
       st.put({id: 'oper', data: window.OPER_DATA || []});
+      st.put({id: 'operbd', data: window.OPER_DATA_BD || []});
       st.put({id: 'vmamix', data: VMA_MIX});
       st.put({id: 'vmadia', data: VMA_DIA});
       st.put({id: 'vmarod', data: VMA_ROD});
@@ -9367,7 +10161,7 @@ function aplicarDatosRestaurados(rawData, bdData, meta, fajaData, ofrodData, pro
   VMA_MIX = vmamixData || {};
   VMA_DIA = vmadiaData || {};
   VMA_ROD = vmarodData || {};
-  BHT_DIAS = bhtdiasData || [];
+  BHT_DIAS = sinFaenasFuera(bhtdiasData || []);
   GRAFX = grafxData || null;
   DIESEL_DATA = dieselData || null;
   CAUSAS_HPERD = causashpData || {};
@@ -9378,7 +10172,7 @@ function aplicarDatosRestaurados(rawData, bdData, meta, fajaData, ofrodData, pro
   OFERTA_RODAL = ofrodData || [];
   OFERTA_SNAPSHOTS = (ofsnapData && ofsnapData.snaps) || [];
   OFERTA_FECHA_ACT = (ofsnapData && ofsnapData.fechaAct) || '';
-  INFORME_HRS = ihrsData || [];
+  INFORME_HRS = sinFaenasFuera(ihrsData || []);
   PROD_RODAL = prodrodData || {};
   var dt    = meta && meta.savedAt ? new Date(meta.savedAt).toLocaleString('es-CL') : '';
   var fname = meta && meta.filename ? meta.filename : 'Excel guardado';
@@ -9424,7 +10218,7 @@ function restaurarDesdeCache() {
       var tx  = db.transaction(OEE_STORE, 'readonly');
       var st  = tx.objectStore(OEE_STORE);
       var raw = null, bd = null, meta = null, faja = null, ofrod = null, prodrod = null, ofsnap = null, ihrs = null, grafx = null, diesel = null, causashp = null, dieseldet = null, oper = null, vmamix = null, bhtdias = null, vmadia = null, vmarod = null, prodfm = null;
-      var pending = 18;
+      var pending = 21;
       function check() {
         pending--;
         if (pending > 0) return;
@@ -9446,8 +10240,11 @@ function restaurarDesdeCache() {
       st.get('grafx').onsuccess   = function(e){ grafx   = e.target.result ? e.target.result.data : null; check(); };
       st.get('diesel').onsuccess  = function(e){ diesel  = e.target.result ? e.target.result.data : null; check(); };
       st.get('causashp').onsuccess = function(e){ causashp = e.target.result ? e.target.result.data : null; check(); };
+      st.get('hperdunif').onsuccess = function(e){ HPERD_UNIF = (e.target.result ? e.target.result.data : null) || {}; check(); };
+      st.get('wadet').onsuccess    = function(e){ WA_DET = (e.target.result ? e.target.result.data : null) || []; check(); };
       st.get('dieseldet').onsuccess = function(e){ dieseldet = e.target.result ? e.target.result.data : null; check(); };
       st.get('oper').onsuccess    = function(e){ oper    = e.target.result ? e.target.result.data : null; check(); };
+      st.get('operbd').onsuccess  = function(e){ window.OPER_DATA_BD = (e.target.result ? e.target.result.data : null) || []; check(); };
       st.get('vmamix').onsuccess  = function(e){ vmamix  = e.target.result ? e.target.result.data : null; check(); };
       st.get('vmadia').onsuccess  = function(e){ vmadia  = e.target.result ? e.target.result.data : null; check(); };
       st.get('vmarod').onsuccess  = function(e){ vmarod  = e.target.result ? e.target.result.data : null; check(); };
@@ -10185,12 +10982,130 @@ function kpiCausasPopup(key) {
   var parts = key.split('|');
   var title = parts[0] + ' — ' + parts[1] + ' (' + parts[2] + ')';
   var html = '<div style="font-size:13px;font-weight:800;color:#1a6b3a;margin-bottom:8px;">' + title + '</div>';
+
+  // ---- Detalle unificado: dia por dia, con lo que aporta cada fuente ----
+  var uni = (window.HPERD_UNIF || {})[kUnif(parts[0], parts[1], parts[2])];
+  if (uni && uni.dias && uni.dias.length) {
+    var porFuente = {};
+    uni.dias.forEach(function(d){
+      if (d.hrs > 0) porFuente[d.fuente || '—'] = (porFuente[d.fuente || '—'] || 0) + d.hrs;
+    });
+    var resumen = Object.keys(porFuente).sort(function(a,b){ return porFuente[b]-porFuente[a]; })
+      .map(function(f){ return f + ' ' + porFuente[f].toLocaleString('es-CL',{maximumFractionDigits:1}) + ' h'; })
+      .join(' · ');
+    var conDias = uni.dias.filter(function(d){ return d.hrs > 0; }).length;
+    html += '<div style="background:#e8f4fd;border-left:3px solid #2980b9;padding:7px 10px;margin-bottom:8px;">'
+         +  '<div style="font-size:12px;font-weight:800;color:#1a5276;">'
+         +  uni.hrs.toLocaleString('es-CL',{maximumFractionDigits:1}) + ' hrs perdidas en ' + conDias + ' días</div>'
+         +  '<div style="font-size:10px;color:#555;margin-top:2px;">Fuente que aportó cada día: ' + resumen + '</div></div>';
+
+    // ---- FALLA DE EQUIPO: que fue lo que fallo ----
+    var diasF = uni.dias.filter(function(d){ return d.hFalla > 0 || d.queFallo; });
+    if (diasF.length) {
+      var hF = 0, comps = {};
+      diasF.forEach(function(d){
+        hF += (d.hFalla || 0);
+        if (d.comp) comps[d.comp] = (comps[d.comp] || 0) + (d.hFalla || 0);
+      });
+      var listaC = Object.keys(comps).sort(function(a,b){ return comps[b]-comps[a]; });
+      // cuanto de esas horas tiene explicacion escrita y cuanto no
+      var hCon = 0, hSin = 0, nSin = 0, fMi = 0, fPl = 0;
+      var rxF = /FALLA EQUIPO ([\d.,]+)h/i;
+      diasF.forEach(function(d){
+        if (d.queFallo) { hCon += (d.hFalla || 0); }
+        else if (d.hFalla > 0) { hSin += d.hFalla; nSin++; }
+        // cuanto declara cada fuente por separado, para explicar el total
+        var a = rxF.exec(d.detFO || ''); if (a) fMi += parseFloat(a[1].replace(',', '.')) || 0;
+        var b = rxF.exec(d.detBP || ''); if (b) fPl += parseFloat(b[1].replace(',', '.')) || 0;
+      });
+      html += '<div style="background:#fdecea;border-left:3px solid #c0392b;padding:8px 10px;margin-bottom:9px;">'
+           +  '<div style="font-size:12px;font-weight:800;color:#922b21;">🔧 Falla de equipo: '
+           +  hF.toLocaleString('es-CL',{maximumFractionDigits:1}) + ' hrs en ' + diasF.length + ' días</div>';
+      if (hSin > 0) {
+        html += '<div style="font-size:11px;margin:4px 0 2px;">'
+             +  '<span style="color:#1a6b3a;">✓ ' + hCon.toLocaleString('es-CL',{maximumFractionDigits:1})
+             +  ' h con causa anotada</span> &nbsp;·&nbsp; '
+             +  '<span style="color:#c0392b;font-weight:700;">' + hSin.toLocaleString('es-CL',{maximumFractionDigits:1})
+             +  ' h sin anotar qué falló</span> <span style="color:#888;">(' + nSin
+             +  (nSin === 1 ? ' día' : ' días') + ')</span></div>';
+      }
+      if (fMi > 0 || fPl > 0) {
+        html += '<div style="font-size:10px;color:#666;margin:4px 0 2px;padding-top:4px;'
+             +  'border-top:1px solid #f1d5d2;">De dónde sale ese total: '
+             +  'Mininco declara <b>' + fMi.toLocaleString('es-CL',{maximumFractionDigits:1}) + ' h</b>, '
+             +  'la planilla <b>' + fPl.toLocaleString('es-CL',{maximumFractionDigits:1}) + ' h</b>. '
+             +  'Por cada día se toma la mayor de las dos, no la suma.</div>';
+      }
+      if (listaC.length) {
+        html += '<div style="font-size:10px;color:#666;margin:3px 0 2px;">Piezas involucradas: '
+             +  listaC.map(function(c){ return '<b>' + c + '</b> ' +
+                  comps[c].toLocaleString('es-CL',{maximumFractionDigits:1}) + ' h'; }).join(' · ')
+             +  '</div>';
+      }
+      html += '<details style="margin-top:5px;"><summary style="cursor:pointer;font-size:11px;'
+           +  'color:#c0392b;font-weight:700;">Ver qué falló cada día</summary>'
+           +  '<table style="width:100%;border-collapse:collapse;font-size:10px;margin-top:5px;">';
+      diasF.forEach(function(d, i){
+        html += '<tr style="background:' + (i%2 ? '#fdf3f2' : '#fff') + ';vertical-align:top;">'
+             +  '<td style="padding:4px 6px;border-bottom:1px solid #f1d5d2;white-space:nowrap;width:52px;">'
+             +  (d.fecha || '').substring(5) + '</td>'
+             +  '<td style="padding:4px 6px;border-bottom:1px solid #f1d5d2;text-align:right;width:44px;font-weight:700;color:#922b21;">'
+             +  (d.hFalla ? d.hFalla.toLocaleString('es-CL',{maximumFractionDigits:1}) + ' h' : '—') + '</td>'
+             +  '<td style="padding:4px 6px;border-bottom:1px solid #f1d5d2;width:150px;color:#7b241c;">'
+             +  (d.comp || '<span style="color:#aaa;">sin identificar</span>') + '</td>'
+             +  '<td style="padding:4px 6px;border-bottom:1px solid #f1d5d2;color:#444;line-height:1.35;">'
+             +  (d.queFallo
+                 ? d.queFallo.replace(/mec[áa]nico en otro equipo/gi,
+                     '<span style="color:#b8860b;">mecánico ocupado en otro equipo</span>')
+                 : '<span style="color:#c0392b;font-style:italic;">⚠ nadie anotó qué falló</span>')
+             +  '</td></tr>';
+      });
+      html += '</table></details></div>';
+    }
+
+    html += '<table style="width:100%;border-collapse:collapse;font-size:11px;">';
+    html += '<tr style="background:#2980b9;color:#fff;">'
+         +  '<th style="padding:5px 6px;text-align:left;width:62px;">Día</th>'
+         +  '<th style="padding:5px 6px;text-align:right;width:52px;">Hrs</th>'
+         +  '<th style="padding:5px 6px;text-align:left;width:86px;">La aporta</th>'
+         +  '<th style="padding:5px 6px;text-align:left;">Qué pasó</th></tr>';
+    uni.dias.forEach(function(d, i){
+      if (!(d.hrs > 0) && !d.txt) return;
+      var det = [];
+      if (d.detFO) det.push('<b>Mininco:</b> ' + d.detFO);
+      if (d.detBP) det.push('<b>Planilla:</b> ' + d.detBP);
+      if (d.obs)   det.push('<i>' + d.obs + '</i>');
+      if (d.txt)   det.push('<span style="color:#1a6b3a;">💬 ' + d.txt + '</span>');
+      if (d.queFallo) det.push('<span style="color:#c0392b;">🔧 <b>Falló:</b> ' + d.queFallo +
+                               (d.comp ? ' <i>(' + d.comp + ')</i>' : '') + '</span>');
+      var col = d.nf >= 3 ? '#1a6b3a' : (d.nf === 2 ? '#b8860b' : '#c0392b');
+      html += '<tr style="background:' + (i%2 ? '#f0f6fb' : '#fff') + ';vertical-align:top;">'
+           +  '<td style="padding:4px 6px;border-bottom:1px solid #e8e8e8;white-space:nowrap;">' + (d.fecha || '').substring(5) + '</td>'
+           +  '<td style="padding:4px 6px;text-align:right;border-bottom:1px solid #e8e8e8;font-weight:700;">'
+           +  (d.hrs ? d.hrs.toLocaleString('es-CL',{maximumFractionDigits:1}) : '—') + '</td>'
+           +  '<td style="padding:4px 6px;border-bottom:1px solid #e8e8e8;font-size:10px;color:' + col + ';" title="'
+           +  d.nf + ' fuente(s) respaldan este día">' + (d.fuente || '—') + '</td>'
+           +  '<td style="padding:4px 6px;border-bottom:1px solid #e8e8e8;font-size:10px;color:#444;line-height:1.35;">'
+           +  (det.join('<br>') || '<span style="color:#999;">sin detalle</span>') + '</td></tr>';
+    });
+    html += '</table>';
+    html += '<div style="font-size:9px;color:#888;margin-top:5px;">'
+         +  'Hoja <b>BaseHorasPerdUnif</b> · por día se toma la mayor de las tres fuentes. '
+         +  'El color de "La aporta" indica cuántas lo respaldan: verde 3+, ámbar 2, rojo 1.</div>';
+    html += '<details style="margin-top:9px;"><summary style="cursor:pointer;font-size:10px;color:#666;">'
+         +  'Ver el resumen por causa de BaseHorasPer (una sola fuente)</summary><div style="margin-top:5px;">';
+  }
+
   if (!causas.length) {
     html += '<div style="color:#888;padding:10px;text-align:center;">Sin detalle de causas en BaseHorasPer para este equipo/mes.</div>';
   } else {
     var grp = {};
     causas.forEach(function(c){ grp[c.causa] = (grp[c.causa] || 0) + c.hrs; });
     var sorted = Object.keys(grp).sort(function(a,b){ return grp[b] - grp[a]; });
+    html += '<div style="font-size:10px;color:#8a6d3b;background:#fcf8e3;border:1px solid #faebcc;'
+         +  'border-radius:3px;padding:5px 8px;margin-bottom:6px;">Ojo: esta tabla es <b>solo de '
+         +  'BaseHorasPer</b>. No incluye lo que aportan Mininco ni el WhatsApp, así que sus horas '
+         +  'son menores que las de arriba.</div>';
     html += '<table style="width:100%;border-collapse:collapse;font-size:11px;">';
     html += '<tr style="background:#2980b9;color:#fff;"><th style="padding:5px 8px;text-align:left;">Causa</th><th style="padding:5px 8px;text-align:right;width:70px;">Horas</th></tr>';
     var totalH = 0;
@@ -10218,8 +11133,65 @@ function kpiCausasPopup(key) {
       html += '</table></details>';
     }
   }
+  if (uni && uni.dias && uni.dias.length) html += '</div></details>';
   document.getElementById('ds-causas-content').innerHTML = html;
   pop.style.display = 'flex';
+}
+
+/* ---------- Cascada de la causa en el popup ----------
+   Cruza el equipo-faena-mes del popup con la hoja BaseHorasPerdUnif para mostrar,
+   por cada causa, el dia a dia: cuantas horas, de que fuente salieron y que fallo. */
+function dsSinTilde(t){
+  return String(t || '').toUpperCase()
+    .replace(/[ÁÀÄÂ]/g,'A').replace(/[ÉÈËÊ]/g,'E').replace(/[ÍÌÏÎ]/g,'I')
+    .replace(/[ÓÒÖÔ]/g,'O').replace(/[ÚÙÜÛ]/g,'U').replace(/Ñ/g,'N')
+    .replace(/[^A-Z0-9]+/g,' ').trim();
+}
+/* La faena del popup viene como "Faena Mec 4" o "Faena Faja"; la unificada la
+   guarda como "MEC 4" o "FAJA". */
+function dsFaenaCorta(fa){
+  var t = String(fa || '').replace(/^\s*faena\s+/i, '').trim();
+  var m = t.match(/Mec\D*(\d)/i);
+  return m ? ('Mec ' + m[1]) : t;
+}
+/* El panel de diesel guarda el mes como numero (202608); la unificada lo guarda
+   como "2026-08". */
+function dsMesYM(ym){
+  var t = String(ym == null ? '' : ym).trim();
+  if (/^\d{6}$/.test(t)) return t.substring(0,4) + '-' + t.substring(4,6);
+  return t;
+}
+function dsUnifDe(r){
+  if (!window.HPERD_UNIF || !r) return null;
+  var k = kUnif(r.equipo, dsFaenaCorta(r.faena), dsMesYM(r.ym));
+  return HPERD_UNIF[k] || null;
+}
+/* Los dias de la unificada que corresponden a una causa del popup */
+function dsDiasCausa(uni, causa){
+  if (!uni || !uni.dias) return [];
+  var c = dsSinTilde(causa);
+  return uni.dias.filter(function(d){ return dsSinTilde(d.causa) === c; })
+                 .sort(function(a, b){ return String(a.fecha||'') < String(b.fecha||'') ? -1 : 1; });
+}
+/* Lo que se alcanza a saber de un dia: que fallo, la observacion o el detalle.
+   Los "detalles" que solo repiten la causa y las horas ("FALLA EQUIPO 11.0h") no
+   dicen nada, asi que se descartan. */
+function dsSoloRepiteCausa(t, causa){
+  var n = dsSinTilde(t);
+  var c = dsSinTilde(causa);
+  if (!c || n.indexOf(c) !== 0) return false;
+  return /^[\s\d.,]*H?$/.test(n.substring(c.length));
+}
+function dsQueFallo(d){
+  var p = [];
+  if (d.comp) p.push('<b>' + d.comp + '</b>');
+  var t = d.queFallo || d.txt || d.obs || '';
+  if (!t){
+    t = d.detFO || d.detBP || '';
+    if (dsSoloRepiteCausa(t, d.causa)) t = '';
+  }
+  if (t) p.push(t);
+  return p.join(' &middot; ');
 }
 
 // Cuántos registros de horas perdidas de este equipo/mes traen Observación TOB escrita
@@ -10259,6 +11231,7 @@ function dieselCausasPopup(idx) {
   });
   var sorted = Object.keys(grp).sort(function(a,b){ return grp[b].hrs - grp[a].hrs; });
   var totalObs = causas.filter(function(c){ return c.obs && String(c.obs).trim(); }).length;
+  var uniPop = dsUnifDe(r);
   var hayFechas = causas.some(function(c){ return !!c.fecha; });
   var DIAS_SEM = ['do','lu','ma','mi','ju','vi','sá'];
 
@@ -10278,6 +11251,14 @@ function dieselCausasPopup(idx) {
             + 'style="background:#eaf2fb;border:1px solid #bcd;border-radius:4px;cursor:pointer;'
             + 'padding:0 5px;font-size:9px;color:#2980b9;font-weight:700;white-space:nowrap;">'
             + '&#128221; ' + g.obs.length + ' &#9662;</button>';
+    }
+    var dcas = dsDiasCausa(uniPop, c);
+    if (dcas.length) {
+      html += ' <button onclick="rodiasToggle(\'' + gid + '-u\',this)" '
+            + 'title="Cascada: día a día de esta causa, con la fuente y qué falló" '
+            + 'style="background:#eaf6ee;border:1px solid #a8ccb5;border-radius:4px;cursor:pointer;'
+            + 'padding:0 5px;font-size:9px;color:#1a6b3a;font-weight:700;white-space:nowrap;">'
+            + '&#128200; ' + dcas.length + ' d&iacute;as &#9662;</button>';
     }
     html += '</td>';
     html += '<td style="padding:4px 8px;text-align:right;border-bottom:1px solid #e8e8e8;font-weight:700;">'
@@ -10302,6 +11283,33 @@ function dieselCausasPopup(idx) {
             + (o.hrs||0).toLocaleString('es-CL',{maximumFractionDigits:1}) + '</td>';
       html += '</tr>';
     });
+    // Cascada: el dia a dia de esta causa segun BaseHorasPerdUnif
+    dcas.forEach(function(d){
+      var fT = '';
+      if (d.fecha) {
+        var pp = String(d.fecha).split('-');
+        var dd = new Date(d.fecha + 'T00:00:00');
+        fT = '<b style="color:#1a6b3a;">' + pp[2] + '-' + pp[1] + '</b>'
+           + (isNaN(dd.getTime()) ? '' : ' <span style="color:#aaa;">' + DIAS_SEM[dd.getDay()] + '</span>');
+      }
+      var qf = dsQueFallo(d);
+      var col = d.nf >= 3 ? '#1a6b3a' : (d.nf === 2 ? '#c87f0a' : '#c0392b');
+      html += '<tr class="' + gid + '-u" style="display:none;background:#f2f8f4;">';
+      html += '<td style="padding:3px 8px 3px 22px;border-bottom:1px solid #dfeee5;font-size:10px;color:#20492f;">'
+            + fT + ' &nbsp;'
+            + (qf ? qf : '<span style="color:#aaa;">sin observación escrita</span>')
+            + (d.fuente ? ' <span style="border:1px solid ' + col + ';color:' + col
+                        + ';border-radius:3px;padding:0 4px;font-size:8.5px;white-space:nowrap;">'
+                        + d.fuente + (d.nf ? ' &middot; ' + d.nf + (d.nf === 1 ? ' fuente' : ' fuentes') : '')
+                        + '</span>' : '')
+            + '</td>';
+      html += '<td style="padding:3px 8px;text-align:right;border-bottom:1px solid #dfeee5;font-size:10px;color:#666;">'
+            + (d.hrs||0).toLocaleString('es-CL',{maximumFractionDigits:1})
+            + (d.hFalla > 0 ? '<br><span style="color:#c0392b;font-size:8.5px;">'
+                            + d.hFalla.toLocaleString('es-CL',{maximumFractionDigits:1}) + ' falla</span>' : '')
+            + '</td>';
+      html += '</tr>';
+    });
   });
   html += '<tr style="background:#e8f4fd;font-weight:800;"><td style="padding:5px 8px;">TOTAL</td>'
         + '<td style="padding:5px 8px;text-align:right;">' + totalH.toLocaleString('es-CL',{maximumFractionDigits:1}) + '</td></tr>';
@@ -10322,6 +11330,21 @@ function dieselCausasPopup(idx) {
           + '&#9888; Los datos guardados no traen fecha. Vuelve a cargar el Excel para ver el día de cada observación.</div>';
   }
 
+  if (uniPop && uniPop.dias && uniPop.dias.length) {
+    html += '<div style="font-size:10px;color:#20492f;background:#f2f8f4;border-radius:5px;'
+          + 'padding:6px 9px;margin-top:6px;line-height:1.5;">'
+          + '&#128200; El bot&oacute;n verde de cada causa abre la <b>cascada</b>: el d&iacute;a a d&iacute;a '
+          + 'seg&uacute;n <b>BaseHorasPerdUnif</b> (Mininco + BaseHorasTrab/Per + BaseProductibTorre/Sk + '
+          + 'WhatsApp), con la fuente que declar&oacute; esas horas y qu&eacute; fall&oacute;. '
+          + 'El color de la etiqueta dice cu&aacute;ntas fuentes respaldan el d&iacute;a: '
+          + '<span style="color:#1a6b3a;font-weight:700;">verde</span> 3 o m&aacute;s, '
+          + '<span style="color:#c87f0a;font-weight:700;">&aacute;mbar</span> 2, '
+          + '<span style="color:#c0392b;font-weight:700;">rojo</span> una sola.</div>';
+  } else if (window.HPERD_UNIF && Object.keys(HPERD_UNIF).length) {
+    html += '<div style="font-size:10px;color:#666;background:#f6f6f6;border-radius:5px;'
+          + 'padding:6px 9px;margin-top:6px;">Este equipo-mes no aparece en '
+          + '<b>BaseHorasPerdUnif</b>, as&iacute; que no hay cascada que mostrar.</div>';
+  }
   document.getElementById('ds-causas-content').innerHTML = html;
   var contCau = document.getElementById('ds-causas-content');
   if (contCau.parentNode) contCau.parentNode.scrollTop = 0;
@@ -10567,6 +11590,262 @@ function dieselRender() {
       }
     });
   }
+
+  // el bloque de brechas sigue el mismo filtro; si falla, el panel no se cae
+  try { brRender(); } catch(ebr){ console.warn('[BRECHAS]', ebr.message); }
+}
+
+
+/* ============================================================================
+   BRECHAS  ·  panel de Combustible
+   Toma las mismas filas que ya arma dieselRender (equipo, faena, ym, lts, hrs,
+   rendStd, difLts) y las cuenta al reves: no "cuanto gasto" sino "cuanto se
+   paso de lo licitado y cuanta plata es eso".
+   Tres cosas que no estaban:
+     - la etiqueta muestra la DIFERENCIA, no solo el valor
+     - las barras se ordenan por brecha: arriba el que cuesta plata
+     - el boton recorre los meses y se ve como se movio cada maquina
+   BR_ON = false lo apaga entero y el panel queda como estaba.
+   ============================================================================ */
+var BR_ON = true;
+var BR_ABIERTO = false, BR_TIMER = null;
+var BR_ROJO = '#c0504d', BR_VERDE = '#1a6b3a', BR_GRIS = '#8c9389', BR_LINEA = '#2c3e50';
+var BR_MESNOM = ['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto',
+                 'Septiembre','Octubre','Noviembre','Diciembre'];
+
+function brNum(v, d){
+  return Number(v || 0).toLocaleString('es-CL',
+    {minimumFractionDigits: d || 0, maximumFractionDigits: d || 0});
+}
+function brFirma(v, d){ return (v > 0 ? '+' : '') + brNum(v, d); }
+function brPesos(v){
+  var a = Math.abs(v);
+  if (a >= 1000000) return '$' + brNum(v / 1000000, 1) + ' MM';
+  if (a >= 1000) return '$' + brNum(Math.round(v / 1000)) + ' mil';
+  return '$' + brNum(v);
+}
+/* El precio del litro sale del campo que ya existe en la ficha de costos */
+function brPrecio(){
+  var el = document.getElementById('c-comb');
+  var v = el ? parseFloat(el.value) : 0;
+  return (v > 0) ? v : 0;
+}
+function brCorto(e){
+  return String(e || '').replace(/^Procesador /, 'Proc ').replace(/^Skidder /, 'Sk ')
+    .replace(/^Shovel Logger /, 'Shovel ').replace(/^Feller /, 'Fel ')
+    .replace(/^Harvester /, 'Harv ').replace(/^Torre /, '');
+}
+
+/* Solo maquinaria: las camionetas no tienen Lts/Hr que comparar */
+function brFilas(){
+  var rows = (dieselRender._lastRows || []).filter(function(r){
+    return String(r.tipo).toLowerCase().indexOf('maquinaria') >= 0 && (r.lts > 0 || r.hrs > 0);
+  });
+  return rows.map(function(r){
+    var prog = (r.rendStd != null && r.hrs > 0) ? r.rendStd * r.hrs : null;
+    return {eq: r.equipo, faena: r.faena, lts: r.lts, hrs: r.hrs,
+            std: r.rendStd, rend: r.rendAct, prog: prog,
+            gap: (prog != null) ? (r.lts - prog) : null,
+            gapR: (r.rendStd != null && r.rendAct != null) ? (r.rendAct - r.rendStd) : null};
+  });
+}
+
+/* Plugin: escribe el valor y, al lado, la diferencia en rojo o verde */
+if (typeof Chart !== 'undefined' && !window.__brPlugin){
+  window.__brPlugin = true;
+  Chart.register({
+    id: 'brEtiq',
+    afterDatasetsDraw: function(ch){
+      var cfg = ch.$br; if (!cfg) return;
+      var ctx = ch.ctx, ds = ch.data.datasets[0], meta = ch.getDatasetMeta(0);
+      if (!meta || meta.hidden) return;
+      meta.data.forEach(function(barra, j){
+        var v = ds.data[j]; if (v == null) return;
+        ctx.save();
+        ctx.font = 'bold 10px Segoe UI'; ctx.textBaseline = 'middle'; ctx.textAlign = 'left';
+        var txt = brNum(v, cfg.dec || 0);
+        ctx.fillStyle = '#3d4349';
+        ctx.fillText(txt, barra.x + 6, barra.y);
+        var g = cfg.gaps[j];
+        if (g != null){
+          ctx.fillStyle = g > 0 ? BR_ROJO : BR_VERDE;
+          ctx.fillText('  ' + brFirma(g, cfg.dec || 0),
+                       barra.x + 6 + ctx.measureText(txt).width, barra.y);
+        }
+        ctx.restore();
+      });
+    }
+  });
+}
+
+function brGrafico(id, cfg){
+  gxDestroy(id);
+  var cv = document.getElementById(id);
+  if (!cv || !cfg.labels.length) return;
+  var cont = cv.parentNode;
+  if (cont) cont.style.height = Math.max(140, cfg.labels.length * 27 + 46) + 'px';
+  CH[id] = new Chart(cv, {
+    type: 'bar',
+    data: {labels: cfg.labels, datasets: [
+      {label: cfg.rotBarra, data: cfg.real, backgroundColor: cfg.colores,
+       borderRadius: 3, categoryPercentage: .78, barPercentage: .86, order: 2},
+      {label: cfg.rotLinea, type: 'line', data: cfg.meta, showLine: false,
+       borderWidth: 0, pointStyle: 'rectRot', pointRadius: 5.5,
+       pointBackgroundColor: BR_LINEA, order: 1}
+    ]},
+    options: {
+      indexAxis: 'y', responsive: true, maintainAspectRatio: false,
+      layout: {padding: {right: 74}},
+      animation: {duration: 650, easing: 'easeOutQuart'},
+      animations: {colors: {type: 'color', duration: 380}},
+      plugins: {
+        legend: {position: 'top', labels: {font: {size: 10}, boxWidth: 12}},
+        tooltip: {callbacks: {label: function(it){
+          var c = it.chart.$br;
+          if (it.datasetIndex === 1) return c.rotLinea + ': ' + brNum(it.parsed.x, c.dec || 0);
+          var g = c.gaps[it.dataIndex];
+          return c.rotBarra + ': ' + brNum(it.parsed.x, c.dec || 0) +
+            (g == null ? '   (sin estándar cargado)'
+             : '   ' + (g > 0 ? 'se pasó ' : 'bajo lo licitado ') + brNum(Math.abs(g), c.dec || 0));
+        }}}
+      },
+      scales: {x: {beginAtZero: true, ticks: {font: {size: 9}}, grid: {color: 'rgba(0,0,0,.06)'}},
+               y: {ticks: {font: {size: 10}}, grid: {display: false}}}
+    }
+  });
+  CH[id].$br = cfg;
+}
+
+/* Los que no tienen estandar van al final: no se les puede pedir cuentas */
+function brOrden(fs, campo){
+  return fs.slice().sort(function(a, b){
+    var x = a[campo], y = b[campo];
+    if (x == null && y == null) return b.lts - a.lts;
+    if (x == null) return 1;
+    if (y == null) return -1;
+    return y - x;
+  });
+}
+
+function brRender(){
+  if (!BR_ON) return;
+  var caja = document.getElementById('br-cuerpo');
+  if (!caja || !BR_ABIERTO) return;
+  var fs = brFilas();
+  if (!fs.length){
+    caja.innerHTML = '<div style="padding:16px;text-align:center;color:#888;font-size:12px;">' +
+      'No hay maquinaria en el filtro elegido.</div>';
+    return;
+  }
+  var conStd = fs.filter(function(x){ return x.gap != null; });
+  var sobre = conStd.filter(function(x){ return x.gap > 0; });
+  var bajo = conStd.filter(function(x){ return x.gap < 0; });
+  var tSobre = sobre.reduce(function(a, x){ return a + x.gap; }, 0);
+  var tBajo = bajo.reduce(function(a, x){ return a + x.gap; }, 0);
+  var neto = tSobre + tBajo;
+  var peor = sobre.slice().sort(function(a, b){ return b.gap - a.gap; })[0];
+  var P = brPrecio();
+  var sinStd = fs.length - conStd.length;
+
+  function tarj(k, v, col, n, destacada){
+    return '<div style="flex:1;min-width:172px;background:' + (destacada ? '#fdf6f5' : '#fff') +
+      ';border:1px solid #dfe3e7;border-left:3px solid ' + col + ';border-radius:6px;padding:9px 12px;">' +
+      '<div style="font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:#888;">' + k + '</div>' +
+      '<div style="font-size:22px;font-weight:800;line-height:1.15;margin-top:1px;color:' + col + ';">' + v + '</div>' +
+      '<div style="font-size:10.5px;color:#888;margin-top:1px;">' + n + '</div></div>';
+  }
+  var h = '<div style="display:flex;gap:9px;flex-wrap:wrap;margin-bottom:12px;">';
+  h += tarj('Sobreconsumo', brNum(tSobre) + ' lts', BR_ROJO,
+            (P > 0 ? brPesos(tSobre * P) + ' a $' + brNum(P) + '/lt · ' : '') +
+            sobre.length + ' de ' + conStd.length + ' equipos');
+  h += tarj('Ahorro de los que cumplen', brNum(Math.abs(tBajo)) + ' lts', BR_VERDE,
+            (P > 0 ? brPesos(Math.abs(tBajo) * P) + ' bajo lo licitado' : bajo.length + ' equipos'));
+  h += tarj('Neto', brFirma(neto) + ' lts', neto > 0 ? BR_ROJO : BR_VERDE,
+            (neto > 0 ? 'de más' : 'de menos') + (P > 0 ? ' · ' + brPesos(Math.abs(neto) * P) : ''));
+  if (peor){
+    h += tarj('El que más cuesta', brCorto(peor.eq), BR_ROJO,
+              '<b style="color:' + BR_ROJO + ';">+' + brNum(peor.gap) + ' lts</b>' +
+              (P > 0 ? ' · ' + brPesos(peor.gap * P) : ''), true);
+  }
+  h += '</div>';
+  if (sinStd > 0){
+    h += '<div style="font-size:10.5px;color:#8a6d00;background:#fff8e1;border-radius:5px;' +
+         'padding:5px 9px;margin-bottom:11px;">&#9888; ' + sinStd + ' ' +
+         (sinStd === 1 ? 'equipo no tiene' : 'equipos no tienen') + ' Rend. Est&aacute;ndar Lts/Hr ' +
+         'cargado, as&iacute; que salen en gris y no entran en el c&aacute;lculo.</div>';
+  }
+  h += '<div style="font-size:11px;font-weight:700;color:#146c43;margin:2px 0 4px;">' +
+       'Litros: gastados contra programados</div>' +
+       '<div style="position:relative;"><canvas id="br-g1"></canvas></div>';
+  h += '<div style="font-size:11px;font-weight:700;color:#146c43;margin:14px 0 4px;">' +
+       'Rendimiento Lts/Hr: real contra licitado</div>' +
+       '<div style="position:relative;"><canvas id="br-g2"></canvas></div>';
+  caja.innerHTML = h;
+
+  var o1 = brOrden(fs, 'gap');
+  brGrafico('br-g1', {
+    labels: o1.map(function(x){ return brCorto(x.eq); }),
+    real: o1.map(function(x){ return Math.round(x.lts); }),
+    meta: o1.map(function(x){ return x.prog == null ? null : Math.round(x.prog); }),
+    gaps: o1.map(function(x){ return x.gap == null ? null : Math.round(x.gap); }),
+    colores: o1.map(function(x){ return x.gap == null ? BR_GRIS : (x.gap > 0 ? BR_ROJO : BR_VERDE); }),
+    rotBarra: 'Lts gastados', rotLinea: 'Lts programados', dec: 0
+  });
+  var o2 = brOrden(fs, 'gapR');
+  brGrafico('br-g2', {
+    labels: o2.map(function(x){ return brCorto(x.eq); }),
+    real: o2.map(function(x){ return x.rend == null ? null : Math.round(x.rend * 10) / 10; }),
+    meta: o2.map(function(x){ return x.std == null ? null : x.std; }),
+    gaps: o2.map(function(x){ return x.gapR == null ? null : Math.round(x.gapR * 10) / 10; }),
+    colores: o2.map(function(x){ return x.gapR == null ? BR_GRIS : (x.gapR > 0 ? BR_ROJO : BR_VERDE); }),
+    rotBarra: 'Lts/hr real', rotLinea: 'Lts/hr licitado', dec: 1
+  });
+}
+
+function brToggle(){
+  BR_ABIERTO = !BR_ABIERTO;
+  brPararRecorrido();
+  document.getElementById('br-cuerpo').style.display = BR_ABIERTO ? 'block' : 'none';
+  document.getElementById('br-btn-ver').textContent = BR_ABIERTO ? 'Ocultar brechas' : 'Ver brechas';
+  document.getElementById('br-btn-rec').style.display = BR_ABIERTO ? 'inline-block' : 'none';
+  if (BR_ABIERTO) brRender();
+  else { gxDestroy('br-g1'); gxDestroy('br-g2'); }
+}
+
+/* Recorrido mes a mes: mueve el propio selector de mes del panel */
+function brPararRecorrido(){
+  if (!BR_TIMER) return;
+  clearInterval(BR_TIMER); BR_TIMER = null;
+  var b = document.getElementById('br-btn-rec');
+  if (b) b.innerHTML = '&#9654; Recorrer los meses';
+  var r = document.getElementById('br-reloj');
+  if (r) r.style.display = 'none';
+}
+function brRecorrer(){
+  if (BR_TIMER){ brPararRecorrido(); return; }
+  var sel = document.getElementById('ds-sel-mes');
+  if (!sel) return;
+  var meses = Array.prototype.map.call(sel.options, function(o){ return o.value; })
+    .filter(function(v){ return v !== 'all'; }).sort();
+  if (meses.length < 2) return;
+  var i = 0, reloj = document.getElementById('br-reloj');
+  document.getElementById('br-btn-rec').innerHTML = '&#9632; Detener';
+  if (reloj) reloj.style.display = 'block';
+  function paso(){
+    sel.value = meses[i];
+    if (reloj){
+      var m = String(meses[i]);
+      var mm = m.length >= 6 ? parseInt(m.substring(4, 6)) : parseInt(m.substring(5, 7));
+      reloj.textContent = (BR_MESNOM[mm] || m).toUpperCase();
+    }
+    dieselRender();
+    i++;
+  }
+  paso();
+  BR_TIMER = setInterval(function(){
+    if (i < meses.length) paso();
+    else { brPararRecorrido(); }
+  }, 1700);
 }
 
 // ===== PANEL PRODUCCIÓN DIARIA DE FAENAS =====
@@ -11304,6 +12583,30 @@ document.getElementById('oee-install-close')?.addEventListener('click',()=>{
             <div class="ds-kpi-card"><div class="ds-kpi-label">Maquinaria (Lts/Hr prom.)</div><div class="ds-kpi-value" id="ds-kpi-maq">—</div></div>
             <div class="ds-kpi-card"><div class="ds-kpi-label">Diferencia Total Lts</div><div class="ds-kpi-value" id="ds-kpi-dif">—</div></div>
           </div>
+          <!-- BRECHAS: bloque aditivo, plegado por defecto -->
+          <div id="ds-brechas" style="border:1px solid #dfe3e7;border-radius:8px;background:#fff;
+               margin:0 0 12px;overflow:hidden;">
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+                 padding:9px 13px;background:#f6f8f6;border-bottom:1px solid #eceeec;">
+              <div>
+                <div style="font-size:12.5px;font-weight:800;color:#146c43;">
+                  &#128200; Brechas &mdash; qui&eacute;n se pas&oacute; y cu&aacute;nto cuesta</div>
+                <div style="font-size:10px;color:#888;margin-top:1px;">
+                  Los mismos litros de la tabla, ordenados por diferencia contra lo licitado
+                  y traducidos a pesos.</div>
+              </div>
+              <div style="margin-left:auto;display:flex;gap:7px;">
+                <button id="br-btn-ver" onclick="brToggle()"
+                  style="background:#146c43;color:#fff;border:0;border-radius:5px;padding:6px 14px;
+                  font-size:11.5px;font-weight:700;cursor:pointer;">Ver brechas</button>
+                <button id="br-btn-rec" onclick="brRecorrer()" style="display:none;
+                  background:#fff;color:#146c43;border:1px solid #146c43;border-radius:5px;
+                  padding:6px 14px;font-size:11.5px;font-weight:700;cursor:pointer;"
+                  >&#9654; Recorrer los meses</button>
+              </div>
+            </div>
+            <div id="br-cuerpo" style="display:none;padding:12px 13px 14px;"></div>
+          </div>
           <div class="ds-table-wrap">
             <table class="ds-table">
               <thead>
@@ -11336,6 +12639,9 @@ document.getElementById('oee-install-close')?.addEventListener('click',()=>{
         <div id="ds-detalle-content"></div>
       </div>
     </div>
+<div id="br-reloj" style="display:none;position:fixed;right:26px;bottom:22px;
+  background:rgba(20,108,67,.94);color:#fff;font-size:25px;font-weight:800;letter-spacing:.06em;
+  padding:9px 21px;border-radius:8px;z-index:9999;box-shadow:0 6px 18px rgba(0,0,0,.22);"></div>
 <script>
 (function(){
   function postH(){ try{ var h=Math.max(document.body.scrollHeight,document.documentElement.scrollHeight,600); parent.postMessage({__oeeHeight:h},'*'); }catch(e){} }
@@ -11381,16 +12687,20 @@ document.getElementById('oee-install-close')?.addEventListener('click',()=>{
         if(ds.faja_daily) FAJA_DAILY=ds.faja_daily;
         if(ds.informe_hrs){ window.INFORME_HRS=ds.informe_hrs; try{ INFORME_HRS=ds.informe_hrs; }catch(e){} }
         if(ds.oper_data){ window.OPER_DATA=ds.oper_data; try{ OPER_DATA=ds.oper_data; }catch(e){} }
+        if(ds.oper_data_bd&&ds.oper_data_bd.length){ window.OPER_DATA_BD=ds.oper_data_bd; }
         if(ds.grafx&&Object.keys(ds.grafx).length){ try{ GRAFX=ds.grafx; }catch(e){} }
         if(ds.diesel&&ds.diesel.length){ try{ DIESEL_DATA=ds.diesel; }catch(e){} }
         if(ds.causas_hperd&&Object.keys(ds.causas_hperd).length){ try{ CAUSAS_HPERD=ds.causas_hperd; }catch(e){} }
         if(ds.diesel_detalle&&Object.keys(ds.diesel_detalle).length){ try{ DIESEL_DETALLE=ds.diesel_detalle; }catch(e){} }
-        // Datasets nuevos v8b (KPI Productividad con BaseHorasTrab + hoja produc + VMA por rodal)
+        // Datasets v8b (KPI Productividad con BaseHorasTrab + hoja produc + VMA por rodal)
         if(ds.vma_mix&&Object.keys(ds.vma_mix).length){ try{ VMA_MIX=ds.vma_mix; }catch(e){} }
         if(ds.vma_dia&&Object.keys(ds.vma_dia).length){ try{ VMA_DIA=ds.vma_dia; }catch(e){} }
         if(ds.vma_rod&&Object.keys(ds.vma_rod).length){ try{ VMA_ROD=ds.vma_rod; }catch(e){} }
         if(ds.bht_dias&&ds.bht_dias.length){ try{ BHT_DIAS=ds.bht_dias; }catch(e){} }
         if(ds.prod_faena_mes&&Object.keys(ds.prod_faena_mes).length){ try{ PROD_FAENA_MES=ds.prod_faena_mes; }catch(e){} }
+        // Datasets v8c "brechas" (horas perdidas unificadas BaseHorasPerdUnif + detenciones WhatsApp)
+        if(ds.hperd_unif&&Object.keys(ds.hperd_unif).length){ try{ HPERD_UNIF=ds.hperd_unif; }catch(e){} }
+        if(ds.wa_det&&ds.wa_det.length){ try{ WA_DET=ds.wa_det; }catch(e){} }
         if(ds.ofsnap){ try{ if(ds.ofsnap.snaps) OFERTA_SNAPSHOTS=ds.ofsnap.snaps; if(ds.ofsnap.fechaAct) OFERTA_FECHA_ACT=ds.ofsnap.fechaAct; }catch(e){} }
         try{ if(typeof bestAutoSelectAndUpdate==='function') bestAutoSelectAndUpdate(); }catch(e){}
         var pBest=document.getElementById('panel-best'); if(pBest&&pBest.style.display!=='none'){ try{ if(typeof bestUpdate==='function') bestUpdate(); }catch(e){} }
