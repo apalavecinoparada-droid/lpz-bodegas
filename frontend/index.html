@@ -5259,7 +5259,8 @@ function InformeCostosView(p){
       h(Kpi,{label:'⛽ Combustible',value:R.consumo_combustible,color:'#DC2626',sub:pct(R.consumo_combustible)+' del costo'}),
       h(Kpi,{label:'📦 Inventario consumido',value:R.consumo_inventario,color:'#EA580C',sub:pct(R.consumo_inventario)+' del costo'}),
       h(Kpi,{label:'🧾 Compras directas (gasto)',value:R.compras_directas,color:'#7C3AED',sub:pct(R.compras_directas)+' del costo'}),
-      h(Kpi,{label:'🏗 Depreciación activo fijo',value:R.depreciacion||0,color:'#0891B2',sub:pct(R.depreciacion||0)+' del costo'})
+      h(Kpi,{label:'🏗 Depreciación activo fijo',value:R.depreciacion||0,color:'#0891B2',sub:pct(R.depreciacion||0)+' del costo'}),
+      h(Kpi,{label:'⏳ Gastos diferidos (devengado)',value:R.gastos_diferidos||0,color:'#B45309',sub:pct(R.gastos_diferidos||0)+' del costo · seguros y otros pagos anticipados'})
     ),
     // ═══ Activos (no son costo) ═══
     h('div',{style:{display:'flex',gap:12,flexWrap:'wrap',marginBottom:16}},
@@ -5269,7 +5270,8 @@ function InformeCostosView(p){
           h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Inventario en bodega'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_inventario_actual))),
           h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Combustible en estanques'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_combustible_actual))),
           h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Activos fijos (valor neto)'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_activos_fijos||0))),
-          h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Total inmovilizado'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_inventario_actual+R.valor_combustible_actual+(R.valor_activos_fijos||0))))
+          h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Gastos anticipados (saldo por devengar)'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_gastos_diferidos||0))),
+          h('div',null,h('div',{style:{fontSize:10,color:'#64748B'}},'Total inmovilizado'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF',fontFamily:'monospace'}},fmt(R.valor_inventario_actual+R.valor_combustible_actual+(R.valor_activos_fijos||0)+(R.valor_gastos_diferidos||0))))
         )
       )
     ),
@@ -8669,7 +8671,7 @@ function OCView(p){
     (function(){window.__ocFolioDup={};var mp=window.__ocFolioDup;ocs.forEach(function(o){if(o.estado==='ANULADA'||!o.numero_documento)return;var k=String(o.proveedor_rut||o.proveedor_id||'')+'|'+String(o.numero_documento).replace(/^0+/,'');mp[k]=(mp[k]||0)+1;});return null;})(),
     load?h('div',{className:'spin'},'Cargando...'):
     h('div',{className:'card'},h(TBL,{cols:[
-      {lbl:h(SortHdr,{field:'numero_oc',label:'N° OC'}),k:'numero_oc',mono:true},{lbl:h(SortHdr,{field:'empresa_nombre',label:'Empresa'}),render:function(r){return r.empresa_nombre||r.empresa||'—';}},{lbl:h(SortHdr,{field:'proveedor_nombre',label:'Proveedor'}),render:function(r){return r.proveedor_nombre||r.proveedor||'—';}},
+      {lbl:h(SortHdr,{field:'numero_oc',label:'N° OC'}),render:function(r){return h('div',null,h('span',{style:{fontFamily:'monospace'}},r.numero_oc),r.es_diferido?h('div',{style:{fontSize:9,fontWeight:800,color:'#92400E',background:'#FEF3C7',border:'1px solid #FCD34D',borderRadius:6,padding:'1px 5px',display:'inline-block',marginTop:2},title:'Gasto diferido: el costo se devenga día a día dentro de la vigencia (ver Finanzas → Gastos Diferidos)'},'⏳ DIFERIDO'):null,r.es_activo_fijo?h('div',{style:{fontSize:9,fontWeight:800,color:'#1E40AF',background:'#DBEAFE',border:'1px solid #93C5FD',borderRadius:6,padding:'1px 5px',display:'inline-block',marginTop:2},title:'Activo fijo: se capitaliza y deprecia'},'🏗 ACTIVO FIJO'):null);}},{lbl:h(SortHdr,{field:'empresa_nombre',label:'Empresa'}),render:function(r){return r.empresa_nombre||r.empresa||'—';}},{lbl:h(SortHdr,{field:'proveedor_nombre',label:'Proveedor'}),render:function(r){return r.proveedor_nombre||r.proveedor||'—';}},
       {lbl:'DT',render:function(r){var isNC=(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0||(r.tipo_doc_nombre||'').toLowerCase().indexOf('nota')>=0&&(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0;
         var esDup=false;
         if(r.numero_documento&&r.estado!=='ANULADA'&&window.__ocFolioDup){var k=String(r.proveedor_rut||r.proveedor_id||'')+'|'+String(r.numero_documento).replace(/^0+/,'');esDup=(window.__ocFolioDup[k]||0)>1;}
@@ -9710,8 +9712,8 @@ function OCFormModal(p){
   // Helper para normalizar fechas que vienen del backend (timestamp ISO o YYYY-MM-DD)
   // al formato YYYY-MM-DD que entiende <input type="date">
   function dateToInput(d){if(!d)return '';var s=String(d);return s.length>=10?s.slice(0,10):s;}
-  const blank={empresa_id:'',proveedor_id:'',fecha_emision:TODAY,solicitante:'',retira:'',condicion_id:'',impuesto_adicional:'0',observaciones:'',tipo_doc_id:'',numero_documento:'',fecha_documento:'',es_activo_fijo:false,af_vida_util_meses:'60',af_valor_residual:'0',af_descripcion:'',lineas:[{descripcion:'',prod_id:'',subcat_id:'',faena_id:'',eq_id:'',cantidad:'1',precio_unitario:'0',ingresa_bodega:false,bodega_destino_id:'',exenta:false}]};
-  const[form,setForm]=useState(isNew?blank:{empresa_id:str(p.oc.empresa_id||''),proveedor_id:str(p.oc.proveedor_id||''),fecha_emision:dateToInput(p.oc.fecha_emision)||TODAY,solicitante:p.oc.solicitante||'',retira:p.oc.retira||'',condicion_id:str(p.oc.condicion_id||''),impuesto_adicional:str(p.oc.impuesto_adicional||0),observaciones:p.oc.observaciones||'',tipo_doc_id:str(p.oc.tipo_doc_id||''),numero_documento:str(p.oc.numero_documento||''),fecha_documento:dateToInput(p.oc.fecha_documento),es_activo_fijo:!!p.oc.es_activo_fijo,af_vida_util_meses:str(p.oc.af_vida_util_meses||60),af_valor_residual:str(p.oc.af_valor_residual||0),af_descripcion:p.oc.af_descripcion||'',lineas:(p.oc.lineas||[]).map(l=>({descripcion:l.descripcion||'',prod_id:str(l.producto_id||''),subcat_id:str(l.subcategoria_id||''),faena_id:str(l.faena_id||''),eq_id:str(l.equipo_id||''),cantidad:str(l.cantidad||1),precio_unitario:str(l.precio_unitario||0),ingresa_bodega:!!l.ingresa_bodega,bodega_destino_id:str(l.bodega_destino_id||''),exenta:!!l.exenta}))});
+  const blank={empresa_id:'',proveedor_id:'',fecha_emision:TODAY,solicitante:'',retira:'',condicion_id:'',impuesto_adicional:'0',observaciones:'',tipo_doc_id:'',numero_documento:'',fecha_documento:'',es_activo_fijo:false,af_vida_util_meses:'60',af_valor_residual:'0',af_descripcion:'',es_diferido:false,dif_desde:'',dif_hasta:'',dif_descripcion:'',lineas:[{descripcion:'',prod_id:'',subcat_id:'',faena_id:'',eq_id:'',cantidad:'1',precio_unitario:'0',ingresa_bodega:false,bodega_destino_id:'',exenta:false}]};
+  const[form,setForm]=useState(isNew?blank:{empresa_id:str(p.oc.empresa_id||''),proveedor_id:str(p.oc.proveedor_id||''),fecha_emision:dateToInput(p.oc.fecha_emision)||TODAY,solicitante:p.oc.solicitante||'',retira:p.oc.retira||'',condicion_id:str(p.oc.condicion_id||''),impuesto_adicional:str(p.oc.impuesto_adicional||0),observaciones:p.oc.observaciones||'',tipo_doc_id:str(p.oc.tipo_doc_id||''),numero_documento:str(p.oc.numero_documento||''),fecha_documento:dateToInput(p.oc.fecha_documento),es_activo_fijo:!!p.oc.es_activo_fijo,af_vida_util_meses:str(p.oc.af_vida_util_meses||60),af_valor_residual:str(p.oc.af_valor_residual||0),af_descripcion:p.oc.af_descripcion||'',es_diferido:!!p.oc.es_diferido,dif_desde:dateToInput(p.oc.dif_desde)||'',dif_hasta:dateToInput(p.oc.dif_hasta)||'',dif_descripcion:p.oc.dif_descripcion||'',lineas:(p.oc.lineas||[]).map(l=>({descripcion:l.descripcion||'',prod_id:str(l.producto_id||''),subcat_id:str(l.subcategoria_id||''),faena_id:str(l.faena_id||''),eq_id:str(l.equipo_id||''),cantidad:str(l.cantidad||1),precio_unitario:str(l.precio_unitario||0),ingresa_bodega:!!l.ingresa_bodega,bodega_destino_id:str(l.bodega_destino_id||''),exenta:!!l.exenta}))});
   const[err,setErr]=useState('');const[saving,setSaving]=useState(false);const[showCalcOC,setShowCalcOC]=useState(false);const[showOCR,setShowOCR]=useState(false);const[ocrLoading,setOcrLoading]=useState(false);const[ocrMsg,setOcrMsg]=useState('');
   const[preciosIVA,setPreciosIVA]=useState(false);
   const[importProvData,setImportProvData]=useState(null);
@@ -9750,7 +9752,7 @@ function OCFormModal(p){
     if(!form.proveedor_id||!form.fecha_emision){setErr('Proveedor y fecha son obligatorios');return;}
     if(!form.lineas.length){setErr('Debe ingresar al menos una linea');return;}
     setSaving(true);
-    const body={empresa_id:form.empresa_id||null,proveedor_id:parseInt(form.proveedor_id),fecha_emision:form.fecha_emision,solicitante:form.solicitante||null,retira:form.retira||null,condicion_id:form.condicion_id||null,impuesto_adicional:imp,observaciones:form.observaciones||null,tipo_doc_id:form.tipo_doc_id||null,numero_documento:form.numero_documento||null,fecha_documento:form.fecha_documento||null,es_activo_fijo:!!form.es_activo_fijo,af_vida_util_meses:form.af_vida_util_meses||60,af_valor_residual:form.af_valor_residual||0,af_descripcion:form.af_descripcion||null,lineas:form.lineas.map(function(l){var pu=parseFloat(l.precio_unitario)||0;if(preciosIVA&&!l.exenta)pu=pu/1.19;return{descripcion:l.descripcion||null,producto_id:l.prod_id||null,subcategoria_id:l.subcat_id||null,faena_id:l.faena_id||null,equipo_id:l.eq_id||null,cantidad:parseFloat(l.cantidad)||0,precio_unitario:pu,ingresa_bodega:l.ingresa_bodega||false,bodega_destino_id:l.bodega_destino_id||null,exenta:!!l.exenta};})};
+    const body={empresa_id:form.empresa_id||null,proveedor_id:parseInt(form.proveedor_id),fecha_emision:form.fecha_emision,solicitante:form.solicitante||null,retira:form.retira||null,condicion_id:form.condicion_id||null,impuesto_adicional:imp,observaciones:form.observaciones||null,tipo_doc_id:form.tipo_doc_id||null,numero_documento:form.numero_documento||null,fecha_documento:form.fecha_documento||null,es_activo_fijo:!!form.es_activo_fijo,af_vida_util_meses:form.af_vida_util_meses||60,af_valor_residual:form.af_valor_residual||0,af_descripcion:form.af_descripcion||null,es_diferido:!!form.es_diferido,dif_desde:form.es_diferido?(form.dif_desde||null):null,dif_hasta:form.es_diferido?(form.dif_hasta||null):null,dif_descripcion:form.es_diferido?(form.dif_descripcion||null):null,lineas:form.lineas.map(function(l){var pu=parseFloat(l.precio_unitario)||0;if(preciosIVA&&!l.exenta)pu=pu/1.19;return{descripcion:l.descripcion||null,producto_id:l.prod_id||null,subcategoria_id:l.subcat_id||null,faena_id:l.faena_id||null,equipo_id:l.eq_id||null,cantidad:parseFloat(l.cantidad)||0,precio_unitario:pu,ingresa_bodega:l.ingresa_bodega||false,bodega_destino_id:l.bodega_destino_id||null,exenta:!!l.exenta};})};
     const method=isNew?'POST':'PUT';
     const path=isNew?'/ordenes-compra':'/ordenes-compra/'+p.oc.oc_id;
     api(path,method,body,p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
@@ -9801,7 +9803,7 @@ function OCFormModal(p){
         // ── Sección: Activo Fijo (capitalización + depreciación) ──
         h('div',{style:{marginTop:14,padding:12,background:form.es_activo_fijo?'#EFF6FF':'#F8FAFC',borderRadius:8,border:'1px solid '+(form.es_activo_fijo?'#93C5FD':'#E2E8F0')}},
           h('label',{style:{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}},
-            h('input',{type:'checkbox',checked:!!form.es_activo_fijo,onChange:function(e){sf('es_activo_fijo',e.target.checked);},style:{width:16,height:16}}),
+            h('input',{type:'checkbox',checked:!!form.es_activo_fijo,onChange:function(e){var on=e.target.checked;setForm(function(f0){return Object.assign({},f0,{es_activo_fijo:on,es_diferido:on?false:f0.es_diferido});});},style:{width:16,height:16,flexShrink:0}}),
             h('span',{style:{fontSize:13,fontWeight:700,color:'#1E293B'}},'🏗 Esta compra es un ACTIVO FIJO'),
             h('span',{style:{fontSize:11,color:'#64748B'}},'(se capitaliza y deprecia, no se imputa todo al costo del período)')
           ),
@@ -9824,6 +9826,37 @@ function OCFormModal(p){
                 var cuota=vm>0?Math.round((val-res)/vm):0;
                 return '💡 Vidas útiles SII referenciales: camionetas 7 años (84m), maquinaria pesada 9-15 años, computadores 6 años (72m). '+
                   'Con estos datos, la depreciación mensual sería ≈ $'+new Intl.NumberFormat('es-CL').format(cuota)+' (sobre neto $'+new Intl.NumberFormat('es-CL').format(Math.round(val))+'). El activo se crea automáticamente al CERRAR la OC.';
+              })()
+            )
+          )
+        ),
+        // ── Sección: Gasto diferido (pagado por anticipado; se devenga día a día dentro de la vigencia) ──
+        h('div',{style:{marginTop:10,padding:12,background:form.es_diferido?'#FFFBEB':'#F8FAFC',borderRadius:8,border:'1px solid '+(form.es_diferido?'#FCD34D':'#E2E8F0')}},
+          h('label',{style:{display:'flex',alignItems:'center',gap:8,cursor:'pointer'}},
+            h('input',{type:'checkbox',checked:!!form.es_diferido,onChange:function(e){var on=e.target.checked;setForm(function(f0){return Object.assign({},f0,{es_diferido:on,es_activo_fijo:on?false:f0.es_activo_fijo});});},style:{width:16,height:16,flexShrink:0}}),
+            h('span',{style:{fontSize:13,fontWeight:700,color:'#1E293B'}},'⏳ Esta compra es un GASTO DIFERIDO (pagado por anticipado)'),
+            h('span',{style:{fontSize:11,color:'#64748B'}},'(seguros, patentes, arriendos: el costo se reparte día a día dentro de la vigencia, no en el mes de la factura)')
+          ),
+          form.es_diferido&&h('div',{style:{marginTop:10,display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:10}},
+            h('div',null,
+              h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Descripción'),
+              h('input',{value:form.dif_descripcion||'',onChange:function(e){sf('dif_descripcion',e.target.value);},placeholder:'Ej: Seguro daños propios y terrorismo maquinaria 2026-2027',style:{width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}})
+            ),
+            h('div',null,
+              h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Vigencia desde *'),
+              h('input',{type:'date',value:form.dif_desde||'',onChange:function(e){sf('dif_desde',e.target.value);},style:{width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}})
+            ),
+            h('div',null,
+              h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Vigencia hasta *'),
+              h('input',{type:'date',value:form.dif_hasta||'',onChange:function(e){sf('dif_hasta',e.target.value);},style:{width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'}})
+            ),
+            h('div',{style:{gridColumn:'1/-1',fontSize:11,color:'#92400E',background:'#FEF3C7',padding:8,borderRadius:5}},
+              (function(){
+                var d0=form.dif_desde?new Date(form.dif_desde+'T00:00:00Z'):null,d1=form.dif_hasta?new Date(form.dif_hasta+'T00:00:00Z'):null;
+                if(!d0||!d1||isNaN(d0)||isNaN(d1))return '💡 Indique la vigencia. Cada línea (máquina) devengará su propio monto en proporción a los días de cada mes; la OC completa se registra y paga normalmente.';
+                var dias=Math.round((d1-d0)/86400000)+1; if(dias<=1)return '⚠ La fecha "hasta" debe ser posterior a "desde".';
+                var cuota=Math.round(neto*30.4375/dias);
+                return '💡 Vigencia de '+dias+' días (≈ '+(dias/30.4375).toFixed(1)+' meses). Sobre el neto de $'+new Intl.NumberFormat('es-CL').format(Math.round(neto))+' la cuota mensual aproximada es $'+new Intl.NumberFormat('es-CL').format(cuota)+', repartida entre las máquinas según el monto de cada línea. El costo por máquina, el informe de costos y el EBITDA usan la cuota devengada; el saldo por devengar queda como activo (gasto anticipado). Si se vende una máquina o se cancela la póliza, en Finanzas → Gastos Diferidos se puede cerrar anticipadamente.';
               })()
             )
           )
@@ -16730,20 +16763,20 @@ function FinResultadoView(p){
     var serie=[];
     for(var mi=1;mi<=12;mi++){
       var per=anio+'-'+('0'+mi).slice(-2);
-      var d=data.meses[per]||{ventas:0,ventas_af:0,compras:0,compras_af:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};
+      var d=data.meses[per]||{ventas:0,ventas_af:0,compras:0,compras_af:0,compras_dif:0,diferido_devengo:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};
       var remuLiq=d.remu_costo-d.imposiciones-d.ret_imp_unico;
       if(remuLiq<0)remuLiq=0; // sin datos de remu suficientes: no restar de más
       // Activo fijo NO es gasto del mes (es inversión que se deprecia): se excluye de egresos y se muestra aparte
-      var egresos=d.compras+remuLiq+d.imposiciones+d.honorarios;
-      var hayDatos=(d.ventas||d.ventas_af||d.compras||d.compras_af||d.remu_costo||d.imposiciones||d.honorarios)?true:false;
-      serie.push({mes:mi,per:per,lbl:MESES_L[mi-1],ventas:d.ventas,ventas_af:d.ventas_af||0,compras:d.compras,compras_af:d.compras_af||0,
+      var egresos=d.compras+remuLiq+d.imposiciones+d.honorarios+(d.diferido_devengo||0);
+      var hayDatos=(d.ventas||d.ventas_af||d.compras||d.compras_af||d.compras_dif||d.diferido_devengo||d.remu_costo||d.imposiciones||d.honorarios)?true:false;
+      serie.push({mes:mi,per:per,lbl:MESES_L[mi-1],ventas:d.ventas,ventas_af:d.ventas_af||0,compras:d.compras,compras_af:d.compras_af||0,compras_dif:d.compras_dif||0,diferido_devengo:d.diferido_devengo||0,
         remu_liq:remuLiq,imposiciones:d.imposiciones,honorarios:d.honorarios,
         egresos:egresos,resultado:d.ventas-egresos,hayDatos:hayDatos,
         faltaImp:d.remu_costo>0&&d.imposiciones===0,
         faltaRemu:d.imposiciones>0&&d.remu_costo===0});
     }
     serie.forEach(function(s){s.incompleto=s.faltaImp||s.faltaRemu;});
-    var tot=serie.reduce(function(a,s){['ventas','ventas_af','compras','compras_af','remu_liq','imposiciones','honorarios','egresos','resultado'].forEach(function(k){a[k]=(a[k]||0)+s[k];});return a;},{});
+    var tot=serie.reduce(function(a,s){['ventas','ventas_af','compras','compras_af','compras_dif','diferido_devengo','remu_liq','imposiciones','honorarios','egresos','resultado'].forEach(function(k){a[k]=(a[k]||0)+s[k];});return a;},{});
     // ── Gráfico alineado con la matriz: el grid de barras usa los MISMOS anchos % que el colgroup de la tabla ──
     var conDatos=serie.filter(function(s){return s.hayDatos;});
     var GRID_LBL='15%',GRID_MES='6.25%',GRID_TOT='10%'; // 15 + 12×6.25 + 10 = 100
@@ -16786,6 +16819,7 @@ function FinResultadoView(p){
         h('div',{className:'card',style:{padding:10,borderLeft:'4px solid '+(tot.resultado>=0?'#1E3A2D':'#DC2626')}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'EBITDA DEL AÑO'),h('div',{style:{fontSize:16,fontWeight:700,color:tot.resultado>=0?'#1E3A2D':'#DC2626'}},CLP(tot.resultado))),
         h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #7C3AED'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'MARGEN'),h('div',{style:{fontSize:16,fontWeight:700,color:'#7C3AED'}},tot.ventas>0?((tot.resultado/tot.ventas*100).toFixed(1)+'%'):'—')),
         tot.compras_af>0&&h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #1E40AF'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'INVERSIÓN ACTIVO FIJO'),h('div',{style:{fontSize:16,fontWeight:700,color:'#1E40AF'}},CLP(tot.compras_af))),
+        tot.compras_dif>0&&h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #B45309'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'GASTO ANTICIPADO (FACTURADO)'),h('div',{style:{fontSize:16,fontWeight:700,color:'#B45309'}},CLP(tot.compras_dif)),h('div',{style:{fontSize:9,color:'#94A3B8'}},'entra al EBITDA como devengo: '+CLP(tot.diferido_devengo||0)+' en el año')),
         tot.ventas_af>0&&h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #0E7490'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'VENTA ACTIVO FIJO'),h('div',{style:{fontSize:16,fontWeight:700,color:'#0E7490'}},CLP(tot.ventas_af)),h('div',{style:{fontSize:9,color:'#94A3B8'}},'fuera del EBITDA')),
         h('div',{className:'card',style:{padding:10,borderLeft:'4px solid #0F766E'}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},'MEJOR / PEOR MES'),h('div',{style:{fontSize:13,fontWeight:700,color:'#0F766E'}},(function(){if(!conDatos.length)return '—';var mx=conDatos.reduce(function(a,b2){return b2.resultado>a.resultado?b2:a;});var mn=conDatos.reduce(function(a,b2){return b2.resultado<a.resultado?b2:a;});return mx.lbl+' '+nfM(mx.resultado)+' / '+mn.lbl+' '+nfM(mn.resultado);})()))
       ),
@@ -16812,11 +16846,13 @@ function FinResultadoView(p){
               filaM('Remuneraciones líquidas','remu_liq','#334155',false),
               filaM('Imposiciones (Previred)','imposiciones','#334155',false),
               filaM('Honorarios (BHE+BTE)','honorarios','#334155',false),
+              filaM('Devengo gastos diferidos (seguros anticipados)','diferido_devengo','#B45309',false),
               filaM('TOTAL EGRESOS','egresos','#B91C1C',true,'#FEF2F2'),
               filaM('EBITDA DEL MES','resultado',null,true,'#E9F1EC'),
               filaM('Compras activo fijo (no resta)','compras_af','#1E40AF',false,'#EFF6FF'),
+              filaM('Compras gasto anticipado (no resta: se devenga)','compras_dif','#B45309',false,'#FFFBEB'),
               filaM('Ventas activo fijo (no suma)','ventas_af','#0E7490',false,'#ECFEFF'))))),
-      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Mes a mes (no acumulado). Ventas y compras: neto + EXENTO del Libro de Compras y Ventas (RCV, notas de crédito restadas) — las facturas exentas (tipo 34) son ingreso/gasto real aunque no lleven IVA. Las compras Y ventas clasificadas como ACTIVO FIJO (según el SII o reclasificadas a mano en el libro RCV) quedan FUERA del resultado operacional — son inversión/desinversión, no operación — y se muestran en filas informativas. El resultado es por tanto un EBITDA (no incluye depreciación, intereses ni impuestos). Remuneraciones líquidas = costo del libro de remuneraciones − imposiciones Previred − retención impuesto único (F29). Honorarios: boletas BHE+BTE brutas vigentes. Cada mes muestra datos solo si sus fuentes están cargadas.')
+      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Mes a mes (no acumulado). Ventas y compras: neto + EXENTO del Libro de Compras y Ventas (RCV, notas de crédito restadas) — las facturas exentas (tipo 34) son ingreso/gasto real aunque no lleven IVA. Las compras Y ventas clasificadas como ACTIVO FIJO (según el SII o reclasificadas a mano en el libro RCV) quedan FUERA del resultado operacional — son inversión/desinversión, no operación — y se muestran en filas informativas. El resultado es por tanto un EBITDA (no incluye depreciación, intereses ni impuestos). Remuneraciones líquidas = costo del libro de remuneraciones − imposiciones Previred − retención impuesto único (F29). Honorarios: boletas BHE+BTE brutas vigentes. Cada mes muestra datos solo si sus fuentes están cargadas. Las compras clasificadas como GASTO ANTICIPADO en el libro RCV (seguros pagados por adelantado, etc.) tampoco restan en el mes de la factura: en su lugar resta cada mes el devengo de la OC marcada como gasto diferido (prorrateo diario dentro de su vigencia, ver Finanzas → Gastos Diferidos).')
     );
   }
   var inpS={padding:'6px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
@@ -16829,7 +16865,7 @@ function FinResultadoView(p){
           h('option',{value:''},'Ambas empresas (consolidado)'),
           empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
       data&&h(Btn,{v:'g',sm:true,onClick:calc},'↻ Recalcular'),
-      data&&h(Btn,{v:'teal',sm:true,onClick:function(){if(typeof XLSX==='undefined'){alert('Librería Excel no disponible');return;}var wb=XLSX.utils.book_new();var MESES_L2=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];var serie2=[];for(var mi2=1;mi2<=12;mi2++){var per2=anio+'-'+('0'+mi2).slice(-2);var d2=data.meses[per2]||{ventas:0,ventas_af:0,compras:0,compras_af:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};var rl2=Math.max(0,d2.remu_costo-d2.imposiciones-d2.ret_imp_unico);serie2.push({l:MESES_L2[mi2-1],v:d2.ventas,vaf:d2.ventas_af||0,c:d2.compras,af:d2.compras_af||0,r:rl2,i:d2.imposiciones,h:d2.honorarios});}
+      data&&h(Btn,{v:'teal',sm:true,onClick:function(){if(typeof XLSX==='undefined'){alert('Librería Excel no disponible');return;}var wb=XLSX.utils.book_new();var MESES_L2=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];var serie2=[];for(var mi2=1;mi2<=12;mi2++){var per2=anio+'-'+('0'+mi2).slice(-2);var d2=data.meses[per2]||{ventas:0,ventas_af:0,compras:0,compras_af:0,compras_dif:0,diferido_devengo:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};var rl2=Math.max(0,d2.remu_costo-d2.imposiciones-d2.ret_imp_unico);serie2.push({l:MESES_L2[mi2-1],v:d2.ventas,vaf:d2.ventas_af||0,c:d2.compras,af:d2.compras_af||0,r:rl2,i:d2.imposiciones,h:d2.honorarios});}
         var aoa=[['Resultado del Año '+anio],['Concepto'].concat(MESES_L2).concat(['TOTAL'])];
         [['Ventas (neto + exento)','v'],['Compras (neto + exento, del giro)','c'],['Remuneraciones líquidas','r'],['Imposiciones','i'],['Honorarios','h']].forEach(function(rw){
           var vals=serie2.map(function(s){return Math.round(s[rw[1]]);});
@@ -16895,6 +16931,82 @@ function parseRcvSII(txt,filename){
   return{libro:libro,periodo:periodo,rut_empresa:rutEmp,docs:docs};
 }
 
+// ═══ GASTOS DIFERIDOS — control de pagos anticipados (seguros, etc.): devengado, saldo por devengar y cierre anticipado ═══
+function FinDiferidosView(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var[data,setData]=useState(null);var[loading,setLoading]=useState(false);var[err,setErr]=useState('');
+  var[fEmp,setFEmp]=useState('');var[hasta,setHasta]=useState(new Date().toISOString().slice(0,10));
+  var[sel,setSel]=useState(null);
+  var mods=(p.user&&p.user.modulos)||[];
+  var puedeCerrar=!!(p.user&&(p.user.es_admin||mods.indexOf('ordenes-editar')>=0||(mods.indexOf('ordenes')>=0&&!mods.some(function(m){return String(m).indexOf('ordenes-')===0;}))));
+  function load(){setLoading(true);setErr('');api('/fin/diferidos?hasta='+hasta+(fEmp?'&empresa_id='+fEmp:''),'GET',null,p.tok).then(function(r){setData(r);setLoading(false);}).catch(function(e){setErr(e.message);setLoading(false);});}
+  useEffect(function(){load();},[p.tok,fEmp,hasta]);
+  function cerrar(o){
+    var fch=prompt('CIERRE ANTICIPADO de '+o.numero_oc+' ('+(o.dif_descripcion||'')+')\n\nEl saldo por devengar ($'+nf(o.saldo)+') se reconocerá completo como gasto en la fecha que indiques (ej: venta de la máquina o cancelación de la póliza).\n\nFecha de cierre (AAAA-MM-DD):',hasta);
+    if(!fch)return;
+    api('/fin/diferidos/'+o.oc_id+'/cerrar','PATCH',{fecha:fch},p.tok).then(function(){load();}).catch(function(e){alert(e.message);});
+  }
+  function reabrir(o){
+    if(!confirm('Quitar el cierre anticipado de '+o.numero_oc+'? Volverá a devengarse día a día hasta '+fmtD(o.dif_hasta)+'.'))return;
+    api('/fin/diferidos/'+o.oc_id+'/cerrar','PATCH',{fecha:null},p.tok).then(function(){load();}).catch(function(e){alert(e.message);});
+  }
+  var T=(data&&data.totales)||{monto:0,devengado:0,saldo:0,cuota_mes:0};
+  var ocs=(data&&data.ocs)||[];
+  var estC={'VIGENTE':'g','TERMINADO':'gray','CERRADO ANTICIPADO':'r','POR INICIAR':'y','OC PENDIENTE':'y'};
+  var selOC=sel?ocs.find(function(o){return o.oc_id===sel;}):null;
+  var inpS={padding:'6px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
+  function card(lbl,val,color,sub){return h('div',{className:'card',style:{padding:10,borderLeft:'4px solid '+color,minWidth:180,flex:1}},h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},lbl),h('div',{style:{fontSize:18,fontWeight:700,color:color}},CLP(val||0)),sub?h('div',{style:{fontSize:9,color:'#94A3B8'}},sub):null);}
+  return h('div',null,
+    h('div',{style:{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap',marginBottom:12}},
+      h('select',{value:fEmp,onChange:function(e){setFEmp(e.target.value);},style:Object.assign({},inpS,{width:200})},h('option',{value:''},'Todas las empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})),
+      h('label',{style:{fontSize:11,color:'#64748B',marginBottom:0}},'Situación al:'),
+      h('input',{type:'date',value:hasta,onChange:function(e){if(e.target.value)setHasta(e.target.value);},style:Object.assign({},inpS,{width:'auto'})}),
+      h('span',{style:{fontSize:11,color:'#64748B',marginLeft:'auto'}},ocs.length+' OC con gasto diferido'),
+      ocs.length>0&&h('button',{onClick:function(){var rows=[];ocs.forEach(function(o){o.lineas.forEach(function(l){rows.push(Object.assign({},l,{numero_oc:o.numero_oc,empresa:o.empresa_nombre,proveedor:o.proveedor_nombre,descripcion:o.dif_descripcion,dif_desde:o.dif_desde,dif_hasta:o.dif_hasta,dif_cerrado_en:o.dif_cerrado_en,estado_dif:o.estado_dif}));});});
+        exportXLSX(rows,[{header:'OC',value:function(r){return r.numero_oc;}},{header:'Empresa',value:function(r){return r.empresa;}},{header:'Proveedor',value:function(r){return r.proveedor;}},{header:'Descripción',value:function(r){return r.descripcion||'';}},{header:'Vigencia desde',value:function(r){return r.dif_desde;}},{header:'Vigencia hasta',value:function(r){return r.dif_hasta;}},{header:'Cerrado el',value:function(r){return r.dif_cerrado_en||'';}},{header:'Estado',value:function(r){return r.estado_dif;}},{header:'Máquina / cargo',value:function(r){return r.equipo||'';}},{header:'Faena',value:function(r){return r.faena||'';}},{header:'Detalle',value:function(r){return r.detalle||'';}},{header:'Monto neto',value:function(r){return r.monto;}},{header:'Devengado al '+hasta,value:function(r){return r.devengado;}},{header:'Saldo por devengar',value:function(r){return r.saldo;}},{header:'Cuota mes en curso',value:function(r){return r.cuota_mes;}},{header:'Cuota mensual aprox.',value:function(r){return r.cuota_mensual;}}],'gastos_diferidos_'+hasta);},
+        style:{padding:'6px 12px',background:'#059669',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontSize:12,fontWeight:600}},'⬇ Excel')
+    ),
+    err&&h('div',{className:'al al-e'},err),
+    loading&&h('div',{className:'spin'},'Cargando...'),
+    data&&h('div',{style:{display:'flex',gap:10,flexWrap:'wrap',marginBottom:12}},
+      card('TOTAL PAGADO (OC cerradas, neto)',T.monto,'#1E3A2D'),
+      card('DEVENGADO AL '+fmtD(hasta),T.devengado,'#B45309','ya reconocido como costo'),
+      card('SALDO POR DEVENGAR (activo)',T.saldo,'#1E40AF','gasto anticipado en balance'),
+      card('CUOTA DEL MES EN CURSO',T.cuota_mes,'#7C3AED','del 1° del mes al corte')
+    ),
+    data&&h('div',{className:'card'},h(TBL,{onRowClick:function(o){setSel(o.oc_id===sel?null:o.oc_id);},cols:[
+      {lbl:'OC',render:function(o){return h('div',null,h('strong',{style:{fontFamily:'monospace',color:o.oc_id===sel?'#1E40AF':'inherit'}},o.numero_oc),h('div',{style:{fontSize:9,color:'#94A3B8'}},fmtD(o.fecha_emision)+(o.numero_documento?' · #'+o.numero_documento:'')));}},
+      {lbl:'Empresa',render:function(o){return h('span',{style:{fontSize:11}},o.empresa_nombre||'—');}},
+      {lbl:'Proveedor / descripción',render:function(o){return h('div',null,h('div',{style:{fontSize:11}},o.proveedor_nombre||'—'),h('div',{style:{fontSize:10,color:'#64748B'}},o.dif_descripcion||''));}},
+      {lbl:'Vigencia',render:function(o){return h('div',{style:{fontSize:11}},fmtD(o.dif_desde)+' → '+fmtD(o.dif_hasta),h('div',{style:{fontSize:9,color:'#94A3B8'}},o.dias_vigencia+' días'+(o.dif_cerrado_en?' · cerrado el '+fmtD(o.dif_cerrado_en):'')));}},
+      {lbl:'Estado',render:function(o){return h(Bg,{c:estC[o.estado_dif]||'gray'},o.estado_dif);}},
+      {lbl:'Monto neto',r:true,render:function(o){return h('strong',null,CLP(o.monto));}},
+      {lbl:'Devengado',r:true,render:function(o){return h('span',{style:{color:'#B45309'}},CLP(o.devengado));}},
+      {lbl:'Saldo',r:true,render:function(o){return h('strong',{style:{color:'#1E40AF'}},CLP(o.saldo));}},
+      {lbl:'Cuota mes',r:true,render:function(o){return CLP(o.cuota_mes);}},
+      {lbl:'',render:function(o){return h('div',{style:{display:'flex',gap:4},onClick:function(e){e.stopPropagation();}},
+        h('button',{onClick:function(){setSel(o.oc_id===sel?null:o.oc_id);},style:{fontSize:10,padding:'2px 7px',background:'#EFF6FF',color:'#1E40AF',border:'1px solid #93C5FD',borderRadius:3,cursor:'pointer'}},o.oc_id===sel?'▾ Ocultar':'▸ Máquinas'),
+        puedeCerrar&&!o.dif_cerrado_en&&o.estado==='CERRADA'&&o.saldo>0&&h('button',{onClick:function(){cerrar(o);},title:'Reconocer el saldo pendiente en una fecha (venta de la máquina, cancelación de la póliza)',style:{fontSize:10,padding:'2px 7px',background:'#FEF2F2',color:'#B91C1C',border:'1px solid #FCA5A5',borderRadius:3,cursor:'pointer'}},'Cierre anticipado'),
+        puedeCerrar&&o.dif_cerrado_en&&h('button',{onClick:function(){reabrir(o);},style:{fontSize:10,padding:'2px 7px',background:'#F8FAFC',color:'#475569',border:'1px solid #CBD5E1',borderRadius:3,cursor:'pointer'}},'↩ Reabrir')
+      );}}
+    ],rows:ocs,empty:'No hay órdenes de compra marcadas como gasto diferido. Se marcan en el formulario de la OC (casilla "GASTO DIFERIDO").'})),
+    selOC&&h('div',{className:'card',style:{marginTop:10,borderLeft:'4px solid #B45309'}},
+      h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Detalle por máquina — '+selOC.numero_oc+(selOC.dif_descripcion?' · '+selOC.dif_descripcion:'')),
+      h(TBL,{cols:[
+        {lbl:'Máquina / cargo',render:function(l){return h('span',{style:{fontSize:11,fontWeight:600}},l.equipo||'Sin cargo');}},
+        {lbl:'Faena',render:function(l){return h('span',{style:{fontSize:11}},l.faena||'—');}},
+        {lbl:'Detalle',render:function(l){return h('span',{style:{fontSize:11}},l.detalle||'');}},
+        {lbl:'Subcategoría',render:function(l){return h('span',{style:{fontSize:11,color:'#64748B'}},l.subcategoria||'—');}},
+        {lbl:'Monto neto',r:true,render:function(l){return CLP(l.monto);}},
+        {lbl:'Devengado',r:true,render:function(l){return h('span',{style:{color:'#B45309'}},CLP(l.devengado));}},
+        {lbl:'Saldo',r:true,render:function(l){return h('strong',{style:{color:'#1E40AF'}},CLP(l.saldo));}},
+        {lbl:'Cuota mes',r:true,render:function(l){return CLP(l.cuota_mes);}},
+        {lbl:'Cuota mensual ≈',r:true,render:function(l){return h('span',{style:{color:'#64748B'}},CLP(l.cuota_mensual));}}
+      ],rows:selOC.lineas})
+    ),
+    h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Devengo lineal por prorrateo diario dentro de la vigencia de cada OC (montos netos). El informe de costos por máquina y el Resultado del Año usan la cuota devengada de cada período en vez de la factura completa; el saldo por devengar es el activo "gasto anticipado". Solo devengan las OC CERRADAS. El cierre anticipado reconoce el saldo completo en la fecha indicada y se registra en el historial de la OC.')
+  );
+}
 function FinRcvView(p){
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   var[lista,setLista]=useState([]);var[load,setLoad]=useState(true);
@@ -17054,12 +17166,15 @@ function FinRcvView(p){
             h('td',{style:{padding:8,fontSize:11}},d.razon_social||'—'),
             // Operación: Giro / Activo fijo — click para reclasificar (la manual prevalece sobre el SII y sobrevive a la reimportación)
             h('td',{style:{padding:8}},(function(){
-              var efect=d.clasif_manual||d.tipo_operacion||'Del Giro';var esAF=/activo/i.test(efect);
+              var efect=d.clasif_manual||d.tipo_operacion||'Del Giro';var esAF=/activo/i.test(efect);var esDif=!esAF&&/anticip/i.test(efect);
+              var esCompra=(d.libro||libro)==='COMPRA';
+              // Ciclo: Giro → Activo fijo → (solo compras) Gasto anticipado → Giro
+              var sig=esAF?(esCompra?'Gasto Anticipado':'Del Giro'):(esDif?'Del Giro':'Activo Fijo');
               return h('button',{onClick:function(){
-                  api('/fin/rcv/'+d.rcv_id+'/clasificar','PATCH',{activo_fijo:!esAF},p.tok).then(function(){load2();}).catch(function(e2){alert(e2.message);});
-                },title:(esAF?'Clasificado como ACTIVO FIJO (no suma al EBITDA). Click → Del Giro':'Del giro. Click → marcar como ACTIVO FIJO (queda fuera del EBITDA)')+(d.clasif_manual?' · clasificación manual':' · según SII'),
-                style:{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',border:'1px solid '+(esAF?'#1E40AF':'#CBD5E1'),background:esAF?'#DBEAFE':'#F8FAFC',color:esAF?'#1E40AF':'#64748B'}},
-                esAF?'🏗 Activo fijo':'Giro');
+                  api('/fin/rcv/'+d.rcv_id+'/clasificar','PATCH',{clasif:sig},p.tok).then(function(){load2();}).catch(function(e2){alert(e2.message);});
+                },title:(esAF?'Clasificado como ACTIVO FIJO (no suma al EBITDA). Click → '+(esCompra?'Gasto anticipado':'Del Giro'):esDif?'GASTO ANTICIPADO: sale del mes de la factura; al EBITDA entra el devengo mensual de la OC marcada como gasto diferido. Click → Del Giro':'Del giro. Click → marcar como ACTIVO FIJO (queda fuera del EBITDA)')+(d.clasif_manual?' · clasificación manual':' · según SII'),
+                style:{padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700,cursor:'pointer',border:'1px solid '+(esAF?'#1E40AF':esDif?'#B45309':'#CBD5E1'),background:esAF?'#DBEAFE':esDif?'#FEF3C7':'#F8FAFC',color:esAF?'#1E40AF':esDif?'#92400E':'#64748B'}},
+                esAF?'🏗 Activo fijo':esDif?'⏳ Gasto anticipado':'Giro');
             })()),
             cell(d.exento),cell(d.neto),cell(d.iva),cell(d.otros_imp),
             h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',fontWeight:700,color:nc?'#DC2626':'#1E3A2D'}},(nc?'-':'')+'$'+nf(d.total)),
@@ -24502,7 +24617,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Informe de Costos de Operación','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -25160,7 +25275,7 @@ function App(){
     'transporte':'transporte',
     'personal':'contratos','contratos':'contratos','vacaciones':'contratos','turnos-faena':'contratos','prevencion':'contratos','finiquitos':'contratos','cartas':'contratos',
     'mantenedores':'mantenedores',
-    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas','fin-remu':'finanzas','fin-activos':'finanzas','fin-liquidaciones':'finanzas','fin-honorarios':'finanzas','fin-eerr':'finanzas','fin-rcv':'finanzas','fin-resultado':'finanzas','fin-f29':'finanzas','fin-imposiciones':'finanzas',
+    'finanzas':'finanzas','cheques':'finanzas','comprobantes':'finanzas','fin-cheques':'finanzas','fin-costos':'finanzas','fin-remu':'finanzas','fin-activos':'finanzas','fin-diferidos':'finanzas','fin-liquidaciones':'finanzas','fin-honorarios':'finanzas','fin-eerr':'finanzas','fin-rcv':'finanzas','fin-resultado':'finanzas','fin-f29':'finanzas','fin-imposiciones':'finanzas',
     'rem-parametros':'remuneraciones','rem-periodos':'remuneraciones','rem-movimientos':'remuneraciones','rem-liquidaciones':'remuneraciones','rem-prestamos':'remuneraciones','rem-previred':'remuneraciones','rem-prevision':'remuneraciones'
   };
   function viewAllowed(v){
@@ -25355,7 +25470,7 @@ function App(){
         canSee('solicitudes')&&grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
         canSee('solicitudes')&&h('div',{className:'sb-sep'}),
         canSee('finanzas')&&grpHdr('fin','FINANZAS'),
-        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true),navI('fin-costos','📊','Informe de Costos',true),navI('fin-liquidaciones','🌲','Liquidaciones Producción',true),navI('fin-honorarios','📜','Honorarios',true),/* oculto por ahora a pedido del usuario (2026-07): navI('fin-eerr','💹','Estado de Resultados',true), */navI('fin-rcv','📚','Libro Compras y Ventas',true),navI('fin-resultado','🗓','Resultado del Año',true),navI('fin-f29','📄','Formulario 29',true),navI('fin-imposiciones','🏦','Imposiciones',true),navI('fin-remu','🧾','Costo Remuneraciones',true),navI('fin-activos','🏗','Activos Fijos',true)),
+        canSee('finanzas')&&grp.fin&&h('div',null,navI('fin-cheques','💳','Registro de Cheques',true),navI('fin-costos','📊','Informe de Costos',true),navI('fin-liquidaciones','🌲','Liquidaciones Producción',true),navI('fin-honorarios','📜','Honorarios',true),/* oculto por ahora a pedido del usuario (2026-07): navI('fin-eerr','💹','Estado de Resultados',true), */navI('fin-rcv','📚','Libro Compras y Ventas',true),navI('fin-resultado','🗓','Resultado del Año',true),navI('fin-f29','📄','Formulario 29',true),navI('fin-imposiciones','🏦','Imposiciones',true),navI('fin-remu','🧾','Costo Remuneraciones',true),navI('fin-activos','🏗','Activos Fijos',true),navI('fin-diferidos','⏳','Gastos Diferidos',true)),
         canSee('finanzas')&&h('div',{className:'sb-sep'}),
         canSee('rendiciones')&&grpHdr('rend','RENDICIONES'),
         canSee('rendiciones')&&grp.rend&&h('div',null,navI('rendiciones','💰','Rendiciones de Gasto',true)),
@@ -25480,6 +25595,7 @@ function App(){
           view==='fin-costos'&&h(InformeCostosView,{tok,m}),
           view==='fin-remu'&&h(RemuCostoView,{tok,m,user}),
           view==='fin-activos'&&h(ActivosFijosView,{tok,m}),
+          view==='fin-diferidos'&&h(FinDiferidosView,{tok,m,user}),
           view==='trans-traslados'&&h(TransporteView,{tok,m}),
           view==='trans-planificacion'&&h(PlanificacionView,{tok,m}),
           view==='trans-tarifas'&&h(TransporteTarifas,{tok,m}),
