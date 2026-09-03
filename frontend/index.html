@@ -17777,29 +17777,31 @@ function FinLiquidacionesView(p){
     dets=dets.slice().sort(function(a,b){return (a.periodo||'').localeCompare(b.periodo||'')||a.liq_id-b.liq_id;});
     // ── Agregaciones ──
     var tot={vol:0,prod:0,pe:0,neto:0};
-    var porEquipo={},porFundo={},pes=[];
+    var porFaena={},porFundo={},pes=[];
     var filasPeriodo=dets.map(function(d){
       var vol=0,prod=0,pe=0;
       (d.lineas||[]).forEach(function(x){
         var m=parseFloat(x.monto)||0,v=parseFloat(x.volumen_m3)||0;
         if(x.tipo==='PRODUCCION'){
           prod+=m;vol+=v;
-          var ke=(x.equipo_contrato||'Sin equipo');
-          if(!porEquipo[ke])porEquipo[ke]={vol:0,prod:0,pe:0};
-          porEquipo[ke].vol+=v;porEquipo[ke].prod+=m;
+          var kfa=(x.faena_nombre||'Sin faena asignada');
+          if(!porFaena[kfa])porFaena[kfa]={vol:0,prod:0,pe:0};
+          porFaena[kfa].vol+=v;porFaena[kfa].prod+=m;
           var kf=((x.fundo_codigo||'')+'|'+(x.fundo_nombre||x.fundo_codigo||'Sin fundo'));
           if(!porFundo[kf])porFundo[kf]={cod:x.fundo_codigo||'',nom:x.fundo_nombre||x.fundo_codigo||'Sin fundo',vol:0,prod:0};
           porFundo[kf].vol+=v;porFundo[kf].prod+=m;
         }else{
           pe+=m;
-          if(porEquipo[(x.equipo_contrato||'Sin equipo')])porEquipo[(x.equipo_contrato||'Sin equipo')].pe+=m;
+          var kfa2=(x.faena_nombre||'Sin faena asignada');
+          if(!porFaena[kfa2])porFaena[kfa2]={vol:0,prod:0,pe:0};
+          porFaena[kfa2].pe+=m;
           pes.push({periodo:d.periodo,equipo:x.equipo_contrato||'—',concepto:x.concepto||'Partida especial',monto:m});
         }
       });
       tot.vol+=vol;tot.prod+=prod;tot.pe+=pe;tot.neto+=prod+pe;
       return{periodo:d.periodo,empresa:d.empresa_nombre||'—',mandante:d.mandante||'—',ref:d.numero_ref||'—',vol:vol,prod:prod,pe:pe,neto:prod+pe};
     });
-    var eqList=Object.keys(porEquipo).map(function(k){var x=porEquipo[k];return{eq:k,vol:x.vol,prod:x.prod,pe:x.pe,neto:x.prod+x.pe};}).sort(function(a,b){return b.prod-a.prod;});
+    var faList=Object.keys(porFaena).map(function(k){var x=porFaena[k];return{faena:k,vol:x.vol,prod:x.prod,pe:x.pe,neto:x.prod+x.pe};}).sort(function(a,b){return b.prod-a.prod;});
     var fuList=Object.keys(porFundo).map(function(k){return porFundo[k];}).sort(function(a,b){return b.prod-a.prod;});
     pes.sort(function(a,b){return (a.periodo||'').localeCompare(b.periodo||'')||a.monto-b.monto;});
     var empSel=fEmpresa?(empresas.find(function(e){return String(e.empresa_id)===String(fEmpresa);})||{}).razon_social:null;
@@ -17843,10 +17845,11 @@ function FinLiquidacionesView(p){
       filasPeriodo.map(function(f){return '<tr><td style="'+td+'font-weight:700;color:'+G+';">'+esc(f.periodo)+'</td><td style="'+td+'">'+esc(f.empresa)+'</td><td style="'+td+'">'+esc(f.mandante)+'</td><td style="'+td+'">'+esc(f.ref)+'</td><td style="'+tdN+'">'+nf(f.vol,1)+'</td><td style="'+tdN+'">'+money(f.prod)+'</td><td style="'+tdN+(f.pe<0?'color:'+ROJO+';':'')+'">'+money(f.pe)+'</td><td style="'+tdN+'font-weight:700;">'+money(f.neto)+'</td><td style="'+tdN+'">'+(f.vol>0?money(f.neto/f.vol):'—')+'</td></tr>';}).join('')+
       '<tr><td colspan="4" style="'+td+'font-weight:800;background:#F3F4F6;">TOTAL</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+nf(tot.vol,1)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+money(tot.prod)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;'+(tot.pe<0?'color:'+ROJO+';':'')+'">'+money(tot.pe)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+money(tot.neto)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+(tot.vol>0?money(tot.neto/tot.vol):'—')+'</td></tr>'+
       '</tbody></table>'+
-      // 2) Producción por equipo de contrato
-      seccion('2 · PRODUCCIÓN POR EQUIPO DE CONTRATO')+
-      '<table><thead><tr><th style="'+thTxt+'">Equipo contrato</th><th style="'+thNum+'">m³</th><th style="'+thNum+'">Producción</th><th style="'+thNum+'">$/m³</th><th style="'+thNum+'">Part. Esp.</th><th style="'+thNum+'">Neto</th><th style="'+thNum+'">% del neto</th></tr></thead><tbody>'+
-      eqList.map(function(x){return '<tr><td style="'+td+'font-weight:600;">'+esc(x.eq)+'</td><td style="'+tdN+'">'+nf(x.vol,1)+'</td><td style="'+tdN+'">'+money(x.prod)+'</td><td style="'+tdN+'">'+(x.vol>0?money(x.prod/x.vol):'—')+'</td><td style="'+tdN+(x.pe<0?'color:'+ROJO+';':'')+'">'+money(x.pe)+'</td><td style="'+tdN+'font-weight:700;">'+money(x.neto)+'</td><td style="'+tdN+'">'+(tot.neto?nf(x.neto/tot.neto*100,1)+'%':'—')+'</td></tr>';}).join('')+
+      // 2) Producción por faena
+      seccion('2 · PRODUCCIÓN POR FAENA')+
+      '<table><thead><tr><th style="'+thTxt+'">Faena</th><th style="'+thNum+'">m³</th><th style="'+thNum+'">Producción</th><th style="'+thNum+'">$/m³</th><th style="'+thNum+'">Part. Esp.</th><th style="'+thNum+'">Neto</th><th style="'+thNum+'">% del neto</th></tr></thead><tbody>'+
+      faList.map(function(x){return '<tr><td style="'+td+'font-weight:600;'+(x.faena==='Sin faena asignada'?'color:#B91C1C;':'')+'">'+esc(x.faena)+'</td><td style="'+tdN+'">'+nf(x.vol,1)+'</td><td style="'+tdN+'">'+money(x.prod)+'</td><td style="'+tdN+'">'+(x.vol>0?money(x.prod/x.vol):'—')+'</td><td style="'+tdN+(x.pe<0?'color:'+ROJO+';':'')+'">'+money(x.pe)+'</td><td style="'+tdN+'font-weight:700;">'+money(x.neto)+'</td><td style="'+tdN+'">'+(tot.neto?nf(x.neto/tot.neto*100,1)+'%':'—')+'</td></tr>';}).join('')+
+      '<tr><td style="'+td+'font-weight:800;background:#F3F4F6;">TOTAL</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+nf(tot.vol,1)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+money(tot.prod)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+(tot.vol>0?money(tot.prod/tot.vol):'—')+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;'+(tot.pe<0?'color:'+ROJO+';':'')+'">'+money(tot.pe)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+money(tot.neto)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">100%</td></tr>'+
       '</tbody></table>'+
       // 3) Producción por fundo
       seccion('3 · PRODUCCIÓN POR FUNDO')+
