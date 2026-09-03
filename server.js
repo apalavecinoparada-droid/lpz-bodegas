@@ -2812,6 +2812,7 @@ ocR.post('/', auth, requireOC('crear'), async(req,res)=>{
     await client.query('BEGIN');
     const{empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,observaciones,lineas,es_activo_fijo,af_vida_util_meses,af_valor_residual,af_descripcion}=req.body;
     if(!proveedor_id||!fecha_emision) throw new Error('Proveedor y fecha son obligatorios');
+    const _dif=difParse(req.body);
     if(!lineas||!lineas.length) throw new Error('Debe ingresar al menos una linea');
     const year=new Date().getFullYear();
     const seq=await client.query("SELECT nextval('seq_oc_num')");
@@ -2822,7 +2823,7 @@ ocR.post('/', auth, requireOC('crear'), async(req,res)=>{
     const iva=Math.round(netoAfecto*0.19);
     const imp=Math.round(parseFloat(impuesto_adicional)||0);
     const total=neto+iva+imp;
-    const ocR2=await client.query('INSERT INTO ordenes_compra(numero_oc,empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,neto,iva,total,observaciones,usuario,es_activo_fijo,af_vida_util_meses,af_valor_residual,af_descripcion) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING oc_id',[numero_oc,empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,req.user.email,es_activo_fijo||false,es_activo_fijo?(parseInt(af_vida_util_meses)||60):null,es_activo_fijo?(parseFloat(af_valor_residual)||0):null,es_activo_fijo?(af_descripcion||null):null]);
+    const ocR2=await client.query('INSERT INTO ordenes_compra(numero_oc,empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,neto,iva,total,observaciones,usuario,es_activo_fijo,af_vida_util_meses,af_valor_residual,af_descripcion,es_diferido,dif_desde,dif_hasta,dif_descripcion) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING oc_id',[numero_oc,empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,req.user.email,es_activo_fijo||false,es_activo_fijo?(parseInt(af_vida_util_meses)||60):null,es_activo_fijo?(parseFloat(af_valor_residual)||0):null,es_activo_fijo?(af_descripcion||null):null,_dif.es,_dif.desde,_dif.hasta,_dif.desc]);
     const ocId=ocR2.rows[0].oc_id;
     for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[ocId,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
     await auditOC(client,ocId,'CREATE',null,req);
@@ -2840,6 +2841,7 @@ ocR.put('/:id', auth, requireOC('editar'), async(req,res)=>{
     if(chk.rows[0].estado!=='PENDIENTE') throw new Error('Solo se pueden editar ordenes PENDIENTES');
     const _snapAntes=await ocSnapshot(client,req.params.id);
     const{empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,observaciones,lineas,tipo_doc_id,numero_documento,fecha_documento,es_activo_fijo,af_vida_util_meses,af_valor_residual,af_descripcion}=req.body;
+    const _dif=difParse(req.body);
     const netoAfecto=lineas.filter(l=>!l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
     const netoExento=lineas.filter(l=>l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
     const neto=Math.round(netoAfecto+netoExento);const iva=Math.round(netoAfecto*0.19);const imp=Math.round(parseFloat(impuesto_adicional)||0);const total=neto+iva+imp;
@@ -2847,7 +2849,7 @@ ocR.put('/:id', auth, requireOC('editar'), async(req,res)=>{
     const _tipoDoc = tipo_doc_id || null;
     const _numDoc = (numero_documento && String(numero_documento).trim()) ? String(numero_documento).trim() : null;
     const _fechaDoc = fecha_documento || null;
-    await client.query('UPDATE ordenes_compra SET empresa_id=$1,proveedor_id=$2,fecha_emision=$3,solicitante=$4,retira=$5,condicion_id=$6,impuesto_adicional=$7,neto=$8,iva=$9,total=$10,observaciones=$11,tipo_doc_id=$12,numero_documento=$13,fecha_documento=$14,es_activo_fijo=$15,af_vida_util_meses=$16,af_valor_residual=$17,af_descripcion=$18,modificado_en=NOW() WHERE oc_id=$19',[empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,_tipoDoc,_numDoc,_fechaDoc,es_activo_fijo||false,es_activo_fijo?(parseInt(af_vida_util_meses)||60):null,es_activo_fijo?(parseFloat(af_valor_residual)||0):null,es_activo_fijo?(af_descripcion||null):null,req.params.id]);
+    await client.query('UPDATE ordenes_compra SET empresa_id=$1,proveedor_id=$2,fecha_emision=$3,solicitante=$4,retira=$5,condicion_id=$6,impuesto_adicional=$7,neto=$8,iva=$9,total=$10,observaciones=$11,tipo_doc_id=$12,numero_documento=$13,fecha_documento=$14,es_activo_fijo=$15,af_vida_util_meses=$16,af_valor_residual=$17,af_descripcion=$18,es_diferido=$19,dif_desde=$20,dif_hasta=$21,dif_descripcion=$22,dif_cerrado_en=CASE WHEN $19 THEN dif_cerrado_en ELSE NULL END,modificado_en=NOW() WHERE oc_id=$23',[empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,_tipoDoc,_numDoc,_fechaDoc,es_activo_fijo||false,es_activo_fijo?(parseInt(af_vida_util_meses)||60):null,es_activo_fijo?(parseFloat(af_valor_residual)||0):null,es_activo_fijo?(af_descripcion||null):null,_dif.es,_dif.desde,_dif.hasta,_dif.desc,req.params.id]);
     await client.query('UPDATE ordenes_compra SET modificado_por=$1 WHERE oc_id=$2',[req.user.email,req.params.id]);
     await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
     for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[req.params.id,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
@@ -7536,7 +7538,7 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
       LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
       LEFT JOIN faenas f ON d.faena_id=f.faena_id
       WHERE oc.estado='CERRADA' AND COALESCE(d.ingresa_bodega,false)=false
-        AND COALESCE(oc.es_activo_fijo,false)=false
+        AND COALESCE(oc.es_activo_fijo,false)=false AND COALESCE(oc.es_diferido,false)=false
         AND oc.fecha_emision BETWEEN $1 AND $2
         ${empresaId?'AND oc.empresa_id=$3':''}
       GROUP BY sc.subcategoria_id, sc.nombre, oc.empresa_id, emp.razon_social, d.faena_id, f.nombre, d.equipo_id, eq.codigo, eq.nombre, oc.proveedor_id, pr.nombre, TO_CHAR(oc.fecha_emision,'YYYY-MM')`,
@@ -7605,7 +7607,7 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
         LEFT JOIN productos p ON d.producto_id=p.producto_id
         LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
         WHERE oc.estado='CERRADA' AND COALESCE(d.ingresa_bodega,false)=false
-          AND COALESCE(oc.es_activo_fijo,false)=false AND oc.fecha_emision BETWEEN $1 AND $2
+          AND COALESCE(oc.es_activo_fijo,false)=false AND COALESCE(oc.es_diferido,false)=false AND oc.fecha_emision BETWEEN $1 AND $2
           AND oc.empresa_id IS NOT NULL AND f.empresa_id IS NOT NULL
           AND oc.empresa_id<>f.empresa_id ${empDir}
       )
@@ -7674,7 +7676,48 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
       }
     });
 
-    var costoTotal=totInventario+totCombustible+totDirectas+totDepreciacion;
+    // ── 7. GASTOS DIFERIDOS: cuota devengada del período por línea (prorrateo diario dentro de la vigencia) ──
+    var totDiferidos=0, saldoDiferidos=0;
+    try{
+      const difQ=await pool.query(`
+        SELECT oc.oc_id, oc.numero_oc, oc.dif_desde, oc.dif_hasta, oc.dif_cerrado_en, oc.dif_descripcion,
+               oc.empresa_id, emp.razon_social AS empresa_nombre, oc.proveedor_id, pr.nombre AS proveedor_nombre,
+               d.faena_id, f.nombre AS faena_nombre, d.equipo_id, eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre,
+               sc.subcategoria_id AS categoria_id, sc.nombre AS categoria_nombre, d.total_linea AS monto
+        FROM ordenes_compra oc
+        JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
+        LEFT JOIN productos p ON d.producto_id=p.producto_id
+        LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,p.subcategoria_id)=sc.subcategoria_id
+        LEFT JOIN empresas emp ON oc.empresa_id=emp.empresa_id
+        LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
+        LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
+        LEFT JOIN faenas f ON d.faena_id=f.faena_id
+        WHERE oc.estado='CERRADA' AND COALESCE(oc.es_diferido,false)=true
+          AND oc.dif_desde IS NOT NULL AND oc.dif_hasta IS NOT NULL
+          AND (oc.dif_desde<=$2::date OR oc.fecha_emision<=$2::date)
+          AND COALESCE(oc.dif_cerrado_en,oc.dif_hasta)>=$1::date
+          ${empresaId?'AND oc.empresa_id=$3':''}`, empresaId?[desde,hasta,empresaId]:[desde,hasta]);
+      const slicesDif=difMesesSlices(desde,hasta);
+      difQ.rows.forEach(function(r){
+        var monto=num(r.monto); if(!monto) return;
+        var catNom='⏳ '+(r.categoria_nombre||'Gasto diferido')+' (devengado)';
+        var cuotaTot=0;
+        slicesDif.forEach(function(sl){
+          var c=calcularDevengoDiferido(r,monto,sl.desde,sl.hasta).cuota_periodo;
+          if(c>0){cuotaTot+=c;acum(porMes,sl.mes,sl.mes,c);}
+        });
+        saldoDiferidos+=Math.max(0,calcularDevengoDiferido(r,monto,desde,hasta).saldo);
+        if(cuotaTot<=0) return;
+        totDiferidos+=cuotaTot;
+        acum(porCategoria,'dif_'+(r.categoria_id||'x'),catNom,cuotaTot);
+        acum(porEmpresa,'emp_'+(r.empresa_id||'sn'),r.empresa_nombre||'Sin empresa',cuotaTot);
+        if(r.faena_id) acum(porFaena,'fae_'+r.faena_id,r.faena_nombre,cuotaTot,r.faena_id);
+        if(r.equipo_id) acum(porEquipo,'eq_'+r.equipo_id,(r.equipo_codigo||'')+' '+(r.equipo_nombre||''),cuotaTot,r.equipo_id);
+        if(r.proveedor_id) acum(porProveedor,'prov_'+r.proveedor_id,r.proveedor_nombre,cuotaTot,r.proveedor_id);
+      });
+    }catch(difErr){console.log('[WARN] gastos diferidos informe-costos:',difErr.message);}
+
+    var costoTotal=totInventario+totCombustible+totDirectas+totDepreciacion+totDiferidos;
     function ordenar(obj){return Object.values(obj).map(function(x){return{nombre:x.nombre,costo:Math.round(x.costo),id_key:x.id_key};}).filter(function(x){return x.costo!==0;}).sort(function(a,b){return b.costo-a.costo;});}
 
     res.json({
@@ -7685,9 +7728,11 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
         consumo_inventario:Math.round(totInventario),
         compras_directas:Math.round(totDirectas),
         depreciacion:Math.round(totDepreciacion),
+        gastos_diferidos:Math.round(totDiferidos),
         valor_inventario_actual:Math.round(num(invActual.rows[0].valor)),
         valor_combustible_actual:Math.round(num(combActual.rows[0].valor)),
-        valor_activos_fijos:Math.round(valorActivosFijos)
+        valor_activos_fijos:Math.round(valorActivosFijos),
+        valor_gastos_diferidos:Math.round(saldoDiferidos)
       },
       por_categoria:ordenar(porCategoria),
       por_empresa:ordenar(porEmpresa),
@@ -7711,7 +7756,7 @@ app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
     // Filtros base por origen
     var pInv=[desde,hasta], wInv=["me.tipo_movimiento='SALIDA'","me.estado='ACTIVO'","me.fecha BETWEEN $1 AND $2"];
     var pComb=[desde,hasta], wComb=["m.tipo_mov='DISTRIBUCION'","m.estado='ACTIVO'","m.fecha BETWEEN $1 AND $2"];
-    var pDir=[desde,hasta], wDir=["oc.estado='CERRADA'","COALESCE(d.ingresa_bodega,false)=false","COALESCE(oc.es_activo_fijo,false)=false","oc.fecha_emision BETWEEN $1 AND $2"];
+    var pDir=[desde,hasta], wDir=["oc.estado='CERRADA'","COALESCE(d.ingresa_bodega,false)=false","COALESCE(oc.es_activo_fijo,false)=false","COALESCE(oc.es_diferido,false)=false","oc.fecha_emision BETWEEN $1 AND $2"];
 
     // Filtro por EMPRESA (faltaba: el detalle ignoraba empresa_id y mezclaba LPZ/Emprecon).
     // Mismo criterio que el informe principal: inventario por empresa del equipo,
@@ -7791,7 +7836,36 @@ app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
       LEFT JOIN faenas f ON d.faena_id=f.faena_id
       WHERE ${wDir.join(' AND ')} ORDER BY oc.fecha_emision DESC LIMIT 1000`, pDir);
 
-    rows=inv.rows.concat(comb.rows).concat(dir.rows).sort(function(a,b){return new Date(b.fecha)-new Date(a.fecha);});
+    // ── Gastos diferidos: cuota devengada del período por línea (misma lógica que el informe principal) ──
+    var difRows=[];
+    if(dimension!=='combustible' && (!catFiltro || catFiltro.indexOf('(devengado)')>=0)){
+      try{
+        var pD=[desde,hasta], wD=["oc.estado='CERRADA'","COALESCE(oc.es_diferido,false)=true","oc.dif_desde IS NOT NULL","oc.dif_hasta IS NOT NULL","oc.dif_desde<=$2::date","COALESCE(oc.dif_cerrado_en,oc.dif_hasta)>=$1::date"];
+        if(empresa_id){wD.push('oc.empresa_id=$'+(pD.length+1));pD.push(empresa_id);}
+        if(dimension==='equipo'){wD.push('d.equipo_id=$'+(pD.length+1));pD.push(idVal);}
+        else if(dimension==='faena'){wD.push('d.faena_id=$'+(pD.length+1));pD.push(idVal);}
+        else if(dimension==='proveedor'){wD.push('oc.proveedor_id=$'+(pD.length+1));pD.push(idVal);}
+        if(equipo_filtro){wD.push('d.equipo_id=$'+(pD.length+1));pD.push(equipo_filtro);}
+        const dq=await pool.query(`
+          SELECT oc.numero_oc, oc.numero_documento, oc.dif_desde, oc.dif_hasta, oc.dif_cerrado_en, oc.dif_descripcion,
+                 COALESCE(p.nombre,d.descripcion) AS detalle, eq.codigo AS equipo, f.nombre AS faena, d.total_linea AS monto, sc.nombre AS categoria_nombre
+          FROM ordenes_compra oc JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
+          LEFT JOIN productos p ON d.producto_id=p.producto_id
+          LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,p.subcategoria_id)=sc.subcategoria_id
+          LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
+          LEFT JOIN faenas f ON d.faena_id=f.faena_id
+          WHERE ${wD.join(' AND ')}`, pD);
+        dq.rows.forEach(function(r){
+          var monto=parseFloat(r.monto)||0; var c=calcularDevengoDiferido(r,monto,desde,hasta).cuota_periodo; if(c<=0) return;
+          var catNom='⏳ '+(r.categoria_nombre||'Gasto diferido')+' (devengado)';
+          if(catFiltro&&catFiltro!==catNom) return;
+          difRows.push({fecha:hasta,origen:'Gasto diferido',codigo:r.numero_oc,
+            detalle:(r.dif_descripcion||r.detalle||'')+' · cuota del '+String(desde)+' al '+String(hasta)+' (vigencia '+difIso(r.dif_desde)+' a '+difIso(r.dif_hasta)+(r.dif_cerrado_en?', cerrado el '+difIso(r.dif_cerrado_en):'')+', total línea $'+Math.round(monto).toLocaleString('es-CL')+')',
+            equipo:r.equipo,faena:r.faena,cantidad:1,costo_unitario:Math.round(c),costo:Math.round(c),documento:r.numero_documento,categoria:catNom});
+        });
+      }catch(e2){console.log('[WARN] diferidos drill-down:',e2.message);}
+    }
+    rows=inv.rows.concat(comb.rows).concat(dir.rows).concat(difRows).sort(function(a,b){return new Date(b.fecha)-new Date(a.fecha);});
 
     // Si NO se pidió categoría puntual, devolver también el agrupado por categoría (NIVEL 2)
     var porCategoria=null;
@@ -7826,7 +7900,7 @@ app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
           UNION ALL
           SELECT d.equipo_id, d.total_linea AS costo
           FROM ordenes_compra oc JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
-          WHERE oc.estado='CERRADA' AND COALESCE(d.ingresa_bodega,false)=false AND COALESCE(oc.es_activo_fijo,false)=false
+          WHERE oc.estado='CERRADA' AND COALESCE(d.ingresa_bodega,false)=false AND COALESCE(oc.es_activo_fijo,false)=false AND COALESCE(oc.es_diferido,false)=false
             AND oc.fecha_emision BETWEEN $1 AND $2 AND d.faena_id=$3 AND d.equipo_id IS NOT NULL
         ) t JOIN equipos eq ON t.equipo_id=eq.equipo_id${empOuter}
         GROUP BY eq.equipo_id, eq.codigo, eq.nombre
@@ -7843,6 +7917,47 @@ app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
 // ═══════════════════════════════════════════════════════════════════════
 // Calcula la depreciación de un activo dentro de un período [desde, hasta]
 // usando prorrateo diario desde la fecha de compra.
+// ═══ GASTOS DIFERIDOS — devengo lineal por prorrateo diario dentro de la vigencia [dif_desde, dif_hasta] ═══
+// Si la OC se "cierra anticipadamente" (dif_cerrado_en), el saldo pendiente se reconoce completo ese día.
+function _difDia(x){ if(!x) return null; if(x instanceof Date) return Date.UTC(x.getFullYear(),x.getMonth(),x.getDate()); var m=String(x).slice(0,10).match(/^(\d{4})-(\d{2})-(\d{2})$/); return m?Date.UTC(+m[1],+m[2]-1,+m[3]):null; }
+function difIso(x){ var t=_difDia(x); return t==null?'':new Date(t).toISOString().slice(0,10); }
+function difDevengadoHasta(oc,monto,t){ // acumulado devengado al cierre del día t (ms UTC)
+  var d0=_difDia(oc.dif_desde), d1=_difDia(oc.dif_hasta); if(d0==null||d1==null||d1<d0||t==null) return 0;
+  var DAY=86400000, totalDias=Math.round((d1-d0)/DAY)+1;
+  var cierre=_difDia(oc.dif_cerrado_en);
+  if(t<d0) return 0;
+  if(cierre!=null&&t>=cierre) return monto;
+  var tt=t>d1?d1:t; var dias=Math.round((tt-d0)/DAY)+1;
+  return Math.min(monto, monto*dias/totalDias);
+}
+function calcularDevengoDiferido(oc,monto,desde,hasta){
+  var a=_difDia(desde), b=_difDia(hasta);
+  var acumB=difDevengadoHasta(oc,monto,b), acumA=difDevengadoHasta(oc,monto,a-86400000);
+  return {cuota_periodo:acumB-acumA, devengado_acum:acumB, saldo:monto-acumB};
+}
+function difMesesSlices(desde,hasta){ // corta [desde,hasta] en tramos por mes calendario
+  var out=[]; var a=String(desde).slice(0,10), b=String(hasta).slice(0,10); if(!a||!b||a>b) return out;
+  var y=+a.slice(0,4), m=+a.slice(5,7), guard=0;
+  while(guard++<600){
+    var mk=y+'-'+String(m).padStart(2,'0');
+    var ini=mk+'-01', fin=mk+'-'+String(new Date(Date.UTC(y,m,0)).getUTCDate()).padStart(2,'0');
+    var d=ini<a?a:ini, h=fin>b?b:fin;
+    if(d<=h) out.push({mes:mk,desde:d,hasta:h});
+    if(fin>=b) break;
+    m++; if(m>12){m=1;y++;}
+  }
+  return out;
+}
+function difParse(b){ // valida y normaliza los campos de gasto diferido del body de una OC
+  b=b||{}; var es=!!b.es_diferido;
+  if(!es) return {es:false,desde:null,hasta:null,desc:null};
+  if(b.es_activo_fijo) throw new Error('Una OC no puede ser a la vez Activo Fijo y Gasto Diferido');
+  var d=String(b.dif_desde||'').slice(0,10), h=String(b.dif_hasta||'').slice(0,10);
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(d)||!/^\d{4}-\d{2}-\d{2}$/.test(h)) throw new Error('Gasto diferido: indique la vigencia (desde y hasta)');
+  if(h<=d) throw new Error('Gasto diferido: la fecha "hasta" debe ser posterior a "desde"');
+  return {es:true,desde:d,hasta:h,desc:(b.dif_descripcion&&String(b.dif_descripcion).trim().slice(0,200))||null};
+}
+
 function calcularDepreciacion(activo, desde, hasta){
   const valor=parseFloat(activo.valor_adquisicion)||0;
   const residual=parseFloat(activo.valor_residual)||0;
@@ -10316,6 +10431,12 @@ async function setupFacturaGuias(q){
   await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS factura_guia_id INT REFERENCES oc_factura_guias(factura_id)');
   // ── Activo fijo: marca y parámetros de depreciación en la OC ──
   try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS es_activo_fijo BOOLEAN DEFAULT false')}catch(e){}
+  // ── Gasto diferido: la OC se paga de una vez pero su costo se devenga por prorrateo diario dentro de una vigencia (seguros, patentes, arriendos anticipados) ──
+  try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS es_diferido BOOLEAN DEFAULT false')}catch(e){}
+  try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS dif_desde DATE')}catch(e){}
+  try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS dif_hasta DATE')}catch(e){}
+  try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS dif_cerrado_en DATE')}catch(e){}
+  try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS dif_descripcion VARCHAR(200)')}catch(e){}
   try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS af_vida_util_meses INT')}catch(e){}
   try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS af_valor_residual NUMERIC(14,2) DEFAULT 0')}catch(e){}
   try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS af_descripcion VARCHAR(200)')}catch(e){}
@@ -13094,11 +13215,75 @@ async function finRcvEnsure(){
 app.patch('/api/fin/rcv/:id/clasificar', auth, async(req,res)=>{
   try{
     await finRcvEnsure();
-    const v=req.body&&req.body.activo_fijo;
-    const val=v===true?'Activo Fijo':(v===false?'Del Giro':null);
+    const b=req.body||{};
+    let val=null;
+    if(typeof b.clasif==='string'){ const c=b.clasif.trim(); val=/activo/i.test(c)?'Activo Fijo':(/anticip|difer/i.test(c)?'Gasto Anticipado':(/giro/i.test(c)?'Del Giro':null)); }
+    else { const v=b.activo_fijo; val=v===true?'Activo Fijo':(v===false?'Del Giro':null); }
     const r=await pool.query('UPDATE fin_rcv SET clasif_manual=$1 WHERE rcv_id=$2 RETURNING rcv_id,clasif_manual,tipo_operacion',[val,req.params.id]);
     if(!r.rows.length)return res.status(404).json({error:'Documento no encontrado'});
     res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// ═══ GASTOS DIFERIDOS — vista de control (saldo por devengar = activo) y cierre anticipado ═══
+app.get('/api/fin/diferidos', auth, async(req,res)=>{
+  try{
+    const hasta=(/^\d{4}-\d{2}-\d{2}$/.test(String(req.query.hasta||''))?String(req.query.hasta):new Date().toISOString().slice(0,10));
+    const emp=req.query.empresa_id||null;
+    const r=await pool.query(`
+      SELECT oc.oc_id, oc.numero_oc, oc.fecha_emision, oc.numero_documento, oc.estado, oc.dif_desde, oc.dif_hasta, oc.dif_cerrado_en, oc.dif_descripcion,
+             oc.empresa_id, emp.razon_social AS empresa_nombre, pr.nombre AS proveedor_nombre,
+             d.detalle_id, d.equipo_id, eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre, d.faena_id, f.nombre AS faena_nombre,
+             COALESCE(p.nombre,d.descripcion) AS detalle, sc.nombre AS subcategoria, d.total_linea AS monto
+      FROM ordenes_compra oc JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
+      LEFT JOIN productos p ON d.producto_id=p.producto_id
+      LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,p.subcategoria_id)=sc.subcategoria_id
+      LEFT JOIN empresas emp ON oc.empresa_id=emp.empresa_id
+      LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
+      LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
+      LEFT JOIN faenas f ON d.faena_id=f.faena_id
+      WHERE COALESCE(oc.es_diferido,false)=true AND oc.estado<>'ANULADA' AND oc.anulado_en IS NULL ${emp?'AND oc.empresa_id=$1':''}
+      ORDER BY oc.dif_desde DESC, oc.oc_id, d.linea_num, d.detalle_id`, emp?[emp]:[]);
+    const mIni=hasta.slice(0,7)+'-01';
+    const ocs={};
+    r.rows.forEach(function(x){
+      var monto=parseFloat(x.monto)||0;
+      var dv=calcularDevengoDiferido(x,monto,'1900-01-01',hasta);
+      var cuotaMes=calcularDevengoDiferido(x,monto,mIni,hasta).cuota_periodo;
+      var d0=_difDia(x.dif_desde), d1=_difDia(x.dif_hasta); var dias=(d0!=null&&d1!=null&&d1>=d0)?Math.round((d1-d0)/86400000)+1:0;
+      var cuotaMensual=dias>0?monto*30.4375/dias:0;
+      var o=ocs[x.oc_id];
+      if(!o){
+        var ini=difIso(x.dif_desde), fin=difIso(x.dif_hasta), cie=difIso(x.dif_cerrado_en);
+        var estadoDif=x.estado!=='CERRADA'?'OC PENDIENTE':(cie&&cie<=hasta?'CERRADO ANTICIPADO':(hasta<ini?'POR INICIAR':(hasta>fin?'TERMINADO':'VIGENTE')));
+        o=ocs[x.oc_id]={oc_id:x.oc_id,numero_oc:x.numero_oc,fecha_emision:x.fecha_emision,numero_documento:x.numero_documento,estado:x.estado,estado_dif:estadoDif,
+          dif_desde:ini,dif_hasta:fin,dif_cerrado_en:cie||null,dif_descripcion:x.dif_descripcion,empresa_id:x.empresa_id,empresa_nombre:x.empresa_nombre,proveedor_nombre:x.proveedor_nombre,
+          dias_vigencia:dias,monto:0,devengado:0,saldo:0,cuota_mes:0,cuota_mensual:0,lineas:[]};
+      }
+      o.monto+=monto; o.devengado+=dv.devengado_acum; o.saldo+=Math.max(0,dv.saldo); o.cuota_mes+=cuotaMes; o.cuota_mensual+=cuotaMensual;
+      o.lineas.push({detalle_id:x.detalle_id,equipo_id:x.equipo_id,equipo:x.equipo_codigo?(x.equipo_codigo+' — '+(x.equipo_nombre||'')):null,faena:x.faena_nombre,detalle:x.detalle,subcategoria:x.subcategoria,
+        monto:Math.round(monto),devengado:Math.round(dv.devengado_acum),saldo:Math.round(Math.max(0,dv.saldo)),cuota_mes:Math.round(cuotaMes),cuota_mensual:Math.round(cuotaMensual)});
+    });
+    const lista=Object.values(ocs).map(function(o){['monto','devengado','saldo','cuota_mes','cuota_mensual'].forEach(function(k){o[k]=Math.round(o[k]);});return o;});
+    const tot={monto:0,devengado:0,saldo:0,cuota_mes:0};
+    lista.forEach(function(o){if(o.estado==='CERRADA'){tot.monto+=o.monto;tot.devengado+=o.devengado;tot.saldo+=o.saldo;tot.cuota_mes+=o.cuota_mes;}});
+    res.json({hasta:hasta,totales:tot,ocs:lista});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// PATCH cierre anticipado: {fecha:'YYYY-MM-DD'} reconoce el saldo pendiente ese día; {fecha:null} reabre
+app.patch('/api/fin/diferidos/:oc_id/cerrar', auth, requireOC('editar'), async(req,res)=>{
+  try{
+    const fecha=(req.body&&req.body.fecha)?String(req.body.fecha).slice(0,10):null;
+    const oc=(await pool.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.oc_id])).rows[0];
+    if(!oc||!oc.es_diferido) return res.status(404).json({error:'OC con gasto diferido no encontrada'});
+    if(fecha){
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return res.status(400).json({error:'Fecha inválida'});
+      if(fecha<difIso(oc.dif_desde)) return res.status(400).json({error:'La fecha de cierre no puede ser anterior al inicio de la vigencia ('+difIso(oc.dif_desde)+')'});
+    }
+    const snap=await ocSnapshot(pool,oc.oc_id);
+    await pool.query('UPDATE ordenes_compra SET dif_cerrado_en=$1, modificado_en=NOW() WHERE oc_id=$2',[fecha,oc.oc_id]);
+    try{await auditOC(pool,oc.oc_id,'UPDATE',snap,req);}catch(e){}
+    res.json({ok:true,dif_cerrado_en:fecha});
   }catch(e){res.status(400).json({error:e.message});}
 });
 
@@ -13209,9 +13394,17 @@ app.get('/api/fin/resultado-anual', auth, async(req,res)=>{
     const rcv=await q2('libro compra/venta',`
       SELECT periodo, libro,
              (COALESCE(clasif_manual,tipo_operacion,'') ILIKE '%activo%') AS af,
+             (COALESCE(clasif_manual,'') ILIKE '%anticip%') AS dif,
              SUM(CASE WHEN tipo_dte='61' THEN -(COALESCE(neto,0)+COALESCE(exento,0)) ELSE (COALESCE(neto,0)+COALESCE(exento,0)) END) AS neto
       FROM fin_rcv WHERE periodo LIKE $1 ${emp?'AND empresa_id=$2':''}
-      GROUP BY periodo, libro, 3`,emp?[like,emp]:[like]);
+      GROUP BY periodo, libro, 3, 4`,emp?[like,emp]:[like]);
+    // Devengo mensual de las OC marcadas como GASTO DIFERIDO (seguros pagados por anticipado, etc.): reemplaza en el EBITDA a la factura completa
+    const difOC=await q2('gastos diferidos',`
+      SELECT oc.oc_id, oc.dif_desde, oc.dif_hasta, oc.dif_cerrado_en, SUM(d.total_linea) AS monto
+      FROM ordenes_compra oc JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id
+      WHERE oc.estado='CERRADA' AND COALESCE(oc.es_diferido,false)=true AND oc.dif_desde IS NOT NULL AND oc.dif_hasta IS NOT NULL
+        AND oc.dif_desde<=$1::date AND COALESCE(oc.dif_cerrado_en,oc.dif_hasta)>=$2::date ${emp?'AND oc.empresa_id=$3':''}
+      GROUP BY oc.oc_id`,emp?[anio+'-12-31',anio+'-01-01',emp]:[anio+'-12-31',anio+'-01-01']);
     const remu=await q2('remuneraciones',`
       SELECT (p.anio||'-'||LPAD(p.mes::text,2,'0')) AS periodo, SUM(p.costo_total) AS monto
       FROM fin_remu_periodo p WHERE p.anio=$1 ${emp?'AND p.empresa_id=$2':''}
@@ -13226,11 +13419,14 @@ app.get('/api/fin/resultado-anual', auth, async(req,res)=>{
       SELECT periodo, SUM(bruto) AS monto FROM fin_honorarios
       WHERE estado='VIGENTE' AND periodo LIKE $1 ${emp?'AND empresa_id=$2':''} GROUP BY periodo`,emp?[like,emp]:[like]);
     const meses={};
-    const M=function(p){if(!meses[p])meses[p]={ventas:0,ventas_af:0,compras:0,compras_af:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};return meses[p];};
-    // Ventas y compras de ACTIVO FIJO quedan FUERA del resultado operacional (EBITDA): solo informativas
+    const M=function(p){if(!meses[p])meses[p]={ventas:0,ventas_af:0,compras:0,compras_af:0,compras_dif:0,diferido_devengo:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};return meses[p];};
+    // Ventas y compras de ACTIVO FIJO quedan FUERA del resultado operacional (EBITDA): solo informativas.
+    // Compras clasificadas como GASTO ANTICIPADO también salen del mes de la factura: entran como devengo mensual (diferido_devengo).
     rcv.forEach(function(r){const m=M(r.periodo);const v=parseFloat(r.neto)||0;
       if(r.libro==='VENTA'){if(r.af===true)m.ventas_af+=v;else m.ventas+=v;}
-      else{if(r.af===true)m.compras_af+=v;else m.compras+=v;}});
+      else{if(r.af===true)m.compras_af+=v;else if(r.dif===true)m.compras_dif+=v;else m.compras+=v;}});
+    const slicesAnio=difMesesSlices(anio+'-01-01',anio+'-12-31');
+    difOC.forEach(function(o){var monto=parseFloat(o.monto)||0;if(!monto)return;slicesAnio.forEach(function(sl){var c=calcularDevengoDiferido(o,monto,sl.desde,sl.hasta).cuota_periodo;if(c>0)M(sl.mes).diferido_devengo+=c;});});
     remu.forEach(function(r){M(r.periodo).remu_costo+=parseFloat(r.monto)||0;});
     impos.forEach(function(r){M(r.periodo).imposiciones+=parseFloat(r.monto)||0;});
     f29r.forEach(function(r){M(r.periodo).ret_imp_unico+=parseFloat(r.ret)||0;});
