@@ -8750,11 +8750,11 @@ function hperdEquipoMes(equipo, faenaShort, mes, fallbackBHT) {
 /* Qué combinaciones faena+AñoMes trae realmente cargadas BaseHorasTrab.
    No basta con que existan filas: en agosto Mec 4 tiene 12 filas de Procesado con horas
    pero sin un solo m³, así que esa faena debe seguir leyéndose de la fuente antigua.
-   El criterio es que haya al menos una fila con horas Y producción.
+   El criterio es que haya horas y de donde sacar la produccion: los m3 de la propia
+   fila, o —si esa columna viene vacia— arboles mas cartola para ese dia.
    soloProcesado = true para el panel de operadores, que solo mira el Procesador. */
 /* Cobertura para las HORAS por proceso: basta con que la faena-mes tenga horas
-   cargadas. bhtCobertura() exige ademas m3, que sirve para los paneles que necesitan
-   produccion por fila, pero dejaria fuera mayo-julio, donde las horas SI estan. */
+   cargadas, sin mirar produccion. bhtCobertura() ademas pide con que repartir los m3. */
 function bhtCoberturaHrs(){
   var cob = {};
   (BHT_DIAS||[]).forEach(function(d){
@@ -8767,10 +8767,20 @@ function bhtCoberturaHrs(){
 
 function bhtCobertura(soloProcesado){
   var cob = {};
+  var pm3 = null;
   (BHT_DIAS||[]).forEach(function(d){
     if (soloProcesado && !/^procesad/i.test(d.proceso)) return;
-    if (!(d.hrs > 0) || !(d.m3 > 0)) return;
-    cob[d.faena + '|' + d.ym] = true;
+    if (!(d.hrs > 0)) return;
+    if (d.m3 > 0){ cob[d.faena + '|' + d.ym] = true; return; }
+    /* Antes se exigia ADEMAS que BaseHorasTrab trajera m3, y si esa columna venia
+       vacia el faena-mes entero se descartaba y quedaba con la fuente antigua, o sea
+       en cero. Paso de verdad en Mec 4 sept-2026: 266 hrs y 13.307 arboles cargados,
+       columna de m3 en blanco, y la ficha de operadores mostraba 0 m3 y "sin std" en
+       todo. Ya no corresponde: la produccion se reparte desde la CARTOLA (produc), no
+       desde esa columna. Basta con que haya horas, arboles y cartola para ese dia. */
+    if (!(d.arb > 0)) return;
+    if (pm3 === null) pm3 = prodM3Dia();
+    if (pm3[d.faena + '|' + d.fecha] > 0) cob[d.faena + '|' + d.ym] = true;
   });
   return cob;
 }
@@ -9316,7 +9326,7 @@ var GRAFX = null;      // datos hoja Tablaparametros para gráficos Rendimiento 
 var DIESEL_DATA = null; // datos panel "Combustible Consumido vs Programado" (replica TabladinamicaDiesel), array de {equipo,faena,ym,empresa,tipo,cod,lts,hrs,hperd,rendAct,rendStd,difLts,mesTxt}
 /* Sello de version: se imprime en la consola al abrir. Si el numero que aparece
    no es el ultimo, el navegador esta sirviendo una copia vieja del archivo. */
-var APP_BUILD = '07-09-2026 tramo-visible';
+var APP_BUILD = '07-09-2026 m3-sin-columna';
 console.log('%c[APP] build ' + APP_BUILD, 'background:#1a6b3a;color:#fff;padding:2px 6px;');
 
 var CAUSAS_HPERD = {}; // key equipo|faenaShort|YYYY-MM → [{causa, hrs, obs}] (BaseHorasPer)
