@@ -12155,6 +12155,20 @@ app.delete('/api/dte-recibidos/:id', auth, requireModulo('ordenes'), async(req,r
 
 // GET: todo lo necesario para la bandeja en una sola llamada
 //      Retorna 3 grupos: dtes_con_candidatos, ocs_incompletas, dtes_sin_candidatos
+// Condición de OC candidata para un DTE (compartida por las 3 consultas de la bandeja):
+//  - mismo proveedor por id O por RUT normalizado (DTE importado sin match en el maestro)
+//  - OC PENDIENTE o CERRADA (no anulada) con saldo por facturar
+//  - folio exacto (numero_documento de la OC = folio del DTE) O monto ±5% con la OC emitida
+//    hasta 180 días ANTES o 120 días DESPUÉS de la factura (el usuario crea la OC al ver la factura)
+const BANDEJA_FOLIO=`(oc.numero_documento IS NOT NULL AND ltrim(regexp_replace(dte.folio,'[^0-9]','','g'),'0')<>'' AND ltrim(regexp_replace(oc.numero_documento,'[^0-9]','','g'),'0') = ltrim(regexp_replace(dte.folio,'[^0-9]','','g'),'0'))`;
+const BANDEJA_CAND=`(oc.proveedor_id = dte.proveedor_id
+          OR (dte.proveedor_rut IS NOT NULL AND regexp_replace(lower(dte.proveedor_rut),'[^0-9k]','','g') <> ''
+              AND regexp_replace(lower(dte.proveedor_rut),'[^0-9k]','','g') = (SELECT regexp_replace(lower(p2.rut),'[^0-9k]','','g') FROM proveedores p2 WHERE p2.proveedor_id=oc.proveedor_id)))
+        AND oc.estado IN ('PENDIENTE','CERRADA') AND oc.anulado_en IS NULL
+        AND COALESCE((SELECT SUM(x.monto_aplicado) FROM dte_oc x WHERE x.oc_id=oc.oc_id),0) < oc.total - 1
+        AND (${BANDEJA_FOLIO}
+             OR (ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.05
+                 AND oc.fecha_emision BETWEEN dte.fecha_emision - INTERVAL '180 days' AND dte.fecha_emision + INTERVAL '120 days'))`;
 app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
   try{
     // ❶ DTEs sin vincular CON al menos una OC candidata (sugerencias para vincular)
@@ -12168,11 +12182,14 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
           json_build_object(
             'oc_id', oc.oc_id,
             'numero_oc', oc.numero_oc,
+            'estado', oc.estado,
+            'numero_documento', oc.numero_documento,
             'fecha_emision', oc.fecha_emision,
             'total', oc.total::numeric(14,0),
             'diferencia', ABS(oc.total - dte.total)::numeric(14,0),
             'dias_oc_a_dte', (dte.fecha_emision - oc.fecha_emision)::int,
-            'confianza', CASE 
+            'confianza', CASE
+              WHEN ${BANDEJA_FOLIO} THEN 'FOLIO'
               WHEN ABS(oc.total - dte.total) < 1 THEN 'ALTO'
               WHEN ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.01 THEN 'MEDIO'
               ELSE 'BAJO' END,
@@ -12182,16 +12199,12 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
                 AND (d.subcategoria_id IS NULL OR (NOT COALESCE(d.ingresa_bodega,false) AND (d.faena_id IS NULL OR d.equipo_id IS NULL)))
             )
           )
-          ORDER BY ABS(oc.total - dte.total)
+          ORDER BY (CASE WHEN ${BANDEJA_FOLIO} THEN 0 ELSE 1 END), ABS(oc.total - dte.total)
         ) AS candidatos
       FROM dte_recibidos dte
       LEFT JOIN proveedores pr ON dte.proveedor_id=pr.proveedor_id
       LEFT JOIN empresas emp ON dte.empresa_id=emp.empresa_id
-      JOIN ordenes_compra oc ON oc.proveedor_id = dte.proveedor_id
-        AND oc.estado = 'PENDIENTE'
-        AND ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.05
-        AND dte.fecha_emision >= oc.fecha_emision
-        AND dte.fecha_emision <= oc.fecha_emision + INTERVAL '180 days'
+      JOIN ordenes_compra oc ON ${BANDEJA_CAND}
       WHERE NOT EXISTS (SELECT 1 FROM dte_oc WHERE dte_id=dte.dte_id)
         AND (dte.observaciones IS NULL OR dte.observaciones NOT LIKE '%[GASTO SIN OC]%')
         AND dte.tipo_dte<>'61'
@@ -12237,10 +12250,7 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
       WHERE NOT EXISTS (SELECT 1 FROM dte_oc WHERE dte_id=dte.dte_id)
         AND (dte.observaciones IS NULL OR dte.observaciones NOT LIKE '%[GASTO SIN OC]%')
         AND (dte.tipo_dte='61' OR NOT EXISTS (
-          SELECT 1 FROM ordenes_compra oc
-          WHERE oc.proveedor_id=dte.proveedor_id AND oc.estado='PENDIENTE'
-            AND ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.05
-            AND dte.fecha_emision BETWEEN oc.fecha_emision AND oc.fecha_emision + INTERVAL '180 days'
+          SELECT 1 FROM ordenes_compra oc WHERE ${BANDEJA_CAND}
         ))
       ORDER BY dte.fecha_emision DESC NULLS LAST
       LIMIT 300`;
@@ -12368,9 +12378,10 @@ app.post('/api/dte-recibidos/bulk-delete', auth, requireModulo('ordenes'), async
 // GET: OCs candidatas para vincular a un DTE (mismo proveedor preferentemente)
 app.get('/api/dte-recibidos/:id/ocs-candidatas', auth, requireModulo('ordenes'), async(req,res)=>{
   try{
-    var dte=await pool.query('SELECT proveedor_id FROM dte_recibidos WHERE dte_id=$1',[req.params.id]);
+    var dte=await pool.query('SELECT proveedor_id, proveedor_rut FROM dte_recibidos WHERE dte_id=$1',[req.params.id]);
     if(!dte.rows.length)return res.status(404).json({error:'DTE no encontrado'});
-    var provId=dte.rows[0].proveedor_id;
+    var provId=dte.rows[0].proveedor_id||null;
+    var rutN=String(dte.rows[0].proveedor_rut||'').toLowerCase().replace(/[^0-9k]/g,'');
     // OCs del mismo proveedor + las que aún tienen saldo no facturado
     var sql=`SELECT oc.oc_id, oc.numero_oc, oc.fecha_emision, oc.total, oc.estado, oc.empresa_id,
                     pr.nombre AS proveedor_nombre, em.razon_social AS empresa_razon_social,
@@ -12379,9 +12390,10 @@ app.get('/api/dte-recibidos/:id/ocs-candidatas', auth, requireModulo('ordenes'),
              FROM ordenes_compra oc
              LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
              LEFT JOIN empresas em ON oc.empresa_id=em.empresa_id
-             WHERE oc.proveedor_id=$1 AND oc.estado!='CANCELADA' AND oc.estado!='ANULADA'
+             WHERE (oc.proveedor_id=$1 OR ($2<>'' AND regexp_replace(lower(COALESCE(pr.rut,'')),'[^0-9k]','','g')=$2))
+               AND oc.estado!='CANCELADA' AND oc.estado!='ANULADA' AND oc.anulado_en IS NULL
              ORDER BY oc.fecha_emision DESC LIMIT 100`;
-    var r=await pool.query(sql,[provId]);
+    var r=await pool.query(sql,[provId,rutN]);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
