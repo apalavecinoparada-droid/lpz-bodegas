@@ -987,6 +987,8 @@ async function autoSetup() {
     if (parseInt(cp.rows[0].count) === 0) {
       await pool.query("INSERT INTO condiciones_pago(nombre) VALUES('Contado'),('30 dias'),('60 dias'),('90 dias') ON CONFLICT DO NOTHING");
     }
+    // Condiciones agregadas después de la semilla inicial (idempotente: nombre es UNIQUE)
+    try{await pool.query("INSERT INTO condiciones_pago(nombre) VALUES('30, 60 días') ON CONFLICT (nombre) DO NOTHING");}catch(e){}
   } catch(e) {}
   // Mantención module tables
   try{ await setupMantenciones(pool.query.bind(pool)); }catch(e){console.log('[WARN] mant tables:',e.message);}
@@ -9719,10 +9721,14 @@ app.get('/api/solicitudes/pendientes-resumen', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
+// Ver TODAS las solicitudes (las de otros usuarios): administradores o roles con el permiso fino 'solicitudes-todas'.
+// El resto solo ve las que envió o las que le llegaron (se aplica en el servidor, no solo en las pestañas).
+function solicitudesVeTodas(u){return !!(u&&(u.es_admin||(u.modulos||[]).indexOf('solicitudes-todas')>=0));}
 app.get('/api/solicitudes', auth, async(req,res)=>{
   try{
     const{estado,dirigida_a_id,solicitante_id}=req.query;
     let w=['1=1'],v=[];
+    if(!solicitudesVeTodas(req.user)){v.push(req.user.id);w.push(`(s.solicitante_id=$${v.length} OR s.dirigida_a_id=$${v.length})`);}
     if(estado){v.push(estado);w.push(`s.estado=$${v.length}`);}
     if(dirigida_a_id){v.push(dirigida_a_id);w.push(`s.dirigida_a_id=$${v.length}`);}
     if(solicitante_id){v.push(solicitante_id);w.push(`s.solicitante_id=$${v.length}`);}
@@ -11944,10 +11950,10 @@ app.post('/api/dte-recibidos/:id/oc', auth, requireModulo('ordenes'), async(req,
         COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.dte_id=d.dte_id),0) AS asignado
       FROM dte_recibidos d WHERE d.dte_id=$1`,[req.params.id]);
     if(!dq.rows.length)return res.status(404).json({error:'DTE no encontrado'});
-    var restanteDte=(parseFloat(dq.rows[0].total)||0)-(parseFloat(dq.rows[0].asignado)||0);
+    var restanteDte=Math.abs(parseFloat(dq.rows[0].total)||0)-Math.abs(parseFloat(dq.rows[0].asignado)||0);
     if(monto>restanteDte+1)return res.status(400).json({error:'El monto excede el saldo sin asignar del DTE ($'+Math.round(restanteDte)+')'});
     // Saldo por facturar de la OC: no sobre-facturar la OC
-    var saldoOc=(parseFloat(oc.rows[0].total)||0)-(parseFloat(oc.rows[0].facturado)||0);
+    var saldoOc=Math.abs(parseFloat(oc.rows[0].total)||0)-Math.abs(parseFloat(oc.rows[0].facturado)||0);
     if(monto>saldoOc+1)return res.status(400).json({error:'El monto excede el saldo por facturar de la OC ($'+Math.round(saldoOc)+')'});
     var r=await pool.query(`INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5) RETURNING *`,
       [req.params.id,req.body.oc_id,monto,req.body.observacion||null,req.user.email]);
@@ -12118,7 +12124,7 @@ app.put('/api/dte-oc/:relId', auth, requireModulo('ordenes'), async(req,res)=>{
     var dq=await pool.query(`SELECT d.total,
         COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.dte_id=d.dte_id AND x.rel_id<>$2),0) AS asignado
       FROM dte_recibidos d WHERE d.dte_id=$1`,[rel.rows[0].dte_id,req.params.relId]);
-    var restanteDte=(parseFloat(dq.rows[0].total)||0)-(parseFloat(dq.rows[0].asignado)||0);
+    var restanteDte=Math.abs(parseFloat(dq.rows[0].total)||0)-Math.abs(parseFloat(dq.rows[0].asignado)||0);
     if(monto>restanteDte+1)return res.status(400).json({error:'El monto excede el saldo sin asignar del DTE ($'+Math.round(restanteDte)+')'});
     var oq=await pool.query(`SELECT total,
         COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.oc_id=$1 AND x.rel_id<>$2),0) AS facturado
@@ -12161,13 +12167,16 @@ app.delete('/api/dte-recibidos/:id', auth, requireModulo('ordenes'), async(req,r
 //  - folio exacto (numero_documento de la OC = folio del DTE) O monto ±5% con la OC emitida
 //    hasta 180 días ANTES o 120 días DESPUÉS de la factura (el usuario crea la OC al ver la factura)
 const BANDEJA_FOLIO=`(oc.numero_documento IS NOT NULL AND ltrim(regexp_replace(dte.folio,'[^0-9]','','g'),'0')<>'' AND ltrim(regexp_replace(oc.numero_documento,'[^0-9]','','g'),'0') = ltrim(regexp_replace(dte.folio,'[^0-9]','','g'),'0'))`;
+// Una OC "de nota de crédito" (rebaja compras) tiene total negativo o documento tipo 61/112; solo se cruza con DTE tipo 61 y viceversa
+const BANDEJA_OC_NC=`(oc.total < 0 OR EXISTS (SELECT 1 FROM tipos_documento td WHERE td.tipo_doc_id=oc.tipo_doc_id AND td.codigo IN ('61','112')))`;
 const BANDEJA_CAND=`(oc.proveedor_id = dte.proveedor_id
           OR (dte.proveedor_rut IS NOT NULL AND regexp_replace(lower(dte.proveedor_rut),'[^0-9k]','','g') <> ''
               AND regexp_replace(lower(dte.proveedor_rut),'[^0-9k]','','g') = (SELECT regexp_replace(lower(p2.rut),'[^0-9k]','','g') FROM proveedores p2 WHERE p2.proveedor_id=oc.proveedor_id)))
         AND oc.estado IN ('PENDIENTE','CERRADA') AND oc.anulado_en IS NULL
-        AND COALESCE((SELECT SUM(x.monto_aplicado) FROM dte_oc x WHERE x.oc_id=oc.oc_id),0) < oc.total - 1
+        AND ((dte.tipo_dte='61') = ${BANDEJA_OC_NC})
+        AND COALESCE((SELECT SUM(ABS(x.monto_aplicado)) FROM dte_oc x WHERE x.oc_id=oc.oc_id),0) < ABS(oc.total) - 1
         AND (${BANDEJA_FOLIO}
-             OR (ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.05
+             OR (ABS(ABS(oc.total) - ABS(dte.total)) / GREATEST(ABS(oc.total), 1) < 0.05
                  AND oc.fecha_emision BETWEEN dte.fecha_emision - INTERVAL '180 days' AND dte.fecha_emision + INTERVAL '120 days'))`;
 app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
   try{
@@ -12183,15 +12192,16 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
             'oc_id', oc.oc_id,
             'numero_oc', oc.numero_oc,
             'estado', oc.estado,
+            'es_nc', ${BANDEJA_OC_NC},
             'numero_documento', oc.numero_documento,
             'fecha_emision', oc.fecha_emision,
             'total', oc.total::numeric(14,0),
-            'diferencia', ABS(oc.total - dte.total)::numeric(14,0),
+            'diferencia', ABS(ABS(oc.total) - ABS(dte.total))::numeric(14,0),
             'dias_oc_a_dte', (dte.fecha_emision - oc.fecha_emision)::int,
             'confianza', CASE
               WHEN ${BANDEJA_FOLIO} THEN 'FOLIO'
-              WHEN ABS(oc.total - dte.total) < 1 THEN 'ALTO'
-              WHEN ABS(oc.total - dte.total) / GREATEST(oc.total, 1) < 0.01 THEN 'MEDIO'
+              WHEN ABS(ABS(oc.total) - ABS(dte.total)) < 1 THEN 'ALTO'
+              WHEN ABS(ABS(oc.total) - ABS(dte.total)) / GREATEST(ABS(oc.total), 1) < 0.01 THEN 'MEDIO'
               ELSE 'BAJO' END,
             'lineas_completas', NOT EXISTS (
               SELECT 1 FROM ordenes_compra_detalle d 
@@ -12199,7 +12209,7 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
                 AND (d.subcategoria_id IS NULL OR (NOT COALESCE(d.ingresa_bodega,false) AND (d.faena_id IS NULL OR d.equipo_id IS NULL)))
             )
           )
-          ORDER BY (CASE WHEN ${BANDEJA_FOLIO} THEN 0 ELSE 1 END), ABS(oc.total - dte.total)
+          ORDER BY (CASE WHEN ${BANDEJA_FOLIO} THEN 0 ELSE 1 END), ABS(ABS(oc.total) - ABS(dte.total))
         ) AS candidatos
       FROM dte_recibidos dte
       LEFT JOIN proveedores pr ON dte.proveedor_id=pr.proveedor_id
@@ -12207,7 +12217,6 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
       JOIN ordenes_compra oc ON ${BANDEJA_CAND}
       WHERE NOT EXISTS (SELECT 1 FROM dte_oc WHERE dte_id=dte.dte_id)
         AND (dte.observaciones IS NULL OR dte.observaciones NOT LIKE '%[GASTO SIN OC]%')
-        AND dte.tipo_dte<>'61'
       GROUP BY dte.dte_id, dte.folio, dte.tipo_dte, dte.fecha_emision, dte.total, dte.proveedor_id, dte.empresa_id, pr.nombre, emp.razon_social
       ORDER BY dte.fecha_emision DESC NULLS LAST
       LIMIT 200`;
@@ -12249,9 +12258,9 @@ app.get('/api/bandeja-dte-oc', auth, async(req,res)=>{
       LEFT JOIN empresas emp ON dte.empresa_id=emp.empresa_id
       WHERE NOT EXISTS (SELECT 1 FROM dte_oc WHERE dte_id=dte.dte_id)
         AND (dte.observaciones IS NULL OR dte.observaciones NOT LIKE '%[GASTO SIN OC]%')
-        AND (dte.tipo_dte='61' OR NOT EXISTS (
+        AND NOT EXISTS (
           SELECT 1 FROM ordenes_compra oc WHERE ${BANDEJA_CAND}
-        ))
+        )
       ORDER BY dte.fecha_emision DESC NULLS LAST
       LIMIT 300`;
     var r3 = await pool.query(sql3);
@@ -12296,9 +12305,9 @@ app.post('/api/bandeja-dte-oc/vincular', auth, async(req,res)=>{
       var dq2=await client.query(`SELECT d.total,
           COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc x WHERE x.dte_id=d.dte_id),0) AS asignado
         FROM dte_recibidos d WHERE d.dte_id=$1`,[b.dte_id]);
-      var restanteDte2=(parseFloat(dq2.rows[0].total)||0)-(parseFloat(dq2.rows[0].asignado)||0);
+      var restanteDte2=Math.abs(parseFloat(dq2.rows[0].total)||0)-Math.abs(parseFloat(dq2.rows[0].asignado)||0);
       if(parseFloat(v.monto_aplicado)>restanteDte2+1){await client.query('ROLLBACK');return res.status(400).json({error:'El monto para OC '+v.oc_id+' excede el saldo sin asignar del DTE ($'+Math.round(restanteDte2)+')'});}
-      var saldoOc2=(parseFloat(oc.rows[0].total)||0)-(parseFloat(oc.rows[0].facturado)||0);
+      var saldoOc2=Math.abs(parseFloat(oc.rows[0].total)||0)-Math.abs(parseFloat(oc.rows[0].facturado)||0);
       if(parseFloat(v.monto_aplicado)>saldoOc2+1){await client.query('ROLLBACK');return res.status(400).json({error:'El monto excede el saldo por facturar de la OC '+v.oc_id+' ($'+Math.round(saldoOc2)+')'});}
       var ins=await client.query(
         'INSERT INTO dte_oc(dte_id,oc_id,monto_aplicado,observacion,creado_por) VALUES($1,$2,$3,$4,$5) RETURNING *',
@@ -12386,7 +12395,7 @@ app.get('/api/dte-recibidos/:id/ocs-candidatas', auth, requireModulo('ordenes'),
     var sql=`SELECT oc.oc_id, oc.numero_oc, oc.fecha_emision, oc.total, oc.estado, oc.empresa_id,
                     pr.nombre AS proveedor_nombre, em.razon_social AS empresa_razon_social,
                     COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc do2 WHERE do2.oc_id=oc.oc_id),0) AS monto_facturado,
-                    (oc.total - COALESCE((SELECT SUM(monto_aplicado) FROM dte_oc do2 WHERE do2.oc_id=oc.oc_id),0)) AS saldo_pendiente
+                    (ABS(oc.total) - COALESCE((SELECT SUM(ABS(monto_aplicado)) FROM dte_oc do2 WHERE do2.oc_id=oc.oc_id),0)) AS saldo_pendiente
              FROM ordenes_compra oc
              LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id
              LEFT JOIN empresas em ON oc.empresa_id=em.empresa_id
