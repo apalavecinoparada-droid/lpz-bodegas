@@ -6347,9 +6347,12 @@ function SolicitudesView(p){
     w.document.write(html);w.document.close();
   }
   var esAdmin=p.user&&p.user.es_admin;
-  var pendientes=solicitudes.filter(function(s){return s.estado==='pendiente'&&(esAdmin||String(s.dirigida_a_id)===String(userId));}).length;
-  var enCursoCount=solicitudes.filter(function(s){return s.estado==='en_curso'&&(esAdmin||String(s.dirigida_a_id)===String(userId));}).length;
-  var tabs=[{k:'recibidas',l:'📥 Recibidas'+(pendientes?' ('+pendientes+')':'')},{k:'enviadas',l:'📤 Enviadas'},{k:'todas',l:'📋 Todas'}];
+  // Ver todas: administradores o roles con el permiso 'Solicitudes: Ver todas' (el servidor filtra igual)
+  var verTodas=!!(esAdmin||((p.user&&p.user.modulos)||[]).indexOf('solicitudes-todas')>=0);
+  var pendientes=solicitudes.filter(function(s){return s.estado==='pendiente'&&(verTodas||String(s.dirigida_a_id)===String(userId));}).length;
+  var enCursoCount=solicitudes.filter(function(s){return s.estado==='en_curso'&&(verTodas||String(s.dirigida_a_id)===String(userId));}).length;
+  var tabs=[{k:'recibidas',l:'📥 Recibidas'+(pendientes?' ('+pendientes+')':'')},{k:'enviadas',l:'📤 Enviadas'}].concat(verTodas?[{k:'todas',l:'📋 Todas'}]:[]);
+  if(tab==='todas'&&!verTodas)setTab('recibidas');
   var estadoColors={pendiente:'y',en_curso:'b',completada:'g',rechazada:'r'};
   var prioColors={baja:'gray',normal:'b',alta:'y',urgente:'r'};
   return h('div',null,
@@ -16158,7 +16161,7 @@ var MODULOS_SISTEMA=[
   {k:'inventario',l:'Inventario'},
   {k:'inventario-editar',l:'Editar Inventario',hint:'Permite editar y anular salidas/traspasos'},
   {k:'mantencion',l:'Mantención'},
-  {k:'solicitudes',l:'Solicitudes'},
+  {k:'solicitudes',l:'Solicitudes'},{k:'solicitudes-todas',l:'Solicitudes: Ver todas',hint:'Además de las propias, ve las solicitudes de todos los usuarios (pestaña Todas), como un administrador'},
   {k:'finanzas',l:'Finanzas'},
   {k:'transporte',l:'Transporte'},
   {k:'contratos',l:'Contratos'},
@@ -22998,7 +23001,8 @@ function MobileSolicitudes(p){
     var misSolicitudes=solicitudes.filter(function(s){return String(s.solicitante_id)===String(userId);});
     var recibidas=solicitudes.filter(function(s){return String(s.dirigida_a_id)===String(userId);});
     var pendientesRec=recibidas.filter(function(s){return s.estado==='pendiente';}).length;
-    var lista=subTab==='recibidas'?recibidas:misSolicitudes;
+    var verTodasM=!!(p.user&&(p.user.es_admin||(p.user.modulos||[]).indexOf('solicitudes-todas')>=0));
+    var lista=subTab==='recibidas'?recibidas:(subTab==='todas'&&verTodasM)?solicitudes:misSolicitudes;
     var estadoColors={pendiente:{b:'#FEF3C7',c:'#92400E',l:'Pendiente'},en_curso:{b:'#DBEAFE',c:'#1E40AF',l:'En curso'},completada:{b:'#DCFCE7',c:'#166534',l:'Completada'},rechazada:{b:'#FEE2E2',c:'#991B1B',l:'Rechazada'}};
     var prioColors={baja:'#94A3B8',normal:'#3B82F6',alta:'#F59E0B',urgente:'#EF4444'};
     return h('div',{className:'mob-wrap'},
@@ -23011,7 +23015,8 @@ function MobileSolicitudes(p){
       // Sub-tabs Enviadas/Recibidas
       h('div',{style:{display:'flex',gap:6,padding:'0 10px',marginBottom:8}},
         h('button',{onClick:function(){setSubTab('enviadas');loadSolicitudes();},style:{flex:1,padding:'10px 8px',background:subTab==='enviadas'?'#1E3A2D':'#fff',color:subTab==='enviadas'?'#fff':'#475569',border:'1px solid '+(subTab==='enviadas'?'#1E3A2D':'#CBD5E1'),borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer'}},'📤 Enviadas ('+misSolicitudes.length+')'),
-        h('button',{onClick:function(){setSubTab('recibidas');loadSolicitudes();},style:{flex:1,padding:'10px 8px',background:subTab==='recibidas'?'#1E3A2D':'#fff',color:subTab==='recibidas'?'#fff':'#475569',border:'1px solid '+(subTab==='recibidas'?'#1E3A2D':'#CBD5E1'),borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer',position:'relative'}},'📥 Recibidas ('+recibidas.length+')',pendientesRec>0&&h('span',{style:{position:'absolute',top:-4,right:-4,background:'#DC2626',color:'#fff',padding:'2px 6px',borderRadius:10,fontSize:9,fontWeight:700,minWidth:18}},pendientesRec))
+        h('button',{onClick:function(){setSubTab('recibidas');loadSolicitudes();},style:{flex:1,padding:'10px 8px',background:subTab==='recibidas'?'#1E3A2D':'#fff',color:subTab==='recibidas'?'#fff':'#475569',border:'1px solid '+(subTab==='recibidas'?'#1E3A2D':'#CBD5E1'),borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer',position:'relative'}},'📥 Recibidas ('+recibidas.length+')',pendientesRec>0&&h('span',{style:{position:'absolute',top:-4,right:-4,background:'#DC2626',color:'#fff',padding:'2px 6px',borderRadius:10,fontSize:9,fontWeight:700,minWidth:18}},pendientesRec)),
+        verTodasM&&h('button',{onClick:function(){setSubTab('todas');loadSolicitudes();},style:{flex:1,padding:'10px 8px',background:subTab==='todas'?'#1E3A2D':'#fff',color:subTab==='todas'?'#fff':'#475569',border:'1px solid '+(subTab==='todas'?'#1E3A2D':'#CBD5E1'),borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer'}},'📋 Todas ('+solicitudes.length+')')
       ),
       h('div',{style:{padding:'0 10px 40px'}},
         lista.length===0?h('div',{style:{textAlign:'center',padding:40,color:'#94A3B8'}},subTab==='recibidas'?'No tienes solicitudes recibidas':'No tienes solicitudes enviadas'):
@@ -23878,7 +23883,7 @@ function BandejaDTEOC(p){
     // Inicialmente seleccionar solo el primer candidato con monto exacto si lo hay
     var inicial={};
     var exacto=(dte.candidatos||[]).find(function(c){return c.confianza==='FOLIO'||c.confianza==='ALTO';});
-    if(exacto)inicial[exacto.oc_id]=parseFloat(exacto.total);
+    if(exacto)inicial[exacto.oc_id]=Math.abs(parseFloat(exacto.total));
     setSelOcs(inicial);
   }
 
@@ -23886,7 +23891,7 @@ function BandejaDTEOC(p){
     setSelOcs(function(s){
       var ns=Object.assign({},s);
       if(ns[oc.oc_id]!==undefined){delete ns[oc.oc_id];}
-      else{ns[oc.oc_id]=parseFloat(oc.total);}
+      else{ns[oc.oc_id]=Math.abs(parseFloat(oc.total));}
       return ns;
     });
   }
@@ -23902,7 +23907,7 @@ function BandejaDTEOC(p){
     var vinculos=Object.keys(selOcs).map(function(k){return{oc_id:parseInt(k),monto_aplicado:parseFloat(selOcs[k])};}).filter(function(v){return v.monto_aplicado>0;});
     if(!vinculos.length){setErr('Seleccione al menos una OC con monto válido');return;}
     var totApl=vinculos.reduce(function(s,v){return s+v.monto_aplicado;},0);
-    if(Math.abs(totApl-parseFloat(selDte.dte_total))>1){
+    if(Math.abs(totApl-Math.abs(parseFloat(selDte.dte_total)))>1){
       if(!confirm('El total aplicado ('+fmtN(totApl)+') difiere del total del DTE ('+fmtN(selDte.dte_total)+'). ¿Continuar igual?'))return;
     }
     setErr('');
@@ -23983,7 +23988,7 @@ function BandejaDTEOC(p){
                           var cc=(c.confianza==='FOLIO'||c.confianza==='ALTO')?'g':c.confianza==='MEDIO'?'y':'r';
                           return h('tr',{key:c.oc_id,style:{background:sel?'#DCFCE7':''}},
                             h('td',null,h('input',{type:'checkbox',checked:sel,onChange:function(){toggleOC(c);},style:{width:15,height:15}})),
-                            h('td',{className:'mono'},c.numero_oc,c.estado==='CERRADA'?h('div',{style:{fontSize:9,color:'#64748B'}},'CERRADA'+(c.numero_documento?' · doc '+c.numero_documento:'')):(c.numero_documento?h('div',{style:{fontSize:9,color:'#64748B'}},'doc '+c.numero_documento):null)),
+                            h('td',{className:'mono'},c.numero_oc,c.es_nc?h('span',{style:{fontSize:9,fontWeight:800,color:'#B91C1C',marginLeft:4},title:'OC de nota de crédito (rebaja compras)'},'NC'):null,c.estado==='CERRADA'?h('div',{style:{fontSize:9,color:'#64748B'}},'CERRADA'+(c.numero_documento?' · doc '+c.numero_documento:'')):(c.numero_documento?h('div',{style:{fontSize:9,color:'#64748B'}},'doc '+c.numero_documento):null)),
                             h('td',null,fmtDate(c.fecha_emision)),
                             h('td',{className:'r mono'},fmtN(c.total)),
                             h('td',{className:'r mono',style:{color:c.diferencia>0?'#DC2626':'#10B981'}},fmtN(c.diferencia)),
@@ -24288,7 +24293,7 @@ function GestionarVinculosOC(p){
     api('/dte-recibidos/'+p.dte.dte_id+'/ocs-candidatas','GET',null,p.tok).then(function(r){setOcsCandidatas(Array.isArray(r)?r:[]);}).catch(function(){setOcsCandidatas([]);}).finally(function(){setLoad(false);});
   }
   useEffect(function(){recargar();},[]);
-  var totalDte=parseFloat(dteData.total)||0;
+  var totalDte=Math.abs(parseFloat(dteData.total)||0);
   var ocsVinc=dteData.ocs_vinculadas||[];
   var totalAplicado=ocsVinc.reduce(function(s,r){return s+parseFloat(r.monto_aplicado||0);},0);
   var saldoFaltante=totalDte-totalAplicado;
@@ -24569,7 +24574,7 @@ function ImportDTERevision(p){
     setSelDte(dte);
     var inicial={};
     var exacto=(dte.candidatos||[]).find(function(c){return c.confianza==='FOLIO'||c.confianza==='ALTO';});
-    if(exacto)inicial[exacto.oc_id]=parseFloat(exacto.total);
+    if(exacto)inicial[exacto.oc_id]=Math.abs(parseFloat(exacto.total));
     setSelOcs(inicial);
   }
   function toggleOC(c){
@@ -24581,7 +24586,7 @@ function ImportDTERevision(p){
     if(!selDte)return;
     var v=Object.keys(selOcs).map(function(k){return{oc_id:parseInt(k),monto_aplicado:parseFloat(selOcs[k])};}).filter(function(x){return x.monto_aplicado>0;});
     if(!v.length){setErr('Seleccione al menos una OC');return;}
-    if(Math.abs(totApl()-parseFloat(selDte.dte_total))>1){
+    if(Math.abs(totApl()-Math.abs(parseFloat(selDte.dte_total)))>1){
       if(!confirm('Total aplicado ('+fmtN(totApl())+') ≠ total DTE ('+fmtN(selDte.dte_total)+'). ¿Continuar?'))return;
     }
     setErr('');
@@ -24675,7 +24680,7 @@ function ImportDTERevision(p){
                 h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',paddingTop:6,borderTop:'1px solid #FCD34D'}},
                   h('div',{style:{fontSize:11}},
                     h('span',{style:{color:'#64748B'}},'Total aplicado: '),
-                    h('strong',{style:{color:Math.abs(totApl()-parseFloat(d.dte_total))<1?'#166534':'#DC2626'}},fmtN(totApl())),
+                    h('strong',{style:{color:Math.abs(totApl()-Math.abs(parseFloat(d.dte_total)))<1?'#166534':'#DC2626'}},fmtN(totApl())),
                     h('span',{style:{color:'#64748B',marginLeft:4}},'/ '+fmtN(d.dte_total))
                   ),
                   h('div',{style:{display:'flex',gap:4}},

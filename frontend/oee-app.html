@@ -267,6 +267,7 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
       <button class="nav-tab" onclick="showPanel('costo',this)">&#9881; Costo Hora M&aacute;q. Detenida</button>
       <button class="nav-tab" onclick="showPanel('proddia',this)">&#128200; Produc. Diaria Faenas</button>
       <button class="nav-tab" onclick="showPanel('poli',this)" style="background:#f9f3e8;border:1px solid #e67e22;">&#128202; Polinomio Reajuste</button>
+      <button class="nav-tab" onclick="showPanel('gest',this)" style="background:#eef6f1;border:1px solid #1a6b3a;font-weight:700;">&#127919; Ficha de Gesti&oacute;n</button>
     </div>
 
     <!-- PANEL DASHBOARD -->
@@ -671,6 +672,73 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
         </div>
         <div id="dc-filtros" style="margin-top:10px;"></div>
         <div id="dc-body" style="margin-top:10px;"></div>
+      </div>
+    </div>
+
+
+    <!-- PANEL GESTION: Ficha de Gestion (diseno aprobado 08-09-2026) -->
+    <div id="panel-gest" class="panel" style="display:none;">
+      <!-- Selectores propios: la ficha es MENSUAL y no hereda el filtro de arriba -->
+      <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:10px;padding:8px 10px;background:#f0f4f8;border-radius:6px;">
+        <div class="ch-fg"><label>Faena</label>
+          <select id="gest-faena" onchange="gestRender()" style="min-width:110px;"></select></div>
+        <div class="ch-fg" id="gest-fg-especie" style="display:none;"><label>Especie</label>
+          <select id="gest-especie" onchange="gestRender()" style="min-width:110px;"></select></div>
+        <div class="ch-fg"><label>Mes</label>
+          <select id="gest-mes" onchange="gestRender()" style="min-width:130px;"></select></div>
+        <div class="ch-fg"><label title="Tarifa vigente = tarifa base del tramo &times; este factor. Se saca del panel Polinomio Reajuste. En 1,0000 la ficha valoriza a tarifa base.">Factor reajuste</label>
+          <input id="gest-factor" type="number" step="0.0001" value="1.0000" onchange="gestSetFactor()"
+                 style="width:90px;padding:4px 6px;font-size:11px;border:1px solid #ccc;border-radius:4px;"></div>
+        <button onclick="gestExportar()" style="background:#1a6b3a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:10px;font-weight:600;padding:6px 12px;"
+                title="Bajar la ficha completa a Excel">&#11015; Exportar Excel</button>
+        <div id="gest-confianza" style="font-size:9px;color:#666;margin-left:auto;padding-bottom:4px;text-align:right;max-width:420px;"></div>
+      </div>
+
+      <!-- 1. SEMAFORO DEL MES -->
+      <div class="ct" style="font-size:11px;color:#1a6b3a;">1 &middot; Sem&aacute;foro del mes</div>
+      <div id="gest-semaforo" class="sc-grid" style="grid-template-columns:repeat(6,1fr);"></div>
+
+      <!-- 2. CASCADA DE LA BRECHA -->
+      <div class="card" style="margin-bottom:10px;">
+        <div class="ct">2 &middot; Cascada de la brecha &mdash; d&oacute;nde se fueron los m&sup3; <span id="gest-casc-sub" style="text-transform:none;color:#888;font-weight:400;"></span></div>
+        <div class="ch" style="height:300px;"><canvas id="gestCascChart"></canvas></div>
+        <div id="gest-casc-tabla" style="margin-top:8px;"></div>
+      </div>
+
+      <!-- 3. EL CUELLO DE BOTELLA -->
+      <div class="card" style="margin-bottom:10px;">
+        <div class="ct">3 &middot; El cuello de botella de la faena <span style="text-transform:none;color:#888;font-weight:400;">&mdash; qu&eacute; eslab&oacute;n manda el ritmo</span></div>
+        <div id="gest-cuello"></div>
+      </div>
+
+      <!-- 4. LO QUE NO ESTAS VIENDO -->
+      <div class="ct" style="font-size:11px;color:#c0392b;">4 &middot; Lo que no est&aacute;s viendo</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+        <div class="card"><div class="ct">a &middot; P&eacute;rdida inducida &mdash; qui&eacute;n le pega a qui&eacute;n</div>
+          <div id="gest-inducida"></div></div>
+        <div class="card"><div class="ct">b &middot; Fuga silenciosa del ritmo</div>
+          <div id="gest-fuga"></div></div>
+      </div>
+      <div class="card" style="margin-bottom:10px;"><div class="ct">c &middot; Ranking de operadores &mdash; contra el est&aacute;ndar de su propio tramo</div>
+        <div id="gest-oper"></div></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+        <div class="card"><div class="ct">d &middot; Pareto de causas en $ (no en horas)</div>
+          <div class="ch" style="height:230px;"><canvas id="gestParetoChart"></canvas></div>
+          <div id="gest-pareto"></div></div>
+        <div class="card"><div class="ct">e &middot; &iquest;Cr&oacute;nico o evento?</div>
+          <div id="gest-cronico"></div></div>
+      </div>
+      <div class="card" style="margin-bottom:10px;"><div class="ct">f &middot; Combustible cruzado &mdash; m&aacute;quina encendida sin producir</div>
+        <div id="gest-diesel"></div></div>
+
+      <!-- 5. ALERTAS -->
+      <div class="card" style="margin-bottom:10px;"><div class="ct">5 &middot; Alertas</div>
+        <div id="gest-alertas"></div></div>
+
+      <!-- 6. GESTION -->
+      <div class="card"><div class="ct">6 &middot; Gesti&oacute;n &mdash; qu&eacute; hacer y cu&aacute;nto vale</div>
+        <div id="gest-acciones"></div>
+        <div id="gest-seguimiento" style="margin-top:12px;"></div>
       </div>
     </div>
 
@@ -4262,6 +4330,7 @@ function showPanel(id, btn) {
   }, 50); }
   if(id==='proddia') { setTimeout(buildProdDiaria, 50); }
   if(id==='tob') { setTimeout(function(){ try{ renderDetalleCausas(); }catch(e){ console.warn('[DC]', e.message); } }, 50); }
+  if(id==='gest'){ setTimeout(function(){ try{ gestRender(); }catch(e){ console.warn('[GEST]', e.message); } }, 50); }
   if(id==='poli') {
     if(!POLI_AUTH) {
       document.getElementById('poli-lock').style.display = '';
@@ -8186,6 +8255,8 @@ function loadExcel(input) {
       document.getElementById('last-update-txt').textContent = 'Última actualización: ' + fechaHora;
       document.getElementById('last-update-info').style.display = 'block';
       guardarEnCache(file.name, aniosTxt, minMes, maxMes);
+      // Datos nuevos: hay que botar lo que la Ficha de Gestión ya tenía calculado
+      if (typeof gestInvalidarCaches === 'function') gestInvalidarCaches();
       // ── Integración ERP: enviar el Excel parseado al sistema para persistir en base de datos ──
       try{ parent.postMessage({__oeeExcelRAW: RAW, __oeeFilename: file.name}, '*'); }catch(e){}
       try{ parent.postMessage({__oeeExcelDatasets: {
@@ -9326,7 +9397,7 @@ var GRAFX = null;      // datos hoja Tablaparametros para gráficos Rendimiento 
 var DIESEL_DATA = null; // datos panel "Combustible Consumido vs Programado" (replica TabladinamicaDiesel), array de {equipo,faena,ym,empresa,tipo,cod,lts,hrs,hperd,rendAct,rendStd,difLts,mesTxt}
 /* Sello de version: se imprime en la consola al abrir. Si el numero que aparece
    no es el ultimo, el navegador esta sirviendo una copia vieja del archivo. */
-var APP_BUILD = '07-09-2026 m3-sin-columna';
+var APP_BUILD = '09-09-2026 dias-trabajados + detalle-perdidas';
 console.log('%c[APP] build ' + APP_BUILD, 'background:#1a6b3a;color:#fff;padding:2px 6px;');
 
 var CAUSAS_HPERD = {}; // key equipo|faenaShort|YYYY-MM → [{causa, hrs, obs}] (BaseHorasPer)
@@ -10814,6 +10885,7 @@ function aplicarDatosRestaurados(rawData, bdData, meta, fajaData, ofrodData, pro
   document.getElementById('excel-indicator').style.background = '#27ae60';
   document.getElementById('excel-status-txt').textContent =
     'Cache: ' + fname + ' (' + dt + ') — Cargue Excel para actualizar';
+  if (typeof gestInvalidarCaches === 'function') gestInvalidarCaches();
   applyFilters();
   bestAutoSelectAndUpdate();
 }
@@ -13175,6 +13247,1790 @@ document.getElementById('oee-install-btn')?.addEventListener('click',async()=>{
 document.getElementById('oee-install-close')?.addEventListener('click',()=>{
   document.getElementById('oee-install-bar').style.display='none';
 });
+
+/* ============================================================================
+   FICHA DE GESTION  ·  diseño aprobado por Gustavo el 08-09-2026
+   ----------------------------------------------------------------------------
+   La idea de fondo: el resto de la App MUESTRA lo que pasó; esta ficha tiene que
+   DECIR QUE HACER y CUANTO VALE hacerlo. Todo en m³ y en $, no en porcentajes
+   sueltos.
+
+   No lee el Excel ni guarda nada en IndexedDB: se calcula al vuelo desde los
+   globales que ya llenó loadExcel() (BHT_DIAS, HPERD_UNIF, PROD_FAENA_MES,
+   DIESEL_DATA, DATA, TARIFA_VMA). Por eso NO hay que tocar el checklist de caché.
+
+   Los 5 bloques: semáforo · cascada de la brecha · lo que no estás viendo ·
+   alertas · gestión.
+   ============================================================================ */
+
+var GEST_SEL     = {faena:'', esp:'', ym:0};
+var GEST_FACTOR  = 1;          // factor de reajuste del mes (panel Polinomio)
+var GEST_CACHE   = {};         // {faena|esp|ym: datos} — el semáforo pide 2 meses
+
+/* Bota TODO lo que quedó calculado en memoria. Hay que llamarla cada vez que
+   entran datos nuevos (Cargar Excel o restaurar de la caché), o la ficha sigue
+   mostrando los números del Excel anterior.
+
+   Pasó el 09-09-2026: después de correr el bot, la ficha de Mec 3 septiembre
+   seguía marcando 5.920 m³ cuando la cartola ya iba en 7.157. No era la caché de
+   IndexedDB ni el navegador: era este objeto, que guarda el resultado ya armado.
+
+   Los tres PROD_*_DIA son memos de la App (prodM3Dia/prodRodalDia/prodFundoDia):
+   se calculan una vez y se quedan pegados, así que también hay que soltarlos. */
+function gestInvalidarCaches(){
+  GEST_CACHE = {};
+  PROD_M3_DIA = null;
+  PROD_ROD_DIA = null;
+  PROD_FUN_DIA = null;
+}
+var GEST_ULTIMO  = null;       // datos del mes en pantalla, para exportar
+
+/* ---------- Clasificación de causas ---------------------------------------
+   El corazón de la ficha: una hora perdida NO es lo mismo si la máquina se
+   rompió, si estuvo esperando a otro proceso, o si llovió. Las tres se anotan
+   igual en la planilla y por eso hoy no se distinguen.
+   Las etiquetas salen tal cual de la columna "Causa principal" de la hoja
+   BaseHorasPerdUnif; si aparece una causa nueva cae en 'propia', que es el
+   supuesto conservador (se la carga uno mismo). */
+var GEST_INDUCIDA = {
+  'DETENIDO POR FALTA DE VOLTEO'      : 'Volteo',
+  'DETENIDO POR FALTA DE MADEREO'     : 'Madereo',
+  'DETENIDO POR FALTA DE ORDENAMIENTO': 'Clasificado',
+  'ESPERA / FALTA DE MADERA'          : 'Volteo/Madereo',
+  'ATOCHAMIENTO EN CANCHA'            : 'Clasificado/Carguío',
+  'DETENIDO POR CARGUIO DE CAMIONES'  : 'Transporte',
+  'DETENIDO POR FALTA DE ASISTENCIA'  : 'Asistencia',
+  'DISTANCIA DE SEGURIDAD'            : 'Otro equipo en faena'
+};
+var GEST_EXTERNA = {
+  'CLIMA Y/O INCENDIO DETIENE OPERACION':1, 'CLIMA':1,
+  'MONITOREO Y/O PARALIZACION FORMIN':1, 'CONTROL A FAENA':1,
+  'DETENIDO POR PASO DE VEHICULOS':1
+};
+
+/* Quita tildes y normaliza para comparar contra las tablas de arriba. */
+function gestNorm(s){
+  return String(s||'')
+    .normalize('NFD').replace(/[̀-ͯ]/g,'')
+    .replace(/\s+/g,' ').trim().toUpperCase();
+}
+
+function gestClaseCausa(causa){
+  var c = gestNorm(causa);
+  if (GEST_INDUCIDA[c]) return {clase:'inducida', culpa: GEST_INDUCIDA[c]};
+  if (GEST_EXTERNA[c])  return {clase:'externa',  culpa:''};
+  return {clase:'propia', culpa:''};
+}
+
+var GEST_CLASE_TXT = {
+  propia:  {t:'Falla propia',        c:'#c0392b'},
+  inducida:{t:'Espera de otro proceso', c:'#e67e22'},
+  externa: {t:'Causa externa',       c:'#7f8c8d'}
+};
+
+/* ---------- Helpers de formato ---------- */
+function gN(v, d){
+  if (v === null || v === undefined || !isFinite(v)) return '—';
+  return Number(v).toLocaleString('es-CL', {maximumFractionDigits: d||0, minimumFractionDigits: d||0});
+}
+function gPlata(v){
+  if (!isFinite(v) || v === 0) return '$0';
+  var neg = v < 0; v = Math.abs(v);
+  var t;
+  if (v >= 1e6) t = '$' + gN(v/1e6, 1) + ' MM';
+  else          t = '$' + gN(v, 0);
+  return (neg ? '-' : '') + t;
+}
+function gestMesTxt(ym){
+  var M = ['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto',
+           'Septiembre','Octubre','Noviembre','Diciembre'];
+  return M[ym % 100] + ' ' + Math.floor(ym/100);
+}
+function gestYmStr(ym){ return Math.floor(ym/100) + '-' + String(ym%100).padStart(2,'0'); }
+function gestYmPrev(ym){
+  var m = ym % 100, a = Math.floor(ym/100);
+  return (m === 1) ? (a-1)*100 + 12 : ym - 1;
+}
+
+/* ---------- Estándares y tarifas ---------- */
+function gestDataKey(faena){
+  var m = String(faena||'').match(/(\d+)/);
+  return m ? 'Faena Mec. ' + m[1] : null;
+}
+/* Máquina estándar de cada proceso — misma regla que stdType() del panel
+   Rend Estándar vs Real, para que los dos paneles no se contradigan. */
+function gestStdMaq(faena, proceso, equipo){
+  var p = gestNorm(proceso), fNum = parseInt(String(faena).replace(/\D/g,'')) || 0;
+  var mq = gestNorm(equipo);
+  if (p.indexOf('MADEREO') >= 0)
+    return (fNum === 4 && mq.indexOf('TORRE') >= 0) ? 'Torre Alpine' : 'Skidder';
+  if (p.indexOf('ORDENAMIENTO') >= 0 || p.indexOf('CLASIFICADO') >= 0) return 'Garra';
+  if (p.indexOf('VOLTEO') >= 0)    return fNum === 4 ? 'Shovel' : 'Feller';
+  if (p.indexOf('PROCESAD') >= 0)  return 'Procesador';
+  return null;
+}
+/* Tramo de la tabla de estándares que contiene ese VMA. */
+function gestTramo(faena, esp, vma){
+  var k = gestDataKey(faena);
+  var rangos = (k && DATA[k]) ? (DATA[k][esp] || []) : [];
+  if (!rangos.length || !(vma > 0)) return null;
+  for (var i = 0; i < rangos.length; i++)
+    if (vma >= rangos[i].vma1 && vma < rangos[i].vma2) return rangos[i];
+  return vma < rangos[0].vma1 ? rangos[0] : rangos[rangos.length-1];
+}
+/* Tarifa $/m³ del tramo. TARIFA_VMA guarda la tarifa BASE; la vigente es
+   base × factor de reajuste del mes, que se escribe en el selector de arriba. */
+function gestTarifa(faena, esp, vma){
+  if (!(vma > 0)) return 0;      // sin VMA no hay tramo, y sin tramo no hay tarifa
+  var k = String(faena);
+  if (/4/.test(k)) k = 'Mec 4 ' + (esp || 'Globulus');
+  var t = TARIFA_VMA[k];
+  if (!t) return 0;
+  for (var i = 0; i < t.tramos.length; i++){
+    var r = t.tramos[i];
+    if (vma >= r.v1 && vma < r.v2) return r.base * GEST_FACTOR;
+  }
+  var ult = vma < t.tramos[0].v1 ? t.tramos[0] : t.tramos[t.tramos.length-1];
+  return ult.base * GEST_FACTOR;
+}
+
+/* ============================================================================
+   EL CALCULO
+   ============================================================================ */
+function gestDatos(faena, esp, ym){
+  var ck = faena + '|' + esp + '|' + ym + '|' + GEST_FACTOR + '|' + (GEST_SIMPLE ? 's' : 'f');
+  if (GEST_CACHE[ck]) return GEST_CACHE[ck];
+
+  var mesStr = gestYmStr(ym);
+  var D = {faena:faena, esp:esp, ym:ym, mes:mesStr, mesTxt:gestMesTxt(ym), vacio:true,
+           avisos:[]};
+
+  /* --- 1. Filas de BaseHorasTrab del mes. Solo maquinaria: en camionetas y
+         camiones la columna "Hrs trabajadas" es el ODOMETRO en km. --- */
+  var filas = (BHT_DIAS||[]).filter(function(d){
+    return d.faena === faena && d.ym === ym && (!d.tipo || d.tipo === 'maquinaria');
+  });
+  if (!filas.length) return (GEST_CACHE[ck] = D);
+  D.vacio = false;
+
+  /* --- 2. VMA del mes: ponderado por árboles del Procesado, que es donde se
+         mide la producción. bhtVmaResolver() manda "Base datos" sobre la
+         columna VMA de BaseHorasTrab, que viene en blanco o inconsistente. --- */
+  var sw = 0, sa = 0, srcCount = {};
+  filas.forEach(function(d){
+    if (!/procesad/i.test(d.proceso)) return;
+    var r = bhtVmaResolver(d);
+    if (!(r.vma > 0) || !(d.arb > 0)) return;
+    sw += r.vma * d.arb; sa += d.arb;
+    srcCount[r.src] = (srcCount[r.src]||0) + d.arb;
+  });
+  D.vma = sa > 0 ? sw/sa : 0;
+  D.vmaSrc = '';
+  var mejor = 0;
+  Object.keys(srcCount).forEach(function(s){ if (srcCount[s] > mejor){ mejor = srcCount[s]; D.vmaSrc = s; } });
+  D.vmaPctRodal = sa > 0 ? (srcCount['rodal']||0)/sa : 0;
+  D.tramo  = gestTramo(faena, esp, D.vma);
+  D.tarifa = gestTarifa(faena, esp, D.vma);
+
+  /* --- 3. Producción: manda la CARTOLA (hoja produc). La columna
+         "m³ producidos" de BaseHorasTrab la anota el operador y viene inflada. --- */
+  /* Mes en curso: los totales van a medias y compararlos contra un mes completo
+     da flechas rojas gigantes que no significan nada (septiembre-2026 al día 8
+     marcaba "cayó 74%"). Se detecta acá y más abajo se compara el RITMO DIARIO,
+     que sí es comparable. */
+  var _hoy = new Date();
+  D.ymHoy = _hoy.getFullYear()*100 + (_hoy.getMonth()+1);
+  D.enCurso = (ym === D.ymHoy);
+  D.diasMes = new Date(Math.floor(ym/100), ym % 100, 0).getDate();
+  D.m3 = (PROD_FAENA_MES||{})[faena + '|' + mesStr] || 0;
+  D.m3Fuente = D.m3 > 0 ? 'cartola' : 'BaseHorasTrab';
+  if (!(D.m3 > 0)) filas.forEach(function(d){ D.m3 += (d.m3||0); });
+
+  /* DIAS TRABAJADOS del mes.
+
+     REGLA DE NEGOCIO (Gustavo, 09-09-2026): **un día sin cartola NO es un día sin
+     trabajo.** Pasa que la faena trabaja y no alcanza a calibrar la madera; esa
+     madera se va calibrando los días siguientes y aparece en la cartola después.
+     Mec 3 septiembre-2026: el día 4 sale en blanco en produc y sí se trabajó.
+
+     Entonces los días trabajados NO se cuentan desde la cartola: se cuentan desde
+     los indicadores de que hubo operación — BaseHorasTrab (horas de máquina) y la
+     cartola — y se toma la UNION. Si cualquiera de las dos dice que ese día hubo
+     actividad, el día cuenta.
+
+     Importa para el promedio: los m³ del mes ya incluyen la madera del día sin
+     cartola (se calibró después), así que dividir por los días con cartola inflaría
+     el m³/día. Ver [[oee-cartolas-atrasadas]]. */
+  var _dias = {}, _conCartola = {};
+  filas.forEach(function(d){                    // BaseHorasTrab: hubo máquina trabajando
+    if (!(d.hrs > 0)) return;
+    if (d.fecha) _dias[d.fecha] = 1;
+  });
+  var _pm3 = (typeof prodM3Dia === 'function') ? prodM3Dia() : {};
+  Object.keys(_pm3).forEach(function(k){        // cartola: hubo producción calibrada
+    var p = k.split('|');                       // faena|YYYY-MM-DD
+    if (p[0] !== faena) return;
+    if (String(p[1]||'').substring(0,7) !== mesStr) return;
+    if (!(_pm3[k] > 0)) return;
+    _dias[p[1]] = 1; _conCartola[p[1]] = 1;
+  });
+  D.diaUlt = 0;
+  Object.keys(_dias).forEach(function(f){
+    var dd = parseInt(String(f).substring(8,10));
+    if (dd > D.diaUlt) D.diaUlt = dd;
+  });
+  D.diasTrab  = Object.keys(_dias).length;
+  D.diasProd  = D.diasTrab;                     // el denominador del m³/día
+  /* Días en que se trabajó pero no se calibró: la madera aparece en la cartola de
+     los días siguientes. No son días perdidos, y conviene decirlo en pantalla
+     porque en el gráfico diario salen con un hueco. */
+  D.diasSinCartola = Object.keys(_dias).filter(function(f){ return !_conCartola[f]; }).sort();
+
+  /* --- 4. Horas trabajadas y árboles por proceso y por equipo --- */
+  D.proc = {};   // proceso → {hrs, arb, equipos:{equipo:{hrs,arb,dias:{}}}}
+  filas.forEach(function(d){
+    var p = d.proceso || '(sin proceso)';
+    if (!D.proc[p]) D.proc[p] = {hrs:0, arb:0, equipos:{}};
+    var P = D.proc[p];
+    P.hrs += (d.hrs||0); P.arb += (d.arb||0);
+    if (!P.equipos[d.equipo]) P.equipos[d.equipo] = {hrs:0, arb:0, m3bht:0, dias:{}};
+    var E = P.equipos[d.equipo];
+    E.hrs += (d.hrs||0); E.arb += (d.arb||0); E.m3bht += (d.m3||0);
+    if (d.fecha) E.dias[d.fecha] = 1;
+  });
+
+  /* --- 5. Horas perdidas del mes, clasificadas.
+         Fuente: BaseHorasPerdUnif (Mininco + planilla + WhatsApp, por equipo-día
+         manda la mayor). El proceso sale del equipo según BaseHorasTrab, no de
+         la hoja de pérdidas, para que todo hable el mismo idioma. --- */
+  var procDeEquipo = {};
+  Object.keys(D.proc).forEach(function(p){
+    Object.keys(D.proc[p].equipos).forEach(function(e){ procDeEquipo[gestNorm(e)] = p; });
+  });
+  D.perd = [];
+  Object.keys(HPERD_UNIF||{}).forEach(function(k){
+    var p = k.split('|');                       // EQUIPO|FAENA|YYYY-MM
+    if (p.length < 3) return;
+    if (gestNorm(p[1]) !== gestNorm(faena) || p[2] !== mesStr) return;
+    var equipo = p[0];
+    /* Si el equipo no trabajó ese mes en BaseHorasTrab igual puede tener horas
+       perdidas (paro total del mes). El proceso se deduce del nombre, como hace
+       bhtProcPorEquipo() en el resto de la App. */
+    var proceso = procDeEquipo[gestNorm(equipo)] ||
+                  (typeof bhtProcPorEquipo === 'function' ? bhtProcPorEquipo(equipo) : '(sin proceso)');
+    (HPERD_UNIF[k].dias||[]).forEach(function(dd){
+      var cc = gestClaseCausa(dd.causa);
+      D.perd.push({equipo:equipo, proceso:proceso, fecha:dd.fecha, hrs:dd.hrs||0,
+                   causa:(dd.causa || 'SIN CAUSA'), clase:cc.clase, culpa:cc.culpa,
+                   fuente:dd.fuente||'', obs:dd.obs||dd.txt||'',
+                   /* detalle de la falla, para el popup del botón de la cascada */
+                   hFalla:dd.hFalla||0, comp:dd.comp||'', queFallo:dd.queFallo||''});
+    });
+  });
+  D.hPerdTot = 0; D.hPropia = 0; D.hInducida = 0; D.hExterna = 0;
+  D.perd.forEach(function(r){
+    D.hPerdTot += r.hrs;
+    if (r.clase === 'propia')   D.hPropia   += r.hrs;
+    if (r.clase === 'inducida') D.hInducida += r.hrs;
+    if (r.clase === 'externa')  D.hExterna  += r.hrs;
+  });
+
+  /* --- 6. CASCADA DE LA BRECHA, sobre el Procesado ---------------------------
+     El Procesado es donde salen los m³ que se facturan, así que la cascada se
+     arma ahí: sumar el potencial de los cuatro procesos sería contar la misma
+     madera cuatro veces.
+
+       potencial = (hrs trabajadas + hrs perdidas) × estándar del tramo
+       − falla propia          = hrs propias   × estándar
+       − espera de otro proc.  = hrs inducidas × estándar
+       − causa externa         = hrs externas  × estándar
+       − ritmo bajo estándar   = hrs trabajadas × (estándar − real)
+       = m³ reales             = hrs trabajadas × real
+
+     La resta cierra exacta contra la cartola, por construcción. --- */
+  var kProc = null;
+  Object.keys(D.proc).forEach(function(p){ if (/procesad/i.test(p)) kProc = p; });
+  var hrsP = kProc ? D.proc[kProc].hrs : 0;
+  var pp = 0, pi = 0, pe = 0;
+  D.perd.forEach(function(r){
+    if (!/procesad/i.test(r.proceso)) return;
+    if (r.clase === 'propia')   pp += r.hrs;
+    if (r.clase === 'inducida') pi += r.hrs;
+    if (r.clase === 'externa')  pe += r.hrs;
+  });
+  var std = (D.tramo && D.tramo.Procesador) ? D.tramo.Procesador.m3hr : 0;
+  var real = hrsP > 0 ? D.m3/hrsP : 0;
+  D.casc = {
+    hrsTrab: hrsP, hpPropia: pp, hpInducida: pi, hpExterna: pe,
+    hrsDisp: hrsP + pp + pi + pe,
+    std: std, real: real,
+    pot:      (hrsP + pp + pi + pe) * std,
+    propia:   pp * std,
+    inducida: pi * std,
+    externa:  pe * std,
+    ritmo:    hrsP * (std - real),          // negativo = va sobre el estándar
+    reales:   D.m3
+  };
+  D.casc.perdidoTot = D.casc.propia + D.casc.inducida + D.casc.externa +
+                      Math.max(D.casc.ritmo, 0);
+  D.platoServido = D.casc.perdidoTot * D.tarifa;   // plata dejada sobre la mesa
+  /* Para comparar "fuga de ritmo" contra "detenciones" hay que hacerlo DENTRO del
+     mismo proceso. Sumar la fuga de los cuatro procesos y valorizarla sería contar
+     la misma madera cuatro veces: la faena la vende una sola vez. */
+  D.fugaProcM3 = Math.max(D.casc.ritmo, 0);
+  D.hpProcM3   = D.casc.propia + D.casc.inducida + D.casc.externa;
+  D.sinTramo   = !D.tramo || !(D.casc.std > 0);
+
+  /* --- 7. m³ por equipo: se reparte la cartola dentro de cada proceso,
+         proporcional a los árboles (o a las horas si no hay árboles). --- */
+  D.equipos = [];
+  Object.keys(D.proc).forEach(function(p){
+    var P = D.proc[p];
+    Object.keys(P.equipos).forEach(function(eq){
+      var E = P.equipos[eq];
+      var pesoArb = P.arb > 0 ? E.arb/P.arb : (P.hrs > 0 ? E.hrs/P.hrs : 0);
+      var m3eq = D.m3 * pesoArb;
+      var maq  = gestStdMaq(faena, p, eq);
+      var e    = (maq && D.tramo && D.tramo[maq]) ? D.tramo[maq].m3hr : 0;
+      var r    = E.hrs > 0 ? m3eq/E.hrs : 0;
+      var hp = 0, hpPro = 0, hpInd = 0;
+      D.perd.forEach(function(x){
+        if (gestNorm(x.equipo) !== gestNorm(eq)) return;
+        hp += x.hrs;
+        if (x.clase === 'propia')   hpPro += x.hrs;
+        if (x.clase === 'inducida') hpInd += x.hrs;
+      });
+      D.equipos.push({
+        equipo:eq, proceso:p, maq:maq||'—',
+        hrs:E.hrs, arb:E.arb, m3:m3eq, dias:Object.keys(E.dias).length,
+        std:e, real:r,
+        fugaM3:  e > 0 ? E.hrs * Math.max(e - r, 0) : 0,
+        hp:hp, hpPro:hpPro, hpInd:hpInd,
+        hpM3: e > 0 ? hp * e : 0,
+        pctStd: e > 0 ? r/e : 0
+      });
+    });
+  });
+  D.equipos.sort(function(a,b){ return b.fugaM3 - a.fugaM3; });
+  D.fugaTotM3 = 0; D.hpTotM3 = 0;
+  D.equipos.forEach(function(e){ D.fugaTotM3 += e.fugaM3; D.hpTotM3 += e.hpM3; });
+
+  /* --- 8. Pérdida inducida: quién le pega a quién --- */
+  var ind = {};
+  D.perd.forEach(function(r){
+    if (r.clase !== 'inducida') return;
+    var k = r.culpa + '' + r.proceso;
+    if (!ind[k]) ind[k] = {culpa:r.culpa, victima:r.proceso, hrs:0, equipos:{}};
+    ind[k].hrs += r.hrs; ind[k].equipos[r.equipo] = 1;
+  });
+  D.inducida = Object.keys(ind).map(function(k){
+    var o = ind[k];
+    o.nEq = Object.keys(o.equipos).length;
+    // valorizada con el estándar de la máquina detenida, que es la que dejó de producir
+    var stdV = 0, n = 0;
+    D.equipos.forEach(function(e){ if (e.proceso === o.victima && e.std > 0){ stdV += e.std; n++; } });
+    o.std = n > 0 ? stdV/n : std;
+    o.m3  = o.hrs * o.std;
+    o.plata = o.m3 * D.tarifa;
+    return o;
+  }).sort(function(a,b){ return b.m3 - a.m3; });
+
+
+  /* --- 6b. EL CUELLO DE BOTELLA DE LA FAENA ---------------------------------
+     Los cuatro procesos van en cadena: Volteo → Madereo → Procesado →
+     Clasificado. Como los cuatro mueven la MISMA madera, comparar su producción
+     no dice nada: los cuatro entregan los m³ de la cartola. Lo que los distingue
+     es la CAPACIDAD con que la movieron.
+
+       capacidad del proceso = Σ (hrs trabajadas del equipo × estándar de su máquina)
+       utilización           = m³ de la faena / capacidad
+       holgura               = capacidad − m³ de la faena
+
+     El **cuello es el proceso con la utilización más alta**, o sea el que quedó
+     sin holgura: si ese se detiene una hora, la faena entera pierde esa hora.
+     Sobre 100% significa que está entregando por encima de su ritmo estándar —
+     normalmente porque tiene menos máquinas de las que supone el estándar.
+
+     Y hay una segunda mirada, independiente de los estándares: **quién hace
+     esperar a quién**. Si el Volteo detiene al Madereo 80 hrs, el Volteo es
+     cuello por evidencia de terreno, sin necesidad de creerle a ninguna tabla.
+     Cuando las dos miradas coinciden, el cuello está confirmado. Cuando no,
+     la ficha lo dice en vez de elegir una. */
+  var GEST_CADENA = ['Volteo', 'Madereo', 'Procesado', 'Clasificado'];
+
+  function gestProcCanon(p){
+    var n = gestNorm(p);
+    if (n.indexOf('VOLTEO') >= 0) return 'Volteo';
+    if (n.indexOf('MADEREO') >= 0) return 'Madereo';
+    if (n.indexOf('PROCESAD') >= 0) return 'Procesado';
+    if (n.indexOf('CLASIFICADO') >= 0 || n.indexOf('ORDENAMIENTO') >= 0) return 'Clasificado';
+    return null;
+  }
+
+  D.cadena = GEST_CADENA.map(function(nom){
+    var eqs = D.equipos.filter(function(e){ return gestProcCanon(e.proceso) === nom; });
+    var cap = 0, capPot = 0, hrs = 0, hp = 0, hpPro = 0, hpInd = 0, stdSum = 0, nStd = 0;
+    eqs.forEach(function(e){
+      hrs += e.hrs; hp += e.hp; hpPro += e.hpPro; hpInd += e.hpInd;
+      if (e.std > 0){
+        cap    += e.hrs * e.std;
+        capPot += (e.hrs + e.hp) * e.std;
+        stdSum += e.std; nStd++;
+      }
+    });
+    /* Horas que este proceso le PROVOCA a los demás. Las causas compartidas
+       ("Volteo/Madereo") se imputan al primer proceso nombrado: repartirlas
+       sería inventar, y contarlas dos veces sería peor. */
+    var provoca = 0, sufre = 0;
+    D.inducida.forEach(function(o){
+      var culp = gestProcCanon(String(o.culpa).split('/')[0]);
+      if (culp === nom) provoca += o.hrs;
+      if (gestProcCanon(o.victima) === nom) sufre += o.hrs;
+    });
+    return {
+      proceso: nom, nEq: eqs.length, hrs: hrs,
+      hp: hp, hpPropia: hpPro, hpInducida: hpInd,
+      std: nStd > 0 ? stdSum/nStd : 0,
+      real: hrs > 0 ? D.m3/hrs : 0,
+      cap: cap, capPot: capPot,
+      util: cap > 0 ? D.m3/cap : 0,
+      holgura: cap - D.m3,
+      provoca: provoca, sufre: sufre,
+      vacio: eqs.length === 0 || !(cap > 0)
+    };
+  });
+
+  /* CORREGIDO 09-09-2026 por Gustavo. La primera version declaraba cuello al proceso
+     con la utilizacion mas alta contra el estandar, y eso da falsos positivos:
+     el Feller 04 de Mec 3 marcaba 150% y NO es el cuello — simplemente rinde por
+     encima del estandar del contrato sin trabajar exigido. El estandar es una
+     referencia contractual, no el techo de la maquina.
+
+       · EL CUELLO se reconoce porque los de abajo lo esperan. La evidencia valida
+         son las horas de espera que un proceso le provoca a otro.
+       · El rendimiento contra el estandar va aparte, como dato, y se redacta como
+         "rinde sobre/bajo el estandar", nunca como "esta exigido".
+       · La MAQUINA CRITICA es otra cosa: el proceso con UNA sola maquina. Hoy no
+         frena a nadie, pero si se cae para la faena entera. Es riesgo, no restriccion. */
+  var conCap = D.cadena.filter(function(p){ return !p.vacio; });
+  var porProvoca = D.cadena.slice().sort(function(a,b){ return b.provoca - a.provoca; });
+  var porUtil = conCap.slice().sort(function(a,b){ return b.util - a.util; });
+
+  /* Dias operativos del mes: el mayor numero de dias distintos que trabajo un
+     proceso. Sirve para saber cuanto produce la faena en un dia. */
+  var diasOp = D.diasProd || 0;
+  if (!diasOp) D.equipos.forEach(function(e){ if (e.dias > diasOp) diasOp = e.dias; });
+  var m3Dia = diasOp > 0 ? D.m3/diasOp : 0;
+
+  /* Procesos con una sola maquina: si esa se detiene, no hay con que reemplazarla.
+     El costo de un dia detenido es la produccion diaria completa de la faena,
+     porque toda la madera pasa por ahi. */
+  D.criticas = D.cadena.filter(function(p){ return !p.vacio && p.nEq === 1; })
+    .map(function(p){
+      return {proceso:p.proceso, hrs:p.hrs, hp:p.hp, util:p.util,
+              costoDia: m3Dia * D.tarifa, m3Dia: m3Dia,
+              /* Volteo y Madereo tienen colchon: hay madera ya volteada o ya
+                 madereada en cancha, asi que la faena aguanta un rato antes de
+                 parar. Procesado y Clasificado no: paran al tiro. */
+              colchon: (p.proceso === 'Volteo' || p.proceso === 'Madereo')};
+    });
+
+  D.cuello = {
+    /* el cuello de verdad: el que hace esperar a los demas */
+    cuello:       (porProvoca[0] && porProvoca[0].provoca > 0) ? porProvoca[0] : null,
+    porTerreno:   (porProvoca[0] && porProvoca[0].provoca > 0) ? porProvoca[0] : null,
+    /* dato de rendimiento, NO veredicto */
+    masSobreStd:  porUtil[0] || null,
+    porCapacidad: porUtil[0] || null,
+    diasOp: diasOp, m3Dia: m3Dia
+  };
+  D.cuello.coinciden = !!(D.cuello.cuello && D.cuello.masSobreStd &&
+                          D.cuello.cuello.proceso === D.cuello.masSobreStd.proceso);
+  /* Lo que vale devolverle una hora al cuello: esa hora sí se traduce en m³,
+     porque hoy hay procesos parados esperandolo. */
+  D.cuello.valorHora = D.cuello.cuello ? D.cuello.cuello.std * D.tarifa : 0;
+  D.cuello.horasRecuperables = D.cuello.cuello ? D.cuello.cuello.hp : 0;
+
+  /* --- 9. Pareto de causas EN $ (no en horas): el orden cambia casi siempre,
+         porque una hora del Procesador no vale lo mismo que una de la Garra. --- */
+  var stdPorEq = {};
+  D.equipos.forEach(function(e){ stdPorEq[gestNorm(e.equipo)] = e.std; });
+  var cau = {};
+  D.perd.forEach(function(r){
+    var c = r.causa || 'SIN CAUSA';
+    if (!cau[c]) cau[c] = {causa:c, hrs:0, m3:0, clase:r.clase};
+    cau[c].hrs += r.hrs;
+    cau[c].m3  += r.hrs * (stdPorEq[gestNorm(r.equipo)] || std);
+  });
+  D.pareto = Object.keys(cau).map(function(c){
+    cau[c].plata = cau[c].m3 * D.tarifa;
+    return cau[c];
+  }).sort(function(a,b){ return b.plata - a.plata; });
+  D.paretoHrs = D.pareto.slice().sort(function(a,b){ return b.hrs - a.hrs; });
+
+  /* --- 10. ¿Crónico o evento? Qué parte de la pérdida se concentra en pocos días.
+          Un motor fundido de 40 hrs en un día se arregla distinto que 40 hrs
+          repartidas en 20 días. --- */
+  var pd = {};
+  D.perd.forEach(function(r){ if (r.fecha) pd[r.fecha] = (pd[r.fecha]||0) + r.hrs; });
+  var dias = Object.keys(pd).map(function(f){ return {fecha:f, hrs:pd[f]}; })
+                            .sort(function(a,b){ return b.hrs - a.hrs; });
+  var tot = 0; dias.forEach(function(d){ tot += d.hrs; });
+  var acum = 0, n80 = 0;
+  for (var i = 0; i < dias.length; i++){
+    acum += dias[i].hrs;
+    if (acum <= tot*0.8) n80 = i+1; else { n80 = i+1; break; }
+  }
+  D.cronico = {
+    dias: dias, nDias: dias.length, tot: tot,
+    top3: dias.slice(0,3), pctTop3: tot > 0 ? (dias.slice(0,3).reduce(function(s,d){return s+d.hrs;},0))/tot : 0,
+    n80: n80, pctDias80: dias.length > 0 ? n80/dias.length : 0
+  };
+  D.cronico.veredicto = D.cronico.pctDias80 <= 0.30 ? 'evento' :
+                        (D.cronico.pctDias80 >= 0.60 ? 'cronico' : 'mixto');
+
+  /* --- 11. Ranking de operadores, contra el estándar de SU tramo.
+          Comparar m³/hr crudo es injusto: un operador en VMA 0,3 nunca le va a
+          ganar a uno en VMA 1,0. Por eso el índice va sobre el estándar propio.
+          La consistencia (variabilidad día a día) va aparte: un operador parejo
+          al 95% vale más que uno que oscila entre 60% y 130%. --- */
+  var op = {};
+  filas.forEach(function(d){
+    if (!/procesad/i.test(d.proceso)) return;
+    if (!(d.hrs > 0)) return;
+    var nom = d.oper || '(Sin nombre)';
+    if (!op[nom]) op[nom] = {oper:nom, hrs:0, arb:0, dias:{}, eq:{}};
+    op[nom].hrs += d.hrs; op[nom].arb += d.arb;
+    op[nom].eq[d.equipo] = 1;
+    var f = d.fecha;
+    if (!f) return;
+    if (!op[nom].dias[f]) op[nom].dias[f] = {hrs:0, arb:0, vma:0, aw:0};
+    op[nom].dias[f].hrs += d.hrs; op[nom].dias[f].arb += d.arb;
+    var rv = bhtVmaResolver(d);
+    if (rv.vma > 0 && d.arb > 0){ op[nom].dias[f].vma += rv.vma*d.arb; op[nom].dias[f].aw += d.arb; }
+  });
+  var arbProcTot = kProc ? D.proc[kProc].arb : 0;
+  D.oper = Object.keys(op).map(function(nom){
+    var o = op[nom];
+    var m3 = arbProcTot > 0 ? D.m3 * (o.arb/arbProcTot) : 0;
+    var idxDia = [];
+    Object.keys(o.dias).forEach(function(f){
+      var dd = o.dias[f];
+      if (!(dd.hrs > 0) || !(dd.arb > 0)) return;
+      var vmaD = dd.aw > 0 ? dd.vma/dd.aw : D.vma;
+      var trD  = gestTramo(faena, esp, vmaD);
+      var stdD = (trD && trD.Procesador) ? trD.Procesador.m3hr : 0;
+      // m³ del día del operador, repartidos por árboles dentro del mes
+      var m3D = arbProcTot > 0 ? D.m3 * (dd.arb/arbProcTot) : 0;
+      var rD  = m3D/dd.hrs;
+      if (stdD > 0) idxDia.push(rD/stdD);
+    });
+    var media = 0; idxDia.forEach(function(x){ media += x; });
+    media = idxDia.length ? media/idxDia.length : 0;
+    var va = 0; idxDia.forEach(function(x){ va += (x-media)*(x-media); });
+    var sd = idxDia.length > 1 ? Math.sqrt(va/(idxDia.length-1)) : 0;
+    return {
+      oper:nom, hrs:o.hrs, arb:o.arb, m3:m3,
+      equipos:Object.keys(o.eq).join(', '),
+      nDias:Object.keys(o.dias).length,
+      m3hr: o.hrs > 0 ? m3/o.hrs : 0,
+      std: (D.tramo && D.tramo.Procesador) ? D.tramo.Procesador.m3hr : 0,
+      idx: media,                                   // 1,00 = justo en su estándar
+      cv:  media > 0 ? sd/media : 0                 // consistencia: mientras más bajo, mejor
+    };
+  }).filter(function(o){ return o.hrs > 0; })
+    .sort(function(a,b){ return b.idx - a.idx; });
+
+  /* --- 12. Combustible cruzado: consumo normal + producción baja = máquina
+          encendida sin producir. Esa hora NO aparece como hora perdida en
+          ninguna planilla, y es la fuga que nadie mira. --- */
+  D.diesel = [];
+  var nFaena = String(faena).replace(/\D/g,'');
+  (DIESEL_DATA||[]).forEach(function(r){
+    // DIESEL_DATA guarda la faena tal cual viene de la hoja ('Faena Mec 3'),
+    // no el nombre corto: se compara por el numero de faena.
+    var mF = String(r.faena||'').match(/Mec\s*(\d+)/i);
+    if (!mF || mF[1] !== nFaena) return;
+    var rym = r.ym;
+    if (typeof rym === 'string') rym = parseInt(String(rym).replace('-',''));
+    if (rym !== ym) return;
+    var eq = null;
+    D.equipos.forEach(function(e){ if (gestNorm(e.equipo) === gestNorm(r.equipo)) eq = e; });
+    var lts = r.lts||0, hrs = r.hrs||0;
+    var ltsHr  = hrs > 0 ? lts/hrs : 0;
+    var m3eq   = eq ? eq.m3 : 0;
+    var ltsM3  = m3eq > 0 ? lts/m3eq : 0;
+    var pctStd = eq ? eq.pctStd : 0;
+    var pctLts = (r.rendStd > 0) ? ltsHr/r.rendStd : 0;
+    D.diesel.push({
+      equipo:r.equipo, proceso: eq ? eq.proceso : '', lts:lts, hrs:hrs, m3:m3eq,
+      ltsHr:ltsHr, ltsM3:ltsM3, stdLtsHr:r.rendStd||0,
+      pctLts:pctLts, pctStd:pctStd,
+      // la señal: quema como si trabajara (>=90% del estándar de litros) pero
+      // produce bajo (<85% del estándar de m³)
+      alerta: (pctLts >= 0.9 && pctStd > 0 && pctStd < 0.85)
+    });
+  });
+  D.diesel.sort(function(a,b){ return (b.pctLts - b.pctStd) - (a.pctLts - a.pctStd); });
+
+  /* --- 13. Confiabilidad del dato: cuando la App no está segura, lo dice.
+          Mejor eso que un número que no aguante una pregunta en la reunión. --- */
+  if (ym < 202608)
+    D.avisos.push('Los m³ por equipo de BaseHorasTrab vienen llenos solo desde agosto-2026: lo que dependa de m³ por máquina en este mes es estimado.');
+  if (D.vmaPctRodal < 0.5)
+    D.avisos.push('El VMA de este mes no cruza por rodal en el ' + gN((1-D.vmaPctRodal)*100,0) + '% de los árboles: el tramo (y por lo tanto el estándar y la tarifa) es poco confiable.');
+  if (D.m3Fuente !== 'cartola')
+    D.avisos.push('Sin producción en la cartola (hoja produc) para este mes: se usó la columna m³ de BaseHorasTrab, que el operador anota inflada.');
+  if (!D.tramo)
+    D.avisos.push('Sin tramo VMA resuelto: no hay estándar ni tarifa con que valorizar.');
+  if (!D.perd.length)
+    D.avisos.push('Sin horas perdidas cargadas en BaseHorasPerdUnif para este mes.');
+  if (D.enCurso)
+    D.avisos.push('Mes en curso: los datos llegan al día ' + D.diaUlt + ' de ' + D.diasMes +
+                  '. Los totales son parciales; las comparaciones con el mes anterior van por m³/día.');
+  if (D.diasSinCartola && D.diasSinCartola.length)
+    D.avisos.push('Se trabajó sin calibrar madera el ' +
+      D.diasSinCartola.map(function(f){ return f.substring(8,10); }).join(', ') +
+      ': esos días salen en blanco en el gráfico diario, pero NO son días perdidos — la madera se calibró después y ya está contada en el total. Cuentan como días trabajados.');
+
+  /* --- 14. ALERTAS en castellano, con el m³ y el $ al lado --- */
+  D.alertas = gestAlertas(D);
+
+  /* --- 15. Las 3 acciones priorizadas por $ recuperable --- */
+  D.acciones = gestAcciones(D);
+
+  GEST_CACHE[ck] = D;
+  return D;
+}
+
+/* ---------- Reglas de alerta ---------------------------------------------
+   Reglas fijas, no adivinanzas: cada una redacta la frase con su m³ y su $. */
+function gestAlertas(D){
+  var A = [];
+  /* Sin tramo VMA no hay estándar ni tarifa: todas las reglas de abajo comparan
+     contra uno de los dos, así que evaluarlas daría alertas inventadas. */
+  if (D.sinTramo)
+    return [{n:'alta', t:'Este mes no se puede evaluar: falta el VMA',
+             d:'Sin VMA resuelto no hay tramo, y sin tramo no hay estándar ni tarifa. ' +
+               'Las horas trabajadas y las horas perdidas de abajo sí son reales; lo que no se puede es valorizarlas. ' +
+               'Se arregla cruzando el VMA por rodal en la planilla.'}];
+  var prev = null;
+  try { prev = gestDatosSimple(D.faena, D.esp, gestYmPrev(D.ym)); } catch(e){}
+  if (prev && prev.sinTramo) prev = null;   // no comparar contra un mes sin estándar
+
+  // 0) El cuello y las maquinas criticas. Van primero porque mandan sobre lo demas.
+  //    OJO: el cuello sale de las horas de espera REALES entre procesos, no del %
+  //    contra el estandar (eso daba falsos positivos: ver gestPintaCuello).
+  var CU = D.cuello, cu = CU && CU.cuello;
+  if (cu){
+    A.push({n:'alta', t:'El cuello de botella de la faena es el ' + cu.proceso,
+      d:'Le provoca ' + gN(cu.provoca,1) + ' hrs de espera a los otros procesos: son horas que las ' +
+        'otras máquinas pasaron detenidas esperándolo. Cada hora que se le devuelva vale ' +
+        gPlata(CU.valorHora) + '.' +
+        (cu.hp > 0 ? ' Perdió ' + gN(cu.hp,1) + ' hrs este mes; recuperarlas vale ' +
+                     gPlata(cu.hp * CU.valorHora) + '.' : '')});
+  }
+  (D.criticas || []).forEach(function(k){
+    A.push({n: k.colchon ? 'media' : 'alta',
+      t:'Máquina crítica: el ' + k.proceso + ' tiene una sola máquina',
+      d:'Hoy no frena a nadie, pero no hay con qué reemplazarla. Un día detenida pone en juego ' +
+        gPlata(k.costoDia) + ' (' + gN(k.m3Dia) + ' m³/día de la faena)' +
+        (k.colchon ? ', aunque la faena aguanta un rato con la madera que ya está en cancha.'
+                   : ', y la faena para al tiro: no hay colchón.')});
+  });
+  // 1) La fuga de ritmo le gana a las detenciones — comparado dentro del Procesado,
+  //    que es donde se cuentan los m³ que se facturan.
+  if (D.fugaProcM3 > D.hpProcM3 && D.fugaProcM3 > 0){
+    A.push({n:'alta', t:'En el Procesado, la fuga de ritmo pesa más que las detenciones',
+      d:'Trabajar bajo el estándar dejó ' + gN(D.fugaProcM3) + ' m³ (' +
+        gPlata(D.fugaProcM3*D.tarifa) + '), contra ' + gN(D.hpProcM3) + ' m³ (' +
+        gPlata(D.hpProcM3*D.tarifa) + ') de las horas perdidas. La reunión mira las horas perdidas; acá la plata está en el ritmo.'});
+  }
+  // 1b) Horas perdidas sin explicación: no es un detalle, es plata sin dueño
+  var sinCla = 0;
+  D.perd.forEach(function(r){ if (/^OTROS|SIN CLASIFICAR/.test(gestNorm(r.causa))) sinCla += r.hrs; });
+  if (D.hPerdTot > 0 && sinCla/D.hPerdTot >= 0.15){
+    var m3sc = sinCla * D.casc.std;
+    A.push({n:'alta', t:'Un ' + gN(sinCla/D.hPerdTot*100,0) + '% de las horas perdidas está anotado como "OTROS"',
+      d:'Son ' + gN(sinCla,1) + ' hrs (' + gN(m3sc) + ' m³ · ' + gPlata(m3sc*D.tarifa) +
+        ') sin causa conocida. No se puede gestionar lo que no está clasificado: acá hay que apretar el registro en faena antes que cualquier otra cosa.'});
+  }
+  // 2) Pérdida inducida relevante
+  if (D.hInducida > 0 && D.hPerdTot > 0 && D.hInducida/D.hPerdTot >= 0.15){
+    var top = D.inducida[0];
+    A.push({n:'alta', t:'Un ' + gN(D.hInducida/D.hPerdTot*100,0) + '% de las horas perdidas las provoca otro proceso',
+      d:'Son ' + gN(D.hInducida,1) + ' hrs que se anotan en la máquina detenida, pero el problema está en otra parte.' +
+        (top ? ' La mayor: ' + top.culpa + ' detiene a ' + top.victima + ' por ' + gN(top.hrs,1) +
+               ' hrs (' + gN(top.m3) + ' m³ · ' + gPlata(top.plata) + ').' : '')});
+  }
+  // 3) Causa que crece respecto al mes anterior
+  if (prev && prev.pareto && prev.pareto.length){
+    var prevM = {}; prev.pareto.forEach(function(c){ prevM[c.causa] = c.plata; });
+    D.pareto.slice(0,6).forEach(function(c){
+      var antes = prevM[c.causa] || 0;
+      if (c.plata > 0 && antes > 0 && c.plata >= antes*1.5 && (c.plata - antes) > 500000){
+        A.push({n:'media', t:'"' + c.causa + '" creció ' + gN((c.plata/antes-1)*100,0) + '% respecto a ' + prev.mesTxt,
+          d:'Pasó de ' + gPlata(antes) + ' a ' + gPlata(c.plata) + ' (' + gN(c.hrs,1) + ' hrs este mes).'});
+      }
+    });
+  }
+  // 4) Máquinas que empeoran
+  if (prev && prev.equipos && prev.equipos.length){
+    var pe = {}; prev.equipos.forEach(function(e){ pe[gestNorm(e.equipo)] = e; });
+    D.equipos.forEach(function(e){
+      var a = pe[gestNorm(e.equipo)];
+      if (!a || !(a.pctStd > 0) || !(e.pctStd > 0)) return;
+      if (e.pctStd < a.pctStd - 0.10){
+        A.push({n:'media', t:e.equipo + ' cayó de ' + gN(a.pctStd*100,0) + '% a ' + gN(e.pctStd*100,0) + '% de su estándar',
+          d:'La baja de ritmo vale ' + gPlata(e.fugaM3*D.tarifa) + ' este mes (' + gN(e.fugaM3) + ' m³).'});
+      }
+    });
+  }
+  // 5) Operadores que cayeron respecto a su propio promedio
+  if (prev && prev.oper && prev.oper.length){
+    var po = {}; prev.oper.forEach(function(o){ po[o.oper] = o; });
+    D.oper.forEach(function(o){
+      var a = po[o.oper];
+      if (!a || !(a.idx > 0)) return;
+      if (o.idx < a.idx - 0.10)
+        A.push({n:'baja', t:o.oper + ' bajó de ' + gN(a.idx*100,0) + '% a ' + gN(o.idx*100,0) + '% de su estándar',
+          d:'Con ' + gN(o.hrs,1) + ' hrs este mes. Es contra el estándar de su propio tramo, así que no lo explica el VMA.'});
+    });
+  }
+  // 6) Crónico vs evento
+  if (D.cronico.nDias > 0){
+    if (D.cronico.veredicto === 'evento')
+      A.push({n:'baja', t:'La pérdida del mes es un evento, no un problema crónico',
+        d:'El ' + gN(D.cronico.pctTop3*100,0) + '% de las horas perdidas se concentra en 3 días (' +
+          D.cronico.top3.map(function(d){ return d.fecha; }).join(', ') + '). Se ataca con un caso, no con un plan.'});
+    if (D.cronico.veredicto === 'cronico')
+      A.push({n:'alta', t:'La pérdida es crónica: gotea todos los días',
+        d:'Hace falta el ' + gN(D.cronico.pctDias80*100,0) + '% de los días para juntar el 80% de las horas perdidas. No hay un culpable puntual: es rutina.'});
+  }
+  // 7) Combustible: encendida sin producir
+  var dq = D.diesel.filter(function(x){ return x.alerta; });
+  if (dq.length)
+    A.push({n:'alta', t:dq.length + (dq.length===1?' máquina quema':' máquinas queman') + ' como si trabajaran, pero producen bajo',
+      d:dq.map(function(x){ return x.equipo + ' (' + gN(x.pctLts*100,0) + '% de litros, ' + gN(x.pctStd*100,0) + '% de m³)'; }).join(' · ') +
+        '. Esas horas no aparecen como hora perdida en ninguna planilla.'});
+  // 8) Tendencia de producción
+  if (prev && prev.m3 > 0 && D.m3 > 0){
+    /* Con el mes a medias los totales no se pueden comparar (al día 8 daba
+       "cayó 74%", que es puro calendario). Se compara el ritmo por día. */
+    var parc = D.enCurso || prev.enCurso;
+    var a = parc ? ((D.cuello && D.cuello.m3Dia) || 0) : D.m3;
+    var b = parc ? ((prev.cuello && prev.cuello.m3Dia) || 0) : prev.m3;
+    if (a > 0 && b > 0){
+      var v = (a/b - 1);
+      if (Math.abs(v) >= 0.15)
+        A.push({n: v < 0 ? 'media' : 'baja',
+          t:'El ritmo de producción ' + (v<0?'bajó':'subió') + ' ' + gN(Math.abs(v)*100,0) +
+            '% respecto a ' + prev.mesTxt + (parc ? ' (comparado por m³/día, porque el mes va a medias)' : ''),
+          d: parc
+              ? gN(b) + ' m³/día → ' + gN(a) + ' m³/día. El mes va al día ' + D.diaUlt + ' de ' + D.diasMes + '.'
+              : gN(prev.m3) + ' m³ → ' + gN(D.m3) + ' m³ (' + gPlata((D.m3-prev.m3)*D.tarifa) + ').'});
+    }
+  }
+  // Si ninguna regla se disparó, la ficha igual dice cuál fue la mayor pérdida:
+  // un panel de alertas en blanco se lee como "no pasó nada", y sí pasó.
+  if (!A.filter(function(a){ return a.n === 'alta'; }).length && D.pareto.length){
+    var c0 = D.pareto[0];
+    A.push({n:'media', t:'La mayor pérdida del mes fue "' + c0.causa + '"',
+      d:gN(c0.hrs,1) + ' hrs · ' + gN(c0.m3) + ' m³ · ' + gPlata(c0.plata) +
+        '. Ninguna regla de alerta se disparó este mes, así que esto es lo más caro que hubo.'});
+  }
+  var ord = {alta:0, media:1, baja:2};
+  return A.sort(function(a,b){ return ord[a.n] - ord[b.n]; });
+}
+
+/* Version liviana para el mes anterior: sin alertas ni acciones, para no
+   entrar en recursión infinita (gestAlertas pide el mes anterior). */
+var GEST_SIMPLE = false;
+function gestDatosSimple(faena, esp, ym){
+  if (GEST_SIMPLE) return null;
+  GEST_SIMPLE = true;
+  var d = null;
+  try { d = gestDatos(faena, esp, ym); } catch(e){ console.warn('[GEST] mes previo:', e.message); }
+  GEST_SIMPLE = false;
+  return (d && !d.vacio) ? d : null;
+}
+
+/* ---------- Las 3 acciones, priorizadas por $ recuperable -----------------
+   Sin esto la ficha queda en informe bonito. Cada acción dice cuánto vale y
+   contra qué se va a medir el mes que viene. */
+function gestAcciones(D){
+  var A = [];
+  if (D.sinTramo) return A;   // sin tarifa no se puede priorizar por $ recuperable
+  // a) la peor pérdida inducida
+  if (D.inducida.length){
+    var i0 = D.inducida[0];
+    A.push({txt:'Destrabar ' + i0.culpa + ', que tiene detenido a ' + i0.victima +
+                ' ' + gN(i0.hrs,1) + ' hrs',
+            plata:i0.plata, m3:i0.m3,
+            metrica:'hrs inducidas ' + i0.culpa + '→' + i0.victima,
+            mkey:'ind|' + i0.culpa + '|' + i0.victima, valor:i0.hrs,
+            comoSeMide:'Que esas horas bajen el mes que viene.'});
+  }
+  // b) recuperarle horas al cuello: es la unica hora que se convierte en m3
+  if (D.cuello && D.cuello.cuello && D.cuello.cuello.hp > 0 && D.cuello.valorHora > 0){
+    var cu = D.cuello.cuello;
+    A.push({txt:'Destrabar el ' + cu.proceso + ', que es el cuello: tiene a los otros procesos ' +
+                gN(cu.provoca,1) + ' hrs esperando y él mismo perdió ' + gN(cu.hp,1) + ' hrs',
+            plata: cu.hp * D.cuello.valorHora, m3: cu.hp * cu.std,
+            metrica:'hrs perdidas del ' + cu.proceso,
+            mkey:'cue|' + cu.proceso, valor: cu.hp,
+            comoSeMide:'Que bajen las horas perdidas del proceso cuello.'});
+  }
+  // c) el equipo con más fuga de ritmo
+  if (D.equipos.length && D.equipos[0].fugaM3 > 0){
+    var e0 = D.equipos[0];
+    A.push({txt:'Subir el ritmo de ' + e0.equipo + ', que va al ' + gN(e0.pctStd*100,0) +
+                '% de su estándar (' + gN(e0.real,1) + ' vs ' + gN(e0.std,1) + ' m³/hr)',
+            plata:e0.fugaM3*D.tarifa, m3:e0.fugaM3,
+            metrica:'% del estándar de ' + e0.equipo,
+            mkey:'eq|' + e0.equipo, valor:e0.pctStd,
+            comoSeMide:'Que el % del estándar suba.'});
+  }
+  // c) la causa que más plata cuesta
+  if (D.pareto.length){
+    var c0 = D.pareto[0];
+    var esVago = /^OTROS|SIN CLASIFICAR/.test(gestNorm(c0.causa));
+    A.push({txt: esVago
+              ? 'Clasificar las ' + gN(c0.hrs,1) + ' hrs anotadas como "' + c0.causa +
+                '": hoy es la mayor pérdida del mes y nadie sabe de qué es'
+              : 'Atacar "' + c0.causa + '", la causa que más cuesta (' + gN(c0.hrs,1) + ' hrs)',
+            plata:c0.plata, m3:c0.m3,
+            metrica:'$ de la causa ' + c0.causa,
+            mkey:'cau|' + c0.causa, valor:c0.hrs,
+            comoSeMide:'Que bajen las horas de esa causa.'});
+  }
+  // d) máquina encendida sin producir
+  var dq = D.diesel.filter(function(x){ return x.alerta; });
+  if (dq.length){
+    A.push({txt:'Revisar por qué ' + dq[0].equipo + ' quema combustible de máquina trabajando pero produce al ' +
+                gN(dq[0].pctStd*100,0) + '%',
+            plata:0, m3:0,
+            metrica:'lts/hr vs m³ de ' + dq[0].equipo,
+            mkey:'ds|' + dq[0].equipo, valor:dq[0].pctStd,
+            comoSeMide:'Que el % de m³ se acerque al % de litros.'});
+  }
+  return A.sort(function(a,b){ return b.plata - a.plata; }).slice(0,3);
+}
+
+/* ---------- Seguimiento: ¿lo que la App propuso el mes pasado, se cumplió? --- */
+function gestGuardarAcciones(D){
+  try {
+    var todo = JSON.parse(localStorage.getItem('GEST_ACCIONES') || '{}');
+    todo[D.faena + '|' + D.mes] = D.acciones.map(function(a){
+      return {txt:a.txt, mkey:a.mkey, metrica:a.metrica, valor:a.valor, plata:a.plata};
+    });
+    localStorage.setItem('GEST_ACCIONES', JSON.stringify(todo));
+  } catch(e){ console.warn('[GEST] no pude guardar acciones:', e.message); }
+}
+/* Valor de hoy de la métrica que se propuso el mes pasado. */
+function gestValorMetrica(D, mkey){
+  var p = String(mkey||'').split('|');
+  if (p[0] === 'ind'){
+    var f = D.inducida.filter(function(i){ return i.culpa === p[1] && i.victima === p[2]; });
+    return f.length ? f[0].hrs : 0;
+  }
+  if (p[0] === 'eq' || p[0] === 'ds'){
+    var e = D.equipos.filter(function(x){ return gestNorm(x.equipo) === gestNorm(p[1]); });
+    return e.length ? e[0].pctStd : 0;
+  }
+  if (p[0] === 'cue'){
+    var q = (D.cadena || []).filter(function(x){ return x.proceso === p[1]; });
+    return q.length ? q[0].hp : null;
+  }
+  if (p[0] === 'cau'){
+    var c = D.pareto.filter(function(x){ return x.causa === p[1]; });
+    return c.length ? c[0].hrs : 0;
+  }
+  return null;
+}
+
+/* ============================================================================
+   RENDER
+   ============================================================================ */
+function gestSetFactor(){
+  var v = parseFloat((document.getElementById('gest-factor')||{}).value);
+  GEST_FACTOR = (isFinite(v) && v > 0) ? v : 1;
+  try { localStorage.setItem('GEST_FACTOR', String(GEST_FACTOR)); } catch(e){}
+  GEST_CACHE = {};
+  gestRender();
+}
+
+function gestOpciones(){
+  var selF = document.getElementById('gest-faena');
+  var selM = document.getElementById('gest-mes');
+  var selE = document.getElementById('gest-especie');
+  if (!selF || !selM) return;
+
+  var fa = {}, ms = {};
+  (BHT_DIAS||[]).forEach(function(d){
+    if (!d.faena || !d.ym) return;
+    fa[d.faena] = 1;
+    ms[d.ym] = 1;
+  });
+  var faenas = Object.keys(fa).sort();
+  var meses  = Object.keys(ms).map(Number).sort(function(a,b){ return b-a; });
+  if (!faenas.length) return;
+
+  if (!GEST_SEL.faena || faenas.indexOf(GEST_SEL.faena) < 0) GEST_SEL.faena = faenas[0];
+  selF.innerHTML = faenas.map(function(f){
+    return '<option value="'+f+'"'+(f===GEST_SEL.faena?' selected':'')+'>'+f+'</option>';
+  }).join('');
+
+  // meses de esa faena
+  var msF = {};
+  (BHT_DIAS||[]).forEach(function(d){ if (d.faena === GEST_SEL.faena && d.ym) msF[d.ym] = 1; });
+  var mesesF = Object.keys(msF).map(Number).sort(function(a,b){ return b-a; });
+  if (!mesesF.length) mesesF = meses;
+  if (!GEST_SEL.ym || mesesF.indexOf(GEST_SEL.ym) < 0) GEST_SEL.ym = mesesF[0];
+  selM.innerHTML = mesesF.map(function(m){
+    return '<option value="'+m+'"'+(m===GEST_SEL.ym?' selected':'')+'>'+gestMesTxt(m)+'</option>';
+  }).join('');
+
+  // especie: solo se muestra cuando la faena tiene más de una en DATA (Mec 4)
+  var k = gestDataKey(GEST_SEL.faena);
+  var esps = (k && DATA[k]) ? Object.keys(DATA[k]) : [];
+  var fg = document.getElementById('gest-fg-especie');
+  if (esps.length > 1 && selE){
+    if (!GEST_SEL.esp || esps.indexOf(GEST_SEL.esp) < 0)
+      GEST_SEL.esp = (typeof FAENA_ESPECIE_DEFAULT !== 'undefined' &&
+                      FAENA_ESPECIE_DEFAULT[GEST_SEL.faena]) || esps[0];
+    selE.innerHTML = esps.map(function(e){
+      return '<option value="'+e+'"'+(e===GEST_SEL.esp?' selected':'')+'>'+e+'</option>';
+    }).join('');
+    if (fg) fg.style.display = '';
+  } else {
+    GEST_SEL.esp = esps[0] || 'Pino';
+    if (fg) fg.style.display = 'none';
+  }
+}
+
+function gestRender(){
+  var selF = document.getElementById('gest-faena');
+  var selM = document.getElementById('gest-mes');
+  var selE = document.getElementById('gest-especie');
+  if (selF && selF.value) GEST_SEL.faena = selF.value;
+  if (selM && selM.value) GEST_SEL.ym    = parseInt(selM.value);
+  if (selE && selE.value && document.getElementById('gest-fg-especie').style.display !== 'none')
+    GEST_SEL.esp = selE.value;
+  gestOpciones();
+
+  if (!(BHT_DIAS||[]).length){
+    document.getElementById('gest-semaforo').innerHTML =
+      '<div style="grid-column:1/-1;color:#8b949e;padding:16px;">Carga el Excel para armar la ficha.</div>';
+    return;
+  }
+  var D = gestDatos(GEST_SEL.faena, GEST_SEL.esp, GEST_SEL.ym);
+  GEST_ULTIMO = D;
+  var P = gestDatosSimple(GEST_SEL.faena, GEST_SEL.esp, gestYmPrev(GEST_SEL.ym));
+
+  gestPintaConfianza(D);
+  gestPintaSemaforo(D, P);
+  gestPintaCascada(D);
+  gestPintaCuello(D);
+  gestPintaInducida(D);
+  gestPintaFuga(D);
+  gestPintaOper(D);
+  gestPintaPareto(D);
+  gestPintaCronico(D);
+  gestPintaDiesel(D);
+  gestPintaAlertas(D);
+  gestPintaGestion(D, P);
+  gestGuardarAcciones(D);
+  console.log('[GEST] ' + D.faena + ' ' + D.mes + ' · m³ ' + gN(D.m3) +
+              ' · hrs perd ' + gN(D.hPerdTot,1) + ' · fuga ritmo ' + gN(D.fugaTotM3) + ' m³');
+}
+
+function gestPintaConfianza(D){
+  var el = document.getElementById('gest-confianza');
+  if (!el) return;
+  var base = 'VMA ' + gN(D.vma,3) + ' · tramo ' + (D.tramo ? D.tramo.rango : '—') +
+             ' · tarifa ' + gPlata(D.tarifa) + '/m³' +
+             (GEST_FACTOR !== 1 ? ' (reajustada)' : ' (base, sin reajuste)');
+  var h = '<div>' + base + '</div>';
+  if (D.avisos.length)
+    h += D.avisos.map(function(a){
+      return '<div style="color:#c0392b;margin-top:2px;">&#9888; ' + a + '</div>'; }).join('');
+  else
+    h += '<div style="color:#1a6b3a;margin-top:2px;">&#10004; Dato confiable: VMA por rodal y producción de cartola.</div>';
+  el.innerHTML = h;
+}
+
+/* --- BLOQUE 1: semáforo --- */
+function gestPintaSemaforo(D, P){
+  var el = document.getElementById('gest-semaforo');
+  if (!el) return;
+  /* Si alguno de los dos meses va a medias, comparar totales no sirve: se compara
+     el promedio por día, que sí es comparable. */
+  var parcial = D.enCurso || (P && P.enCurso);
+  function flecha(hoy, antes, alRevés){
+    if (!P || !isFinite(antes) || antes === 0) return '<span style="color:#bbb;">sin mes anterior</span>';
+    var v = (hoy/antes - 1)*100;
+    var bueno = alRevés ? (v < 0) : (v > 0);
+    var col = Math.abs(v) < 1 ? '#888' : (bueno ? '#27ae60' : '#c0392b');
+    return '<span style="color:'+col+';font-weight:700;">' + (v>=0?'&#9650; +':'&#9660; ') +
+           gN(v,1) + '%</span> vs ' + P.mesTxt;
+  }
+  var hrsProc = D.casc.hrsTrab;
+  var dispo = D.casc.hrsDisp > 0 ? D.casc.hrsTrab/D.casc.hrsDisp : 0;
+  var dispoP = P ? (P.casc.hrsDisp > 0 ? P.casc.hrsTrab/P.casc.hrsDisp : 0) : 0;
+  var cumpl  = (D.tramo && D.tramo.volMes > 0) ? D.m3/D.tramo.volMes : 0;
+  var cumplP = (P && P.tramo && P.tramo.volMes > 0) ? P.m3/P.tramo.volMes : 0;
+
+  /* Ritmo diario: m³ por día operativo, comparable entre un mes a medias y uno
+     completo. Es la única lectura honesta mientras el mes no cierre. */
+  function flechaRitmo(){
+    var a = (D.cuello && D.cuello.m3Dia) || 0;
+    var b = (P && P.cuello && P.cuello.m3Dia) || 0;
+    if (!(a > 0) || !(b > 0)) return '<span style="color:#bbb;">sin ritmo comparable</span>';
+    var v = (a/b - 1)*100;
+    var col = Math.abs(v) < 3 ? '#888' : (v > 0 ? '#27ae60' : '#c0392b');
+    return '<span style="color:'+col+';font-weight:700;">' + (v>=0?'&#9650; +':'&#9660; ') + gN(v,1) + '%</span>' +
+           ' en m³/día vs ' + P.mesTxt + ' (' + gN(a) + ' vs ' + gN(b) + ')';
+  }
+  var cards = [
+    {l: D.enCurso ? 'm³ al día ' + D.diaUlt : 'm³ del mes',
+     v:gN(D.m3),
+     s: D.enCurso
+          ? '<span style="color:#e67e22;font-weight:700;">mes en curso &middot; ' + D.diaUlt + ' de ' + D.diasMes +
+            ' días &middot; ' + D.diasTrab + ' trabajados</span>' +
+            (P ? '<br>' + flechaRitmo() : '')
+          : flecha(D.m3, P?P.m3:0),
+     c:'#1a6b3a'},
+    {l:'% Vol. normal del tramo', v:gN(cumpl*100,0)+'%',    s:flecha(cumpl, cumplP),                     c: cumpl>=1?'#27ae60':'#e67e22'},
+    {l:'m³/hr vs estándar',     v:gN(D.casc.real,1),        s:'Std ' + gN(D.casc.std,1) + ' · ' +
+                                                                 gN(D.casc.std>0?D.casc.real/D.casc.std*100:0,0) + '%',
+                                                            c: D.casc.real>=D.casc.std?'#27ae60':'#c0392b'},
+    {l:'Horas perdidas',        v:gN(D.hPerdTot,1),         s:flecha(D.hPerdTot, P?P.hPerdTot:0, true),  c:'#c0392b'},
+    {l:'Disponibilidad Procesado', v:gN(dispo*100,0)+'%',   s:flecha(dispo, dispoP),                     c: dispo>=0.85?'#27ae60':'#e67e22'},
+    {l:'Plata sobre la mesa',   v:gPlata(D.platoServido),   s:flecha(D.platoServido, P?P.platoServido:0, true), c:'#8e44ad'}
+  ];
+  el.innerHTML = cards.map(function(c){
+    return '<div class="sc"><div class="sc-label">'+c.l+'</div>' +
+           '<div class="sc-val" style="color:'+c.c+';font-size:19px;">'+c.v+'</div>' +
+           '<div class="sc-sub">'+c.s+'</div></div>';
+  }).join('');
+}
+
+/* --- BLOQUE 2: cascada de la brecha --- */
+function gestPintaCascada(D){
+  /* Sin tramo VMA no hay estándar ni tarifa: dibujar la cascada igual daría una
+     brecha inventada. Mejor decir por qué no se puede (Mec 4 junio y julio no
+     cruzan el VMA por rodal). */
+  if (D.sinTramo){
+    killChart('gestCasc');
+    var s2 = document.getElementById('gest-casc-sub');
+    if (s2) s2.textContent = '';
+    var t2 = document.getElementById('gest-casc-tabla');
+    if (t2) t2.innerHTML =
+      '<div style="padding:14px;background:#fdf3f2;border:1px solid #f2c9c4;border-radius:5px;color:#c0392b;font-size:11.5px;">' +
+      '<b>No se puede armar la cascada de este mes.</b><br>' +
+      'Sin VMA resuelto no hay tramo, y sin tramo no hay estándar ni tarifa con que valorizar la brecha. ' +
+      'Un gráfico igual saldría, pero sería un número que no aguanta una pregunta en la reunión.</div>';
+    var cv2 = document.getElementById('gestCascChart');
+    if (cv2 && cv2.parentNode) cv2.parentNode.style.display = 'none';
+    return;
+  }
+  var cvOn = document.getElementById('gestCascChart');
+  if (cvOn && cvOn.parentNode) cvOn.parentNode.style.display = '';
+  var sub = document.getElementById('gest-casc-sub');
+  if (sub) sub.textContent = '· ' + D.faena + ' ' + D.mesTxt + ' · Procesado · estándar ' +
+                             gN(D.casc.std,1) + ' m³/hr del tramo ' + (D.tramo?D.tramo.rango:'—');
+  var c = D.casc;
+  var ganaRitmo = c.ritmo < 0;     // va SOBRE el estándar
+  var pasos = [
+    {l:'m³ potenciales',        v: c.pot,             tipo:'tot', col:'#2c3e50',
+     ay:'(' + gN(c.hrsDisp,1) + ' hrs disponibles × ' + gN(c.std,1) + ' m³/hr)'},
+    {l:'Falla propia',          v:-c.propia,          tipo:'baja', col:'#c0392b', ay:gN(c.hpPropia,1)+' hrs',   cl:'propia'},
+    {l:'Espera de otro proceso',v:-c.inducida,        tipo:'baja', col:'#e67e22', ay:gN(c.hpInducida,1)+' hrs', cl:'inducida'},
+    {l:'Causa externa',         v:-c.externa,         tipo:'baja', col:'#7f8c8d', ay:gN(c.hpExterna,1)+' hrs',  cl:'externa'},
+    {l: ganaRitmo ? 'Ritmo sobre estándar' : 'Ritmo bajo estándar',
+                                v:-c.ritmo,           tipo: ganaRitmo?'sube':'baja', col: ganaRitmo?'#27ae60':'#9b59b6',
+     ay:gN(c.hrsTrab,1)+' hrs × '+gN(Math.abs(c.std-c.real),1)+' m³/hr'},
+    {l:'m³ reales',             v: c.reales,          tipo:'tot', col:'#1a6b3a', ay:'cartola'}
+  ];
+  // waterfall con barras apiladas: una base invisible + el tramo de color
+  var labels = pasos.map(function(p){ return p.l; });
+  var base = [], val = [], cols = [];
+  var acum = 0;
+  pasos.forEach(function(p){
+    if (p.tipo === 'tot'){ base.push(0); val.push(Math.abs(p.v)); acum = Math.abs(p.v); }
+    else {
+      var alto = Math.abs(p.v);
+      if (p.v < 0){ acum -= alto; base.push(acum); }      // baja
+      else        { base.push(acum); acum += alto; }      // sube
+      val.push(alto);
+    }
+    cols.push(p.col);
+  });
+  killChart('gestCasc');
+  var cv = document.getElementById('gestCascChart');
+  if (cv) CH['gestCasc'] = new Chart(cv, {
+    type:'bar',
+    data:{labels:labels, datasets:[
+      {label:'', data:base, backgroundColor:'rgba(0,0,0,0)', stack:'w', borderWidth:0},
+      {label:'m³', data:val, backgroundColor:cols, stack:'w', borderRadius:3, maxBarThickness:70}
+    ]},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      layout:{padding:{top:30}},
+      plugins:{
+        legend:{display:false},
+        tooltip:{callbacks:{label:function(ctx){
+          if (ctx.datasetIndex === 0) return null;
+          var p = pasos[ctx.dataIndex];
+          return p.l + ': ' + gN(Math.abs(p.v)) + ' m³ · ' + gPlata(Math.abs(p.v)*D.tarifa) + ' — ' + p.ay;
+        }}},
+        subtitle:{display:true, align:'end', position:'top', color:'#c0392b',
+                  font:{size:10.5, weight:'700'},
+                  text: D.faena + ' · VMA ' + gN(D.vma,3) + ' · ' + gPlata(D.tarifa) + '/m³'}
+      },
+      scales:{x:{stacked:true, ticks:{font:{size:9}}, grid:{display:false}},
+              y:{stacked:true, beginAtZero:true, ticks:{font:{size:9}}, grid:{color:'rgba(0,0,0,.06)'}}}
+    },
+    plugins:[{
+      id:'gestCascLbl',
+      afterDatasetsDraw:function(ch){
+        var ctx = ch.ctx, meta = ch.getDatasetMeta(1);
+        ctx.save(); ctx.font='700 10px system-ui'; ctx.textAlign='center';
+        meta.data.forEach(function(bar, i){
+          var p = pasos[i];
+          /* Los m³ van ARRIBA de la barra y el $ ADENTRO, en blanco.
+             Antes iban los dos arriba y en la barra más alta el $ se salía del
+             canvas: quedaba invisible justo en el tramo más importante. */
+          ctx.fillStyle = p.tipo==='tot' ? '#222' : p.col;
+          ctx.font = '700 10px system-ui';
+          var t = (p.tipo==='tot' || Math.round(p.v)===0 ? '' : (p.v<0?'−':'+')) + gN(Math.abs(p.v));
+          ctx.fillText(t, bar.x, Math.max(bar.y - 4, 11));
+          var altoBarra = Math.abs(bar.base - bar.y);
+          if (altoBarra >= 26 && Math.abs(p.v) > 0){
+            ctx.fillStyle = '#fff'; ctx.font = '700 9px system-ui';
+            ctx.fillText(gPlata(Math.abs(p.v)*D.tarifa), bar.x, bar.y + 13);
+          }
+        });
+        ctx.restore();
+      }
+    }]
+  });
+
+  var t = document.getElementById('gest-casc-tabla');
+  if (t) t.innerHTML =
+    '<div class="table-wrap"><table><thead><tr>' +
+    '<th>Tramo de la cascada</th><th style="text-align:right;">Horas</th>' +
+    '<th style="text-align:right;">m³</th><th style="text-align:right;">$</th>' +
+    '<th style="text-align:right;">% del potencial</th></tr></thead><tbody>' +
+    pasos.map(function(p, i){
+      var hrs = [c.hrsDisp, c.hpPropia, c.hpInducida, c.hpExterna, c.hrsTrab, c.hrsTrab][i];
+      var cls = p.tipo === 'tot' ? ' style="background:#e8f5ee;font-weight:700;"' : '';
+      var btn = (p.cl && Math.abs(p.v) > 0)
+        ? ' <button onclick="gestVerDetalle(&quot;'+p.cl+'&quot;)" title="Ver el detalle día por día"' +
+          ' style="border:1px solid '+p.col+';background:#fff;color:'+p.col+';border-radius:4px;' +
+          'font-size:9px;font-weight:700;padding:1px 7px;cursor:pointer;margin-left:6px;">&#128269; ver detalle</button>'
+        : '';
+      return '<tr'+cls+'><td style="color:'+p.col+';font-weight:600;">'+p.l+
+             ' <span style="color:#999;font-weight:400;">'+p.ay+'</span>' + btn + '</td>' +
+             '<td style="text-align:right;">'+gN(hrs,1)+'</td>' +
+             '<td style="text-align:right;">'+((p.tipo==='tot'||Math.round(p.v)===0)?'':(p.v<0?'−':'+'))+gN(Math.abs(p.v))+'</td>' +
+             '<td style="text-align:right;">'+gPlata(Math.abs(p.v)*D.tarifa)+'</td>' +
+             '<td style="text-align:right;">'+(c.pot>0?gN(Math.abs(p.v)/c.pot*100,1)+'%':'—')+'</td></tr>';
+    }).join('') + '</tbody></table></div>' +
+    '<div style="font-size:9px;color:#888;margin-top:5px;">La cascada mira solo el <b>Procesado</b>, que es donde salen los m³ que se facturan. ' +
+    'El bloque de pérdida inducida de más abajo cubre los cuatro procesos, por eso sus horas son mayores.</div>';
+}
+
+
+/* --- BLOQUE 3: el cuello de botella y las máquinas críticas ---
+   Ojo con la distinción, que la primera versión tenía mal:
+     · CUELLO   = el que hace esperar a los demás. Restricción real, hoy.
+     · CRÍTICA  = el proceso con una sola máquina. No frena a nadie, pero si se cae
+                  para la faena entera. Es riesgo, no restricción.
+     · El % contra el estándar es un dato de RENDIMIENTO. Sobre 100% significa que
+       rinde por encima de la referencia del contrato, NO que esté exigido. */
+function gestPintaCuello(D){
+  var el = document.getElementById('gest-cuello');
+  if (!el) return;
+  if (D.sinTramo){
+    el.innerHTML = '<div style="padding:12px;background:#fdf3f2;border:1px solid #f2c9c4;border-radius:5px;color:#c0392b;font-size:11px;">Sin tramo VMA resuelto no hay est&aacute;ndar por proceso, y sin eso no se puede medir el rendimiento de cada eslab&oacute;n. Las horas de espera provocadas de m&aacute;s abajo s&iacute; son reales.</div>';
+    return;
+  }
+  var C = D.cuello, cu = C.cuello;
+  if (!D.cadena || !D.cadena.filter(function(p){ return !p.vacio; }).length){
+    el.innerHTML = '<div style="color:#8b949e;padding:10px;">Sin horas por proceso para este mes.</div>';
+    return;
+  }
+
+  /* ---- 1) El veredicto del cuello, por evidencia de terreno ---- */
+  var frase, colV;
+  if (cu){
+    colV = '#c0392b';
+    frase = '<b>El cuello es el ' + cu.proceso + '</b>: le provoca <b>' + gN(cu.provoca,1) +
+            ' hrs</b> de espera a los otros procesos. Eso no es una estimaci&oacute;n contra una tabla &mdash; ' +
+            'son horas que las otras m&aacute;quinas pasaron detenidas esper&aacute;ndolo.';
+    if (C.valorHora > 0)
+      frase += ' Cada hora que se le devuelva vale <b>' + gPlata(C.valorHora) + '</b>.';
+  } else {
+    colV = '#27ae60';
+    frase = '<b>Este mes ning&uacute;n proceso est&aacute; frenando a los otros.</b> No hay horas de espera ' +
+            'provocadas entre eslabones, as&iacute; que la cadena no tiene un cuello de botella: ' +
+            'lo que se pierde son detenciones propias de cada m&aacute;quina, no esperas.';
+  }
+
+  var h =
+    '<div style="padding:10px 12px;border-left:4px solid '+colV+';background:#fafafa;border-radius:0 4px 4px 0;font-size:12px;margin-bottom:10px;">' +
+      frase +
+    '</div>';
+
+  /* ---- 2) Máquinas críticas: una sola, sin reemplazo ---- */
+  if (D.criticas && D.criticas.length){
+    h += '<div style="padding:9px 11px;border-left:4px solid #e67e22;background:#fffaf3;border-radius:0 4px 4px 0;font-size:11.5px;margin-bottom:10px;">' +
+      '<b>&#9888; M&aacute;quinas cr&iacute;ticas &mdash; una sola, sin reemplazo.</b> ' +
+      'No frenan la cadena hoy, pero si se caen no hay con qu&eacute; taparlas. Es <b>riesgo</b>, no restricci&oacute;n:' +
+      '<ul style="margin:5px 0 0;padding-left:18px;">' +
+      D.criticas.map(function(k){
+        return '<li><b>' + k.proceso + '</b> &mdash; ' + gN(k.hrs,1) + ' hrs este mes. ' +
+               'Un d&iacute;a detenida pone en juego <b>' + gPlata(k.costoDia) + '</b> (' + gN(k.m3Dia) + ' m&sup3;/d&iacute;a de la faena)' +
+               (k.colchon
+                 ? ', aunque la faena aguanta un rato con la madera que ya est&aacute; en cancha.'
+                 : ', y ah&iacute; la faena para al tiro: no hay colch&oacute;n.') +
+               (k.hp > 0 ? ' Perdi&oacute; ' + gN(k.hp,1) + ' hrs este mes.' : '') + '</li>';
+      }).join('') + '</ul></div>';
+  }
+
+  /* ---- 3) La cadena, con el rendimiento de cada eslabón ---- */
+  h += '<div style="font-size:10px;color:#666;margin-bottom:8px;">' +
+    'Los cuatro procesos mueven la <b>misma</b> madera, as&iacute; que comparar su producci&oacute;n no dice nada. ' +
+    'Abajo va el <b>rendimiento de cada uno contra el est&aacute;ndar del contrato</b> ' +
+    '(m&sup3; de la faena / (horas &times; est&aacute;ndar de su m&aacute;quina)). ' +
+    '<b>Sobre 100% significa que rinde por encima de la referencia del contrato, no que est&eacute; exigido</b>: ' +
+    'el est&aacute;ndar es una cifra contractual, no el techo de la m&aacute;quina.' +
+    '</div>';
+
+  var maxUtil = 0;
+  D.cadena.forEach(function(p){ if (p.util > maxUtil) maxUtil = p.util; });
+
+  h += '<div style="display:grid;grid-template-columns:repeat(' + D.cadena.length + ',1fr);gap:8px;margin-bottom:10px;">';
+  D.cadena.forEach(function(p, i){
+    var esCuello = !!(cu && p.proceso === cu.proceso);
+    var esUnica  = (!p.vacio && p.nEq === 1);
+    var col = p.vacio ? '#bbb' : (p.util >= 1 ? '#27ae60' : (p.util >= 0.85 ? '#e67e22' : '#c0392b'));
+    var ancho = maxUtil > 0 ? Math.min(p.util/maxUtil*100, 100) : 0;
+    var borde = esCuello ? '2px solid #c0392b' : (esUnica ? '2px solid #e67e22' : '1px solid #ddd');
+    var fondo = esCuello ? '#fdf3f2' : (esUnica ? '#fffaf3' : '#fff');
+    h += '<div style="border:' + borde + ';border-radius:6px;padding:8px 10px;background:' + fondo + ';">' +
+         '<div style="font-size:10px;font-weight:700;color:#444;">' +
+           (i > 0 ? '<span style="color:#bbb;">&#10230;</span> ' : '') + p.proceso +
+           (esCuello ? ' <span style="color:#c0392b;">&#9679; CUELLO</span>' : '') +
+           (esUnica && !esCuello ? ' <span style="color:#e67e22;">&#9888; &Uacute;NICA</span>' : '') +
+         '</div>';
+    if (p.vacio){
+      h += '<div style="font-size:11px;color:#999;margin-top:6px;">Sin datos este mes</div></div>';
+      return;
+    }
+    h += '<div style="font-size:20px;font-weight:800;color:' + col + ';margin-top:2px;">' + gN(p.util*100,0) + '%</div>' +
+         '<div style="font-size:8.5px;color:#999;margin-top:-2px;">del est&aacute;ndar del contrato</div>' +
+         '<div style="height:6px;background:#eee;border-radius:3px;margin:4px 0 6px;overflow:hidden;">' +
+           '<div style="height:100%;width:' + ancho.toFixed(1) + '%;background:' + col + ';"></div></div>' +
+         '<div style="font-size:9px;color:#777;line-height:1.5;">' +
+           p.nEq + (p.nEq === 1 ? ' m&aacute;quina' : ' m&aacute;quinas') + ' &middot; ' + gN(p.hrs,1) + ' hrs<br>' +
+           'real ' + gN(p.real,1) + ' vs std ' + gN(p.std,1) + ' m&sup3;/hr<br>' +
+           (p.provoca > 0
+             ? '<b style="color:#c0392b;">detiene a otros ' + gN(p.provoca,1) + ' hrs</b>'
+             : 'no detiene a nadie') +
+         '</div></div>';
+  });
+  h += '</div>';
+
+  /* ---- 4) La tabla con el detalle ---- */
+  h += '<div class="table-wrap"><table><thead><tr>' +
+    '<th>Proceso</th><th style="text-align:right;">M&aacute;q.</th><th style="text-align:right;">Hrs trab.</th>' +
+    '<th style="text-align:right;">Hrs perd.</th><th style="text-align:right;">m&sup3;/hr real</th>' +
+    '<th style="text-align:right;">m&sup3;/hr est&aacute;ndar</th><th style="text-align:right;">% del est&aacute;ndar</th>' +
+    '<th style="text-align:right;">Detiene a otros</th><th style="text-align:right;">Lo detienen</th>' +
+    '</tr></thead><tbody>';
+  D.cadena.forEach(function(p){
+    if (p.vacio){
+      h += '<tr><td style="color:#999;">' + p.proceso + '</td><td colspan="8" style="color:#999;">sin datos este mes</td></tr>';
+      return;
+    }
+    var esCuello = !!(cu && p.proceso === cu.proceso);
+    var col = p.util >= 1 ? '#27ae60' : (p.util >= 0.85 ? '#e67e22' : '#c0392b');
+    h += '<tr' + (esCuello ? ' style="background:#fdf3f2;font-weight:600;"' : '') + '>' +
+      '<td>' + p.proceso + (esCuello ? ' &#9679; cuello' : '') + (p.nEq === 1 ? ' <span style="color:#e67e22;" title="Una sola máquina: no hay reemplazo">&#9888;</span>' : '') + '</td>' +
+      '<td style="text-align:right;">' + p.nEq + '</td>' +
+      '<td style="text-align:right;">' + gN(p.hrs,1) + '</td>' +
+      '<td style="text-align:right;">' + gN(p.hp,1) + '</td>' +
+      '<td style="text-align:right;">' + gN(p.real,1) + '</td>' +
+      '<td style="text-align:right;color:#888;">' + gN(p.std,1) + '</td>' +
+      '<td style="text-align:right;color:' + col + ';font-weight:700;">' + gN(p.util*100,0) + '%</td>' +
+      '<td style="text-align:right;color:' + (p.provoca > 0 ? '#c0392b' : '#999') + ';">' +
+        (p.provoca > 0 ? gN(p.provoca,1) + ' hrs' : '&mdash;') + '</td>' +
+      '<td style="text-align:right;color:' + (p.sufre > 0 ? '#e67e22' : '#999') + ';">' +
+        (p.sufre > 0 ? gN(p.sufre,1) + ' hrs' : '&mdash;') + '</td></tr>';
+  });
+  h += '</tbody></table></div>';
+
+  /* ---- 5) Qué hacer con esto ---- */
+  if (cu && C.valorHora > 0){
+    h += '<div style="margin-top:9px;padding:8px 10px;background:#f4f9f6;border:1px solid #d6e9de;border-radius:5px;font-size:11px;">' +
+      '<b>Qu&eacute; hacer con esto:</b> destrabar el <b>' + cu.proceso + '</b>. Cada hora que se le devuelva vale <b>' +
+      gPlata(C.valorHora) + '</b>, porque hoy hay m&aacute;quinas paradas esper&aacute;ndolo. ' +
+      (cu.hp > 0
+        ? 'Perdi&oacute; <b>' + gN(cu.hp,1) + ' hrs</b> este mes: recuperarlas vale <b>' +
+          gPlata(cu.hp * C.valorHora) + '</b>.'
+        : '') + '</div>';
+  }
+  h += '<div style="font-size:9px;color:#999;margin-top:5px;">' +
+       'Las causas compartidas ("Volteo/Madereo") se imputan al primer proceso nombrado. ' +
+       'El <b>cuello</b> sale de las horas de espera reales entre procesos; el <b>%</b> es solo rendimiento contra el contrato.</div>';
+
+  el.innerHTML = h;
+}
+
+/* --- BLOQUE 4a: pérdida inducida --- */
+function gestPintaInducida(D){
+  var el = document.getElementById('gest-inducida');
+  if (!el) return;
+  if (!D.inducida.length){
+    el.innerHTML = '<div style="color:#8b949e;padding:10px;">Ninguna hora perdida de este mes quedó clasificada como espera de otro proceso.</div>';
+    return;
+  }
+  el.innerHTML =
+    '<div style="font-size:10px;color:#666;margin-bottom:6px;">La pérdida se anota en la máquina detenida, pero el problema está en otra. La flecha dice quién le pega a quién.</div>' +
+    '<div class="table-wrap"><table><thead><tr><th>Quién falla</th><th></th><th>A quién detiene</th>' +
+    '<th style="text-align:right;">Hrs</th><th style="text-align:right;">m³</th><th style="text-align:right;">$</th></tr></thead><tbody>' +
+    D.inducida.map(function(o){
+      return '<tr><td style="font-weight:600;color:#c0392b;">'+o.culpa+'</td>' +
+             '<td style="text-align:center;color:#e67e22;font-weight:700;">&#10230;</td>' +
+             '<td>'+o.victima+' <span style="color:#999;">('+o.nEq+' máq.)</span></td>' +
+             '<td style="text-align:right;">'+gN(o.hrs,1)+'</td>' +
+             '<td style="text-align:right;">'+gN(o.m3)+'</td>' +
+             '<td style="text-align:right;font-weight:700;">'+gPlata(o.plata)+'</td></tr>';
+    }).join('') +
+    '<tr class="gr"><td colspan="3">Total inducido</td><td style="text-align:right;">'+gN(D.hInducida,1)+'</td>' +
+    '<td style="text-align:right;">'+gN(D.inducida.reduce(function(s,o){return s+o.m3;},0))+'</td>' +
+    '<td style="text-align:right;">'+gPlata(D.inducida.reduce(function(s,o){return s+o.plata;},0))+'</td></tr>' +
+    '</tbody></table></div>';
+}
+
+/* --- BLOQUE 3b: fuga silenciosa del ritmo --- */
+function gestPintaFuga(D){
+  var el = document.getElementById('gest-fuga');
+  if (!el) return;
+  if (D.sinTramo){ el.innerHTML = '<div style="padding:12px;background:#fdf3f2;border:1px solid #f2c9c4;border-radius:5px;color:#c0392b;font-size:11px;">Sin tramo VMA resuelto para este mes: no hay est&aacute;ndar ni tarifa con que calcular esto. Las horas de abajo son reales, la valorizaci&oacute;n no.</div>'; return; }
+  var conStd = D.equipos.filter(function(e){ return e.std > 0 && e.hrs > 0; });
+  if (!conStd.length){ el.innerHTML = '<div style="color:#8b949e;padding:10px;">Sin estándar resuelto para los equipos de este mes.</div>'; return; }
+  /* La comparación se hace DENTRO del Procesado: ahí se cuentan los m³ que se
+     facturan. Sumar la fuga de los cuatro procesos y valorizarla sería contar la
+     misma madera cuatro veces. */
+  var gana = D.fugaProcM3 > D.hpProcM3;
+  el.innerHTML =
+    '<div style="font-size:10px;padding:6px 8px;border-radius:4px;margin-bottom:6px;background:' +
+      (gana?'#fdecea':'#eef6f1') + ';color:' + (gana?'#c0392b':'#1a6b3a') + ';font-weight:600;">' +
+      'En el <b>Procesado</b>: ' +
+      (gana ? '&#9888; la fuga de ritmo (' + gN(D.fugaProcM3) + ' m³ · ' + gPlata(D.fugaProcM3*D.tarifa) +
+              ') pesa M&Aacute;S que todas las horas perdidas juntas (' + gN(D.hpProcM3) + ' m³ · ' + gPlata(D.hpProcM3*D.tarifa) + ').'
+            : 'las horas perdidas (' + gN(D.hpProcM3) + ' m³ · ' + gPlata(D.hpProcM3*D.tarifa) +
+              ') pesan más que la fuga de ritmo (' + gN(D.fugaProcM3) + ' m³ · ' + gPlata(D.fugaProcM3*D.tarifa) + ').') +
+    '</div>' +
+    '<div style="font-size:9px;color:#888;margin-bottom:6px;">Abajo van los cuatro procesos para diagnóstico. Los m³ de cada proceso <b>no se suman entre s&iacute;</b>: la faena vende la madera una sola vez.</div>' +
+    '<div class="table-wrap"><table><thead><tr><th>Equipo</th><th>Proceso</th>' +
+    '<th style="text-align:right;">Hrs</th><th style="text-align:right;">Real</th>' +
+    '<th style="text-align:right;">Estándar</th><th style="text-align:right;">% Std</th>' +
+    '<th style="text-align:right;">Fuga m³</th><th style="text-align:right;">$</th></tr></thead><tbody>' +
+    conStd.map(function(e){
+      var col = e.pctStd >= 1 ? '#27ae60' : (e.pctStd >= 0.85 ? '#e67e22' : '#c0392b');
+      return '<tr><td style="font-weight:600;">'+e.equipo+'</td><td>'+e.proceso+'</td>' +
+             '<td style="text-align:right;">'+gN(e.hrs,1)+'</td>' +
+             '<td style="text-align:right;">'+gN(e.real,1)+'</td>' +
+             '<td style="text-align:right;color:#888;">'+gN(e.std,1)+'</td>' +
+             '<td style="text-align:right;color:'+col+';font-weight:700;">'+gN(e.pctStd*100,0)+'%</td>' +
+             '<td style="text-align:right;">'+(e.fugaM3>0?gN(e.fugaM3):'—')+'</td>' +
+             '<td style="text-align:right;font-weight:600;">'+(e.fugaM3>0?gPlata(e.fugaM3*D.tarifa):'—')+'</td></tr>';
+    }).join('') +
+    '<tr class="gr"><td colspan="6">Suma de las brechas por proceso (no acumulable)</td>' +
+    '<td style="text-align:right;">'+gN(D.fugaTotM3)+'</td>' +
+    '<td style="text-align:right;">'+gPlata(D.fugaTotM3*D.tarifa)+'</td></tr></tbody></table></div>';
+}
+
+/* --- BLOQUE 3c: ranking de operadores --- */
+function gestPintaOper(D){
+  var el = document.getElementById('gest-oper');
+  if (!el) return;
+  if (D.sinTramo){ el.innerHTML = '<div style="padding:12px;background:#fdf3f2;border:1px solid #f2c9c4;border-radius:5px;color:#c0392b;font-size:11px;">Sin tramo VMA resuelto para este mes: no hay est&aacute;ndar ni tarifa con que calcular esto. Las horas de abajo son reales, la valorizaci&oacute;n no.</div>'; return; }
+  if (!D.oper.length){ el.innerHTML = '<div style="color:#8b949e;padding:10px;">Sin operadores de Procesado en este mes.</div>'; return; }
+  el.innerHTML =
+    '<div style="font-size:10px;color:#666;margin-bottom:6px;">El índice va contra el estándar del <b>tramo VMA de cada día</b>, no contra el m³/hr crudo: comparar m³/hr entre tramos distintos es injusto. La consistencia mide cuánto oscila día a día — un operador parejo al 95% vale más que uno que va de 60% a 130%.</div>' +
+    '<div class="table-wrap"><table><thead><tr><th style="width:4%">#</th><th>Operador</th><th>Equipo(s)</th>' +
+    '<th style="text-align:right;">Días</th><th style="text-align:right;">Hrs</th>' +
+    '<th style="text-align:right;">m³/hr</th><th style="text-align:right;">Índice vs su estándar</th>' +
+    '<th style="text-align:right;">Consistencia</th></tr></thead><tbody>' +
+    D.oper.map(function(o, i){
+      var col = o.idx >= 1 ? '#27ae60' : (o.idx >= 0.85 ? '#e67e22' : '#c0392b');
+      var cons = o.cv <= 0.15 ? {t:'Pareja', c:'#27ae60'} :
+                 (o.cv <= 0.30 ? {t:'Media', c:'#e67e22'} : {t:'Irregular', c:'#c0392b'});
+      return '<tr><td>'+(i+1)+'</td><td style="font-weight:600;">'+o.oper+'</td>' +
+             '<td style="color:#666;">'+o.equipos+'</td>' +
+             '<td style="text-align:right;">'+o.nDias+'</td>' +
+             '<td style="text-align:right;">'+gN(o.hrs,1)+'</td>' +
+             '<td style="text-align:right;">'+gN(o.m3hr,1)+'</td>' +
+             '<td style="text-align:right;color:'+col+';font-weight:700;">'+gN(o.idx*100,0)+'%</td>' +
+             '<td style="text-align:right;color:'+cons.c+';">'+cons.t+' <span style="color:#aaa;">(±'+gN(o.cv*100,0)+'%)</span></td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+/* --- BLOQUE 3d: pareto en $ --- */
+function gestPintaPareto(D){
+  var top = D.sinTramo ? [] : D.pareto.slice(0, 10);
+  killChart('gestPareto');
+  var cv = document.getElementById('gestParetoChart');
+  if (cv && top.length) CH['gestPareto'] = new Chart(cv, {
+    type:'bar',
+    data:{labels: top.map(function(c){ return c.causa.length>26 ? c.causa.substring(0,24)+'…' : c.causa; }),
+          datasets:[{label:'$ perdidos', data: top.map(function(c){ return Math.round(c.plata); }),
+                     backgroundColor: top.map(function(c){ return GEST_CLASE_TXT[c.clase].c; }),
+                     borderRadius:3}]},
+    options:{indexAxis:'y', responsive:true, maintainAspectRatio:false,
+      plugins:{legend:{display:false},
+        tooltip:{callbacks:{label:function(ctx){
+          var c = top[ctx.dataIndex];
+          return gPlata(c.plata) + ' · ' + gN(c.m3) + ' m³ · ' + gN(c.hrs,1) + ' hrs';
+        }}}},
+      scales:{x:{ticks:{font:{size:9}, callback:function(v){ return gPlata(v); }}, grid:{color:'rgba(0,0,0,.06)'}},
+              y:{ticks:{font:{size:9}}, grid:{display:false}}}}
+  });
+
+  var el = document.getElementById('gest-pareto');
+  if (!el) return;
+  if (D.sinTramo){ el.innerHTML = '<div style="padding:12px;background:#fdf3f2;border:1px solid #f2c9c4;border-radius:5px;color:#c0392b;font-size:11px;">Sin tramo VMA resuelto para este mes: no hay est&aacute;ndar ni tarifa con que calcular esto. Las horas de abajo son reales, la valorizaci&oacute;n no.</div>'; return; }
+  // el orden por horas vs el orden por plata: ahí está la gracia
+  var posHrs = {}; D.paretoHrs.forEach(function(c, i){ posHrs[c.causa] = i+1; });
+  var cambios = top.filter(function(c, i){ return Math.abs((posHrs[c.causa]||0) - (i+1)) >= 2; });
+  el.innerHTML =
+    (cambios.length ? '<div style="font-size:10px;color:#c0392b;margin-top:6px;">&#9888; El ranking cambia al mirarlo en $: ' +
+      cambios.slice(0,3).map(function(c, i){
+        var iPlata = top.indexOf(c)+1;
+        return '"'+c.causa+'" es #'+iPlata+' en plata pero #'+posHrs[c.causa]+' en horas';
+      }).join(' · ') + '.</div>' : '') +
+    '<div class="table-wrap" style="margin-top:6px;max-height:190px;overflow-y:auto;"><table><thead><tr>' +
+    '<th>Causa</th><th>Tipo</th><th style="text-align:right;">Hrs</th>' +
+    '<th style="text-align:right;">m³</th><th style="text-align:right;">$</th></tr></thead><tbody>' +
+    top.map(function(c){
+      return '<tr><td>'+c.causa+'</td>' +
+             '<td style="color:'+GEST_CLASE_TXT[c.clase].c+';font-size:9px;">'+GEST_CLASE_TXT[c.clase].t+'</td>' +
+             '<td style="text-align:right;">'+gN(c.hrs,1)+'</td>' +
+             '<td style="text-align:right;">'+gN(c.m3)+'</td>' +
+             '<td style="text-align:right;font-weight:700;">'+gPlata(c.plata)+'</td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+/* --- BLOQUE 3e: crónico o evento --- */
+function gestPintaCronico(D){
+  var el = document.getElementById('gest-cronico');
+  if (!el) return;
+  var c = D.cronico;
+  if (!c.nDias){ el.innerHTML = '<div style="color:#8b949e;padding:10px;">Sin días con horas perdidas.</div>'; return; }
+  var ver = {evento:  {t:'EVENTO puntual', c:'#e67e22',
+                       d:'La pérdida se concentra en pocos días. Se ataca con un caso concreto, no con un plan de mejora.'},
+             cronico: {t:'CRÓNICO', c:'#c0392b',
+                       d:'La pérdida gotea todos los días. No hay un culpable puntual: es rutina, y necesita cambio de método.'},
+             mixto:   {t:'MIXTO', c:'#8e44ad',
+                       d:'Hay días malos que pesan, pero también goteo de fondo.'}}[c.veredicto];
+  el.innerHTML =
+    '<div style="font-size:22px;font-weight:800;color:'+ver.c+';">'+ver.t+'</div>' +
+    '<div style="font-size:10px;color:#666;margin:4px 0 10px;">'+ver.d+'</div>' +
+    '<div style="font-size:11px;">Los <b>3 peores días</b> concentran el <b style="color:'+ver.c+'">' +
+      gN(c.pctTop3*100,0) + '%</b> de las horas perdidas del mes.</div>' +
+    '<div style="font-size:11px;margin-top:3px;">Hacen falta <b>'+c.n80+' de '+c.nDias+' días</b> (' +
+      gN(c.pctDias80*100,0) + '%) para juntar el 80%.</div>' +
+    '<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>Peores días</th>' +
+    '<th style="text-align:right;">Hrs</th><th style="text-align:right;">m³</th>' +
+    '<th style="text-align:right;">$</th></tr></thead><tbody>' +
+    c.dias.slice(0,5).map(function(d){
+      var m3 = d.hrs * D.casc.std;
+      return '<tr><td>'+d.fecha+'</td><td style="text-align:right;">'+gN(d.hrs,1)+'</td>' +
+             '<td style="text-align:right;">'+gN(m3)+'</td>' +
+             '<td style="text-align:right;">'+gPlata(m3*D.tarifa)+'</td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+/* --- BLOQUE 3f: combustible cruzado --- */
+function gestPintaDiesel(D){
+  var el = document.getElementById('gest-diesel');
+  if (!el) return;
+  if (!D.diesel.length){
+    el.innerHTML = '<div style="color:#8b949e;padding:10px;">Sin datos de combustible para esta faena y mes (hoja BaseCombustible).</div>';
+    return;
+  }
+  var alerta = D.diesel.filter(function(x){ return x.alerta; });
+  el.innerHTML =
+    '<div style="font-size:10px;color:#666;margin-bottom:6px;">Consumo normal + producción baja = <b>máquina encendida sin producir</b>. Esa hora no aparece como hora perdida en ninguna planilla.</div>' +
+    (alerta.length ? '<div style="font-size:11px;padding:6px 8px;border-radius:4px;margin-bottom:6px;background:#fdecea;color:#c0392b;font-weight:600;">&#9888; ' +
+      alerta.map(function(x){ return x.equipo; }).join(', ') +
+      (alerta.length===1?' quema':' queman') + ' combustible de máquina trabajando, pero produce' + (alerta.length===1?'':'n') + ' bajo el estándar.</div>' : '') +
+    '<div class="table-wrap"><table><thead><tr><th>Equipo</th><th>Proceso</th>' +
+    '<th style="text-align:right;">Litros</th><th style="text-align:right;">Hrs</th>' +
+    '<th style="text-align:right;">Lts/hr</th><th style="text-align:right;">Std lts/hr</th>' +
+    '<th style="text-align:right;">% litros</th><th style="text-align:right;">% m³</th>' +
+    '<th style="text-align:right;">Lts/m³</th><th></th></tr></thead><tbody>' +
+    D.diesel.map(function(x){
+      var col = x.alerta ? '#c0392b' : '#222';
+      return '<tr'+(x.alerta?' style="background:#fdf3f2;"':'')+'>' +
+             '<td style="font-weight:600;color:'+col+';">'+x.equipo+'</td><td>'+x.proceso+'</td>' +
+             '<td style="text-align:right;">'+gN(x.lts)+'</td>' +
+             '<td style="text-align:right;">'+gN(x.hrs,1)+'</td>' +
+             '<td style="text-align:right;">'+gN(x.ltsHr,1)+'</td>' +
+             '<td style="text-align:right;color:#888;">'+gN(x.stdLtsHr,1)+'</td>' +
+             '<td style="text-align:right;">'+(x.pctLts>0?gN(x.pctLts*100,0)+'%':'—')+'</td>' +
+             '<td style="text-align:right;">'+(x.pctStd>0?gN(x.pctStd*100,0)+'%':'—')+'</td>' +
+             '<td style="text-align:right;">'+(x.ltsM3>0?gN(x.ltsM3,2):'—')+'</td>' +
+             '<td style="text-align:center;">'+(x.alerta?'&#9888;':'')+'</td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+/* --- BLOQUE 4: alertas --- */
+function gestPintaAlertas(D){
+  var el = document.getElementById('gest-alertas');
+  if (!el) return;
+  if (!D.alertas.length){
+    el.innerHTML = '<div style="color:#1a6b3a;padding:10px;">Sin alertas: ninguna regla se disparó este mes.</div>';
+    return;
+  }
+  var col = {alta:'#c0392b', media:'#e67e22', baja:'#2471a3'};
+  var ico = {alta:'&#128308;', media:'&#128992;', baja:'&#128309;'};
+  el.innerHTML = D.alertas.map(function(a){
+    return '<div style="border-left:4px solid '+col[a.n]+';background:#fafafa;padding:7px 10px;margin-bottom:6px;border-radius:0 4px 4px 0;">' +
+           '<div style="font-size:11.5px;font-weight:700;color:'+col[a.n]+';">'+ico[a.n]+' '+a.t+'</div>' +
+           '<div style="font-size:10.5px;color:#444;margin-top:2px;">'+a.d+'</div></div>';
+  }).join('');
+}
+
+/* --- BLOQUE 5: gestión --- */
+function gestPintaGestion(D, P){
+  var el = document.getElementById('gest-acciones');
+  if (el){
+    if (!D.acciones.length) el.innerHTML = '<div style="color:#8b949e;padding:10px;">Sin acciones que proponer: no hay pérdida valorizada este mes.</div>';
+    else el.innerHTML =
+      '<div style="font-size:10px;color:#666;margin-bottom:8px;">Las tres cosas que más plata recuperan, en orden. Cada una dice contra qué se mide el mes que viene.</div>' +
+      D.acciones.map(function(a, i){
+        return '<div style="display:flex;gap:10px;align-items:flex-start;padding:9px 10px;margin-bottom:6px;background:#f4f9f6;border:1px solid #d6e9de;border-radius:5px;">' +
+               '<div style="font-size:20px;font-weight:800;color:#1a6b3a;min-width:26px;">'+(i+1)+'</div>' +
+               '<div style="flex:1;">' +
+                 '<div style="font-size:12px;font-weight:700;color:#222;">'+a.txt+'</div>' +
+                 '<div style="font-size:10px;color:#666;margin-top:2px;">Se mide con: '+a.metrica+'. '+a.comoSeMide+'</div>' +
+               '</div>' +
+               '<div style="text-align:right;min-width:110px;">' +
+                 '<div style="font-size:15px;font-weight:800;color:#1a6b3a;">'+gPlata(a.plata)+'</div>' +
+                 '<div style="font-size:9px;color:#888;">'+gN(a.m3)+' m³ recuperables</div>' +
+               '</div></div>';
+      }).join('');
+  }
+
+  var sg = document.getElementById('gest-seguimiento');
+  if (!sg) return;
+  var guardadas = null;
+  try {
+    var todo = JSON.parse(localStorage.getItem('GEST_ACCIONES') || '{}');
+    guardadas = todo[D.faena + '|' + (P ? P.mes : '')] || null;
+  } catch(e){}
+  if (!guardadas || !guardadas.length){
+    sg.innerHTML = '<div style="font-size:10px;color:#888;border-top:1px dashed #ddd;padding-top:8px;">' +
+      'Todavía no hay acciones guardadas del mes anterior con que comparar. Abre la ficha de ' +
+      (P ? P.mesTxt : 'el mes anterior') + ' una vez y vuelve: desde ahí queda el seguimiento.</div>';
+    return;
+  }
+  sg.innerHTML =
+    '<div class="ct" style="border-top:1px dashed #ddd;padding-top:10px;">Seguimiento &mdash; lo que la ficha propuso en ' + P.mesTxt + '</div>' +
+    '<div class="table-wrap"><table><thead><tr><th>Acción propuesta</th><th>Se medía con</th>' +
+    '<th style="text-align:right;">Entonces</th><th style="text-align:right;">Ahora</th>' +
+    '<th style="text-align:center;">¿Mejoró?</th></tr></thead><tbody>' +
+    guardadas.map(function(a){
+      var ahora = gestValorMetrica(D, a.mkey);
+      var esPct = /^eq\||^ds\|/.test(a.mkey);          // en % del estándar: subir es bueno
+      var ok = (ahora === null) ? null : (esPct ? ahora > a.valor : ahora < a.valor);
+      var fmt = function(v){ return v === null ? '—' : (esPct ? gN(v*100,0)+'%' : gN(v,1)); };
+      return '<tr><td>'+a.txt+'</td><td style="color:#666;">'+a.metrica+'</td>' +
+             '<td style="text-align:right;">'+fmt(a.valor)+'</td>' +
+             '<td style="text-align:right;">'+fmt(ahora)+'</td>' +
+             '<td style="text-align:center;font-weight:700;color:'+(ok===null?'#999':(ok?'#27ae60':'#c0392b'))+';">' +
+             (ok===null?'sin dato':(ok?'&#10004; Sí':'&#10008; No'))+'</td></tr>';
+    }).join('') + '</tbody></table></div>';
+}
+
+/* Detalle día por día de un tramo de pérdida de la cascada.
+   Solo Procesado, porque la cascada es del Procesado: si trajera los cuatro
+   procesos las horas no cuadrarían con la fila desde la que se abre. */
+function gestVerDetalle(clase){
+  var D = GEST_ULTIMO;
+  var cont = document.getElementById('gest-detalle-content');
+  var pop  = document.getElementById('gest-detalle-popup');
+  if (!D || !cont || !pop) return;
+
+  var rows = (D.perd || []).filter(function(r){
+    return r.clase === clase && /procesad/i.test(r.proceso);
+  }).sort(function(a,b){ return b.hrs - a.hrs; });
+
+  var std = D.casc.std, tarifa = D.tarifa;
+  var totH = 0; rows.forEach(function(r){ totH += r.hrs; });
+  var meta = GEST_CLASE_TXT[clase] || {t:clase, c:'#333'};
+
+  var h = '<div style="font-size:14px;font-weight:800;color:' + meta.c + ';margin-bottom:2px;">' +
+          meta.t + ' &mdash; detalle d&iacute;a por d&iacute;a</div>' +
+          '<div style="font-size:10.5px;color:#666;margin-bottom:10px;">' +
+            D.faena + ' &middot; ' + D.mesTxt + ' &middot; proceso <b>Procesado</b> &middot; ' +
+            rows.length + (rows.length === 1 ? ' registro' : ' registros') + ' &middot; <b>' +
+            gN(totH,1) + ' hrs</b> = ' + gN(totH*std) + ' m&sup3; = <b>' + gPlata(totH*std*tarifa) + '</b>' +
+          '</div>';
+
+  if (!rows.length){
+    cont.innerHTML = h + '<div style="color:#8b949e;padding:10px;">Sin registros de este tipo en el Procesado.</div>';
+    pop.style.display = 'flex';
+    return;
+  }
+
+  /* Resumen por equipo arriba: es lo primero que uno quiere ver */
+  var porEq = {};
+  rows.forEach(function(r){
+    var k = r.equipo;
+    if (!porEq[k]) porEq[k] = {equipo:k, hrs:0, n:0};
+    porEq[k].hrs += r.hrs; porEq[k].n++;
+  });
+  var eqs = Object.keys(porEq).map(function(k){ return porEq[k]; })
+              .sort(function(a,b){ return b.hrs - a.hrs; });
+  h += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
+    eqs.map(function(e){
+      return '<div style="border:1px solid #ddd;border-radius:6px;padding:6px 11px;background:#fafafa;">' +
+             '<div style="font-size:10px;font-weight:700;color:#333;">' + e.equipo + '</div>' +
+             '<div style="font-size:15px;font-weight:800;color:' + meta.c + ';">' + gN(e.hrs,1) + ' hrs</div>' +
+             '<div style="font-size:9px;color:#888;">' + e.n + ' evento' + (e.n===1?'':'s') + ' &middot; ' +
+               gPlata(e.hrs*std*tarifa) + '</div></div>';
+    }).join('') + '</div>';
+
+  h += '<div class="table-wrap"><table><thead><tr>' +
+    '<th>Fecha</th><th>Equipo</th><th>Causa</th>' +
+    '<th style="text-align:right;">Hrs</th><th style="text-align:right;">m&sup3;</th>' +
+    '<th style="text-align:right;">$</th>' +
+    (clase === 'inducida' ? '<th>Lo detiene</th>' : '<th>Qu&eacute; fall&oacute;</th>') +
+    '<th>Fuente</th><th>Observaci&oacute;n</th></tr></thead><tbody>';
+  rows.forEach(function(r){
+    var m3 = r.hrs * std;
+    var queFallo = (r.comp || r.queFallo)
+      ? [r.comp, r.queFallo].filter(function(x){ return x; }).join(' &mdash; ')
+      : (r.hFalla > 0 ? gN(r.hFalla,1) + ' hrs de falla de equipo' : '&mdash;');
+    h += '<tr><td>' + (r.fecha || '&mdash;') + '</td>' +
+      '<td style="font-weight:600;">' + r.equipo + '</td>' +
+      '<td>' + r.causa + '</td>' +
+      '<td style="text-align:right;font-weight:600;">' + gN(r.hrs,1) + '</td>' +
+      '<td style="text-align:right;">' + gN(m3) + '</td>' +
+      '<td style="text-align:right;font-weight:600;">' + gPlata(m3*tarifa) + '</td>' +
+      '<td style="font-size:9.5px;color:#555;">' + (clase === 'inducida' ? (r.culpa || '&mdash;') : queFallo) + '</td>' +
+      '<td style="font-size:9px;color:#888;">' + (r.fuente || '&mdash;') + '</td>' +
+      '<td style="font-size:9.5px;color:#555;max-width:260px;">' + (r.obs || '&mdash;') + '</td></tr>';
+  });
+  h += '<tr class="gr"><td colspan="3">Total</td>' +
+       '<td style="text-align:right;">' + gN(totH,1) + '</td>' +
+       '<td style="text-align:right;">' + gN(totH*std) + '</td>' +
+       '<td style="text-align:right;">' + gPlata(totH*std*tarifa) + '</td>' +
+       '<td colspan="3"></td></tr></tbody></table></div>' +
+       '<div style="font-size:9px;color:#999;margin-top:6px;">' +
+       'Los m&sup3; y los $ salen de valorizar cada hora al est&aacute;ndar del Procesador del tramo (' +
+       gN(std,1) + ' m&sup3;/hr) por la tarifa (' + gPlata(tarifa) + '/m&sup3;). ' +
+       'Fuente: hoja BaseHorasPerdUnif, que combina Mininco, la planilla y el WhatsApp.</div>';
+
+  cont.innerHTML = h;
+  pop.style.display = 'flex';
+}
+
+/* ---------- Exportar a Excel ---------- */
+function gestExportar(){
+  var D = GEST_ULTIMO;
+  if (!D || D.vacio){ alert('No hay ficha en pantalla para exportar.'); return; }
+  if (typeof XLSX === 'undefined'){ alert('Falta la librería XLSX.'); return; }
+  var wb = XLSX.utils.book_new();
+  var c = D.casc;
+
+  var resumen = [
+    ['FICHA DE GESTIÓN', D.faena, D.mesTxt],
+    ['VMA ponderado', D.vma], ['Tramo', D.tramo ? D.tramo.rango : ''],
+    ['Tarifa $/m³', D.tarifa], ['Factor reajuste', GEST_FACTOR],
+    [], ['CASCADA DE LA BRECHA (Procesado)', 'Horas', 'm³', '$'],
+    ['m³ potenciales', c.hrsDisp, c.pot, c.pot*D.tarifa],
+    ['Falla propia', c.hpPropia, -c.propia, -c.propia*D.tarifa],
+    ['Espera de otro proceso', c.hpInducida, -c.inducida, -c.inducida*D.tarifa],
+    ['Causa externa', c.hpExterna, -c.externa, -c.externa*D.tarifa],
+    ['Ritmo vs estándar', c.hrsTrab, -c.ritmo, -c.ritmo*D.tarifa],
+    ['m³ reales (cartola)', c.hrsTrab, c.reales, c.reales*D.tarifa],
+    [], ['Plata dejada sobre la mesa', '', D.casc.perdidoTot, D.platoServido]
+  ];
+  D.avisos.forEach(function(a, i){ if (i===0) resumen.push([], ['CONFIABILIDAD DEL DATO']); resumen.push([a]); });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(resumen), 'Resumen');
+
+  if (D.cadena && D.cadena.length)
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(D.cadena.map(function(p){
+      return {'Proceso':p.proceso,
+              'Es el cuello': (D.cuello.cuello && p.proceso === D.cuello.cuello.proceso) ? 'SÍ' : '',
+              'Máquina única (riesgo)': (!p.vacio && p.nEq === 1) ? 'SÍ' : '',
+              'Máquinas':p.nEq, 'Hrs trabajadas':p.hrs, 'Hrs perdidas':p.hp,
+              'm³/hr real':p.real, 'm³/hr estándar':p.std,
+              '% del estándar del contrato':p.util,
+              'Hrs que provoca a otros':p.provoca, 'Hrs que le provocan':p.sufre};
+    })), 'Cuello de botella');
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(D.inducida.map(function(o){
+    return {'Quién falla':o.culpa, 'A quién detiene':o.victima, 'Máquinas':o.nEq,
+            'Hrs':o.hrs, 'm³':o.m3, '$':o.plata};
+  })), 'Pérdida inducida');
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(D.equipos.map(function(e){
+    return {'Equipo':e.equipo, 'Proceso':e.proceso, 'Máq. estándar':e.maq, 'Días':e.dias,
+            'Hrs':e.hrs, 'Hrs perdidas':e.hp, 'Árboles':e.arb, 'm³':e.m3,
+            'm³/hr real':e.real, 'm³/hr estándar':e.std, '% del estándar':e.pctStd,
+            'Fuga ritmo m³':e.fugaM3, 'Fuga ritmo $':e.fugaM3*D.tarifa};
+  })), 'Fuga de ritmo');
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(D.oper.map(function(o){
+    return {'Operador':o.oper, 'Equipos':o.equipos, 'Días':o.nDias, 'Hrs':o.hrs,
+            'm³':o.m3, 'm³/hr':o.m3hr, 'Índice vs su estándar':o.idx, 'Variabilidad':o.cv};
+  })), 'Operadores');
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(D.pareto.map(function(x){
+    return {'Causa':x.causa, 'Tipo':GEST_CLASE_TXT[x.clase].t, 'Hrs':x.hrs, 'm³':x.m3, '$':x.plata};
+  })), 'Pareto en $');
+
+  if (D.diesel.length)
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(D.diesel.map(function(x){
+      return {'Equipo':x.equipo, 'Proceso':x.proceso, 'Litros':x.lts, 'Hrs':x.hrs,
+              'Lts/hr':x.ltsHr, 'Std lts/hr':x.stdLtsHr, '% litros':x.pctLts,
+              '% m³':x.pctStd, 'Lts/m³':x.ltsM3, 'Alerta':x.alerta ? 'SÍ' : ''};
+    })), 'Combustible');
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(
+    [['Nivel','Alerta','Detalle']].concat(D.alertas.map(function(a){ return [a.n, a.t, a.d]; }))
+  ), 'Alertas');
+
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(
+    [['#','Acción','$ recuperable','m³','Se mide con']].concat(D.acciones.map(function(a, i){
+      return [i+1, a.txt, a.plata, a.m3, a.metrica]; }))
+  ), 'Gestión');
+
+  XLSX.utils.writeFile(wb, 'Ficha_Gestion_' + D.faena.replace(/\s/g,'') + '_' + D.mes + '.xlsx');
+}
+
+/* Factor de reajuste guardado entre sesiones */
+(function(){
+  try {
+    var f = parseFloat(localStorage.getItem('GEST_FACTOR'));
+    if (isFinite(f) && f > 0){
+      GEST_FACTOR = f;
+      var el = document.getElementById('gest-factor');
+      if (el) el.value = f.toFixed(4);
+    }
+  } catch(e){}
+})();
+
 </script>
     <!-- OVERLAY FULLSCREEN GRÁFICO -->
     <div id="gx-fullscreen-overlay" onclick="if(event.target===this)cerrarGxFullscreen()">
@@ -13365,12 +15221,23 @@ document.getElementById('oee-install-close')?.addEventListener('click',()=>{
         <div id="ds-detalle-content"></div>
       </div>
     </div>
+    <!-- POPUP DETALLE DE PERDIDAS DE LA CASCADA (Ficha de Gestion) -->
+    <div id="gest-detalle-popup" onclick="if(event.target===this)this.style.display='none'"
+         style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.45);z-index:10001;justify-content:center;align-items:center;padding:20px;">
+      <div style="background:#fff;border-radius:12px;padding:18px 22px;max-width:1000px;width:96%;box-shadow:0 8px 30px rgba(0,0,0,0.3);position:relative;max-height:85vh;overflow-y:auto;">
+        <button onclick="document.getElementById('gest-detalle-popup').style.display='none'"
+                style="position:absolute;top:8px;right:10px;background:#c0392b;color:#fff;border:none;border-radius:4px;padding:3px 10px;font-size:10px;font-weight:700;cursor:pointer;">&#10005; Cerrar</button>
+        <div id="gest-detalle-content"></div>
+      </div>
+    </div>
+
 <div id="br-reloj" style="display:none;position:fixed;right:26px;bottom:22px;
   background:rgba(20,108,67,.94);color:#fff;font-size:25px;font-weight:800;letter-spacing:.06em;
   padding:9px 21px;border-radius:8px;z-index:9999;box-shadow:0 6px 18px rgba(0,0,0,.22);"></div>
 <script>
 (function(){
   function postH(){ try{ var h=Math.max(document.body.scrollHeight,document.documentElement.scrollHeight,600); parent.postMessage({__oeeHeight:h},'*'); }catch(e){} }
+  function gestRefresh(){ try{ if(typeof gestInvalidarCaches==='function') gestInvalidarCaches(); var pG=document.getElementById('panel-gest'); if(pG&&pG.style.display!=='none'&&typeof gestRender==='function') gestRender(); }catch(e){} }
   window.addEventListener('message',function(ev){
     var d=ev.data||{};
     if(d.__oeeRAW){
@@ -13401,6 +15268,7 @@ document.getElementById('oee-install-close')?.addEventListener('click',()=>{
         if(typeof applyFilters==='function') applyFilters();
         if(typeof bestAutoSelectAndUpdate==='function'){ try{bestAutoSelectAndUpdate();}catch(e){} }
         try{ if(typeof buildDashboard==='function') buildDashboard(); }catch(e){}
+        gestRefresh();
         setTimeout(postH,300);
       }catch(e){ console.warn('OEE RAW apply error',e); }
     }
@@ -13432,6 +15300,8 @@ document.getElementById('oee-install-close')?.addEventListener('click',()=>{
         var pBest=document.getElementById('panel-best'); if(pBest&&pBest.style.display!=='none'){ try{ if(typeof bestUpdate==='function') bestUpdate(); }catch(e){} }
         var pPD=document.getElementById('panel-proddia'); if(pPD&&pPD.style.display!=='none'){ try{ if(typeof buildProdDiaria==='function') buildProdDiaria(); }catch(e){} }
         var pKpi=document.getElementById('panel-kpi'); if(pKpi&&pKpi.style.display!=='none'){ try{ if(typeof setView==='function'&&typeof viewMode!=='undefined') setView(viewMode); }catch(e){} }
+        // Ficha de Gestión (v8e): sus caches dependen de RAW + datasets → invalidar y repintar si está abierta
+        gestRefresh();
         setTimeout(postH,300);
       }catch(e){ console.warn('OEE datasets apply error',e); }
     }
