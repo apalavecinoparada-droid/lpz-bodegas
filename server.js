@@ -7946,6 +7946,25 @@ app.get('/api/finanzas/eerr', auth, async(req,res)=>{
         GROUP BY 1,2,3,4,5,6,7,8`,pD)).forEach(function(r){
       push({mes:r.mes,empresa_id:r.empresa_id,faena_id:r.faena_id,tipo:'costo',linea:'compras',categoria:r.categoria,detalle:r.proveedor||'',equipo_id:r.equipo_id,equipo_nombre:r.equipo_id?((r.equipo_codigo||'')+' '+(r.equipo_nombre||'')).trim():null,monto:r.monto,n:parseInt(r.n)||0});
     });
+    // 6b) COMPRAS EN OC ABIERTAS (pendientes de cierre con DTE): no inventariables, sin AF ni diferidas. Línea aparte para que
+    //     los servicios recurrentes (leasing, alimentación, arriendos) no desaparezcan del informe mientras la OC no se cierra.
+    (await q2('oc_abiertas',`SELECT TO_CHAR(oc.fecha_emision,'YYYY-MM') AS mes,oc.empresa_id,COALESCE(d.faena_id,eq.faena_id) AS faena_id,d.equipo_id,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,COALESCE(sc.nombre,'Servicios / Gasto directo') AS categoria,pr.nombre AS proveedor,SUM(d.total_linea) AS monto,COUNT(*) AS n
+        FROM ordenes_compra oc JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id LEFT JOIN productos p ON d.producto_id=p.producto_id
+        LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,p.subcategoria_id)=sc.subcategoria_id LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
+        WHERE oc.estado NOT IN ('CERRADA','ANULADA','CANCELADA') AND oc.anulado_en IS NULL AND COALESCE(d.ingresa_bodega,false)=false AND COALESCE(oc.es_activo_fijo,false)=false AND COALESCE(oc.es_diferido,false)=false
+          AND oc.fecha_emision BETWEEN $1 AND $2 ${empresaId?'AND oc.empresa_id=$3':''}
+        GROUP BY 1,2,3,4,5,6,7,8`,pD)).forEach(function(r){
+      push({mes:r.mes,empresa_id:r.empresa_id,faena_id:r.faena_id,tipo:'costo',linea:'oc_abiertas',categoria:r.categoria,detalle:r.proveedor||'',equipo_id:r.equipo_id,equipo_nombre:r.equipo_id?((r.equipo_codigo||'')+' '+(r.equipo_nombre||'')).trim():null,monto:r.monto,n:parseInt(r.n)||0});
+    });
+    // 6c) FACTURAS MARCADAS COMO GASTO SIN OC (bandeja DTE): no tienen faena ni cargo → costo común, categoría = proveedor
+    (await q2('gastos_sin_oc',`SELECT TO_CHAR(dte.fecha_emision,'YYYY-MM') AS mes,dte.empresa_id,dte.proveedor_nombre,dte.folio,dte.tipo_dte,dte.neto,dte.observaciones
+        FROM dte_recibidos dte
+        WHERE dte.observaciones LIKE '%[GASTO SIN OC]%' AND NOT EXISTS (SELECT 1 FROM dte_oc x WHERE x.dte_id=dte.dte_id)
+          AND dte.fecha_emision BETWEEN $1 AND $2 ${empresaId?'AND dte.empresa_id=$3':''}`,pD)).forEach(function(r){
+      var mt=num(r.neto)*(String(r.tipo_dte)==='61'?-1:1);
+      var mot=(String(r.observaciones||'').match(/\[GASTO SIN OC\]\s*([^—\n]*)/)||[])[1]||'';
+      push({mes:r.mes,empresa_id:r.empresa_id,faena_id:null,tipo:'costo',linea:'gastos_sin_oc',categoria:(r.proveedor_nombre||'Proveedor')+(mot.trim()?' · '+mot.trim():''),detalle:'Folio '+r.folio+(String(r.tipo_dte)==='61'?' (NC)':''),equipo_id:null,monto:mt,n:1});
+    });
     // 7) DEPRECIACIÓN: cuota mensual de cada activo fijo (prorrateo diario), faena del activo o del cargo
     const slices=difMesesSlices(desde,hasta);
     (await q2('depreciacion',`SELECT af.*,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,COALESCE(af.faena_id,eq.faena_id) AS faena_ref FROM activos_fijos af LEFT JOIN equipos eq ON af.equipo_id=eq.equipo_id WHERE 1=1 ${empresaId?'AND af.empresa_id=$1':''}`,empresaId?[empresaId]:[])).forEach(function(a){
