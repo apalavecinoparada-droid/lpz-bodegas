@@ -691,6 +691,9 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
                  style="width:90px;padding:4px 6px;font-size:11px;border:1px solid #ccc;border-radius:4px;"></div>
         <button onclick="gestExportar()" style="background:#1a6b3a;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:10px;font-weight:600;padding:6px 12px;"
                 title="Bajar la ficha completa a Excel">&#11015; Exportar Excel</button>
+        <button id="gest-btn-chequeos" onclick="gestVerChequeos()"
+                style="background:#fff;color:#1a6b3a;border:1px solid #1a6b3a;border-radius:4px;cursor:pointer;font-size:10px;font-weight:700;padding:6px 12px;"
+                title="Revisar las observaciones de consistencia entre fuentes">&#128269; Chequeos</button>
         <div id="gest-confianza" style="font-size:9px;color:#666;margin-left:auto;padding-bottom:4px;text-align:right;max-width:420px;"></div>
       </div>
 
@@ -1519,6 +1522,7 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
         <select id="rendoper-rodal" onchange="renderRendOper()" style="background:#21262d;color:#e6edf3;border:1px solid #58a6ff;border-radius:5px;padding:4px 10px;font-size:12px;"><option value="all">Todos los rodales</option></select>
         <div style="font-size:11px;color:#8b949e;">VMA:</div>
         <select id="rendoper-vma" onchange="rendOperVmaChange()" title="VMA del d&iacute;a. La lista sale de lo que hay en el fundo y el rodal elegidos; con 'Todos los fundos' muestra todos los VMA del mes de esa faena." style="background:#21262d;color:#e6edf3;border:1px solid #58a6ff;border-radius:5px;padding:4px 10px;font-size:12px;"><option value="all">Todos los VMA</option></select>
+        <button id="rendoper-fuente-btn" onclick="rendOperFuenteToggle()" title="Con qu&eacute; hoja se reparte la producci&oacute;n entre los operadores. Por defecto usa BaseHorasTrab y, en los d&iacute;as que esa planilla no trae, rescata las horas de 'Base datos Procesador Mecaniz' (Formin). Con un clic pasa a usar SOLO BaseHorasTrab." style="background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:5px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer;margin-left:6px;">&#129534; Fuente: BHT + Formin</button>
       </div>
       <div id="rendoper-body"></div>
     </div>
@@ -2821,8 +2825,54 @@ function rendOperVmaChange(){
   renderRendOper();
 }
 
+/* La columna Índice va OCULTA por defecto (pedido de Gustavo, 10-09-2026): el
+   encabezado queda como botón y con un clic se muestra o se vuelve a esconder.
+   La elección se guarda, así que si la deja abierta sigue abierta la próxima vez. */
+var RO_VER_IDX = (function(){
+  try { return localStorage.getItem('RO_VER_IDX') === '1'; } catch(e){ return false; }
+})();
+function roToggleIdx(){
+  RO_VER_IDX = !RO_VER_IDX;
+  try { localStorage.setItem('RO_VER_IDX', RO_VER_IDX ? '1' : '0'); } catch(e){}
+  renderRendOper();
+}
+
+/* ============================================================================
+   FUENTE DE LAS HORAS CON QUE SE REPARTE LA PRODUCCION ENTRE LOS OPERADORES
+   'mix' (por defecto) = BaseHorasTrab y, en los dias que esa hoja no trae, el rescate
+                         desde "Base datos Procesador Mecaniz" (Formin). Es la regla de
+                         la casa y la que hace cuadrar el mes con la cartola.
+   'bht'               = SOLO BaseHorasTrab. Los dias que la planilla de terreno todavia
+                         no tiene quedan fuera y su produccion no se le asigna a nadie
+                         (sale listada en la nota "Faltan m3 por repartir").
+   Sirve para ver el mes con una sola fuente, sin mezcla, cuando se esta revisando la
+   planilla de terreno o discutiendo horas con Mininco.
+   NO se guarda en el cache: al recargar la App vuelve sola a 'mix'.
+   ============================================================================ */
+window.OPER_FUENTE = 'mix';
+
+function rendOperFuenteToggle(){
+  window.OPER_FUENTE = (window.OPER_FUENTE === 'bht') ? 'mix' : 'bht';
+  // rehacer OPER_DATA con la fuente nueva (bhtAplicarAOperadores se puede repetir:
+  // reconstruye los meses de BaseHorasTrab y deja intacto lo anterior a BHT_DESDE)
+  try { bhtAplicarAOperadores(); }
+  catch(e){ console.warn('[FUENTE] no se pudo rehacer OPER_DATA: ' + e.message); }
+  rendOperFuenteBtn();
+  renderRendOper();
+}
+
+function rendOperFuenteBtn(){
+  var b = document.getElementById('rendoper-fuente-btn');
+  if (!b) return;
+  var solo = (window.OPER_FUENTE === 'bht');
+  b.innerHTML = solo ? '&#129534; Fuente: solo BaseHorasTrab' : '&#129534; Fuente: BHT + Formin';
+  b.style.background  = solo ? '#1f6feb' : '#21262d';
+  b.style.borderColor = solo ? '#58a6ff' : '#30363d';
+}
+
 function renderRendOper(){
   var data = window.OPER_DATA || [];
+  rendOperFuenteBtn();
   var body = document.getElementById('rendoper-body');
   var fSel = document.getElementById('rendoper-faena').value;
   var mSel = document.getElementById('rendoper-mes').value;
@@ -2865,6 +2915,10 @@ function renderRendOper(){
     return true;
   });
   if(!rows.length){ body.innerHTML='<div style="color:#8b949e;padding:20px;">Sin datos para el filtro.</div>'; return; }
+  /* Foto de la faena+mes ANTES de los filtros de fundo / rodal / VMA: es contra esto que
+     se compara la cartola para saber qué días quedaron sin repartir (ver la nota
+     "Faltan m³ por repartir" al final de la tabla). */
+  var rowsBase = rows;
 
   /* ---- Filtros encadenados FUNDO -> RODAL --------------------------------
      Ambos vienen en el detalle diario (DET) que arma bhtAplicarAOperadores desde
@@ -3060,9 +3114,94 @@ function renderRendOper(){
     if(r.VMA>0 && r.M3>0){ o.meses[mk].VMA_sum+=r.VMA*r.M3; o.meses[mk].VMA_w+=r.M3; }
   });
 
-  var opers = Object.values(byOper).sort(function(a,b){return (b.HRS>0?b.M3/b.HRS:0)-(a.HRS>0?a.M3/a.HRS:0);});
+  var opers = Object.values(byOper);
+
+  /* ==========================================================================
+     RANKING MEDIDO (10-09-2026) — la corrección de fondo de este panel.
+
+     Antes se ordenaba por m³/hr, y esos m³ salen de REPARTIR la cartola del día
+     entre los operadores proporcional a los árboles. Si a una máquina le faltaban
+     los árboles ese día, su parte se la llevaba la otra: LOPEZ VIDAL aparecía
+     primero con 126% del estándar por los 1.237 m³ de un día que eran de la faena
+     completa. El ranking no medía rendimiento, medía a quién le tocó la fila.
+
+     Ahora se ordena por lo que se MIDE por operador, desde la hoja de Formin:
+         índice = (árboles ÷ horas de horómetro) ÷ velocidad de tabla del VMA
+     Los árboles los cuenta el computador del procesador y la velocidad de tabla
+     viene por fila, o sea ya normalizada por el VMA del rodal.
+
+     Los m³ se siguen mostrando, pero repartidos ponderando por árboles × VMA
+     (no por árboles solos), y el mes sigue cerrando en la cartola.
+     Ver [[oee-ranking-operadores]]. ========================================== */
+  (function(){
+    /* Ranking anclado en BaseHorasTrab (10-09-2026). El EQUIPO de Formin es un CUPO
+       DE CONTRATO, no la máquina: en Mec 5 cambiaron el Procesador 13 por el 08 y
+       para Mininco siguió siendo "máquina 2". BaseHorasTrab es la única fuente con
+       el operador Y la máquina real dentro del turno. Ver operMedido(). */
+    window._RENDOPER_MEDIDO = false;
+    window._RENDOPER_MOTIVO = '';
+    var mesesRO = {};
+    opers.forEach(function(o){ Object.keys(o.meses||{}).forEach(function(mk){ mesesRO[mk] = 1; }); });
+    var mesUnico = Object.keys(mesesRO).length === 1 ? Object.keys(mesesRO)[0] : null;
+    if (!mesUnico){
+      window._RENDOPER_MOTIVO = 'Con varios meses juntos no se arma el ranking medido: elige un mes.';
+      opers.sort(function(a,b){ return (b.HRS>0?b.M3/b.HRS:0)-(a.HRS>0?a.M3/a.HRS:0); });
+      return;
+    }
+    var ymRO = parseInt(mesUnico);
+    var m3Tot = 0; opers.forEach(function(o){ m3Tot += o.M3 || 0; });
+    var stdRO = null;
+    try {
+      var vmaRO = 0, wRO = 0;
+      opers.forEach(function(o){ if (o.VMA_w > 0){ vmaRO += o.VMA_sum; wRO += o.VMA_w; } });
+      var vmaM = wRO > 0 ? vmaRO/wRO : 0;
+      stdRO = (faenaDataKey && especie && vmaM > 0) ? _operStdM3hr(faenaDataKey, especie, vmaM) : null;
+    } catch(e){}
+    var med = operMedido(fSel, ymRO, m3Tot, stdRO || 0);
+    if (!med.length){
+      window._RENDOPER_MOTIVO = 'BaseHorasTrab todavía no trae este mes para esta faena.';
+      opers.sort(function(a,b){ return (b.HRS>0?b.M3/b.HRS:0)-(a.HRS>0?a.M3/a.HRS:0); });
+      return;
+    }
+    var byNom = {};
+    med.forEach(function(x){ byNom[x.oper] = x; });
+    opers.forEach(function(o){
+      var x = byNom[o.OPER];
+      if (!x) { o._sinMedir = true; return; }
+      o.ARB_M = x.arb; o.HM = x.hrs; o.TUR = x.hrs;
+      o.STDARB = x.stdArb; o.ARBHR = x.arbHr; o.IDX = x.idx;
+      o.M3 = x.m3; o.NARB = x.arb; o.HRS = x.hrs; o.EQREAL = x.equipos; o.NEQ = x.nEq;
+    });
+    /* operadores que están en BaseHorasTrab y no venían en la tabla */
+    med.forEach(function(x){
+      if (byNom[x.oper] && opers.some(function(o){ return o.OPER === x.oper; })) return;
+      opers.push({OPER:x.oper, M3:x.m3, HRS:x.hrs, NARB:x.arb, VMA_sum:0, VMA_w:0,
+                  meses:{}, DET:[], ARB_M:x.arb, HM:x.hrs, TUR:x.hrs, STDARB:x.stdArb,
+                  ARBHR:x.arbHr, IDX:x.idx, EQREAL:x.equipos, NEQ:x.nEq});
+    });
+    window._RENDOPER_MEDIDO = true;
+    opers.sort(function(a,b){ return (b.IDX||0) - (a.IDX||0); });
+  })();
 
   var html = '';
+  if(window.OPER_FUENTE === 'bht'){
+    html += '<div style="background:#eef5fd;border:1px solid #a8cdf0;border-left:6px solid #1f6feb;border-radius:8px;'
+          + 'padding:11px 14px;margin-bottom:10px;line-height:1.65;color:#14507d;">'
+          + '<div style="font-size:14px;font-weight:700;color:#0b4a8f;margin-bottom:3px;">'
+          + '&#129534; Repartiendo <u>solo</u> con BaseHorasTrab</div>'
+          + '<div style="font-size:11.5px;">Esta vista usa <b>&uacute;nicamente la planilla de terreno</b>. '
+          + 'Los d&iacute;as que <b>BaseHorasTrab</b> todav&iacute;a no trae quedan <b>fuera</b>: no se rescatan '
+          + 'de <i>Base datos Procesador Mecaniz</i> (Formin) como en la vista normal, as&iacute; que su '
+          + 'producci&oacute;n <b>no se le asigna a ning&uacute;n operador</b> y aparece abajo en '
+          + '&laquo;Faltan m&sup3; por repartir&raquo;.</div>'
+          + '<div style="font-size:11.5px;margin-top:4px;">Sirve para revisar la planilla o discutir horas con '
+          + 'Mininco con una sola fuente. <b>Para el cierre del mes usa la vista normal</b>, que es la que hace '
+          + 'cuadrar el total con la cartola.</div>'
+          + '<button onclick="rendOperFuenteToggle()" style="margin-top:7px;background:#1f6feb;color:#fff;border:none;'
+          + 'border-radius:5px;padding:5px 13px;font-size:11.5px;font-weight:600;cursor:pointer;">'
+          + '&#8592; Volver a BHT + Formin</button>'
+          + '</div>';
+  }
   if(window._RENDOPER_AVISO_FAENA){
     html += '<div style="font-size:11px;color:#e3b341;background:#2d2410;border:1px solid #6b5314;border-radius:6px;padding:7px 10px;margin-bottom:10px;">'
           + '&#9888; No hay registros de operador para <b>'+window._RENDOPER_AVISO_FAENA+'</b> en la hoja "Base datos Procesador Mecaniz". '
@@ -3141,7 +3280,22 @@ function renderRendOper(){
     html += '<th style="background:#1a6b3a;color:#fff;padding:7px 8px;text-align:center;">m³/hr Real</th>';
     html += '<th style="background:#1a6b3a;color:#fff;padding:7px 8px;text-align:center;">m³/hr Estándar</th>';
     html += '<th style="background:#1a6b3a;color:#fff;padding:7px 8px;text-align:center;">Real vs Std</th>';
+    if (window._RENDOPER_MEDIDO){
+      html += '<th style="background:#1a6b3a;color:#fff;padding:7px 8px;text-align:center;" title="Árboles ÷ horas de horómetro">Árb/hr</th>';
+      html += '<th style="background:#1a6b3a;color:#fff;padding:7px 8px;text-align:center;" title="La velocidad de tabla de Formin para el VMA que trabajó">Meta árb/hr</th>';
+      html += '<th style="background:#14512c;color:#fff;padding:0;text-align:center;'
+            + (RO_VER_IDX ? '' : 'width:34px;') + '">'
+            + '<button onclick="roToggleIdx()" title="'
+            + (RO_VER_IDX ? 'Ocultar la columna Índice'
+                          : 'Mostrar el Índice: árb/hr ÷ meta. Es el orden del ranking')
+            + '" style="width:100%;height:100%;background:none;border:0;color:#fff;cursor:pointer;'
+            + 'font-size:' + (RO_VER_IDX ? '11px' : '13px') + ';font-weight:700;padding:7px 8px;'
+            + 'font-family:inherit;">'
+            + (RO_VER_IDX ? '&Iacute;ndice &#9662;' : '&#9656;') + '</button></th>';
+    }
     html += '<th style="background:#1a6b3a;color:#fff;padding:7px 8px;text-align:center;">m³ total</th>';
+    if (window._RENDOPER_MEDIDO)
+      html += '<th style="background:#1a6b3a;color:#fff;padding:7px 8px;text-align:center;" title="Máquina real que operó, según BaseHorasTrab">Máquina</th>';
     html += '<th style="background:#1a6b3a;color:#fff;padding:7px 8px;text-align:center;">Hrs turno</th>';
     html += '<th style="background:#1a6b3a;color:#fff;padding:7px 8px;text-align:center;">N° Árboles</th>';
     html += '<th style="background:#1a6b3a;color:#fff;padding:7px 8px;text-align:center;width:34px;"></th>';
@@ -3176,8 +3330,22 @@ function renderRendOper(){
         html+='</div>';
       } else { html+='<span style="color:#ccc;font-size:10px;">sin std</span>'; }
       html+='</td>';
+      if (window._RENDOPER_MEDIDO){
+        var colI = (o.IDX>=1) ? '#1a6b3a' : (o.IDX>=0.85 ? '#e67e22' : '#c0392b');
+        html+='<td style="text-align:center;padding:6px 8px;border-bottom:1px solid #eee;font-weight:600;">'
+            +(o.ARBHR>0?o.ARBHR.toFixed(1):'—')+'</td>';
+        html+='<td style="text-align:center;padding:6px 8px;border-bottom:1px solid #eee;color:#888;">'
+            +(o.STDARB>0?o.STDARB.toFixed(1):'—')+'</td>';
+        html+= RO_VER_IDX
+            ? ('<td style="text-align:center;padding:6px 8px;border-bottom:1px solid #eee;font-weight:800;font-size:13px;color:'+colI+';">'
+               +(o.IDX>0?Math.round(o.IDX*100)+'%':'—')+'</td>')
+            : '<td style="border-bottom:1px solid #eee;background:#fbfbfb;"></td>';
+      }
       html+='<td style="text-align:center;padding:6px 8px;border-bottom:1px solid #eee;">'+o.M3.toFixed(0)+'</td>';
-      html+='<td style="text-align:center;padding:6px 4px;border-bottom:1px solid #eee;white-space:nowrap;">'+Math.round(o.HRS);
+      if (window._RENDOPER_MEDIDO)
+        html+='<td style="text-align:center;padding:6px 8px;border-bottom:1px solid #eee;font-size:10px;color:#555;">'
+            +(o.EQREAL||'—')+'</td>';
+      html+='<td style="text-align:center;padding:6px 4px;border-bottom:1px solid #eee;white-space:nowrap;">'+Math.round(window._RENDOPER_MEDIDO?(o.TUR||0):o.HRS);
       if(o.DET && o.DET.length){
         html+=' <button onclick="showRendOperDias('+idx+')" title="Ver horas día por día" '
             + 'style="background:none;border:1px solid #bcd;border-radius:4px;cursor:pointer;padding:1px 4px;font-size:10px;line-height:1.3;color:#1a6b3a;vertical-align:middle;">&#128197;</button>';
@@ -3228,7 +3396,12 @@ function renderRendOper(){
     var filtroSubRO = (fSel2 !== 'all' || rSel !== 'all' || vSel !== 'all');
     if (filtroSubRO) ihrsTotal = 0;
     var sinAsignar = ihrsTotal > 0 ? Math.max(0, ihrsTotal - totHRS) : 0;
-    var hrsOficial = ihrsTotal > 0 ? ihrsTotal : totHRS;
+    /* REGLA DE GUSTAVO (10-09-2026): "los promedios, el valor total por las horas
+       efectivamente trabajadas". Antes esta fila DIVIDÍA por las horas oficiales del
+       proceso (ihrsTotal) pero MOSTRABA la suma de los operadores (totHRS), así que
+       el promedio no cuadraba con sus propias columnas: 7.893 ÷ 148 da 53,3 y la fila
+       decía 58,0 porque por debajo dividía por 136. Ahora divide por lo que muestra. */
+    var hrsOficial = totHRS;
     var totRend = hrsOficial > 0 ? totM3/hrsOficial : 0;
 
     html+='<tr style="background:#e8f5ee;font-weight:700;">';
@@ -3236,9 +3409,22 @@ function renderRendOper(){
     html+='<td></td>';
     html+='<td style="text-align:center;color:#1a6b3a;padding:6px 8px;">'+totRend.toFixed(1)+'</td>';
     html+='<td></td><td></td>';
-    html+='<td style="text-align:center;padding:6px 8px;">'+totM3.toFixed(0)+'</td>';
-    html+='<td style="text-align:center;padding:6px 8px;">'+Math.round(totHRS)+'</td>';
-    html+='<td style="text-align:center;padding:6px 8px;">'+totNARB+'</td>';
+    if (window._RENDOPER_MEDIDO){
+      var tHM = 0, tTUR = 0, tARB = 0;
+      opers.forEach(function(o){ tHM += (o.HM||0); tTUR += (o.TUR||0); tARB += (o.ARB_M||0); });
+      var tHrsM = tHM > 0 ? tHM : tTUR;
+      html+='<td style="text-align:center;padding:6px 8px;">'+(tHrsM>0?(tARB/tHrsM).toFixed(1):'—')+'</td>';
+      html+='<td></td>';
+      html+= RO_VER_IDX ? '<td></td>' : '<td style="background:#f3f8f5;"></td>';
+      html+='<td style="text-align:center;padding:6px 8px;">'+totM3.toFixed(0)+'</td>';
+      html+='<td></td>';
+      html+='<td style="text-align:center;padding:6px 8px;">'+Math.round(tTUR)+'</td>';
+      html+='<td style="text-align:center;padding:6px 8px;">'+Math.round(tARB)+'</td>';
+    } else {
+      html+='<td style="text-align:center;padding:6px 8px;">'+totM3.toFixed(0)+'</td>';
+      html+='<td style="text-align:center;padding:6px 8px;">'+Math.round(totHRS)+'</td>';
+      html+='<td style="text-align:center;padding:6px 8px;">'+totNARB+'</td>';
+    }
     html+='</tr>';
     // Nota informativa si hay horas adicionales sin operador asignado
     var hojaHrs = desdeBHT ? 'BaseHorasTrab' : 'InformeHrsProc';
@@ -3269,9 +3455,117 @@ function renderRendOper(){
       html+='</td></tr>';
     }
     html+='</tbody></table>';
+
+    /* ===== FALTAN m³ POR REPARTIR ==========================================
+       Caso real que cazó Gustavo el 14-09-2026 (Mec 5, septiembre): las cartolas de
+       "produc" llegaban al día 13 y la planilla de horas solo al 10, así que los
+       2.380 m³ de los días 11, 12 y 13 no se los llevaba NADIE: la tabla mostraba
+       6.361 m³ contra los 8.741 de Rend Estándar vs Real.
+
+       No es un error de cálculo. Un día con cartola y sin horas (ni BaseHorasTrab ni
+       "Base datos Procesador Mecaniz") no tiene a quién asignarle la producción, así
+       que se queda fuera del reparto de bloquesCartola(). Lo malo era que pasaba en
+       silencio: acá se avisa, con los días y los m³ a la vista.
+
+       Es el caso ESPEJO del aviso azul de "Cartolas atrasadas": allá la cartola llega
+       tarde y se reparte hacia atrás; acá la cartola llega ANTES que la planilla.
+
+       Con un filtro de fundo / rodal / tramo de VMA activo la nota se calla: ahí el m³
+       es legítimamente menor que el del mes y compararlo con la cartola no dice nada. */
+    var filtroTramoRO = (selRO && selRO.modo === 'rango');
+    if (!filtroSubRO && !filtroTramoRO){
+      var _diasRep = {};
+      rowsBase.forEach(function(r){
+        (r.DET||[]).forEach(function(d){ if (d.f) _diasRep[d.f] = 1; });
+      });
+      var _pm3 = (typeof prodM3Dia === 'function') ? prodM3Dia() : {};
+      var _mesesSel = (mSel !== 'all') ? [mSel] : mesesDisp;
+      /* Solo cuentan los meses que SE REPARTEN POR CARTOLA. En los meses viejos el m³
+         del operador se calcula VMA × árboles desde Formin, así que restarle la cartola
+         daría una diferencia que no significa "días sin repartir". */
+      var _mesOK = {};
+      _mesesSel.forEach(function(ym){
+        if (parseInt(ym) < BHT_DESDE) return;
+        if (typeof bhtCubre === 'function' && !bhtCubre(fSel, parseInt(ym))) return;
+        _mesOK[ym] = 1;
+      });
+      var _ymDe = function(fe){ return fe.substring(0,4) + fe.substring(5,7); };
+      var _falt = [], _faltM3 = 0, _cartTot = 0;
+      Object.keys(_pm3).forEach(function(k){
+        var _i = k.indexOf('|');
+        if (k.substring(0, _i) !== fSel) return;
+        var _fe = k.substring(_i + 1);
+        if (!_mesOK[_ymDe(_fe)]) return;
+        _cartTot += _pm3[k];
+        if (!_diasRep[_fe]){ _falt.push({f:_fe, m3:_pm3[k]}); _faltM3 += _pm3[k]; }
+      });
+      // m³ repartidos de ESOS mismos meses (con "Todos los meses", totM3 trae también los viejos)
+      var _repM3 = 0;
+      opers.forEach(function(o){
+        (o.DET||[]).forEach(function(d){ if (d.f && _mesOK[_ymDe(d.f)]) _repM3 += (d.m3||0); });
+      });
+      if (_faltM3 > 0.5){
+        _falt.sort(function(a,b){ return a.f < b.f ? -1 : 1; });
+        var _pct = _cartTot > 0 ? (_faltM3/_cartTot*100) : 0;
+        var _chips = _falt.map(function(x){
+          var _dd = x.f.substring(8,10) + '-' + x.f.substring(5,7);
+          return '<span style="display:inline-block;background:#fff;border:1px solid #f0a04b;border-radius:5px;'
+               + 'padding:2px 9px;margin:3px 5px 0 0;font-size:11.5px;color:#a34700;white-space:nowrap;">'
+               + '<b>' + _dd + '</b> &middot; ' + Math.round(x.m3).toLocaleString('es-CL') + ' m³</span>';
+        }).join('');
+        html += '<div style="margin-top:10px;background:#fff4e5;border:1px solid #f0a04b;border-left:6px solid #e8590c;'
+              + 'border-radius:8px;padding:11px 14px;line-height:1.65;color:#7a3b00;">'
+              + '<div style="font-size:14px;font-weight:700;color:#c2410c;margin-bottom:3px;">'
+              + '&#9888;&#65039; Faltan ' + Math.round(_faltM3).toLocaleString('es-CL') + ' m³ por repartir'
+              + '<span style="font-weight:600;font-size:12px;color:#a34700;"> ('
+              + _pct.toFixed(0) + '% de la cartola del período)</span></div>'
+              + '<div style="font-size:11.5px;">Estos días <b>ya tienen cartola</b>, pero todavía no llegan sus '
+              + '<b>horas</b> '
+              + (window.OPER_FUENTE === 'bht'
+                   ? 'en <b>BaseHorasTrab</b> (esta vista no usa el respaldo de Formin)'
+                   : '(ni <b>BaseHorasTrab</b> ni <b>Base datos Procesador Mecaniz</b>)')
+              + ', así que no hay a quién asignarle esa producción y quedan fuera de la tabla:</div>'
+              + '<div style="margin:4px 0 5px 0;">' + _chips + '</div>'
+              + '<div style="font-size:11.5px;">La cartola del período son <b>'
+              + Math.round(_cartTot).toLocaleString('es-CL') + ' m³</b> (lo que muestra <i>Rend Estándar vs Real</i>) '
+              + 'y acá se reparten <b>' + Math.round(_repM3).toLocaleString('es-CL') + ' m³</b>. '
+              + '<b>No es un error de cálculo</b>, y los rendimientos por operador que sí se muestran están bien: '
+              + 'son de los días que tienen las dos fuentes.</div>'
+              + '<div style="font-size:11px;color:#a34700;margin-top:4px;">'
+              + '&#128260; Se cierra solo cuando entren las horas de esos días: corre el bot de Mininco y vuelve a '
+              + 'cargar el Excel. Si la planilla de terreno va atrasada, hay que esperarla.</div>'
+              + '</div>';
+      }
+    }
+
+    if (!window._RENDOPER_MEDIDO && window._RENDOPER_MOTIVO)
+      html+='<div style="margin-top:6px;font-size:10.5px;color:#8a2b1a;background:#fdf3f2;border:1px solid #f2c9c4;'
+          + 'border-radius:6px;padding:8px 11px;line-height:1.6;">'
+          + '&#9888; <b>Este mes se está mostrando con el método antiguo</b> (m³ repartidos de la cartola), '
+          + 'que puede estar distorsionado.<br>' + window._RENDOPER_MOTIVO
+          + '<br><span style="color:#a5584a;">Mientras tanto, no tomes decisiones de ranking con esta tabla. '
+          + 'Revisa el bot&oacute;n &#128269; Chequeos de la Ficha de Gesti&oacute;n.</span></div>';
+    if (window._RENDOPER_MEDIDO)
+      html+='<div style="margin-top:6px;font-size:10px;color:#14507d;background:#eef5fd;border:1px solid #cfe0f5;'
+          + 'border-radius:6px;padding:7px 10px;line-height:1.6;">'
+          + '&#128200; <b>El ranking va por índice medido</b>, no por m³ repartidos: '
+          + '<b>(árboles ÷ horas del turno) ÷ meta de árb/hr</b>.<br>'
+          + 'El <b>operador y la máquina real</b> salen de <b>BaseHorasTrab</b>, que es la única fuente que '
+          + 'los da dentro del turno: el <i>equipo</i> de Formin es un <b>cupo de contrato</b>, así que si se '
+          + 'cambia una máquina por otra (un cabezal, un reemplazo por panne) para Mininco sigue siendo la misma.<br>'
+          + 'La <b>meta</b> sale de la tabla de velocidad de <b>Formin</b>, buscada por el VMA del rodal y la '
+          + 'duración del turno. Los <b>m³</b> son la parte de la cartola de cada uno, ponderada por '
+          + '<b>árboles × VMA</b>. El promedio del total divide por las horas que muestra la misma fila.<br>'
+          + '<span style="color:#5a7a99;">Los árboles los cuenta el computador del procesador, así que tampoco '
+          + 'son exactos — pero es el mismo criterio para todos. Revisa el botón &#128269; Chequeos de la '
+          + 'Ficha de Gestión para ver las observaciones del mes.</span></div>';
     html+='<div style="margin-top:6px;font-size:10px;color:#8b949e;">Fuente de los reales: <b>'
-        + (desdeBHT ? 'BaseHorasTrab' : 'Base datos Procesador Mecaniz + InformeHrsProc')
-        + '</b>'+(mSel==='all'?'':' · '+mSel.substring(4,6)+'-'+mSel.substring(0,4))+'</div>';
+        + (window._RENDOPER_MEDIDO ? 'BaseHorasTrab (operador y máquina) + tabla de Formin (meta)'
+             : (desdeBHT ? 'BaseHorasTrab' : 'Base datos Procesador Mecaniz + InformeHrsProc'))
+        + '</b>'
+        + (window.OPER_FUENTE === 'bht'
+             ? ' <span style="color:#1f6feb;font-weight:700;">· solo BaseHorasTrab (sin rescate de Formin)</span>'
+             : '')+(mSel==='all'?'':' · '+mSel.substring(4,6)+'-'+mSel.substring(0,4))+'</div>';
     if(!faenaDataKey || !especie){
       html+='<div style="margin-top:8px;font-size:10px;color:#e67e22;">⚠ Para ver m³/hr Estándar, seleccione Faena y Especie en los filtros de arriba.</div>';
     }
@@ -6670,6 +6964,17 @@ function loadExcel(input) {
       var COL_HRT    = C(['HRT','HR_T','HRS_TURNO_OP','HRTURNO','HR/T'], 93);
       // N° de maquina (columna N): sirve para cruzar con Tabla38 y resolver operadores
       var COL_EQUIPO = C(['EQUIPO'], 13);
+      /* Columnas para el ranking de operadores medido (10-09-2026).
+         El horometro cuenta MOTOR ANDANDO; 'HORAS OPERACION' es la hora de TURNO.
+         Coinciden solo en el 44% de las filas y el horometro siempre es menor:
+         la diferencia es maquina detenida. Para medir a un operador la hora justa
+         es la del motor. Ver [[oee-ranking-operadores]]. */
+      var COL_HMINI  = C(['HOROMETRO_INICIAL'], 26);
+      var COL_HMFIN  = C(['HOROMETRO_FINAL'], 27);
+      var COL_HRSOP  = C(['HORAS_OPERACION'], 32);
+      var COL_VREAL  = C(['VELOCIDAD_PROD_REAL'], 33);
+      var COL_VTABLA = C(['VELOCIDAD_PROD_TABLA'], 34);
+      var COL_INDPRO = C(['INDICE_PRODUCTIVIDAD'], 35);
       // Mezcla de VMA por rodal: O = Fundo, P = Fundo nombre, Q = Rodal,
       // Z = Volumen árbol, AF = N° árboles.
       // El rodal NO identifica solo: dos fundos distintos pueden traer el mismo número de
@@ -6993,6 +7298,64 @@ function loadExcel(input) {
          por día. BaseHorasTrab reemplaza a OPER_DATA desde agosto, pero hay días que la
          planilla no tiene y Formin sí (Mec 3: 2, 5 y 30 de agosto). Con esta copia se
          pueden rescatar esos turnos en vez de perder la producción de esos días. */
+      /* ---- FMN_DIAS: la hoja de Formin fila por fila, para el ranking medido ----
+         Una fila = equipo + dia + rodal. Es la unica fuente que trae, POR OPERADOR:
+         arboles medidos por el computador del procesador, horas de horometro,
+         y la velocidad de tabla que le toca a ese VMA. Con eso el ranking no
+         necesita repartir nada. */
+      try {
+        FMN_DIAS = [];
+        for (var iF = dataStart; iF < rows1.length; iF++) {
+          var rF = rows1[iF];
+          if (!rF || !rF[COL_FECHA]) continue;
+          var faF = String(rF[COL_FAENA]||'').trim();
+          if (!faF || faF === '0') continue;
+          var amF = String(rF[COL_ANOMES]||'');
+          if (!amF || amF.length < 6) continue;
+          /* OJO: en septiembre-2026 el horómetro viene como TEXTO en formato chileno
+             ("15.414,0") y en agosto como número (405). parseFloat("15.414,0") corta en
+             el punto y devuelve 15,414 — o sea mil veces menos. Hay que distinguir el
+             punto de miles del punto decimal, y solo cuando el patrón lo confirma. */
+          var numF = function(c){
+            var v = rF[c];
+            if (typeof v === 'number') return isFinite(v) ? v : null;
+            var t = String(v == null ? '' : v).trim();
+            if (!t) return null;
+            if (t.indexOf(',') >= 0)                       // "15.414,0" / "1.234,56"
+              t = t.replace(/\./g, '').replace(',', '.');
+            else if (/^\d{1,3}(\.\d{3})+$/.test(t))       // "15.414" sin decimales
+              t = t.replace(/\./g, '');
+            var f = parseFloat(t);
+            return isFinite(f) ? f : null;
+          };
+          FMN_DIAS.push({
+            fecha:  excelDateToStr(rF[COL_FECHA]),
+            ym:     parseInt(amF.substring(0,4))*100 + parseInt(amF.substring(4,6)),
+            faena:  faF,
+            equipo: String(rF[COL_EQUIPO]||'').trim(),
+            oper:   String(rF[COL_OPER]||'').replace(/\s+/g,' ').trim(),
+            rodal:  String(rF[COL_RODAL]||'').trim(),
+            arb:    numF(COL_ARBAF) || numF(COL_NARB) || 0,
+            vma:    numF(COL_VMA) || 0,
+            hmIni:  numF(COL_HMINI),
+            hmFin:  numF(COL_HMFIN),
+            hrsHm:  numF(COL_HRS) || 0,      // diferencia de horometro = motor andando
+            hrsTur: numF(COL_HRSOP) || 0,    // horas de turno
+            vReal:  numF(COL_VREAL),
+            vTabla: numF(COL_VTABLA),
+            indice: numF(COL_INDPRO)
+          });
+        }
+        FMN_DIAS = sinFaenasFuera(FMN_DIAS);
+        var _fmnHm = 0, _fmnDif = 0;
+        FMN_DIAS.forEach(function(x){
+          if (x.hmIni != null && x.hmIni > 0) _fmnHm++;
+          if (x.hrsHm > 0 && x.hrsTur > 0 && Math.abs(x.hrsHm - x.hrsTur) >= 0.5) _fmnDif++;
+        });
+        console.log('[FMN] Formin fila a fila: ' + FMN_DIAS.length + ' registros equipo-día · ' +
+                    _fmnHm + ' con horómetro cargado · ' + _fmnDif + ' donde el horómetro no calza con el turno');
+      } catch(eF){ console.warn('[FMN] error:', eF.message); FMN_DIAS = []; }
+
       window.OPER_DATA_BD = JSON.parse(JSON.stringify(window.OPER_DATA));
       console.log('[BD] OPER_DATA_BD (Formin) guardado: ' + window.OPER_DATA_BD.length + ' operador-mes');
 
@@ -8278,6 +8641,7 @@ function loadExcel(input) {
         vma_rod: (typeof VMA_ROD!=='undefined'?VMA_ROD:{}),
         bht_dias: (typeof BHT_DIAS!=='undefined'?BHT_DIAS:[]),
         prod_faena_mes: (typeof PROD_FAENA_MES!=='undefined'?PROD_FAENA_MES:{}),
+        fmn_dias: (typeof FMN_DIAS!=='undefined'?FMN_DIAS:[]),
         ofsnap: {snaps:(typeof OFERTA_SNAPSHOTS!=='undefined'&&OFERTA_SNAPSHOTS?OFERTA_SNAPSHOTS:[]), fechaAct:(typeof OFERTA_FECHA_ACT!=='undefined'?OFERTA_FECHA_ACT:'')}
       }}, '*'); }catch(e){}
       applyFilters();
@@ -9127,7 +9491,8 @@ function bhtAplicarAOperadores(){
     if (/^procesad/i.test(d.proceso)) diasBHT[d.faena + '|' + d.fecha] = true;
   });
   var RESCATE = [];
-  (window.OPER_DATA_BD || []).forEach(function(r){
+  // En la vista "solo BaseHorasTrab" no se rescata nada de Formin (ver OPER_FUENTE)
+  (window.OPER_FUENTE === 'bht' ? [] : (window.OPER_DATA_BD || [])).forEach(function(r){
     var ym = r.ANIO * 100 + r.MES;
     if (ym < BHT_DESDE) return;                       // antes de agosto ya se usa Formin
     if (!cob[r.FAENA + '|' + ym]) return;             // faena-mes que igual sale de Formin
@@ -9397,8 +9762,199 @@ var GRAFX = null;      // datos hoja Tablaparametros para gráficos Rendimiento 
 var DIESEL_DATA = null; // datos panel "Combustible Consumido vs Programado" (replica TabladinamicaDiesel), array de {equipo,faena,ym,empresa,tipo,cod,lts,hrs,hperd,rendAct,rendStd,difLts,mesTxt}
 /* Sello de version: se imprime en la consola al abrir. Si el numero que aparece
    no es el ultimo, el navegador esta sirviendo una copia vieja del archivo. */
-var APP_BUILD = '09-09-2026 dias-trabajados + detalle-perdidas';
+var APP_BUILD = '14-09-2026 boton "Fuente: solo BaseHorasTrab" en Rend Operadores';
 console.log('%c[APP] build ' + APP_BUILD, 'background:#1a6b3a;color:#fff;padding:2px 6px;');
+
+
+/* ============================================================================
+   RANKING DE OPERADORES — anclado en BaseHorasTrab (10-09-2026)
+   ----------------------------------------------------------------------------
+   Por qué acá y no en Formin, explicado por Gustavo:
+
+   **El `EQUIPO` de Formin es un CUPO DE CONTRATO, no la máquina.** Mec 5 tiene dos
+   cupos (1 y 2) ante Mininco. En agosto-2026 cambiaron el Procesador 13 por el
+   Procesador 08 por un cambio de cabezal — verificado: el 13 va hasta el 26-08 y
+   el 08 desde el 27 — y para Mininco los dos siguen siendo "máquina 2". Lo mismo
+   va a pasar cada vez que una panne larga obligue a meter un reemplazo.
+
+   Consecuencia: Formin **no puede** decir qué máquina real hizo el trabajo, y su
+   nombre de operador sale de cruzar Tabla38 por faena+día+cupo, sin el turno, así
+   que en las faenas de doble turno le pone el mismo nombre a los dos (SAEZ con 38
+   hrs en un día).
+
+   **BaseHorasTrab es la única fuente que da el operador Y la máquina real dentro
+   del turno.** Verificado en Mec 5 agosto: operador+máquina+día+turno es único en
+   las 108 claves, sin una sola repetición, y trae Turno A/B y Jornada Día/Noche.
+
+   Entonces:
+     · operador, máquina real, horas y árboles  → BaseHorasTrab
+     · la META de árb/hr                        → la tabla de Formin, buscada por
+                                                   (VMA, duración del turno)
+     · los m³                                   → la cartola, repartida ponderando
+                                                   por árboles × VMA
+   ============================================================================ */
+
+/* La velocidad de tabla de Formin no es una función solo del VMA: baja con la
+   duración del turno (VMA 1,04 → 73,3 con 2 hrs y 71,8 con 11). Se arma un índice
+   (faena, VMA, horas) desde las propias filas de Formin: determina el valor en 77
+   de 79 combinaciones; en las 2 ambiguas se toma la mediana. */
+var VT_LOOKUP = null;
+function vtLookup(){
+  if (VT_LOOKUP) return VT_LOOKUP;
+  VT_LOOKUP = {porClave:{}, porVma:{}};
+  (window.FMN_DIAS||[]).forEach(function(r){
+    if (!(r.vTabla > 0)) return;
+    var fa = String(r.faena).replace(/\s+/g,'').toUpperCase();
+    var k  = fa + '|' + (Math.round((r.vma||0)*1000)/1000) + '|' + Math.round(r.hrsTur||0);
+    (VT_LOOKUP.porClave[k] = VT_LOOKUP.porClave[k] || []).push(r.vTabla);
+    var kv = fa + '|' + (Math.round((r.vma||0)*1000)/1000);
+    (VT_LOOKUP.porVma[kv] = VT_LOOKUP.porVma[kv] || []).push(r.vTabla);
+  });
+  return VT_LOOKUP;
+}
+function vtMediana(a){
+  if (!a || !a.length) return 0;
+  var b = a.slice().sort(function(x,y){ return x-y; });
+  return b[Math.floor(b.length/2)];
+}
+/* Meta de árb/hr para un turno: primero la tabla de Formin por (VMA, horas), después
+   por VMA solo, y si Formin no cubre ese VMA se deriva del estándar del tramo. */
+function metaArbHr(faena, vma, hrs, stdM3hr){
+  var L = vtLookup();
+  var fa = String(faena).replace(/\s+/g,'').toUpperCase();
+  var v  = Math.round((vma||0)*1000)/1000;
+  var m  = vtMediana(L.porClave[fa + '|' + v + '|' + Math.round(hrs||0)]);
+  if (m > 0) return {v:m, src:'formin'};
+  m = vtMediana(L.porVma[fa + '|' + v]);
+  if (m > 0) return {v:m, src:'formin~'};
+  if (stdM3hr > 0 && vma > 0) return {v: stdM3hr/vma, src:'tabla'};
+  return {v:0, src:''};
+}
+
+/* Devuelve el ranking del mes para una faena, o [] si no hay con qué armarlo. */
+function operMedido(faena, ym, m3Mes, stdM3hr){
+  var filas = (window.BHT_DIAS||[]).filter(function(d){
+    return d.faena === faena && d.ym === ym &&
+           /^procesad/i.test(d.proceso) &&
+           (!d.tipo || d.tipo === 'maquinaria') &&
+           (d.hrs > 0 || d.arb > 0);
+  });
+  if (!filas.length) return [];
+
+  var op = {}, pesoTot = 0;
+  filas.forEach(function(d){
+    var nom = d.oper || '(Sin nombre)';
+    var o = op[nom] || (op[nom] = {oper:nom, hrs:0, arb:0, peso:0, metaW:0,
+                                   dias:{}, eq:{}, det:[], sinMeta:0});
+    /* El VMA del turno: manda el del rodal, como en el resto de la App */
+    var rv = (typeof bhtVmaResolver === 'function') ? bhtVmaResolver(d) : {vma:d.vma||0, src:'bht'};
+    var vma = rv.vma || 0;
+    var meta = metaArbHr(faena, vma, d.hrs, stdM3hr);
+    if (!(meta.v > 0)) o.sinMeta++;
+    var peso = (d.arb || 0) * vma;
+    o.hrs  += d.hrs || 0;
+    o.arb  += d.arb || 0;
+    o.peso += peso;
+    pesoTot += peso;
+    if (meta.v > 0) o.metaW += meta.v * (d.arb || 0);
+    if (d.fecha) o.dias[d.fecha] = 1;
+    if (d.equipo) o.eq[d.equipo] = 1;
+    o.det.push({f:d.fecha, eq:d.equipo, hrs:d.hrs||0, arb:d.arb||0, vma:vma,
+                vmaSrc:rv.src, meta:meta.v, metaSrc:meta.src, peso:peso});
+  });
+
+  return Object.keys(op).map(function(nom){
+    var o = op[nom];
+    var meta = o.arb > 0 ? o.metaW/o.arb : 0;
+    var arbHr = o.hrs > 0 ? o.arb/o.hrs : 0;
+    var m3 = pesoTot > 0 ? (m3Mes||0) * (o.peso/pesoTot) : 0;
+    /* consistencia día a día del índice */
+    var idxs = o.det.filter(function(x){ return x.hrs > 0 && x.meta > 0; })
+                    .map(function(x){ return (x.arb/x.hrs)/x.meta; })
+                    .filter(function(x){ return x > 0; });
+    var media = 0; idxs.forEach(function(x){ media += x; });
+    media = idxs.length ? media/idxs.length : 0;
+    var va = 0; idxs.forEach(function(x){ va += (x-media)*(x-media); });
+    var sd = idxs.length > 1 ? Math.sqrt(va/(idxs.length-1)) : 0;
+    return {
+      oper:nom, hrs:o.hrs, arb:o.arb, m3:m3, peso:o.peso,
+      equipos:Object.keys(o.eq).sort().join(', '),
+      nEq:Object.keys(o.eq).length,
+      nDias:Object.keys(o.dias).length,
+      arbHr:arbHr, stdArb:meta,
+      idx: meta > 0 ? arbHr/meta : 0,
+      m3hr: o.hrs > 0 ? m3/o.hrs : 0,
+      std: stdM3hr || 0,
+      cv: media > 0 ? sd/media : 0,
+      sinMeta:o.sinMeta, det:o.det
+    };
+  }).filter(function(o){ return o.hrs > 0; })
+    .sort(function(a,b){ return b.idx - a.idx; });
+}
+
+/* ¿Se puede confiar en la atribución POR OPERADOR que trae Formin para esta faena-mes?
+
+   Descubierto el 10-09-2026 con Mec 5 agosto: el operador de cada fila de Formin se
+   resuelve cruzando Tabla38 por **faena + día + máquina, SIN el turno**. En las faenas
+   que trabajan a dos turnos eso le pone el MISMO nombre a los dos, y el operador queda
+   con jornadas imposibles: SAEZ el 15-08 aparecía con 4 filas y 38 hrs en un día.
+   Gustavo lo dijo de una: "nunca va a tener doble turno 1 operador".
+
+   Mec 3 pasa (un turno, máximo 11 hrs/día). Mec 4 y Mec 5 no.
+
+   Además Formin ve menos máquinas: en Mec 5 agosto trae 2 equipos y BaseHorasTrab 3,
+   y las horas dan 749 contra 847.
+
+   Mientras el cruce no incluya el turno, el ranking medido solo se usa donde la
+   atribución aguanta. Donde no, se vuelve al método anterior y se dice por qué. */
+function fmnAtribucionConfiable(faena, ym){
+  var filas = (window.FMN_DIAS||[]).filter(function(r){
+    return r.ym === ym &&
+           String(r.faena).replace(/\s+/g,'').toUpperCase() ===
+           String(faena).replace(/\s+/g,'').toUpperCase();
+  });
+  if (!filas.length) return {ok:false, motivo:'Formin todavía no trae este mes.', filas:0};
+
+  /* 1) jornadas imposibles: mismo operador con más de 16 hrs de turno en un día */
+  var pd = {}, peor = 0, peorQuien = '';
+  filas.forEach(function(r){
+    if (!r.oper || !r.fecha) return;
+    var k = r.fecha + '|' + r.oper;
+    pd[k] = (pd[k] || 0) + (r.hrsTur || 0);
+    if (pd[k] > peor){ peor = pd[k]; peorQuien = r.oper + ' el ' + r.fecha; }
+  });
+  var imposibles = Object.keys(pd).filter(function(k){ return pd[k] > 16; });
+  if (imposibles.length)
+    return {ok:false, filas:filas.length, imposibles:imposibles.length, peor:peor, quien:peorQuien,
+            motivo:'Formin le asigna a un mismo operador los dos turnos del día: ' +
+                   imposibles.length + ' día-operador sobre 16 hrs (el peor, ' + peorQuien +
+                   ', con ' + Math.round(peor) + ' hrs). El operador de cada fila se resuelve ' +
+                   'cruzando Tabla38 por faena + día + máquina, sin el turno.'};
+
+  /* 2) cobertura: ¿ve las mismas máquinas que la planilla de terreno? */
+  var eqF = {}, eqB = {};
+  filas.forEach(function(r){ if (r.equipo) eqF[r.equipo] = 1; });
+  (window.BHT_DIAS||[]).forEach(function(d){
+    if (d.ym !== ym || d.faena !== faena) return;
+    if (!/^procesad/i.test(d.proceso)) return;
+    if (d.tipo && d.tipo !== 'maquinaria') return;
+    if (d.hrs > 0 && d.equipo) eqB[d.equipo] = 1;
+  });
+  var nF = Object.keys(eqF).length, nB = Object.keys(eqB).length;
+  if (nB > 0 && nF < nB)
+    return {ok:false, filas:filas.length, eqF:nF, eqB:nB,
+            motivo:'Formin ve ' + nF + ' máquina(s) y BaseHorasTrab ' + nB +
+                   ' (' + Object.keys(eqB).join(', ') + '). Falta una máquina entera, así que ' +
+                   'el ranking quedaría incompleto.'};
+
+  return {ok:true, filas:filas.length};
+}
+
+/* Hoja "Base datos Procesador Mecaniz" (Formin) fila a fila: equipo + día + rodal.
+   Es la fuente del ranking de operadores MEDIDO — árboles del computador del
+   procesador, horas de horómetro y la velocidad de tabla del VMA de ese rodal.
+   [{fecha,ym,faena,equipo,oper,rodal,arb,vma,hmIni,hmFin,hrsHm,hrsTur,vReal,vTabla,indice}] */
+var FMN_DIAS = [];
 
 var CAUSAS_HPERD = {}; // key equipo|faenaShort|YYYY-MM → [{causa, hrs, obs}] (BaseHorasPer)
 
@@ -10816,6 +11372,7 @@ function guardarEnCache(filename, aniosTxt, minMes, maxMes) {
       st.put({id: 'vmadia', data: VMA_DIA});
       st.put({id: 'vmarod', data: VMA_ROD});
       st.put({id: 'bhtdias', data: BHT_DIAS});
+      st.put({id: 'fmndias', data: FMN_DIAS});
       st.put({id: 'prodfm', data: PROD_FAENA_MES});
       st.put({id: 'meta', data: {
         filename: filename, savedAt: new Date().toISOString(),
@@ -10833,7 +11390,8 @@ function guardarEnCache(filename, aniosTxt, minMes, maxMes) {
   });
 }
 
-function aplicarDatosRestaurados(rawData, bdData, meta, fajaData, ofrodData, prodrodData, ofsnapData, ihrsData, grafxData, dieselData, causashpData, dieseldetData, operData, vmamixData, bhtdiasData, vmadiaData, vmarodData, prodfmData) {
+function aplicarDatosRestaurados(rawData, bdData, meta, fajaData, ofrodData, prodrodData, ofsnapData, ihrsData, grafxData, dieselData, causashpData, dieseldetData, operData, vmamixData, bhtdiasData, vmadiaData, vmarodData, prodfmData, fmndiasData) {
+  FMN_DIAS = sinFaenasFuera(fmndiasData || []);
   window.OPER_DATA = operData || [];
   PROD_FAENA_MES = prodfmData || {};
   VMA_MIX = vmamixData || {};
@@ -10896,14 +11454,14 @@ function restaurarDesdeCache() {
     try {
       var tx  = db.transaction(OEE_STORE, 'readonly');
       var st  = tx.objectStore(OEE_STORE);
-      var raw = null, bd = null, meta = null, faja = null, ofrod = null, prodrod = null, ofsnap = null, ihrs = null, grafx = null, diesel = null, causashp = null, dieseldet = null, oper = null, vmamix = null, bhtdias = null, vmadia = null, vmarod = null, prodfm = null;
-      var pending = 21;
+      var raw = null, bd = null, meta = null, faja = null, ofrod = null, prodrod = null, ofsnap = null, ihrs = null, grafx = null, diesel = null, causashp = null, dieseldet = null, oper = null, vmamix = null, bhtdias = null, vmadia = null, vmarod = null, prodfm = null, fmndias = null;
+      var pending = 22;
       function check() {
         pending--;
         if (pending > 0) return;
         if (raw && raw.length) {
           console.log('Cache IndexedDB restaurada: ' + raw.length + ' registros');
-          aplicarDatosRestaurados(raw, bd, meta, faja, ofrod, prodrod, ofsnap, ihrs, grafx, diesel, causashp, dieseldet, oper, vmamix, bhtdias, vmadia, vmarod, prodfm);
+          aplicarDatosRestaurados(raw, bd, meta, faja, ofrod, prodrod, ofsnap, ihrs, grafx, diesel, causashp, dieseldet, oper, vmamix, bhtdias, vmadia, vmarod, prodfm, fmndias);
         } else {
           applyFilters();
         }
@@ -10928,6 +11486,7 @@ function restaurarDesdeCache() {
       st.get('vmadia').onsuccess  = function(e){ vmadia  = e.target.result ? e.target.result.data : null; check(); };
       st.get('vmarod').onsuccess  = function(e){ vmarod  = e.target.result ? e.target.result.data : null; check(); };
       st.get('bhtdias').onsuccess = function(e){ bhtdias = e.target.result ? e.target.result.data : null; check(); };
+      st.get('fmndias').onsuccess = function(e){ fmndias = e.target.result ? e.target.result.data : null; check(); };
       st.get('prodfm').onsuccess  = function(e){ prodfm  = e.target.result ? e.target.result.data : null; check(); };
       tx.onerror = function(){ applyFilters(); };
     } catch(e) {
@@ -13810,7 +14369,7 @@ function gestDatos(faena, esp, ym){
     if (rv.vma > 0 && d.arb > 0){ op[nom].dias[f].vma += rv.vma*d.arb; op[nom].dias[f].aw += d.arb; }
   });
   var arbProcTot = kProc ? D.proc[kProc].arb : 0;
-  D.oper = Object.keys(op).map(function(nom){
+  var _operBHT = Object.keys(op).map(function(nom){
     var o = op[nom];
     var m3 = arbProcTot > 0 ? D.m3 * (o.arb/arbProcTot) : 0;
     var idxDia = [];
@@ -13840,6 +14399,38 @@ function gestDatos(faena, esp, ym){
     };
   }).filter(function(o){ return o.hrs > 0; })
     .sort(function(a,b){ return b.idx - a.idx; });
+
+
+  /* --- 11. RANKING DE OPERADORES — MEDIDO, NO REPARTIDO (10-09-2026) ----------
+     Cambio de fondo aprobado por Gustavo: el ranking dejaba de ser confiable
+     porque se armaba sobre los m³ REPARTIDOS de la cartola del día. Si a una
+     máquina le faltaban los árboles ese día, su parte se la llevaba la otra y
+     salían 224% del estándar.
+
+     Ahora se rankea con lo que se MIDE por operador, desde la hoja de Formin:
+
+       índice = (árboles ÷ horas de horómetro) ÷ velocidad de tabla del VMA
+
+     · los árboles los cuenta el computador del procesador (fila a fila),
+     · las horas de horómetro son MOTOR ANDANDO — la hora de turno incluye la
+       máquina detenida, y difieren en más de la mitad de las filas,
+     · la velocidad de tabla viene por fila, o sea ya normalizada por el VMA del
+       rodal: compara peras con peras sin que la App invente nada.
+
+     Gustavo lo dijo y hay que tenerlo presente: **los árboles salen del computador
+     del procesador, así que tampoco son la verdad absoluta** — pero son un
+     parámetro parejo para todos, y eso es lo que se necesita para comparar.
+
+     Los m³ y el $ siguen saliendo de la CARTOLA (regla de la casa), pero el
+     reparto se pondera por **árboles × VMA** en vez de árboles solos, para no
+     castigar al que trabajó rodal de árboles chicos. El mes cierra en la cartola. */
+  /* El ranking se ancla en BaseHorasTrab: es la única fuente con el operador Y la
+     máquina real dentro del turno. La meta sale de la tabla de Formin. */
+  D.fmnVal = fmnAtribucionConfiable(faena, ym);   // se sigue evaluando, para los chequeos
+  D.oper = operMedido(faena, ym, D.m3,
+                      (D.tramo && D.tramo.Procesador) ? D.tramo.Procesador.m3hr : 0);
+  D.operFuente = D.oper.length ? 'medido' : 'bht';
+  if (!D.oper.length) { D.oper = _operBHT; D.operFuente = 'bht'; }
 
   /* --- 12. Combustible cruzado: consumo normal + producción baja = máquina
           encendida sin producir. Esa hora NO aparece como hora perdida en
@@ -14240,6 +14831,7 @@ function gestRender(){
   gestPintaDiesel(D);
   gestPintaAlertas(D);
   gestPintaGestion(D, P);
+  gestPintaBotonChequeos(D);
   gestGuardarAcciones(D);
   console.log('[GEST] ' + D.faena + ' ' + D.mes + ' · m³ ' + gN(D.m3) +
               ' · hrs perd ' + gN(D.hPerdTot,1) + ' · fuga ritmo ' + gN(D.fugaTotM3) + ' m³');
@@ -14660,29 +15252,84 @@ function gestPintaFuga(D){
 function gestPintaOper(D){
   var el = document.getElementById('gest-oper');
   if (!el) return;
-  if (D.sinTramo){ el.innerHTML = '<div style="padding:12px;background:#fdf3f2;border:1px solid #f2c9c4;border-radius:5px;color:#c0392b;font-size:11px;">Sin tramo VMA resuelto para este mes: no hay est&aacute;ndar ni tarifa con que calcular esto. Las horas de abajo son reales, la valorizaci&oacute;n no.</div>'; return; }
   if (!D.oper.length){ el.innerHTML = '<div style="color:#8b949e;padding:10px;">Sin operadores de Procesado en este mes.</div>'; return; }
-  el.innerHTML =
-    '<div style="font-size:10px;color:#666;margin-bottom:6px;">El índice va contra el estándar del <b>tramo VMA de cada día</b>, no contra el m³/hr crudo: comparar m³/hr entre tramos distintos es injusto. La consistencia mide cuánto oscila día a día — un operador parejo al 95% vale más que uno que va de 60% a 130%.</div>' +
-    '<div class="table-wrap"><table><thead><tr><th style="width:4%">#</th><th>Operador</th><th>Equipo(s)</th>' +
-    '<th style="text-align:right;">Días</th><th style="text-align:right;">Hrs</th>' +
-    '<th style="text-align:right;">m³/hr</th><th style="text-align:right;">Índice vs su estándar</th>' +
-    '<th style="text-align:right;">Consistencia</th></tr></thead><tbody>' +
-    D.oper.map(function(o, i){
-      var col = o.idx >= 1 ? '#27ae60' : (o.idx >= 0.85 ? '#e67e22' : '#c0392b');
-      var cons = o.cv <= 0.15 ? {t:'Pareja', c:'#27ae60'} :
-                 (o.cv <= 0.30 ? {t:'Media', c:'#e67e22'} : {t:'Irregular', c:'#c0392b'});
-      return '<tr><td>'+(i+1)+'</td><td style="font-weight:600;">'+o.oper+'</td>' +
-             '<td style="color:#666;">'+o.equipos+'</td>' +
-             '<td style="text-align:right;">'+o.nDias+'</td>' +
-             '<td style="text-align:right;">'+gN(o.hrs,1)+'</td>' +
-             '<td style="text-align:right;">'+gN(o.m3hr,1)+'</td>' +
-             '<td style="text-align:right;color:'+col+';font-weight:700;">'+gN(o.idx*100,0)+'%</td>' +
-             '<td style="text-align:right;color:'+cons.c+';">'+cons.t+' <span style="color:#aaa;">(±'+gN(o.cv*100,0)+'%)</span></td></tr>';
-    }).join('') + '</tbody></table></div>';
+  var porFormin = (D.operFuente === 'formin');
+
+  var h = '<div style="font-size:10px;color:#666;margin-bottom:6px;">';
+  if (porFormin){
+    h += 'El ranking va por <b>&iacute;ndice medido</b>, no por m&sup3; repartidos: ' +
+         '<b>(&aacute;rboles &divide; horas del turno) &divide; meta de &aacute;rb/hr</b>.<br>' +
+         'El <b>operador y la m&aacute;quina real</b> salen de <b>BaseHorasTrab</b>, la &uacute;nica fuente que ' +
+         'los da dentro del turno: el <i>equipo</i> de Formin es un <b>cupo de contrato</b>, as&iacute; que si se ' +
+         'cambia una m&aacute;quina por otra, para Mininco sigue siendo la misma. ' +
+         'La <b>meta</b> sale de la tabla de velocidad de <b>Formin</b>, por VMA del rodal y duraci&oacute;n del turno. ' +
+         'Los <b>m&sup3;</b> son su parte de la cartola, ponderada por <b>&aacute;rboles &times; VMA</b>. ' +
+         '<span style="color:#8e44ad;">Ojo: los &aacute;rboles los cuenta el computador del procesador, ' +
+         'as&iacute; que tampoco son exactos &mdash; pero es el mismo criterio para todos.</span>';
+  } else {
+    h += '&#9888; <b>Ranking con el m&eacute;todo antiguo</b> (m&sup3; repartidos de la cartola), que puede ' +
+         'estar distorsionado. ' + ((D.fmnVal && D.fmnVal.motivo) ? D.fmnVal.motivo : '') +
+         ' <b>No tomes decisiones de ranking con esta tabla.</b>';
+  }
+  h += ' La <b>consistencia</b> mide cu&aacute;nto oscila d&iacute;a a d&iacute;a.</div>';
+
+  h += '<div class="table-wrap"><table><thead><tr><th style="width:4%">#</th><th>Operador</th><th>Equipo(s)</th>' +
+    '<th style="text-align:right;">D&iacute;as</th>' +
+    '<th style="text-align:right;">Hrs turno</th>' +
+    '<th title="Máquina real que operó, según BaseHorasTrab">M&aacute;quina</th>' +
+    '<th style="text-align:right;">&Aacute;rboles</th>' +
+    '<th style="text-align:right;">&Aacute;rb/hr</th>' +
+    '<th style="text-align:right;">Meta &aacute;rb/hr</th>' +
+    '<th style="text-align:right;">&Iacute;ndice</th>' +
+    '<th style="text-align:right;">Consistencia</th>' +
+    '<th style="text-align:right;" title="Su parte de la cartola del mes, ponderada por árboles × VMA">m&sup3;</th>' +
+    '<th style="text-align:right;">m&sup3;/hr</th></tr></thead><tbody>';
+
+  h += D.oper.map(function(o, i){
+    var col = o.idx >= 1 ? '#27ae60' : (o.idx >= 0.85 ? '#e67e22' : '#c0392b');
+    var cons = o.cv <= 0.15 ? {t:'Pareja', c:'#27ae60'} :
+               (o.cv <= 0.30 ? {t:'Media', c:'#e67e22'} : {t:'Irregular', c:'#c0392b'});
+    var avisoHm = o.sinHm > 0
+      ? ' <span style="color:#e67e22;" title="' + o.sinHm + ' día(s) sin horómetro: se usó la hora de turno">&#9888;</span>'
+      : '';
+    return '<tr><td>'+(i+1)+'</td><td style="font-weight:600;">'+o.oper+'</td>' +
+      '<td style="color:#666;">'+(o.equipos||'—')+'</td>' +
+      '<td style="text-align:right;">'+o.nDias+'</td>' +
+      '<td style="text-align:right;font-weight:600;">'+gN(o.hrs,1)+'</td>' +
+      '<td style="color:#666;font-size:9.5px;">'+(o.equipos||'—')+'</td>' +
+      '<td style="text-align:right;">'+gN(o.arb)+'</td>' +
+      '<td style="text-align:right;font-weight:600;">'+gN(o.arbHr,1)+'</td>' +
+      '<td style="text-align:right;color:#888;">'+(o.stdArb>0?gN(o.stdArb,1):'—')+'</td>' +
+      '<td style="text-align:right;color:'+col+';font-weight:700;font-size:12px;">'+
+        (o.idx>0?gN(o.idx*100,0)+'%':'—')+'</td>' +
+      '<td style="text-align:right;color:'+cons.c+';">'+cons.t+
+        ' <span style="color:#aaa;">(&plusmn;'+gN(o.cv*100,0)+'%)</span></td>' +
+      '<td style="text-align:right;">'+gN(o.m3)+'</td>' +
+      '<td style="text-align:right;color:#666;">'+gN(o.m3hr,1)+'</td></tr>';
+  }).join('');
+
+  /* Fila total: consistente consigo misma — m³ del mes ÷ horas efectivamente trabajadas */
+  var tArb = 0, tHrs = 0, tM3 = 0;
+  D.oper.forEach(function(o){ tArb += o.arb; tHrs += o.hrs; tM3 += o.m3; });
+  h += '<tr class="gr"><td colspan="4">TOTAL / PROM.</td>' +
+    '<td style="text-align:right;">'+gN(tHrs,1)+'</td>' +
+    '<td></td>' +
+    '<td style="text-align:right;">'+gN(tArb)+'</td>' +
+    '<td style="text-align:right;">'+gN(tHrs>0?tArb/tHrs:0,1)+'</td>' +
+    '<td colspan="3"></td>' +
+    '<td style="text-align:right;">'+gN(tM3)+'</td>' +
+    '<td style="text-align:right;">'+gN(tHrs>0?tM3/tHrs:0,1)+'</td></tr>';
+  h += '</tbody></table></div>';
+
+  if (porFormin)
+    h += '<div style="font-size:9px;color:#999;margin-top:5px;">' +
+      'El total divide por las <b>horas efectivamente trabajadas</b> que muestra la misma fila. ' +
+      'Fuente: hoja "Base datos Procesador Mecaniz" (Formin), fila por fila. ' +
+      'Los m&sup3; suman ' + gN(tM3) + ', que es la cartola del mes.</div>';
+
+  el.innerHTML = h;
 }
 
-/* --- BLOQUE 3d: pareto en $ --- */
 function gestPintaPareto(D){
   var top = D.sinTramo ? [] : D.pareto.slice(0, 10);
   killChart('gestPareto');
@@ -14942,6 +15589,403 @@ function gestVerDetalle(clase){
 
   cont.innerHTML = h;
   pop.style.display = 'flex';
+}
+
+
+/* ============================================================================
+   CHEQUEOS DE CONSISTENCIA  ·  pedido por Gustavo el 10-09-2026
+   ----------------------------------------------------------------------------
+   Regla de la casa que fijó él ese día:
+     · Las horas mandan las de MININCO ("Base datos Procesador Mecaniz").
+     · BaseHorasTrab es el CHEQUEO: cuando se actualiza, la App compara y avisa.
+     · El reparto de m³ que hace la App tiene que ser consecuente con los m³ que
+       BaseHorasTrab informa por operador.
+
+   Esto no corrige nada: LEVANTA OBSERVACIONES para que se puedan revisar. La
+   idea es que un número raro se vea antes de que alguien tome una decisión con él.
+
+   Por qué hace falta (caso real, Mec 3 septiembre-2026):
+     El día 08 la App le asignó a LOPEZ VIDAL los 1.237 m³ de TODA la faena
+     (137,5 m³/hr contra un estándar de 61,5). La causa: el reparto es proporcional
+     a los árboles, pero ese día el otro procesador no tenía árboles cargados —
+     BaseHorasTrab todavía no llegaba al día 8 y la fila de Formin no resolvió
+     operador. Al quedar fuera del denominador, su parte se la llevó el otro.
+     Mismo mecanismo al revés el día 07: LOPEZ salió con 0 m³ trabajando 7 horas.
+   ============================================================================ */
+
+/* Umbrales. Se dejan acá arriba para poder apretarlos o soltarlos sin buscar. */
+var GEST_CHK = {
+  hrsDif:      1.0,   // hrs de diferencia por operador-día entre Formin y BaseHorasTrab
+  m3DifPct:    0.20,  // 20% de diferencia en los m³ del mes por operador
+  m3DifMin:    100,   // ...y al menos 100 m³, para no gritar por migajas
+  rendAlto:    1.40,  // m³/hr por sobre el estándar que ya no es creíble
+  rendBajo:    0.50   // ...y por debajo
+};
+
+function gestChequeos(D){
+  var obs = [];
+  if (!D || D.vacio) return obs;
+  var std = (D.casc && D.casc.std) || 0;
+  var mesStr = D.mes, faena = D.faena;
+
+  function agrega(nivel, tipo, titulo, detalle, filas){
+    obs.push({nivel:nivel, tipo:tipo, titulo:titulo, detalle:detalle, filas:filas||[]});
+  }
+
+  /* ---------- Lo que dice cada fuente, por operador y por día ---------- */
+  var bht = {};      // BaseHorasTrab: oper|fecha -> {hrs, arb, m3, equipo}
+  var bhtMes = {};   // BaseHorasTrab: oper -> {hrs, arb, m3}
+  (BHT_DIAS||[]).forEach(function(d){
+    if (d.faena !== faena || d.ym !== D.ym) return;
+    if (!/^procesad/i.test(d.proceso)) return;
+    if (d.tipo && d.tipo !== 'maquinaria') return;
+    var k = d.oper + '|' + d.fecha;
+    if (!bht[k]) bht[k] = {hrs:0, arb:0, m3:0, equipo:d.equipo};
+    bht[k].hrs += d.hrs||0; bht[k].arb += d.arb||0; bht[k].m3 += d.m3||0;
+    if (!bhtMes[d.oper]) bhtMes[d.oper] = {hrs:0, arb:0, m3:0};
+    bhtMes[d.oper].hrs += d.hrs||0; bhtMes[d.oper].arb += d.arb||0; bhtMes[d.oper].m3 += d.m3||0;
+  });
+
+  var fmn = {}, fmnMes = {};   // Formin (Base datos Procesador Mecaniz), vía OPER_DATA_BD
+  (window.OPER_DATA_BD||[]).forEach(function(r){
+    if (r.FAENA !== faena) return;
+    if (r.ANIO*100 + r.MES !== D.ym) return;
+    if (!fmnMes[r.OPER]) fmnMes[r.OPER] = {hrs:0, arb:0, m3:0};
+    fmnMes[r.OPER].hrs += r.HRS||0; fmnMes[r.OPER].arb += r.NARB||0; fmnMes[r.OPER].m3 += r.M3||0;
+    (r.DET||[]).forEach(function(dd){
+      if (!dd || !dd.f) return;
+      var k = r.OPER + '|' + dd.f;
+      if (!fmn[k]) fmn[k] = {hrs:0, arb:0, m3:0};
+      fmn[k].hrs += dd.h||0; fmn[k].arb += dd.n||0; fmn[k].m3 += dd.m3||0;
+    });
+  });
+
+  var app = {};      // lo que la App terminó mostrando por operador (después del reparto)
+  (window.OPER_DATA||[]).forEach(function(r){
+    if (r.FAENA !== faena) return;
+    if (r.ANIO*100 + r.MES !== D.ym) return;
+    if (!app[r.OPER]) app[r.OPER] = {hrs:0, arb:0, m3:0, det:(r.DET||[])};
+    app[r.OPER].hrs += r.HRS||0; app[r.OPER].arb += r.NARB||0; app[r.OPER].m3 += r.M3||0;
+  });
+
+  /* ---------- 1) m³ repartidos por la App vs m³ informados en BaseHorasTrab ----
+     Es el chequeo que pidió Gustavo. OJO: la columna "m³ producidos" de
+     BaseHorasTrab la anota el operador y viene inflada (ver [[oee-app]]), así que
+     NO es la verdad — pero una diferencia grande igual delata un reparto torcido. */
+  var filas1 = [];
+  Object.keys(app).forEach(function(op){
+    var b = bhtMes[op];
+    if (!b || !(b.m3 > 0)) return;
+    var dif = app[op].m3 - b.m3;
+    var pct = b.m3 > 0 ? dif/b.m3 : 0;
+    if (Math.abs(pct) >= GEST_CHK.m3DifPct && Math.abs(dif) >= GEST_CHK.m3DifMin)
+      filas1.push({oper:op, app:app[op].m3, bht:b.m3, dif:dif, pct:pct});
+  });
+  filas1.sort(function(a,b){ return Math.abs(b.dif) - Math.abs(a.dif); });
+  if (filas1.length)
+    agrega('alta', 'm3', 'Rend Operadores: el reparto de m³ no cuadra con BaseHorasTrab',
+      filas1.length + (filas1.length===1?' operador se aparta':' operadores se apartan') +
+      ' más de ' + gN(GEST_CHK.m3DifPct*100,0) + '% de lo que la planilla declara. ' +
+      'La columna de BaseHorasTrab la anota el operador y viene inflada, así que no es la verdad — ' +
+      'pero una diferencia grande casi siempre significa que el reparto de la cartola se concentró mal.',
+      filas1.map(function(f){
+        return {c:[f.oper, gN(f.app)+' m³', gN(f.bht)+' m³',
+                   (f.dif>=0?'+':'')+gN(f.dif)+' m³', (f.pct>=0?'+':'')+gN(f.pct*100,0)+'%']};
+      }));
+
+  /* ---------- 2) Rendimientos imposibles: la huella del reparto concentrado ---- */
+  var filas2 = [];
+  if (std > 0){
+    Object.keys(app).forEach(function(op){
+      (app[op].det||[]).forEach(function(dd){
+        var h = dd.h || 0, m3 = dd.m3 || 0;
+        if (!(h > 0)) return;
+        var r = m3/h, pct = r/std;
+        if (pct >= GEST_CHK.rendAlto || (m3 === 0 && h > 0) || pct <= GEST_CHK.rendBajo)
+          filas2.push({oper:op, f:dd.f, hrs:h, m3:m3, rend:r, pct:pct, arb:dd.n||0});
+      });
+    });
+  }
+  filas2.sort(function(a,b){ return b.pct - a.pct; });
+  if (filas2.length){
+    var altos = filas2.filter(function(f){ return f.pct >= GEST_CHK.rendAlto; }).length;
+    var ceros = filas2.filter(function(f){ return f.m3 === 0; }).length;
+    agrega('alta', 'rend', 'Rend Operadores: días con rendimientos que no son creíbles',
+      (altos ? altos + ' día-operador por sobre el ' + gN(GEST_CHK.rendAlto*100,0) + '% del estándar' : '') +
+      (altos && ceros ? ' y ' : '') +
+      (ceros ? ceros + ' con 0 m³ habiendo trabajado horas' : '') +
+      '. Casi siempre es el mismo mecanismo: el m³ del día es de la faena completa y se reparte ' +
+      'proporcional a los árboles; si a una máquina le faltan los árboles ese día, su parte se la ' +
+      'lleva la otra. El estándar del tramo es ' + gN(std,1) + ' m³/hr. ' +
+      '<b>Esto mira el panel Rend Operadores, que todavía usa el método antiguo</b> — ' +
+      'el ranking de esta ficha ya no depende del reparto, se mide con árboles y horómetro.',
+      filas2.map(function(f){
+        return {c:[f.f, f.oper, gN(f.hrs,1)+' hrs', gN(f.arb)+' árb', gN(f.m3)+' m³',
+                   gN(f.rend,1)+' m³/hr', gN(f.pct*100,0)+'%']};
+      }));
+  }
+
+  /* ---------- 3) Horas: Formin manda, BaseHorasTrab chequea ---------- */
+  var filas3 = [], soloF = [], soloB = [];
+  var todas = {};
+  Object.keys(fmn).forEach(function(k){ todas[k] = 1; });
+  Object.keys(bht).forEach(function(k){ todas[k] = 1; });
+  Object.keys(todas).forEach(function(k){
+    var f = fmn[k], b = bht[k];
+    var p = k.split('|');
+    if (f && !b){ soloF.push({oper:p[0], f:p[1], hrs:f.hrs, arb:f.arb}); return; }
+    if (b && !f){ soloB.push({oper:p[0], f:p[1], hrs:b.hrs, arb:b.arb}); return; }
+    var dif = (f.hrs||0) - (b.hrs||0);
+    if (Math.abs(dif) >= GEST_CHK.hrsDif)
+      filas3.push({oper:p[0], f:p[1], fmn:f.hrs, bht:b.hrs, dif:dif});
+  });
+  filas3.sort(function(a,b){ return Math.abs(b.dif) - Math.abs(a.dif); });
+  if (filas3.length)
+    agrega('media', 'hrs', 'Las horas de Mininco y las de BaseHorasTrab no calzan',
+      filas3.length + ' día-operador con más de ' + gN(GEST_CHK.hrsDif,1) +
+      ' hr de diferencia. Manda Mininco; esto es para que alguien revise la planilla de terreno.',
+      filas3.map(function(f){
+        return {c:[f.f, f.oper, gN(f.fmn,1)+' hrs', gN(f.bht,1)+' hrs',
+                   (f.dif>=0?'+':'')+gN(f.dif,1)+' hrs']};
+      }));
+  if (soloF.length)
+    agrega('media', 'faltaBHT', 'Días que tiene Mininco y BaseHorasTrab todavía no',
+      soloF.length + ' día-operador. Es lo normal cuando la planilla de terreno va atrasada, ' +
+      'pero mientras dure, el reparto de la cartola de esos días se apoya en menos máquinas de ' +
+      'las que realmente trabajaron — y ahí es donde se concentran los m³ en un solo operador.',
+      soloF.sort(function(a,b){ return a.f < b.f ? -1 : 1; }).map(function(x){
+        return {c:[x.f, x.oper, gN(x.hrs,1)+' hrs', gN(x.arb)+' árb']};
+      }));
+  if (soloB.length)
+    agrega('baja', 'faltaFMN', 'Días que tiene BaseHorasTrab y Mininco no',
+      soloB.length + ' día-operador. Puede ser atraso de publicación de Formin, o un turno ' +
+      'anotado en terreno que Mininco no registró.',
+      soloB.sort(function(a,b){ return a.f < b.f ? -1 : 1; }).map(function(x){
+        return {c:[x.f, x.oper, gN(x.hrs,1)+' hrs', gN(x.arb)+' árb']};
+      }));
+
+  /* ---------- 4) Horas trabajadas sin árboles: la causa raíz del reparto malo -- */
+  var filas4 = [];
+  Object.keys(bht).forEach(function(k){
+    var b = bht[k], p = k.split('|');
+    if (b.hrs > 0 && !(b.arb > 0)) filas4.push({oper:p[0], f:p[1], hrs:b.hrs, equipo:b.equipo});
+  });
+  filas4.sort(function(a,b){ return a.f < b.f ? -1 : 1; });
+  if (filas4.length)
+    agrega('alta', 'sinArb', 'Turnos con horas trabajadas y cero árboles',
+      filas4.length + ' día-operador. Como el reparto de la cartola es proporcional a los árboles, ' +
+      'estos turnos quedan con 0 m³ y su parte se la llevan los demás. Es el mismo problema, visto ' +
+      'desde el otro lado.',
+      filas4.map(function(x){
+        return {c:[x.f, x.oper, x.equipo || '—', gN(x.hrs,1)+' hrs', '0 árboles']};
+      }));
+
+  /* ---------- 4b) HORÓMETRO: correlatividad, ceros y contraste con el turno ----
+     Pedido por Gustavo el 10-09-2026: "que sean correlativos los horómetros, si hay
+     algún salto de un día para otro hacer la observación".
+     El horómetro final de un día tiene que ser el inicial del siguiente. Un salto
+     hacia adelante es tiempo de motor sin registrar; uno hacia atrás es un error
+     de digitación o un cambio de equipo. */
+  var fmn = (window.FMN_DIAS||[]).filter(function(r){
+    return r.ym === D.ym && gestNorm(r.faena) === gestNorm(faena);
+  }).sort(function(a,b){
+    return a.equipo === b.equipo ? (a.fecha < b.fecha ? -1 : 1) : (a.equipo < b.equipo ? -1 : 1);
+  });
+
+  var saltos = [], ceros = [], vsTurno = [], incoh = [];
+  var prev = {};
+  fmn.forEach(function(r){
+    /* Antes de usar el horómetro para nada, se comprueba que cuadre consigo mismo:
+       final − inicial tiene que dar la diferencia declarada. Si no, la fila quedó
+       mal escrita y no sirve para la correlatividad. */
+    if (r.hmIni != null && r.hmFin != null && r.hmIni > 0 && r.hmFin > 0 &&
+        Math.abs((r.hmFin - r.hmIni) - (r.hrsHm || 0)) >= 0.5){
+      incoh.push({f:r.fecha, eq:r.equipo, oper:r.oper, ini:r.hmIni, fin:r.hmFin,
+                  calc:r.hmFin - r.hmIni, dice:r.hrsHm || 0});
+      return;                                   // no se usa para saltos ni ceros
+    }
+    if (r.hmIni === 0 || r.hmFin === 0)
+      ceros.push({f:r.fecha, eq:r.equipo, oper:r.oper, ini:r.hmIni, fin:r.hmFin, hrs:r.hrsHm});
+    var p = prev[r.equipo];
+    if (p && r.hmIni != null && p.fin != null && r.hmIni > 0 && p.fin > 0){
+      var salto = r.hmIni - p.fin;
+      if (Math.abs(salto) >= 0.5)
+        saltos.push({eq:r.equipo, de:p.f, a:r.fecha, cierra:p.fin, abre:r.hmIni, salto:salto});
+    }
+    if (r.hmFin != null && r.hmFin > 0) prev[r.equipo] = {fin:r.hmFin, f:r.fecha};
+    if (r.hrsHm > 0 && r.hrsTur > 0 && (r.hrsTur - r.hrsHm) >= 2)
+      vsTurno.push({f:r.fecha, eq:r.equipo, oper:r.oper, hm:r.hrsHm, tur:r.hrsTur,
+                    dif:r.hrsTur - r.hrsHm});
+  });
+
+  if (incoh.length)
+    agrega('media', 'incoh', 'El horómetro no cuadra con su propia diferencia',
+      incoh.length + ' registro(s) donde final − inicial no da las horas declaradas. ' +
+      'Esas filas quedan fuera del chequeo de correlatividad, y las horas se toman de la ' +
+      'columna de diferencia, que es la que sí es consistente.',
+      incoh.map(function(x){
+        return {c:[x.f, 'Equipo ' + x.eq, x.oper || '—', gN(x.ini,1), gN(x.fin,1),
+                   gN(x.calc,1), gN(x.dice,1)]};
+      }));
+  if (saltos.length){
+    saltos.sort(function(a,b){ return Math.abs(b.salto) - Math.abs(a.salto); });
+    agrega('media', 'salto', 'El horómetro no es correlativo entre días',
+      saltos.length + (saltos.length===1?' salto':' saltos') + '. El horómetro final de un día ' +
+      'tiene que ser el inicial del siguiente. Hacia adelante es motor andando sin registrar; ' +
+      'hacia atrás es error de digitación o cambio de equipo. Afecta directo las horas con que ' +
+      'se mide al operador.',
+      saltos.map(function(x){
+        return {c:['Equipo ' + x.eq, x.de + ' → ' + x.a, gN(x.cierra,1), gN(x.abre,1),
+                   (x.salto>=0?'+':'')+gN(x.salto,1) + ' hrs']};
+      }));
+  }
+  if (ceros.length)
+    agrega('media', 'cero', 'Horómetros en cero',
+      ceros.length + ' registro(s) con el horómetro inicial o final en cero. La App se cae a ' +
+      'la hora de turno en esos días, que incluye la máquina detenida.',
+      ceros.map(function(x){
+        return {c:[x.f, 'Equipo ' + x.eq, x.oper || '—', gN(x.ini,1), gN(x.fin,1), gN(x.hrs,1)+' hrs']};
+      }));
+  if (vsTurno.length){
+    vsTurno.sort(function(a,b){ return b.dif - a.dif; });
+    var totDif = 0; vsTurno.forEach(function(x){ totDif += x.dif; });
+    agrega('baja', 'hmTurno', 'Turnos con mucha máquina detenida',
+      vsTurno.length + ' día-equipo donde el motor anduvo 2 hrs o más menos que el turno, ' +
+      gN(totDif,1) + ' hrs en total. No es un error: es la diferencia entre estar en faena y estar ' +
+      'produciendo. Sirve para cruzarla con las horas perdidas declaradas.',
+      vsTurno.map(function(x){
+        return {c:[x.f, 'Equipo ' + x.eq, x.oper || '—', gN(x.hm,1)+' hrs', gN(x.tur,1)+' hrs',
+                   gN(x.dif,1)+' hrs']};
+      }));
+  }
+
+  /* ---------- 4c) Doble turno asignado al mismo operador ----------------------
+     "Nunca va a tener doble turno 1 operador" (Gustavo, 10-09-2026). Cuando Formin
+     le pone el mismo nombre a los dos turnos del día, el operador aparece con
+     jornadas imposibles y el ranking deja de servir. */
+  var pdT = {};
+  (window.FMN_DIAS||[]).forEach(function(r){
+    if (r.ym !== D.ym || gestNorm(r.faena) !== gestNorm(faena)) return;
+    if (!r.oper || !r.fecha) return;
+    var k = r.fecha + '|' + r.oper;
+    if (!pdT[k]) pdT[k] = {f:r.fecha, oper:r.oper, tur:0, hm:0, filas:0, eq:{}};
+    pdT[k].tur += r.hrsTur || 0; pdT[k].hm += r.hrsHm || 0; pdT[k].filas++;
+    if (r.equipo) pdT[k].eq[r.equipo] = 1;
+  });
+  var dobles = Object.keys(pdT).map(function(k){ return pdT[k]; })
+    .filter(function(x){ return x.tur > 16; })
+    .sort(function(a,b){ return b.tur - a.tur; });
+  if (dobles.length)
+    agrega('alta', 'doble', 'Formin le asigna a un operador los dos turnos del día',
+      dobles.length + ' día-operador con más de 16 hrs de turno (el peor, ' +
+      gN(dobles[0].tur,0) + ' hrs). Un operador no hace doble turno: el nombre de cada fila de ' +
+      'Formin se resuelve cruzando Tabla38 por faena + día + máquina, <b>sin el turno</b>, así que ' +
+      'a las dos filas del día les pone el mismo. Mientras esto no se arregle, el ranking de esta ' +
+      'faena-mes se muestra con el método antiguo.',
+      dobles.map(function(x){
+        return {c:[x.f, x.oper, gN(x.tur,1)+' hrs turno', gN(x.hm,1)+' hrs motor',
+                   x.filas + ' filas', Object.keys(x.eq).length + ' máq.']};
+      }));
+
+  /* ---------- 5) Días trabajados sin cartola (no son días perdidos) ---------- */
+  if (D.diasSinCartola && D.diasSinCartola.length)
+    agrega('baja', 'sinCartola', 'Días trabajados sin calibrar madera',
+      'La faena trabajó y no se calibró: la madera entra en la cartola de los días siguientes. ' +
+      'No son días perdidos y ya están contados como días trabajados.',
+      D.diasSinCartola.map(function(f){ return {c:[f, 'se trabajó, sin cartola']}; }));
+
+  var ord = {alta:0, media:1, baja:2};
+  return obs.sort(function(a,b){ return ord[a.nivel] - ord[b.nivel]; });
+}
+
+/* Encabezados de cada tabla del popup, según el tipo de observación */
+var GEST_CHK_TH = {
+  m3:        ['Operador','m³ que reparte la App','m³ que informa BaseHorasTrab','Diferencia','%'],
+  rend:      ['Fecha','Operador','Hrs','Árboles','m³','m³/hr','% del estándar'],
+  hrs:       ['Fecha','Operador','Hrs Mininco','Hrs BaseHorasTrab','Diferencia'],
+  faltaBHT:  ['Fecha','Operador','Hrs Mininco','Árboles'],
+  faltaFMN:  ['Fecha','Operador','Hrs BaseHorasTrab','Árboles'],
+  sinArb:    ['Fecha','Operador','Equipo','Hrs','Árboles'],
+  salto:     ['Equipo','Días','Cierra en','Abre en','Salto'],
+  cero:      ['Fecha','Equipo','Operador','Horóm. inicial','Horóm. final','Hrs'],
+  incoh:     ['Fecha','Equipo','Operador','Horóm. inicial','Horóm. final','Final − inicial','Dice la planilla'],
+  hmTurno:   ['Fecha','Equipo','Operador','Hrs motor','Hrs turno','Detenida'],
+  doble:     ['Fecha','Operador','Hrs turno','Hrs motor','Filas','Máquinas'],
+  sinCartola:['Fecha','Situación']
+};
+
+function gestVerChequeos(){
+  var D = GEST_ULTIMO;
+  var cont = document.getElementById('gest-chequeos-content');
+  var pop  = document.getElementById('gest-chequeos-popup');
+  if (!D || !cont || !pop) return;
+  var obs = gestChequeos(D);
+  var col = {alta:'#c0392b', media:'#e67e22', baja:'#2471a3'};
+  var ico = {alta:'&#128308;', media:'&#128992;', baja:'&#128309;'};
+
+  var h = '<div style="font-size:14px;font-weight:800;color:#1a6b3a;margin-bottom:2px;">' +
+          '&#128269; Chequeos de consistencia</div>' +
+          '<div style="font-size:10.5px;color:#666;margin-bottom:12px;">' +
+          D.faena + ' &middot; ' + D.mesTxt + ' &middot; proceso Procesado. ' +
+          'Las horas mandan las de <b>Mininco</b>; <b>BaseHorasTrab</b> se usa para contrastar. ' +
+          'Esto no corrige nada: solo muestra d&oacute;nde los n&uacute;meros no se sostienen entre s&iacute;.</div>';
+
+  if (!obs.length){
+    cont.innerHTML = h + '<div style="padding:14px;background:#eef6f1;border:1px solid #cfe6da;' +
+      'border-radius:6px;color:#1a6b3a;font-size:12px;">&#10004; Sin observaciones. Las dos fuentes ' +
+      'calzan y el reparto de m³ es consistente con lo informado en terreno.</div>';
+    pop.style.display = 'flex';
+    return;
+  }
+
+  obs.forEach(function(o){
+    var ths = GEST_CHK_TH[o.tipo] || [];
+    h += '<div style="border-left:4px solid '+col[o.nivel]+';background:#fafafa;padding:9px 12px;' +
+         'margin-bottom:12px;border-radius:0 5px 5px 0;">' +
+         '<div style="font-size:12.5px;font-weight:700;color:'+col[o.nivel]+';">' +
+           ico[o.nivel] + ' ' + o.titulo + ' <span style="color:#888;font-weight:400;">(' +
+           o.filas.length + ')</span></div>' +
+         '<div style="font-size:10.5px;color:#444;margin:3px 0 8px;">' + o.detalle + '</div>';
+    if (o.filas.length){
+      h += '<div class="table-wrap" style="max-height:260px;overflow-y:auto;"><table><thead><tr>' +
+           ths.map(function(t){ return '<th>' + t + '</th>'; }).join('') +
+           '</tr></thead><tbody>' +
+           o.filas.map(function(f){
+             return '<tr>' + f.c.map(function(v, i){
+               return '<td' + (i > 0 ? ' style="text-align:right;"' : ' style="font-weight:600;"') +
+                      '>' + v + '</td>';
+             }).join('') + '</tr>';
+           }).join('') + '</tbody></table></div>';
+    }
+    h += '</div>';
+  });
+
+  h += '<div style="font-size:9px;color:#999;margin-top:4px;">' +
+       'Umbrales actuales: ' + gN(GEST_CHK.hrsDif,1) + ' hr de diferencia en horas &middot; ' +
+       gN(GEST_CHK.m3DifPct*100,0) + '% y ' + gN(GEST_CHK.m3DifMin) + ' m³ en producción &middot; ' +
+       'rendimiento fuera de ' + gN(GEST_CHK.rendBajo*100,0) + '&ndash;' + gN(GEST_CHK.rendAlto*100,0) +
+       '% del estándar.</div>';
+
+  cont.innerHTML = h;
+  pop.style.display = 'flex';
+}
+
+/* Pinta el botón del toolbar con el número y el color de la peor observación. */
+function gestPintaBotonChequeos(D){
+  var b = document.getElementById('gest-btn-chequeos');
+  if (!b) return;
+  var obs = [];
+  try { obs = gestChequeos(D); } catch(e){ console.warn('[GEST] chequeos:', e.message); }
+  var peor = obs.length ? obs[0].nivel : null;
+  var col = peor === 'alta' ? '#c0392b' : (peor === 'media' ? '#e67e22' :
+            (peor === 'baja' ? '#2471a3' : '#1a6b3a'));
+  b.style.background = obs.length ? col : '#fff';
+  b.style.color = obs.length ? '#fff' : '#1a6b3a';
+  b.style.borderColor = col;
+  b.innerHTML = '&#128269; Chequeos' + (obs.length ? ' (' + obs.length + ')' : ' &#10004;');
+  b.title = obs.length
+    ? obs.map(function(o){ return '• ' + o.titulo + ' (' + o.filas.length + ')'; }).join('\n')
+    : 'Las fuentes calzan y el reparto es consistente';
 }
 
 /* ---------- Exportar a Excel ---------- */
@@ -15221,6 +16265,16 @@ function gestExportar(){
         <div id="ds-detalle-content"></div>
       </div>
     </div>
+    <!-- POPUP CHEQUEOS DE CONSISTENCIA (Ficha de Gestion) -->
+    <div id="gest-chequeos-popup" onclick="if(event.target===this)this.style.display='none'"
+         style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.45);z-index:10001;justify-content:center;align-items:center;padding:20px;">
+      <div style="background:#fff;border-radius:12px;padding:18px 22px;max-width:1000px;width:96%;box-shadow:0 8px 30px rgba(0,0,0,0.3);position:relative;max-height:85vh;overflow-y:auto;">
+        <button onclick="document.getElementById('gest-chequeos-popup').style.display='none'"
+                style="position:absolute;top:8px;right:10px;background:#c0392b;color:#fff;border:none;border-radius:4px;padding:3px 10px;font-size:10px;font-weight:700;cursor:pointer;">&#10005; Cerrar</button>
+        <div id="gest-chequeos-content"></div>
+      </div>
+    </div>
+
     <!-- POPUP DETALLE DE PERDIDAS DE LA CASCADA (Ficha de Gestion) -->
     <div id="gest-detalle-popup" onclick="if(event.target===this)this.style.display='none'"
          style="display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.45);z-index:10001;justify-content:center;align-items:center;padding:20px;">
@@ -15292,6 +16346,8 @@ function gestExportar(){
         if(ds.vma_rod&&Object.keys(ds.vma_rod).length){ try{ VMA_ROD=ds.vma_rod; }catch(e){} }
         if(ds.bht_dias&&ds.bht_dias.length){ try{ BHT_DIAS=ds.bht_dias; }catch(e){} }
         if(ds.prod_faena_mes&&Object.keys(ds.prod_faena_mes).length){ try{ PROD_FAENA_MES=ds.prod_faena_mes; }catch(e){} }
+        // Dataset v8f: hoja "Base datos Procesador Mecaniz" (ranking de operadores MEDIDO, botón "Fuente: solo BaseHorasTrab")
+        if(ds.fmn_dias&&ds.fmn_dias.length){ try{ FMN_DIAS=(typeof sinFaenasFuera==='function')?sinFaenasFuera(ds.fmn_dias):ds.fmn_dias; }catch(e){} }
         // Datasets v8c "brechas" (horas perdidas unificadas BaseHorasPerdUnif + detenciones WhatsApp)
         if(ds.hperd_unif&&Object.keys(ds.hperd_unif).length){ try{ HPERD_UNIF=ds.hperd_unif; }catch(e){} }
         if(ds.wa_det&&ds.wa_det.length){ try{ WA_DET=ds.wa_det; }catch(e){} }
