@@ -6625,22 +6625,26 @@ app.get('/api/mant/historial/:equipo_id', auth, async(req,res)=>{
 app.get('/api/mant/historial-tecnico', auth, async(req,res)=>{
   try{
     const{equipo_id,empresa_id,faena_id,desde,hasta,tipo,estado}=req.query;
+    // Fecha de referencia de la OT: la más antigua entre apertura, inicio y término (hay OT abiertas en el sistema después de ejecutadas)
+    const FREF="LEAST(o.fecha_apertura, COALESCE(o.fecha_inicio::date,o.fecha_apertura), COALESCE(o.fecha_termino::date,o.fecha_apertura))";
     let w=["o.estado<>'cancelada'"],v=[];
     if(equipo_id){v.push(equipo_id);w.push(`o.equipo_id=$${v.length}`);}
     if(empresa_id){v.push(empresa_id);w.push(`COALESCE(o.empresa_id,eq.empresa_id)=$${v.length}`);}
     if(faena_id){v.push(faena_id);w.push(`COALESCE(o.faena_id,eq.faena_id)=$${v.length}`);}
-    if(desde){v.push(desde);w.push(`o.fecha_apertura>=$${v.length}::date`);}
-    if(hasta){v.push(hasta);w.push(`o.fecha_apertura<=$${v.length}::date`);}
+    if(desde){v.push(desde);w.push(`${FREF}>=$${v.length}::date`);}
+    if(hasta){v.push(hasta);w.push(`${FREF}<=$${v.length}::date`);}
     if(tipo){v.push(tipo);w.push(`o.tipo_mantencion=$${v.length}`);}
     if(estado==='cerradas')w.push("o.estado='cerrada'"); else if(estado==='abiertas')w.push("o.estado<>'cerrada'");
     const ots=(await pool.query(`
       SELECT o.ot_id,o.numero_ot,o.equipo_id,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,eq.horas_productivas_dia,
              o.faena_id,COALESCE(f.nombre,f2.nombre) AS faena_nombre,emp.razon_social AS empresa_nombre,
-             o.tipo_mantencion,o.origen,o.estado,o.prioridad,o.sistema,o.fecha_apertura,o.fecha_inicio,o.fecha_termino,o.horometro_servicio,o.kilometraje_servicio,
+             o.tipo_mantencion,o.origen,o.estado,o.prioridad,o.sistema,o.fecha_apertura,o.fecha_inicio,o.fecha_termino,${FREF} AS fecha_ref,
+             COALESCE(o.horometro_servicio,(SELECT l.horometro FROM mant_lecturas l WHERE l.ot_id=o.ot_id AND l.horometro>0 ORDER BY l.fecha DESC LIMIT 1)) AS horometro_servicio,o.kilometraje_servicio,
              o.sintoma_reportado,o.diagnostico,o.causa,o.trabajo_realizado,o.responsable,o.mecanico_asignado,o.taller_tipo,o.taller_nombre,o.plan_id,
              COALESCE(o.tiempo_detenido_hrs,0) AS tiempo_detenido_hrs,
              COALESCE(o.costo_total,0) AS costo_total_guardado,
-             COALESCE((SELECT SUM(m.costo_total) FROM mant_ot_materiales m WHERE m.ot_id=o.ot_id),0) AS c_materiales,
+             COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON d.oc_id=oc.oc_id WHERE d.ot_id=o.ot_id AND oc.estado<>'ANULADA' AND oc.anulado_en IS NULL),0) AS c_compras,
+             COALESCE((SELECT SUM(m.costo_total) FROM mant_ot_materiales m WHERE m.ot_id=o.ot_id AND COALESCE(m.origen,'')<>'compra'),0) AS c_materiales,
              COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS c_salidas,
              GREATEST(COALESCE((SELECT SUM(pp.costo_total) FROM mant_ot_personal pp WHERE pp.ot_id=o.ot_id),0),
                       COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0)) AS c_mo_interna,
@@ -6648,7 +6652,8 @@ app.get('/api/mant/historial-tecnico', auth, async(req,res)=>{
              COALESCE(o.costo_servicios,0) AS c_servicios,
              COALESCE(NULLIF(o.costo_traslado,0),o.costo_combustible_traslado,0) AS c_traslado,
              COALESCE(o.costo_otros,0) AS c_otros,
-             (SELECT string_agg(s.sistema,', ' ORDER BY s.es_principal DESC,s.sistema) FROM mant_ot_sistemas s WHERE s.ot_id=o.ot_id) AS sistemas,
+             COALESCE((SELECT string_agg(s.sistema,', ' ORDER BY s.es_principal DESC,s.sistema) FROM mant_ot_sistemas s WHERE s.ot_id=o.ot_id),
+                      (SELECT string_agg(DISTINCT COALESCE(ms.nombre,t.sistema),', ') FROM mant_ot_tareas t LEFT JOIN mant_sistemas ms ON t.sistema_id=ms.sistema_id WHERE t.ot_id=o.ot_id AND COALESCE(ms.nombre,t.sistema) IS NOT NULL)) AS sistemas,
              (SELECT COUNT(*) FROM mant_ot_tareas t WHERE t.ot_id=o.ot_id) AS n_tareas,
              (SELECT COUNT(*) FROM mant_ot_tareas t WHERE t.ot_id=o.ot_id AND t.estado IN ('completada','realizada','ok','cerrada')) AS n_tareas_ok,
              (SELECT string_agg(DISTINCT pe.nombre_completo,', ') FROM mant_ot_personal pp JOIN personal pe ON pp.persona_id=pe.persona_id WHERE pp.ot_id=o.ot_id) AS personal,
@@ -6660,19 +6665,20 @@ app.get('/api/mant/historial-tecnico', auth, async(req,res)=>{
       LEFT JOIN faenas f2 ON eq.faena_id=f2.faena_id
       LEFT JOIN empresas emp ON COALESCE(o.empresa_id,eq.empresa_id)=emp.empresa_id
       WHERE ${w.join(' AND ')}
-      ORDER BY o.fecha_apertura DESC, o.ot_id DESC`,v)).rows;
+      ORDER BY ${FREF} DESC, o.ot_id DESC`,v)).rows;
     const num=function(x){return parseFloat(x)||0;};
     const DAY=86400000;
     const iso=function(d){if(!d)return null;var t=new Date(d);return isNaN(t)?null:t.toISOString().slice(0,10);};
     // ── Por OT: desglose y total recalculado (no depende de que costo_total esté al día) ──
     ots.forEach(function(o){
-      o.c_repuestos=num(o.c_materiales)+num(o.c_salidas);
+      o.c_compras=num(o.c_compras); o.c_materiales=num(o.c_materiales); o.c_salidas=num(o.c_salidas);
+      o.c_repuestos=o.c_compras+o.c_materiales+o.c_salidas;
       o.c_mo_interna=num(o.c_mo_interna); o.c_mo_externa=num(o.c_mo_externa); o.c_servicios=num(o.c_servicios); o.c_traslado=num(o.c_traslado); o.c_otros=num(o.c_otros);
       o.costo_total=o.c_repuestos+o.c_mo_interna+o.c_mo_externa+o.c_servicios+o.c_traslado+o.c_otros;
       o.tiempo_detenido_hrs=num(o.tiempo_detenido_hrs);
       var fi=o.fecha_inicio||o.fecha_apertura, ft=o.fecha_termino;
       o.dias_duracion=(fi&&ft)?Math.max(0,Math.round((new Date(ft)-new Date(fi))/DAY)):null;
-      o.dias_abierta=(o.estado!=='cerrada'&&o.fecha_apertura)?Math.max(0,Math.round((Date.now()-new Date(o.fecha_apertura))/DAY)):null;
+      o.dias_abierta=(o.estado!=='cerrada'&&(o.fecha_ref||o.fecha_apertura))?Math.max(0,Math.round((Date.now()-new Date(o.fecha_ref||o.fecha_apertura))/DAY)):null;
       o.sistema_ref=o.sistema||(o.sistemas?String(o.sistemas).split(',')[0].trim():'')||'Sin sistema';
     });
     // ── Agregaciones ──
@@ -6685,7 +6691,7 @@ app.get('/api/mant/historial-tecnico', auth, async(req,res)=>{
       if(tp==='correctivo')R.costo_correctivo+=o.costo_total; else if(tp==='preventivo')R.costo_preventivo+=o.costo_total;
       if(!porTipo[tp])porTipo[tp]={tipo:tp,n:0,costo:0,hrs_detenido:0};
       porTipo[tp].n++;porTipo[tp].costo+=o.costo_total;porTipo[tp].hrs_detenido+=o.tiempo_detenido_hrs;
-      var mes=(iso(o.fecha_apertura)||'').slice(0,7)||'s/f';
+      var mes=(iso(o.fecha_ref||o.fecha_apertura)||'').slice(0,7)||'s/f';
       if(!porMes[mes])porMes[mes]={mes:mes,n:0,costo:0,preventivo:0,correctivo:0,otros:0,hrs_detenido:0};
       porMes[mes].n++;porMes[mes].costo+=o.costo_total;porMes[mes].hrs_detenido+=o.tiempo_detenido_hrs;
       if(tp==='preventivo')porMes[mes].preventivo+=o.costo_total; else if(tp==='correctivo')porMes[mes].correctivo+=o.costo_total; else porMes[mes].otros+=o.costo_total;
@@ -6694,7 +6700,7 @@ app.get('/api/mant/historial-tecnico', auth, async(req,res)=>{
       porSistema[sk].n++;porSistema[sk].costo+=o.costo_total;if(tp==='correctivo')porSistema[sk].correctivas++;
     });
     // MTBF (días entre correctivas) y MTTR (horas detenido promedio de correctivas)
-    var corr=ots.filter(function(o){return o.tipo_mantencion==='correctivo'&&o.fecha_apertura;}).map(function(o){return new Date(o.fecha_apertura).getTime();}).sort(function(a,b){return a-b;});
+    var corr=ots.filter(function(o){return o.tipo_mantencion==='correctivo'&&(o.fecha_ref||o.fecha_apertura);}).map(function(o){return new Date(o.fecha_ref||o.fecha_apertura).getTime();}).sort(function(a,b){return a-b;});
     var mtbf=null; if(corr.length>=2){var gaps=0;for(var i=1;i<corr.length;i++)gaps+=(corr[i]-corr[i-1])/DAY;mtbf=gaps/(corr.length-1);}
     var corrHrs=ots.filter(function(o){return o.tipo_mantencion==='correctivo'&&o.tiempo_detenido_hrs>0;});
     var mttr=corrHrs.length?corrHrs.reduce(function(a,o){return a+o.tiempo_detenido_hrs;},0)/corrHrs.length:null;
@@ -6724,7 +6730,7 @@ app.get('/api/mant/historial-tecnico', auth, async(req,res)=>{
       }
     }
     R.horas_operadas=horasOperadas; R.costo_por_hora=(horasOperadas&&horasOperadas>0)?R.costo_total/horasOperadas:null; R.disponibilidad_pct=disponibilidad;
-    var topOT=ots.slice().sort(function(a,b){return b.costo_total-a.costo_total;}).slice(0,5).map(function(o){return{ot_id:o.ot_id,numero_ot:o.numero_ot,fecha_apertura:o.fecha_apertura,tipo_mantencion:o.tipo_mantencion,sistema_ref:o.sistema_ref,costo_total:Math.round(o.costo_total),equipo_codigo:o.equipo_codigo,trabajo_realizado:o.trabajo_realizado};});
+    var topOT=ots.slice().sort(function(a,b){return b.costo_total-a.costo_total;}).slice(0,5).map(function(o){return{ot_id:o.ot_id,numero_ot:o.numero_ot,fecha_apertura:o.fecha_apertura,fecha_ref:o.fecha_ref,tipo_mantencion:o.tipo_mantencion,sistema_ref:o.sistema_ref,costo_total:Math.round(o.costo_total),equipo_codigo:o.equipo_codigo,trabajo_realizado:o.trabajo_realizado};});
     var round=function(obj){Object.keys(obj).forEach(function(k){if(typeof obj[k]==='number'&&k!=='mtbf_dias'&&k!=='mttr_hrs'&&k!=='disponibilidad_pct'&&k!=='costo_por_hora'&&k!=='horas_operadas')obj[k]=Math.round(obj[k]*100)/100;});return obj;};
     res.json({
       filtros:{equipo_id:equipo_id||null,empresa_id:empresa_id||null,faena_id:faena_id||null,desde:desde||null,hasta:hasta||null,tipo:tipo||null,estado:estado||'todas'},
@@ -6734,7 +6740,7 @@ app.get('/api/mant/historial-tecnico', auth, async(req,res)=>{
       por_mes:Object.values(porMes).map(round).sort(function(a,b){return a.mes<b.mes?-1:1;}),
       por_sistema:Object.values(porSistema).map(round).sort(function(a,b){return b.costo-a.costo;}),
       top_ot:topOT,
-      ots:ots.map(function(o){['c_materiales','c_salidas','c_repuestos','c_mo_interna','c_mo_externa','c_servicios','c_traslado','c_otros','costo_total','costo_total_guardado'].forEach(function(k){o[k]=Math.round(num(o[k]));});return o;})
+      ots:ots.map(function(o){['c_compras','c_materiales','c_salidas','c_repuestos','c_mo_interna','c_mo_externa','c_servicios','c_traslado','c_otros','costo_total','costo_total_guardado'].forEach(function(k){o[k]=Math.round(num(o[k]));});return o;})
     });
   }catch(e){res.status(500).json({error:e.message});}
 });
