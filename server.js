@@ -7884,6 +7884,86 @@ app.get('/api/finanzas/informe-costos', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
+// ══ ESTADO DE RESULTADOS POR FAENA — "hechos" (mes × faena × cargo × categoría) de ingresos y costos ══
+// El front pivotea: columnas por faena o por mes, filas del estado de resultados, drill-down categoría → cargo → documentos.
+// Faena de un costo: la de la línea/movimiento; si no trae, la del cargo (equipos.faena_id). Sin faena = costo común.
+app.get('/api/finanzas/eerr', auth, async(req,res)=>{
+  try{
+    const desde=String(req.query.desde||'').slice(0,10), hasta=String(req.query.hasta||'').slice(0,10);
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(desde)||!/^\d{4}-\d{2}-\d{2}$/.test(hasta)) return res.status(400).json({error:'Indica desde y hasta (AAAA-MM-DD)'});
+    const empresaId=req.query.empresa_id||null;
+    const mDesde=desde.slice(0,7), mHasta=hasta.slice(0,7);
+    const num=function(x){return parseFloat(x)||0;};
+    const H=[], warn=[];
+    const push=function(o){ if(!num(o.monto)&&!num(o.m3)) return; o.monto=Math.round(num(o.monto)); if(o.m3!==undefined)o.m3=Math.round(num(o.m3)*1000)/1000; H.push(o); };
+    async function q2(label,sql,vals){try{return (await pool.query(sql,vals)).rows;}catch(e){warn.push(label+': '+e.message);return[];}}
+    try{await finLiqEnsure();}catch(e){} try{await finRemuEnsure();}catch(e){} try{await finHonEnsure();}catch(e){}
+    const pM=empresaId?[mDesde,mHasta,empresaId]:[mDesde,mHasta];
+    const pD=empresaId?[desde,hasta,empresaId]:[desde,hasta];
+    const faenas=await q2('faenas',`SELECT f.faena_id,f.nombre,f.empresa_id,e.razon_social AS empresa_nombre,f.activo FROM faenas f LEFT JOIN empresas e ON f.empresa_id=e.empresa_id ORDER BY f.nombre`,[]);
+    // 1) INGRESOS: liquidaciones de producción del mandante (por faena de cada línea)
+    (await q2('ingresos',`SELECT l.periodo AS mes,l.empresa_id,x.faena_id,x.tipo,x.concepto,x.fundo_codigo,x.fundo_nombre,x.equipo_contrato,l.mandante,l.numero_ref,SUM(x.volumen_m3) AS m3,SUM(x.monto) AS monto
+        FROM fin_liquidaciones l JOIN fin_liquidacion_lineas x ON x.liq_id=l.liq_id
+        WHERE l.periodo>=$1 AND l.periodo<=$2 ${empresaId?'AND l.empresa_id=$3':''}
+        GROUP BY 1,2,3,4,5,6,7,8,9,10`,pM)).forEach(function(r){
+      var prod=r.tipo==='PRODUCCION';
+      push({mes:r.mes,empresa_id:r.empresa_id,faena_id:r.faena_id,tipo:'ingreso',linea:prod?'produccion':'partidas_especiales',
+        categoria:prod?((r.fundo_codigo?r.fundo_codigo+' — ':'')+(r.fundo_nombre||r.fundo_codigo||'Producción')):(r.concepto||'Partida especial'),
+        detalle:(r.equipo_contrato?'Equipo '+r.equipo_contrato+' · ':'')+(r.mandante||'')+(r.numero_ref?' · Ref '+r.numero_ref:''),equipo_id:null,monto:r.monto,m3:prod?r.m3:0,n:1});
+    });
+    // 2) REMUNERACIONES: costo empresa por trabajador (faena y cargo del detalle importado)
+    (await q2('remuneraciones',`SELECT (rp.anio||'-'||LPAD(rp.mes::text,2,'0')) AS mes,rp.empresa_id,d.faena_id,COALESCE(NULLIF(d.cargo,''),'Sin cargo') AS cargo,d.nombre,d.costo
+        FROM fin_remu_periodo rp JOIN fin_remu_detalle d ON d.periodo_id=rp.periodo_id
+        WHERE (rp.anio||'-'||LPAD(rp.mes::text,2,'0'))>=$1 AND (rp.anio||'-'||LPAD(rp.mes::text,2,'0'))<=$2 ${empresaId?'AND rp.empresa_id=$3':''}`,pM)).forEach(function(r){
+      push({mes:r.mes,empresa_id:r.empresa_id,faena_id:r.faena_id,tipo:'costo',linea:'remuneraciones',categoria:r.cargo,detalle:r.nombre||'',equipo_id:null,monto:r.costo,n:1});
+    });
+    // 3) HONORARIOS vigentes (BHE/BTE) por faena asignada
+    (await q2('honorarios',`SELECT periodo AS mes,empresa_id,faena_id,tipo,prestador_nombre,numero,bruto FROM fin_honorarios
+        WHERE estado='VIGENTE' AND periodo>=$1 AND periodo<=$2 ${empresaId?'AND empresa_id=$3':''}`,pM)).forEach(function(r){
+      push({mes:r.mes,empresa_id:r.empresa_id,faena_id:r.faena_id,tipo:'costo',linea:'honorarios',categoria:(r.tipo||'BHE')==='BTE'?'Boletas de terceros (BTE)':'Boletas de honorarios (BHE)',detalle:(r.prestador_nombre||'')+' · N° '+(r.numero||''),equipo_id:null,monto:r.bruto,n:1});
+    });
+    // 4) INVENTARIO: salidas de bodega valorizadas (faena del movimiento o del cargo)
+    (await q2('inventario',`SELECT TO_CHAR(me.fecha,'YYYY-MM') AS mes,COALESCE(eq.empresa_id,f.empresa_id) AS empresa_id,COALESCE(me.faena_id,eq.faena_id) AS faena_id,me.equipo_id,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,COALESCE(sc.nombre,'Sin categoría') AS categoria,SUM(md.costo_total) AS monto,COUNT(*) AS n
+        FROM movimiento_encabezado me JOIN movimiento_detalle md ON md.movimiento_id=me.movimiento_id JOIN productos p ON md.producto_id=p.producto_id
+        LEFT JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id LEFT JOIN equipos eq ON me.equipo_id=eq.equipo_id LEFT JOIN faenas f ON COALESCE(me.faena_id,eq.faena_id)=f.faena_id
+        WHERE me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO' AND me.fecha BETWEEN $1 AND $2 ${empresaId?'AND COALESCE(eq.empresa_id,f.empresa_id)=$3':''}
+        GROUP BY 1,2,3,4,5,6,7`,pD)).forEach(function(r){
+      push({mes:r.mes,empresa_id:r.empresa_id,faena_id:r.faena_id,tipo:'costo',linea:'inventario',categoria:r.categoria,detalle:'',equipo_id:r.equipo_id,equipo_nombre:r.equipo_id?((r.equipo_codigo||'')+' '+(r.equipo_nombre||'')).trim():null,monto:r.monto,n:parseInt(r.n)||0});
+    });
+    // 5) COMBUSTIBLE: distribuciones valorizadas
+    (await q2('combustible',`SELECT TO_CHAR(m.fecha,'YYYY-MM') AS mes,COALESCE(m.empresa_id,eq.empresa_id) AS empresa_id,COALESCE(m.faena_id,eq.faena_id) AS faena_id,m.equipo_id,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,COALESCE(ct.nombre,'Combustible') AS categoria,SUM(m.costo_total) AS monto,SUM(m.litros) AS litros,COUNT(*) AS n
+        FROM comb_movimientos m LEFT JOIN comb_tipos ct ON m.tipo_id=ct.tipo_id LEFT JOIN equipos eq ON m.equipo_id=eq.equipo_id
+        WHERE m.tipo_mov='DISTRIBUCION' AND m.estado='ACTIVO' AND m.fecha BETWEEN $1 AND $2 ${empresaId?'AND COALESCE(m.empresa_id,eq.empresa_id)=$3':''}
+        GROUP BY 1,2,3,4,5,6,7`,pD)).forEach(function(r){
+      push({mes:r.mes,empresa_id:r.empresa_id,faena_id:r.faena_id,tipo:'costo',linea:'combustible',categoria:r.categoria,detalle:'',equipo_id:r.equipo_id,equipo_nombre:r.equipo_id?((r.equipo_codigo||'')+' '+(r.equipo_nombre||'')).trim():null,monto:r.monto,litros:num(r.litros),n:parseInt(r.n)||0});
+    });
+    // 6) COMPRAS DIRECTAS Y SERVICIOS: OC cerradas, líneas no inventariables (sin activo fijo ni diferidas)
+    (await q2('compras',`SELECT TO_CHAR(oc.fecha_emision,'YYYY-MM') AS mes,oc.empresa_id,COALESCE(d.faena_id,eq.faena_id) AS faena_id,d.equipo_id,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,COALESCE(sc.nombre,'Servicios / Gasto directo') AS categoria,pr.nombre AS proveedor,SUM(d.total_linea) AS monto,COUNT(*) AS n
+        FROM ordenes_compra oc JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id LEFT JOIN productos p ON d.producto_id=p.producto_id
+        LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,p.subcategoria_id)=sc.subcategoria_id LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
+        WHERE oc.estado='CERRADA' AND COALESCE(d.ingresa_bodega,false)=false AND COALESCE(oc.es_activo_fijo,false)=false AND COALESCE(oc.es_diferido,false)=false
+          AND oc.fecha_emision BETWEEN $1 AND $2 ${empresaId?'AND oc.empresa_id=$3':''}
+        GROUP BY 1,2,3,4,5,6,7,8`,pD)).forEach(function(r){
+      push({mes:r.mes,empresa_id:r.empresa_id,faena_id:r.faena_id,tipo:'costo',linea:'compras',categoria:r.categoria,detalle:r.proveedor||'',equipo_id:r.equipo_id,equipo_nombre:r.equipo_id?((r.equipo_codigo||'')+' '+(r.equipo_nombre||'')).trim():null,monto:r.monto,n:parseInt(r.n)||0});
+    });
+    // 7) DEPRECIACIÓN: cuota mensual de cada activo fijo (prorrateo diario), faena del activo o del cargo
+    const slices=difMesesSlices(desde,hasta);
+    (await q2('depreciacion',`SELECT af.*,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,COALESCE(af.faena_id,eq.faena_id) AS faena_ref FROM activos_fijos af LEFT JOIN equipos eq ON af.equipo_id=eq.equipo_id WHERE 1=1 ${empresaId?'AND af.empresa_id=$1':''}`,empresaId?[empresaId]:[])).forEach(function(a){
+      slices.forEach(function(sl){var c=calcularDepreciacion(a,sl.desde,sl.hasta).cuota_periodo;if(c>0)push({mes:sl.mes,empresa_id:a.empresa_id,faena_id:a.faena_ref,tipo:'costo',linea:'depreciacion',categoria:a.categoria||'Depreciación activo fijo',detalle:a.descripcion||'',equipo_id:a.equipo_id,equipo_nombre:a.equipo_id?((a.equipo_codigo||'')+' '+(a.equipo_nombre||'')).trim():null,monto:c,n:1});});
+    });
+    // 8) GASTOS DIFERIDOS: devengo mensual de OC diferidas (prorrateo diario dentro de la vigencia)
+    (await q2('diferidos',`SELECT oc.oc_id,oc.numero_oc,oc.dif_desde,oc.dif_hasta,oc.dif_cerrado_en,oc.dif_descripcion,oc.empresa_id,COALESCE(d.faena_id,eq.faena_id) AS faena_id,d.equipo_id,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,COALESCE(sc.nombre,'Gasto diferido') AS categoria,d.total_linea AS monto
+        FROM ordenes_compra oc JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id LEFT JOIN productos p ON d.producto_id=p.producto_id
+        LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,p.subcategoria_id)=sc.subcategoria_id LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id
+        WHERE oc.estado='CERRADA' AND COALESCE(oc.es_diferido,false)=true AND oc.dif_desde IS NOT NULL AND oc.dif_hasta IS NOT NULL
+          AND oc.dif_desde<=$2::date AND COALESCE(oc.dif_cerrado_en,oc.dif_hasta)>=$1::date ${empresaId?'AND oc.empresa_id=$3':''}`,pD)).forEach(function(r){
+      var monto=num(r.monto); if(!monto) return;
+      slices.forEach(function(sl){var c=calcularDevengoDiferido(r,monto,sl.desde,sl.hasta).cuota_periodo;if(c>0)push({mes:sl.mes,empresa_id:r.empresa_id,faena_id:r.faena_id,tipo:'costo',linea:'diferidos',categoria:r.categoria+' (devengado)',detalle:r.numero_oc+(r.dif_descripcion?' · '+r.dif_descripcion:''),equipo_id:r.equipo_id,equipo_nombre:r.equipo_id?((r.equipo_codigo||'')+' '+(r.equipo_nombre||'')).trim():null,monto:c,n:1});});
+    });
+    res.json({periodo:{desde:desde,hasta:hasta,mes_desde:mDesde,mes_hasta:mHasta,meses:slices.map(function(x){return x.mes;})},faenas:faenas,hechos:H,advertencias:warn});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 // Detalle drill-down: movimientos que componen el costo de una dimensión
 app.get('/api/finanzas/informe-costos/detalle', auth, async(req,res)=>{
   try{
