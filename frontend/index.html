@@ -5159,7 +5159,9 @@ var EERR_LINEAS=[
   {k:'honorarios',l:'Honorarios (BHE/BTE)',tipo:'costo',c:'#7C3AED'},
   {k:'combustible',l:'Combustible',tipo:'costo',c:'#DC2626'},
   {k:'inventario',l:'Repuestos e insumos (bodega)',tipo:'costo',c:'#EA580C'},
-  {k:'compras',l:'Compras directas y servicios',tipo:'costo',c:'#B45309'},
+  {k:'compras',l:'Compras directas y servicios (OC cerradas)',tipo:'costo',c:'#B45309'},
+  {k:'oc_abiertas',l:'Compras en OC abiertas (sin cerrar)',tipo:'costo',c:'#9A3412'},
+  {k:'gastos_sin_oc',l:'Facturas sin OC (gasto directo)',tipo:'costo',c:'#6B7280'},
   {k:'depreciacion',l:'Depreciación activo fijo',tipo:'costo',c:'#0891B2'},
   {k:'diferidos',l:'Gastos diferidos (devengo)',tipo:'costo',c:'#0F766E'}
 ];
@@ -5276,7 +5278,9 @@ function EERRFaenaView(p){
       '<tr><td colspan="'+(colKeys.length+1)+'" style="'+tl+'font-weight:800;color:#B91C1C;background:#FEF2F2;">COSTOS</td></tr>'+EERR_LINEAS.filter(function(L){return L.tipo==='costo';}).map(function(L){var v={};colKeys.forEach(function(k){v[k]=POR[k][L.k]||0;});return fila(L.l,v,false,null,null,true);}).join('')+fila('TOTAL COSTOS',COS,true,'#B91C1C','#FEF2F2')+
       (function(){var mg={};colKeys.forEach(function(k){mg[k]=(ING[k]||0)-(COS[k]||0);});var s=fila('MARGEN (EBITDA)',mg,true,'#1E3A2D','#E9F1EC');
         s+='<tr><td style="'+tl+'font-style:italic;color:#6B7280;padding-left:18px;">Margen %</td>'+colKeys.map(function(k){return '<td style="'+td+'font-style:italic;color:#6B7280;">'+pctS(mg[k],ING[k])+'</td>';}).join('')+'</tr>';
-        s+='<tr><td style="'+tl+'font-style:italic;color:#6B7280;padding-left:18px;">m³ producidos · costo $/m³</td>'+colKeys.map(function(k){return '<td style="'+td+'font-style:italic;color:#6B7280;">'+(M3[k]?nf(M3[k],1)+' · '+money(COS[k]/M3[k]):'—')+'</td>';}).join('')+'</tr>';
+        s+='<tr><td style="'+tl+'font-style:italic;color:#6B7280;padding-left:18px;">m³ producidos</td>'+colKeys.map(function(k){return '<td style="'+td+'font-style:italic;color:#6B7280;">'+(M3[k]?nf(M3[k],1):'—')+'</td>';}).join('')+'</tr>';
+        s+='<tr><td style="'+tl+'font-style:italic;color:#6B7280;padding-left:18px;">Ingreso por m³</td>'+colKeys.map(function(k){return '<td style="'+td+'font-style:italic;color:#6B7280;">'+(M3[k]?money(ING[k]/M3[k]):'—')+'</td>';}).join('')+'</tr>';
+        s+='<tr><td style="'+tl+'font-style:italic;color:#6B7280;padding-left:18px;">Costo por m³</td>'+colKeys.map(function(k){return '<td style="'+td+'font-style:italic;color:#6B7280;">'+(M3[k]?money(COS[k]/M3[k]):'—')+'</td>';}).join('')+'</tr>';
         if(vista==='faena'&&prorratear&&hayComun){var ca={};var rn={};colKeys.forEach(function(k){ca[k]=k==='comun'?-(COS['comun']||0):(k==='*'?0:(comunAsig[k]||0));rn[k]=mg[k]-ca[k];});s+=fila('Costos comunes asignados (prorrateo por ingresos)',ca,false,'#92400E','#FFFBEB');s+=fila('RESULTADO DESPUÉS DE COMUNES',rn,true,'#1E3A2D','#E9F1EC');}
         return s;})()+
       '</tbody></table>'+
@@ -5326,11 +5330,12 @@ function EERRFaenaView(p){
             h('tr',null,h('td',{colSpan:colKeys.length+1,style:{padding:'6px 8px',fontSize:11,fontWeight:800,color:'#166534',background:'#F0FDF4'}},'INGRESOS')),
             EERR_LINEAS.filter(function(L){return L.tipo==='ingreso';}).map(filaLinea),
             filaTotal('TOTAL INGRESOS',ING,'#166534','#F0FDF4'),
-            filaInfo('m³ producidos · ingreso $/m³',function(k){return M3[k]?nf(M3[k],1)+' m³ · '+money(ING[k]/M3[k]):'—';}),
+            filaInfo('m³ producidos',function(k){return M3[k]?nf(M3[k],1)+' m³':'—';}),
+            filaInfo('Ingreso por m³',function(k){return M3[k]?money(ING[k]/M3[k]):'—';}),
             h('tr',null,h('td',{colSpan:colKeys.length+1,style:{padding:'6px 8px',fontSize:11,fontWeight:800,color:'#B91C1C',background:'#FEF2F2'}},'COSTOS')),
             EERR_LINEAS.filter(function(L){return L.tipo==='costo';}).map(filaLinea),
             filaTotal('TOTAL COSTOS',COS,'#B91C1C','#FEF2F2',ING),
-            filaInfo('costo $/m³',function(k){return M3[k]?money(COS[k]/M3[k]):'—';}),
+            filaInfo('Costo por m³',function(k){return M3[k]?money(COS[k]/M3[k]):'—';}),
             (function(){var mg={};colKeys.forEach(function(k){mg[k]=(ING[k]||0)-(COS[k]||0);});return filaTotal('MARGEN (EBITDA DE FAENA)',mg,'#1E3A2D','#E9F1EC',ING);})(),
             vista==='faena'&&prorratear&&hayComun&&(function(){var mg={},ca={},rn={};colKeys.forEach(function(k){mg[k]=(ING[k]||0)-(COS[k]||0);ca[k]=k==='comun'?-(COS['comun']||0):(k==='*'?0:(comunAsig[k]||0));rn[k]=mg[k]-ca[k];});
               return [h('tr',{key:'ca',style:{borderBottom:'1px solid #F1F5F9'}},h('td',{style:Object.assign({},lblS,{color:'#92400E',background:'#FFFBEB'})},'Costos comunes asignados (prorrateo por ingresos)'),colKeys.map(function(k){return celda(ca[k]?money(ca[k]):'—',{key:k,color:'#92400E',bg:'#FFFBEB'});})),
@@ -5363,7 +5368,7 @@ function EERRFaenaView(p){
           esMov&&!conCargo&&h('div',{style:{marginTop:8}},h('button',{onClick:function(){abrirDocs(null);},style:{padding:'5px 12px',background:'#1E40AF',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontSize:11,fontWeight:600}},'📄 Ver documentos de esta categoría'))
         )
       ),
-      h('div',{style:{fontSize:10,color:'#94A3B8'}},'Ingresos: liquidaciones de producción por faena. Costos: remuneraciones (costo empresa por faena del trabajador), honorarios vigentes, combustible distribuido, salidas de bodega a costo promedio, compras directas y servicios de OC cerradas, depreciación lineal y devengo de gastos diferidos. La faena de un costo es la de la línea o movimiento y, si no la trae, la del cargo; lo que no tiene faena queda en "Común". El margen es el EBITDA de faena (antes de intereses, impuestos y comunes no asignados). Los ingresos por ventas del libro RCV se mantienen en Resultado del Año.')
+      h('div',{style:{fontSize:10,color:'#94A3B8'}},'Ingresos: liquidaciones de producción por faena. Costos: remuneraciones (costo empresa por faena del trabajador), honorarios vigentes, combustible distribuido, salidas de bodega a costo promedio, compras directas y servicios de OC cerradas, compras en OC abiertas (líneas no inventariables de OC aún sin cerrar, para que servicios recurrentes como leasing o alimentación no queden fuera mientras no llega la factura), facturas marcadas como gasto sin OC en la bandeja DTE (sin faena: van a Común), depreciación lineal y devengo de gastos diferidos. La faena de un costo es la de la línea o movimiento y, si no la trae, la del cargo; lo que no tiene faena queda en "Común". El margen es el EBITDA de faena (antes de intereses, impuestos y comunes no asignados). Los ingresos por ventas del libro RCV se mantienen en Resultado del Año.')
     ),
     modal&&h(CostoDetalleModal,{tok:p.tok,desde:modal.desde,hasta:modal.hasta,empresaId:empresaId,dimension:modal.dimension,valor:modal.valor,nombre:modal.nombre,catInicial:modal.catInicial,onClose:function(){setModal(null);}})
   );
