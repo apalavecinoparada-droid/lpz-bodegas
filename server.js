@@ -13289,7 +13289,10 @@ function impParseTexto(txt){
   bloques.forEach(function(bl){
     var nombre=null,tipo=null;
     if(/^FORMULARIO DE COTIZACIONES PREVISIONALES/.test(bl)&&/SEGURO SOCIAL/i.test(bl)){
-      nombre='Seguro Social Previsional (ISL)';tipo='ISL';
+      // Reforma de pensiones (Ley 21.735, planillas desde 08/2026): el "Formulario Seguro Social Previsional" trae la
+      // cotización del empleador (Seguro Social Previsional + Rentabilidad Protegida) y el SIS, que dejó de ir en las AFP.
+      if(/Rentabilidad Protegida|SEGURO SOCIAL PREVISIONAL/i.test(bl)){nombre='Seguro Social Previsional (reforma pensiones)';tipo='SSP';}
+      else{nombre='Seguro Social Previsional (ISL)';tipo='ISL';}
     }else if(/^PLANILLA DE DECLARACION Y PAGO SIMULTANEO/.test(bl)&&/FONASA/i.test(bl)){
       nombre='FONASA';tipo='FONASA';
     }else{
@@ -13298,14 +13301,19 @@ function impParseTexto(txt){
       nombre=inst.trim();
       tipo=/^AFP/i.test(nombre)?'AFP':(/^ISAPRE/i.test(nombre)?'ISAPRE':(/^Caja/i.test(nombre)?'CCAF':(/Seguridad|Mutual/i.test(nombre)?'MUTUAL':'OTRA')));
     }
-    const folio=(bl.match(/N[uú]mero de Folio:\s*(\d+)/i)||[])[1]||'';
+    const folio=(bl.match(/N[uú]mero de Folio:\s*(\d+)/i)||[])[1]||(bl.match(/N[UÚ]MERO DE SERIE:\s*(\d+)/i)||[])[1]||'';
     // Período: "Periodo 01/2026" (AFP) o "Enero 2026" (ISAPRE/CCAF)
     var periodo='';
-    var m1=bl.match(/Periodo\s+(\d{1,2})\/(\d{4})/i);
+    var m1=bl.match(/Periodo\s+(\d{1,2})\/(\d{4})/i)||bl.match(/Per[ií]odo de Remuneraciones:?\s*(\d{1,2})\/(\d{4})/i);
     if(m1)periodo=m1[2]+'-'+('0'+parseInt(m1[1])).slice(-2);
     else{
       var m2=bl.match(/(Enero|Febrero|Marzo|Abril|Mayo|Junio|Julio|Agosto|Septiembre|Octubre|Noviembre|Diciembre)\s+(\d{4})/i);
       if(m2)periodo=m2[2]+'-'+('0'+IMP_MESES[m2[1].toLowerCase()]).slice(-2);
+      else{
+        // Formularios Seguro Social / FONASA: el período va en un cuadro (mes y año en líneas separadas) después del rótulo PERIODO
+        var m3=bl.match(/PER[IÍ]ODO[^\n]*\n[\s\S]{0,120}?\n\s*(0[1-9]|1[0-2])\s*\n\s*(20\d{2})\s*\n/i);
+        if(m3)periodo=m3[2]+'-'+m3[1];
+      }
     }
     var fp=bl.match(/Fecha Pago\s*:?\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i)||bl.match(/Pago Electr[oó]nico\s*\n?\s*(\d{1,2})\/(\d{1,2})\/(\d{4})/i);
     const fechaPago=fp?(fp[3]+'-'+('0'+parseInt(fp[2])).slice(-2)+'-'+('0'+parseInt(fp[1])).slice(-2)):null;
@@ -13344,16 +13352,34 @@ function impParseTexto(txt){
         if(monto>0)break;
       }
     }
-    const renta=num((bl.match(/Renta Imponible\s*\n?\s*([\d\.]+)/i)||[])[1]);
+    // Componentes del resumen (Seguro Social Previsional, Rentabilidad Protegida, SIS, salud FONASA...): pares "rótulo / monto" entre RESUMEN y MONTO PAGADO
+    if(monto>0&&detalle.length===1&&detalle[0].concepto==='MONTO PAGADO'){
+      var iRes=-1,iMp=-1;
+      for(var lr=0;lr<lineasBl.length;lr++){if(iRes<0&&/^RESUMEN/i.test(lineasBl[lr].trim()))iRes=lr;if(iRes>=0&&/MONTO PAGADO/i.test(lineasBl[lr])){iMp=lr;break;}}
+      if(iRes>=0&&iMp>iRes){
+        var comp=[];
+        for(var lc=iRes+1;lc<iMp-1;lc++){
+          var lab=lineasBl[lc].trim(), val=(lineasBl[lc+1]||'').trim();
+          if(!lab||!/[A-Za-zÀ-ſ]/.test(lab)||/^Subtotal/i.test(lab)||/^TOTAL REMUNERACI/i.test(lab)||/^PERIODO/i.test(lab))continue;
+          var mv=val.match(/^\$?([\d][\d\.]*)$/);
+          if(mv&&num(mv[1])>0){comp.push({concepto:lab.replace(/:$/,''),monto:num(mv[1])});lc++;}
+        }
+        if(comp.length){detalle.length=0;comp.forEach(function(x){detalle.push(x);});detalle.push({concepto:'MONTO PAGADO',monto:monto});}
+      }
+    }
+    const renta=num((bl.match(/Renta Imponible\s*\n?\s*([\d\.]+)/i)||[])[1])
+        ||num((bl.match(/TOTAL REMUNERACI[ÓO]N IMPONIBLE DECLARADA EN \$\s*\n?\s*\$?\s*([\d][\d\.]*)/i)||[])[1]);
     var nT=parseInt((bl.match(/FDO\.?\s*PENSIONES\s+(\d+)/i)||[])[1]||0)
-        ||parseInt((bl.match(/N[°º] de Afiliados Informados\s*\n?\s*(\d+)/i)||[])[1]||0);
+        ||parseInt((bl.match(/N[°º]\s*(?:de\s+)?Afiliados Informados\s*\n?\s*(\d+)/i)||[])[1]||0);
     // Desglose: el comprobante AFP trae fondo de pensiones + seguro de cesantía (AFC) en un mismo pago
     var mCes=detalle.reduce(function(s,d){return s+(/CESANT/i.test(d.concepto)?d.monto:0);},0);
     comprobantes.push({institucion:nombre,tipo:tipo,folio:folio,periodo:periodo,fecha_pago:fechaPago,
       monto:monto,monto_cesantia:mCes,monto_pensiones:monto-mCes,
       renta_imponible:renta,n_trabajadores:nT,detalle:detalle});
   });
-  return{rut_empresa:rutEmp,comprobantes:comprobantes};
+  // Las páginas de detalle por trabajador repiten el encabezado del formulario y quedan como bloques sin monto: se descartan
+  const limpios=comprobantes.filter(function(c){return c.monto!==0||c.detalle.length>0;});
+  return{rut_empresa:rutEmp,comprobantes:limpios};
 }
 
 // POST: parsear el PDF de imposiciones (no guarda)
