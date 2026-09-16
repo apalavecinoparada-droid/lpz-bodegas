@@ -11890,6 +11890,22 @@ app.get('/api/prevencion/irl-plantillas', auth, async(req,res)=>{
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
+// Cargar / restaurar las plantillas oficiales (las que faltan por nombre, sin empresa)
+app.post('/api/prevencion/irl-plantillas/semilla', auth, async(req,res)=>{
+  try{
+    await prevDocsEnsure();
+    let insertadas=0;
+    for(const sd of PREV_IRL_SEED){
+      const ex=await pool.query('SELECT 1 FROM prev_irl_plantillas WHERE empresa_id IS NULL AND nombre=$1',[sd.nombre]);
+      if(ex.rows.length)continue;
+      await pool.query(`INSERT INTO prev_irl_plantillas(empresa_id,orden,nombre,codigo,version,fecha_aprobacion,cargo_titulo,grupo_objetivo,espacio_trabajo,condiciones_ambientales,orden_aseo,maquinas_herramientas,riesgos,material,cargos_match)
+        VALUES(NULL,$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [sd.orden,sd.nombre,sd.codigo,sd.version,sd.fecha_aprobacion,sd.cargo_titulo,sd.grupo_objetivo,sd.espacio_trabajo,sd.condiciones_ambientales,sd.orden_aseo,sd.maquinas_herramientas,JSON.stringify(sd.riesgos),JSON.stringify(sd.material),JSON.stringify(sd.cargos_match)]);
+      insertadas++;
+    }
+    res.json({ok:true,insertadas,total:PREV_IRL_SEED.length});
+  }catch(e){res.status(400).json({error:e.message});}
+});
 app.post('/api/prevencion/irl-plantillas', auth, async(req,res)=>{
   try{
     await prevDocsEnsure();
