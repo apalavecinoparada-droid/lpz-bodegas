@@ -10626,7 +10626,7 @@ var GRAFX = null;      // datos hoja Tablaparametros para gráficos Rendimiento 
 var DIESEL_DATA = null; // datos panel "Combustible Consumido vs Programado" (replica TabladinamicaDiesel), array de {equipo,faena,ym,empresa,tipo,cod,lts,hrs,hperd,rendAct,rendStd,difLts,mesTxt}
 /* Sello de version: se imprime en la consola al abrir. Si el numero que aparece
    no es el ultimo, el navegador esta sirviendo una copia vieja del archivo. */
-var APP_BUILD = '25-09-2026 Costo hora Mec 5: tramos bajo 0,40 desde tabla KPI';
+var APP_BUILD = '28-09-2026 Lupa muestra el reparto del dia por grupo';
 console.log('%c[APP] build ' + APP_BUILD, 'background:#1a6b3a;color:#fff;padding:2px 6px;');
 
 
@@ -10845,13 +10845,13 @@ var WA_DET = [];
    proceso pero es norma de seguridad con torre y no se recupera nunca. */
 var RECUP_NOM = {
   1: 'No deber\u00edan existir', 2: 'Espera por otro proceso',
-  3: 'Parte de la operaci\u00f3n', 4: 'No recuperable'
+  3: 'Parte de la operaci\u00f3n (no recuperable)', 4: 'Externas (no recuperable)'
 };
 var RECUP_COL = {1:'#b83a2e', 2:'#d68910', 3:'#5b6570', 4:'#8b949e'};
 var RECUP_QUE = {
   1: 'Fallas, "Otros", falta de personal y traslados mal planificados',
   2: 'La m\u00e1quina estaba buena, esperando a otra',
-  3: 'Se reduce, pero no se elimina',
+  3: 'Inevitables: mantenci\u00f3n programada, cambio de cadena, combustible, charlas. Se controlan, pero no se cuentan como recuperables',
   4: 'Clima e incendio'
 };
 var RECUP_MAPA = {
@@ -10911,15 +10911,96 @@ function recupFmtSem(lun){
   var dd = function(z){ return z.substring(8,10) + '-' + z.substring(5,7); };
   return 'Semana ' + dd(lun) + ' al ' + dd(f.toISOString().substring(0,10));
 }
+/* Reparto de las horas de un equipo-dia entre sus causas (28-09-2026).
+   BaseHorasPerdUnif trae UNA "causa principal" por equipo-dia, pero el dia suele tener
+   varias: "FALLA EQUIPO 2.0h · CHARLA 0.2h · CAMBIO DE CADENA 0.2h ...". Antes todas las
+   horas se cargaban a la principal, y las charlas, cadenas y medicion de largos quedaban
+   contadas como falla (lo vio Gustavo en Mec 5). Ahora:
+   - se toma el desglose de la fuente que aporta las horas; si esa no trae desglose
+     (BaseHorasTrab), el desglose mas completo entre Mininco, BaseHorasPer y WhatsApp;
+   - si el desglose suma mas que las horas del dia, se achica a prorrata;
+   - si suma menos, lo que falta queda en la causa principal.
+   Devuelve [{causa, hrs}] que suma exactamente d.hrs. */
+function perdDesgloseFmt(txt){          // "CAUSA 1.2h · CAUSA 0.2h" (Mininco y BaseHorasPer)
+  var out = [];
+  String(txt || '').split('\u00b7').forEach(function(pz){
+    var m = pz.trim().match(/^(.*?)\s+([\d.,]+)\s*h$/i);
+    if (m && parseFloat(m[2].replace(',', '.')) > 0)
+      out.push({causa: m[1].trim(), hrs: parseFloat(m[2].replace(',', '.'))});
+  });
+  return out;
+}
+/* El WhatsApp viene en texto libre ("0.2h control de largos | 0.2h cambio cadenas"):
+   se traduce a la causa del catalogo por palabras clave. Lo que no se reconoce no se
+   inventa: queda en la causa principal. */
+var PERD_WA_CLAVES = [
+  // calibracion y ajuste de rueda medidora = falla de equipo (Gustavo, 28-09-2026)
+  [/r77|falla|flexible|fuga|repara|sproket|manguera|cabezal|rotula|cilindro|perno|calibra|rueda medidora/, 'FALLA EQUIPO'],
+  [/distancia/, 'DISTANCIA DE SEGURIDAD'],
+  [/largo|medici/, 'MEDICION DE LARGO DE TROZOS'],
+  [/cadena|espada/, 'CAMBIO DE CADENA O ESPADA'],
+  [/mantenci|aceite|filtro|reaprete|engrase/, 'MANTENCION PROGRAMADA'],
+  [/clima|viento|lluvia|incendio/, 'CLIMA'],
+  [/paso (de )?cami|paso de veh/, 'DETENIDO POR PASO DE VEHICULOS'],
+  [/cargu/, 'DETENIDO POR CARGUIO DE CAMIONES'],
+  [/atochamiento/, 'ATOCHAMIENTO EN CANCHA'],
+  [/sin asistencia|falta de asistencia/, 'DETENIDO POR FALTA DE ASISTENCIA'],
+  [/volteo/, 'DETENIDO POR FALTA DE VOLTEO'],
+  [/madereo|madera|clasificar|arrumado/, 'DETENIDO POR FALTA DE MADEREO'],
+  [/fundo|por tierra/, 'TRASLADO POR TIERRA'],
+  [/traslado|cambio (de )?sector/, 'TRASLADO DENTRO FAENA'],
+  [/charla|achs|capacita|reuni|pauta|planificaci/, 'CHARLA, CAPACITACIONES O REUNIONES'],
+  [/marcha/, 'PUESTA EN MARCHA'],
+  [/formin/, 'MONITOREO Y/O PARALIZACION FORMIN'],
+  [/combustible|petroleo|petr\u00f3leo/, 'CARGA COMBUSTIBLE O ACEITE'],
+  [/atraso|retras/, 'ATRASO INICIO O SALIDA TEMPRANA DE FAENA']
+];
+function perdDesgloseWA(txt){
+  var out = [];
+  String(txt || '').split('|').forEach(function(pz){
+    var m = pz.trim().match(/^([\d.,]+)\s*h\s+(.*)$/i);
+    if (!m) return;
+    var h = parseFloat(m[1].replace(',', '.')); if (!(h > 0)) return;
+    var t = m[2].toLowerCase();
+    for (var i = 0; i < PERD_WA_CLAVES.length; i++)
+      if (PERD_WA_CLAVES[i][0].test(t)) { out.push({causa: PERD_WA_CLAVES[i][1], hrs: h}); return; }
+  });
+  return out;
+}
+function perdRepartir(d){
+  var H = d.hrs || 0, ppal = d.causa || '';
+  if (!(H > 0)) return [];
+  var cand = {Mininco: perdDesgloseFmt(d.detFO), BaseHorasPer: perdDesgloseFmt(d.detBP),
+              WhatsApp: perdDesgloseWA(d.txt)};
+  var suma = function(a){ return a.reduce(function(s, x){ return s + x.hrs; }, 0); };
+  var des = cand[d.fuente] && cand[d.fuente].length ? cand[d.fuente] : null, desDe = des ? d.fuente : '';
+  if (!des) ['Mininco', 'BaseHorasPer', 'WhatsApp'].forEach(function(k){
+    if (cand[k].length && (!des || suma(cand[k]) > suma(des))) { des = cand[k]; desDe = k; }
+  });
+  if (!des){ var uno = [{causa: ppal, hrs: H}]; uno.desDe = ''; return uno; }
+  var S = suma(des), f = S > H ? H / S : 1, acc = {};
+  des.forEach(function(x){ acc[x.causa] = (acc[x.causa] || 0) + x.hrs * f; });
+  if (S < H) acc[ppal] = (acc[ppal] || 0) + (H - S);
+  var res = Object.keys(acc).map(function(c){ return {causa: c, hrs: Math.round(acc[c] * 1000) / 1000}; });
+  res.desDe = desDe;
+  return res;
+}
 function recupDatos(conTope){
   var out = [];
   Object.keys(window.HPERD_UNIF || {}).forEach(function(k){
     var p = k.split('|'), eq = p[0], fa = p[1];
     (HPERD_UNIF[k].dias || []).forEach(function(d){
       if (!d.fecha || !d.hrs) return;
-      out.push({ eq: eq, faena: fa, fecha: d.fecha, hrs: d.hrs, hrsReg: d.hrs,
-                 causa: d.causa || '', g: recupGrupo(d.causa),
-                 proc: bhtProcPorEquipo(eq) });
+      var det = d.queFallo || d.txt || d.obs || d.detFO || d.detBP || '';
+      var rep = perdRepartir(d);
+      rep.forEach(function(pz){
+        out.push({ eq: eq, faena: fa, fecha: d.fecha, hrs: pz.hrs, hrsReg: pz.hrs,
+                   causa: pz.causa, g: recupGrupo(pz.causa),
+                   proc: bhtProcPorEquipo(eq),
+                   hrsDia: d.hrs, rep: rep,
+                   // texto para la lupa de cada proceso (28-09-2026)
+                   det: det });
+      });
     });
   });
   if (conTope === false) return out;
@@ -11121,6 +11202,25 @@ function recupRender(){
    estaria contando la misma madera cuatro veces (volteo, madereo, procesado y
    clasificado mueven el mismo arbol). */
 var RECUP_D = [];
+/* Estilo de las ventanas que abre la lupa (28-09-2026, pedido de Gustavo): se abren con
+   un movimiento y un destello, llevan cabecera de color y un boton "Cerrar" visible, y
+   la pagina se desplaza hasta ellas. Antes se confundian con el resto de la ficha. */
+function recupEstilos(){
+  if (document.getElementById('recup-anim-css')) return;
+  var st = document.createElement('style');
+  st.id = 'recup-anim-css';
+  st.textContent =
+    '@keyframes recupAbre{0%{opacity:0;transform:translateY(-10px) scale(.985);}100%{opacity:1;transform:none;}}' +
+    '@keyframes recupDestello{0%{box-shadow:0 0 0 0 rgba(26,107,58,.55);}70%{box-shadow:0 0 0 10px rgba(26,107,58,0);}100%{box-shadow:0 3px 12px rgba(0,0,0,.12);}}' +
+    '.recup-ventana{animation:recupAbre .35s ease-out, recupDestello 1.1s ease-out;box-shadow:0 3px 12px rgba(0,0,0,.12);border-radius:8px;}' +
+    '.recup-cerrar{float:right;background:#b83a2e;color:#fff;border:none;border-radius:14px;padding:3px 12px;' +
+    'font-size:11px;font-weight:700;cursor:pointer;margin-left:10px;}' +
+    '.recup-cerrar:hover{background:#8e2a20;}';
+  document.head.appendChild(st);
+}
+function recupMostrar(el){
+  try { el.scrollIntoView({behavior:'smooth', block:'nearest'}); } catch(e){}
+}
 function recupDetalle(faena, grupo, destino){
   if (grupo === undefined) grupo = 1;
   var cont = document.getElementById(destino || 'rec-detalle');
@@ -11147,15 +11247,22 @@ function recupDetalle(faena, grupo, destino){
     ? faena + ' \u00b7 sus ' + n1(tot) + ' horas perdidas, por proceso'
     : faena + ' \u00b7 de d\u00f3nde salen las ' + n1(tot) + ' horas del grupo ' + grupo + ', "' + RECUP_NOM[grupo] + '"';
   var color = (grupo === null) ? '#1a6b3a' : RECUP_COL[grupo];
-  var h = '<div style="border:1px solid #e1e4e8;border-left:4px solid ' + color + ';border-radius:0 6px 6px 0;padding:10px 14px;background:#fbfdfc;">' +
-    '<div style="font-weight:700;color:' + color + ';margin-bottom:2px;">' + titulo + '</div>' +
+  recupEstilos();
+  var h = '<div class="recup-ventana" style="border:2px solid ' + color + ';border-left:6px solid ' + color + ';padding:10px 14px;background:#fff;">' +
+    '<div style="font-weight:700;color:' + color + ';margin-bottom:2px;">&#128269; ' + titulo +
+    '<button class="recup-cerrar" onclick="recupDetalle(\'' + String(faena).replace(/'/g, "\\'") + '\',' + (grupo === null ? 'null' : grupo) +
+    ',\'' + (destino || 'rec-detalle') + '\')">&#10005; Cerrar</button></div>' +
     '<div style="font-size:11px;color:#57606a;margin-bottom:8px;">La misma madera pasa por las cuatro m\u00e1quinas, pero los m\u00b3 se miden una sola vez, en el <b>Procesado</b>. Por eso solo esas horas se valorizan.</div>';
   h += '<table style="width:100%;font-size:12px;border-collapse:collapse;">';
   Object.keys(porProc).sort(function(a,b){ return porProc[b] - porProc[a]; }).forEach(function(p){
     var esProc = (p === 'Procesado');
     h += '<tr style="border-top:1px solid #eee;' + (esProc ? 'background:#eef6f1;' : '') + '">' +
       '<td style="padding:4px 6px;font-weight:' + (esProc ? '700' : '600') + ';color:' + (esProc ? '#1a6b3a' : '#57606a') + ';width:24%;">' + p + '</td>' +
-      '<td style="padding:4px 6px;text-align:right;width:11%;font-weight:' + (esProc ? '700' : '400') + ';">' + n1(porProc[p]) + ' hrs</td>' +
+      '<td style="padding:4px 6px;text-align:right;width:11%;font-weight:' + (esProc ? '700' : '400') + ';">' +
+        '<span onclick="recupDetProc(\'' + (destino || 'rec-detalle') + '\',\'' + p.replace(/'/g, "\\'") + '\')" ' +
+        'title="Ver d&iacute;a por d&iacute;a qu&eacute; m&aacute;quina y qu&eacute; causa suman estas horas" ' +
+        'style="cursor:pointer;border-bottom:1px dotted #9aa5ad;">' + n1(porProc[p]) +
+        ' hrs <span style="font-size:10px;opacity:.6;">&#128269;</span></span></td>' +
       '<td style="padding:4px 6px;color:#57606a;">' +
         Object.keys(porEq).filter(function(e){ return eqProc[e] === p; })
           .sort(function(a,b){ return porEq[b] - porEq[a]; })
@@ -11166,6 +11273,8 @@ function recupDetalle(faena, grupo, destino){
                 : (p.charAt(0) === '(' ? 'equipo de apoyo' : 'alimenta al Procesado')) + '</td></tr>';
   });
   h += '</table>';
+  h += '<div id="' + (destino || 'rec-detalle') + '-proc"></div>';
+  RECUP_DET_FILAS[destino || 'rec-detalle'] = filas;
   var causas = Object.keys(porCausa).sort(function(a,b){ return porCausa[b] - porCausa[a]; });
   h += '<div style="margin-top:8px;font-size:11px;color:#57606a;"><b>Por qu\u00e9:</b> ' +
        causas.slice(0, 8).map(function(c){ return c.toLowerCase() + ' <b>' + n1(porCausa[c]) + '</b>'; }).join(' \u00b7 ') +
@@ -11173,6 +11282,62 @@ function recupDetalle(faena, grupo, destino){
   h += '</div>';
   cont.innerHTML = h;
   cont.setAttribute('data-clave', clave);
+  recupMostrar(cont);
+}
+
+/* Lupa de cada proceso dentro del desglose (28-09-2026, pedido de Gustavo): lista dia por
+   dia las filas maquina-dia que suman esas horas, con causa y detalle. Segundo click cierra. */
+var RECUP_DET_FILAS = {};
+/* Reparto del dia en la lupa (28-09-2026): el texto de terreno trae todo el dia mezclado
+   (falla + charla + cadena...) y parecia que lo del grupo 3 estaba metido en el grupo 1.
+   Aqui se muestra como se repartieron las horas del dia: la causa de esta fila en negrita
+   y cada otro pedazo con su grupo (G1..G4) y color. */
+function recupRepartoTxt(r, n1, esc){
+  var rep = r.rep || [];
+  if (rep.length < 2) return '<span style="color:#8b949e;">todo el d&iacute;a a esta causa</span>';
+  var partes = rep.slice().sort(function(a, b){ return b.hrs - a.hrs; }).map(function(pz){
+    var g = recupGrupo(pz.causa), col = RECUP_COL[g] || '#57606a';
+    var nom = esc(recupNorm(pz.causa).toLowerCase());
+    if (recupNorm(pz.causa) === recupNorm(r.causa))
+      return '<b style="color:#24292f;">' + nom + ' ' + n1(pz.hrs) + '</b>';
+    return '<span style="color:' + col + ';">' + nom + ' ' + n1(pz.hrs) + ' <sup>G' + g + '</sup></span>';
+  });
+  return '<span style="color:#57606a;">D&iacute;a ' + n1(r.hrsDia || 0) + ' h' +
+         (rep.desDe ? ' (desglose ' + esc(rep.desDe) + ')' : '') + ':</span> ' + partes.join(' &middot; ');
+}
+function recupDetProc(destino, proc){
+  var cont = document.getElementById(destino + '-proc');
+  if (!cont) return;
+  if (cont.getAttribute('data-proc') === proc && cont.innerHTML){ cont.innerHTML = ''; cont.removeAttribute('data-proc'); return; }
+  var filas = (RECUP_DET_FILAS[destino] || []).filter(function(r){ return r.proc === proc; })
+    .sort(function(a,b){ return a.fecha < b.fecha ? -1 : a.fecha > b.fecha ? 1 : (a.eq < b.eq ? -1 : 1); });
+  var n1 = function(x){ return (Math.round(x*10)/10).toLocaleString('es-CL', {minimumFractionDigits:1, maximumFractionDigits:1}); };
+  var esc = function(t){ return String(t || '').replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); };
+  var tot = filas.reduce(function(s, r){ return s + r.hrs; }, 0);
+  var th = function(t, al){ return '<th style="background:#57606a;color:#fff;padding:4px 7px;font-size:10.5px;text-align:' + (al || 'left') + ';">' + t + '</th>'; };
+  recupEstilos();
+  var h = '<div class="recup-ventana" style="margin:10px 0 4px;border:2px solid #2c3e50;overflow:hidden;">' +
+          '<div style="background:#2c3e50;padding:7px 10px;font-size:12px;font-weight:700;color:#fff;">&#128269; ' + esc(proc) +
+          ': ' + filas.length + ' registros m&aacute;quina-d&iacute;a &middot; ' + n1(tot) + ' hrs' +
+          '<button class="recup-cerrar" onclick="recupDetProc(\'' + destino + '\',\'' + proc.replace(/'/g, "\\'") + '\')">&#10005; Cerrar</button></div>' +
+          '<div style="max-height:320px;overflow:auto;"><table style="width:100%;border-collapse:collapse;font-size:11px;"><thead><tr>' +
+          th('Fecha') + th('M&aacute;quina') + th('Causa') + th('Horas', 'right') + th('Detalle') + '</tr></thead><tbody>';
+  filas.forEach(function(r, i){
+    var fe = r.fecha ? r.fecha.substring(8,10) + '-' + r.fecha.substring(5,7) : '';
+    var tope = (r.hrsReg && Math.abs(r.hrsReg - r.hrs) > 0.05)
+      ? ' <span title="Anotadas ' + n1(r.hrsReg) + ' h; se descuenta lo que pasa del m&aacute;ximo diario" style="color:#b9770e;">(de ' + n1(r.hrsReg) + ')</span>' : '';
+    h += '<tr style="background:' + (i % 2 ? '#fafbfc' : '#fff') + ';border-top:1px solid #eee;">' +
+         '<td style="padding:3px 7px;white-space:nowrap;">' + fe + '</td>' +
+         '<td style="padding:3px 7px;white-space:nowrap;font-weight:600;">' + esc(r.eq) + '</td>' +
+         '<td style="padding:3px 7px;color:#57606a;">' + esc(recupNorm(r.causa) || '(sin causa anotada)').toLowerCase() + '</td>' +
+         '<td style="padding:3px 7px;text-align:right;font-weight:700;white-space:nowrap;">' + n1(r.hrs) + tope + '</td>' +
+         '<td style="padding:3px 7px;color:#57606a;">' + recupRepartoTxt(r, n1, esc) +
+           (r.det ? '<div style="font-size:9.5px;color:#9aa4ad;margin-top:1px;">' + esc(r.det).substring(0, 180) + '</div>' : '') + '</td></tr>';
+  });
+  h += '</tbody></table></div></div>';
+  cont.innerHTML = h;
+  cont.setAttribute('data-proc', proc);
+  recupMostrar(cont);
 }
 
 /* Estandar m3/hr del Procesado de la faena, por la misma via que la Ficha de Gestion:
@@ -15195,15 +15360,20 @@ function gestNorm(s){
 
 function gestClaseCausa(causa){
   var c = gestNorm(causa);
-  if (GEST_INDUCIDA[c]) return {clase:'inducida', culpa: GEST_INDUCIDA[c]};
   if (GEST_EXTERNA[c])  return {clase:'externa',  culpa:''};
+  /* 28-09-2026 (Gustavo): lo que es PARTE DE LA OPERACION (grupo 3 de Horas Recuperables:
+     mantencion programada, cambio de cadena, combustible, charlas, distancia de seguridad...)
+     es inevitable: no es "falla propia" ni plata recuperable. */
+  if (typeof RECUP_MAPA !== 'undefined' && RECUP_MAPA[c] === 3) return {clase:'operacion', culpa:''};
+  if (GEST_INDUCIDA[c]) return {clase:'inducida', culpa: GEST_INDUCIDA[c]};
   return {clase:'propia', culpa:''};
 }
 
 var GEST_CLASE_TXT = {
   propia:  {t:'Falla propia',        c:'#c0392b'},
   inducida:{t:'Espera de otro proceso', c:'#e67e22'},
-  externa: {t:'Causa externa',       c:'#7f8c8d'}
+  externa: {t:'Causa externa',       c:'#7f8c8d'},
+  operacion:{t:'Parte de la operación (no recuperable)', c:'#5b6570'}
 };
 
 /* ---------- Helpers de formato ---------- */
@@ -15409,17 +15579,22 @@ function gestDatos(faena, esp, ym){
     var proceso = procDeEquipo[gestNorm(equipo)] ||
                   (typeof bhtProcPorEquipo === 'function' ? bhtProcPorEquipo(equipo) : '(sin proceso)');
     (HPERD_UNIF[k].dias||[]).forEach(function(dd){
-      var cc = gestClaseCausa(dd.causa);
-      D.perd.push({equipo:equipo, proceso:proceso, fecha:dd.fecha, hrs:dd.hrs||0,
-                   causa:(dd.causa || 'SIN CAUSA'), clase:cc.clase, culpa:cc.culpa,
-                   fuente:dd.fuente||'', obs:dd.obs||dd.txt||'',
-                   /* detalle de la falla, para el popup del botón de la cascada */
-                   hFalla:dd.hFalla||0, comp:dd.comp||'', queFallo:dd.queFallo||''});
+      /* 28-09-2026: el dia se reparte entre sus causas (perdRepartir), para que la
+         charla o el cambio de cadena no queden contados como falla propia. */
+      perdRepartir(dd).forEach(function(pz){
+        var cc = gestClaseCausa(pz.causa);
+        D.perd.push({equipo:equipo, proceso:proceso, fecha:dd.fecha, hrs:pz.hrs,
+                     causa:(pz.causa || 'SIN CAUSA'), clase:cc.clase, culpa:cc.culpa,
+                     fuente:dd.fuente||'', obs:dd.obs||dd.txt||'',
+                     /* detalle de la falla, para el popup del botón de la cascada */
+                     hFalla:dd.hFalla||0, comp:dd.comp||'', queFallo:dd.queFallo||''});
+      });
     });
   });
-  D.hPerdTot = 0; D.hPropia = 0; D.hInducida = 0; D.hExterna = 0;
+  D.hPerdTot = 0; D.hPropia = 0; D.hInducida = 0; D.hExterna = 0; D.hOperacion = 0;
   D.perd.forEach(function(r){
     D.hPerdTot += r.hrs;
+    if (r.clase === 'operacion') D.hOperacion += r.hrs;
     if (r.clase === 'propia')   D.hPropia   += r.hrs;
     if (r.clase === 'inducida') D.hInducida += r.hrs;
     if (r.clase === 'externa')  D.hExterna  += r.hrs;
@@ -15441,23 +15616,25 @@ function gestDatos(faena, esp, ym){
   var kProc = null;
   Object.keys(D.proc).forEach(function(p){ if (/procesad/i.test(p)) kProc = p; });
   var hrsP = kProc ? D.proc[kProc].hrs : 0;
-  var pp = 0, pi = 0, pe = 0;
+  var pp = 0, pi = 0, pe = 0, po = 0;
   D.perd.forEach(function(r){
     if (!/procesad/i.test(r.proceso)) return;
     if (r.clase === 'propia')   pp += r.hrs;
     if (r.clase === 'inducida') pi += r.hrs;
     if (r.clase === 'externa')  pe += r.hrs;
+    if (r.clase === 'operacion') po += r.hrs;
   });
   var std = (D.tramo && D.tramo.Procesador) ? D.tramo.Procesador.m3hr : 0;
   var real = hrsP > 0 ? D.m3/hrsP : 0;
   D.casc = {
-    hrsTrab: hrsP, hpPropia: pp, hpInducida: pi, hpExterna: pe,
-    hrsDisp: hrsP + pp + pi + pe,
+    hrsTrab: hrsP, hpPropia: pp, hpInducida: pi, hpExterna: pe, hpOperacion: po,
+    hrsDisp: hrsP + pp + pi + pe + po,
     std: std, real: real,
-    pot:      (hrsP + pp + pi + pe) * std,
+    pot:      (hrsP + pp + pi + pe + po) * std,
     propia:   pp * std,
     inducida: pi * std,
     externa:  pe * std,
+    operacion: po * std,        // inevitable: se muestra, pero NO suma a la plata recuperable
     ritmo:    hrsP * (std - real),          // negativo = va sobre el estándar
     reales:   D.m3
   };
@@ -15639,7 +15816,13 @@ function gestDatos(faena, esp, ym){
   /* Lo que vale devolverle una hora al cuello: esa hora sí se traduce en m³,
      porque hoy hay procesos parados esperandolo. */
   D.cuello.valorHora = D.cuello.cuello ? D.cuello.cuello.std * D.tarifa : 0;
-  D.cuello.horasRecuperables = D.cuello.cuello ? D.cuello.cuello.hp : 0;
+  D.cuello.horasRecuperables = 0;
+  if (D.cuello.cuello){
+    D.perd.forEach(function(r){
+      if (gestProcCanon(r.proceso) === D.cuello.cuello.proceso && (r.clase === 'propia' || r.clase === 'inducida'))
+        D.cuello.horasRecuperables += r.hrs;
+    });
+  }
 
   /* --- 9. Pareto de causas EN $ (no en horas): el orden cambia casi siempre,
          porque una hora del Procesador no vale lo mismo que una de la Garra. --- */
@@ -15849,8 +16032,8 @@ function gestAlertas(D){
       d:'Le provoca ' + gN(cu.provoca,1) + ' hrs de espera a los otros procesos: son horas que las ' +
         'otras máquinas pasaron detenidas esperándolo. Cada hora que se le devuelva vale ' +
         gPlata(CU.valorHora) + '.' +
-        (cu.hp > 0 ? ' Perdió ' + gN(cu.hp,1) + ' hrs este mes; recuperarlas vale ' +
-                     gPlata(cu.hp * CU.valorHora) + '.' : '')});
+        (CU.horasRecuperables > 0 ? ' Perdió ' + gN(CU.horasRecuperables,1) + ' hrs recuperables este mes (sin contar lo que es parte de la operación ni lo externo); recuperarlas vale ' +
+                     gPlata(CU.horasRecuperables * CU.valorHora) + '.' : '')});
   }
   (D.criticas || []).forEach(function(k){
     A.push({n: k.colchon ? 'media' : 'alta',
@@ -15994,11 +16177,11 @@ function gestAcciones(D){
             comoSeMide:'Que esas horas bajen el mes que viene.'});
   }
   // b) recuperarle horas al cuello: es la unica hora que se convierte en m3
-  if (D.cuello && D.cuello.cuello && D.cuello.cuello.hp > 0 && D.cuello.valorHora > 0){
-    var cu = D.cuello.cuello;
+  if (D.cuello && D.cuello.cuello && D.cuello.horasRecuperables > 0 && D.cuello.valorHora > 0){
+    var cu = D.cuello.cuello, hrC = D.cuello.horasRecuperables;
     A.push({txt:'Destrabar el ' + cu.proceso + ', que es el cuello: tiene a los otros procesos ' +
-                gN(cu.provoca,1) + ' hrs esperando y él mismo perdió ' + gN(cu.hp,1) + ' hrs',
-            plata: cu.hp * D.cuello.valorHora, m3: cu.hp * cu.std,
+                gN(cu.provoca,1) + ' hrs esperando y él mismo perdió ' + gN(hrC,1) + ' hrs recuperables',
+            plata: hrC * D.cuello.valorHora, m3: hrC * cu.std,
             metrica:'hrs perdidas del ' + cu.proceso,
             mkey:'cue|' + cu.proceso, valor: cu.hp,
             comoSeMide:'Que bajen las horas perdidas del proceso cuello.'});
@@ -16014,8 +16197,10 @@ function gestAcciones(D){
             comoSeMide:'Que el % del estándar suba.'});
   }
   // c) la causa que más plata cuesta
-  if (D.pareto.length){
-    var c0 = D.pareto[0];
+  // solo causas recuperables: ni la operacion ni las externas se "atacan"
+  var paretoRec = D.pareto.filter(function(x){ return x.clase === 'propia' || x.clase === 'inducida'; });
+  if (paretoRec.length){
+    var c0 = paretoRec[0];
     var esVago = /^OTROS|SIN CLASIFICAR/.test(gestNorm(c0.causa));
     A.push({txt: esVago
               ? 'Clasificar las ' + gN(c0.hrs,1) + ' hrs anotadas como "' + c0.causa +
@@ -16294,6 +16479,7 @@ function gestPintaCascada(D){
     {l:'Falla propia',          v:-c.propia,          tipo:'baja', col:'#c0392b', ay:gN(c.hpPropia,1)+' hrs',   cl:'propia'},
     {l:'Espera de otro proceso',v:-c.inducida,        tipo:'baja', col:'#e67e22', ay:gN(c.hpInducida,1)+' hrs', cl:'inducida'},
     {l:'Causa externa',         v:-c.externa,         tipo:'baja', col:'#7f8c8d', ay:gN(c.hpExterna,1)+' hrs',  cl:'externa'},
+    {l:'Parte de la operación (no recuperable)', v:-(c.operacion||0), tipo:'baja', col:'#5b6570', ay:gN(c.hpOperacion||0,1)+' hrs', cl:'operacion'},
     {l: ganaRitmo ? 'Ritmo sobre estándar' : 'Ritmo bajo estándar',
                                 v:-c.ritmo,           tipo: ganaRitmo?'sube':'baja', col: ganaRitmo?'#27ae60':'#9b59b6',
      ay:gN(c.hrsTrab,1)+' hrs × '+gN(Math.abs(c.std-c.real),1)+' m³/hr'},
@@ -16370,7 +16556,7 @@ function gestPintaCascada(D){
     '<th style="text-align:right;">m³</th><th style="text-align:right;">$</th>' +
     '<th style="text-align:right;">% del potencial</th></tr></thead><tbody>' +
     pasos.map(function(p, i){
-      var hrs = [c.hrsDisp, c.hpPropia, c.hpInducida, c.hpExterna, c.hrsTrab, c.hrsTrab][i];
+      var hrs = [c.hrsDisp, c.hpPropia, c.hpInducida, c.hpExterna, c.hpOperacion || 0, c.hrsTrab, c.hrsTrab][i];
       var cls = p.tipo === 'tot' ? ' style="background:#e8f5ee;font-weight:700;"' : '';
       var btn = (p.cl && Math.abs(p.v) > 0)
         ? ' <button onclick="gestVerDetalle(&quot;'+p.cl+'&quot;)" title="Ver el detalle día por día"' +
@@ -16524,9 +16710,9 @@ function gestPintaCuello(D){
     h += '<div style="margin-top:9px;padding:8px 10px;background:#f4f9f6;border:1px solid #d6e9de;border-radius:5px;font-size:11px;">' +
       '<b>Qu&eacute; hacer con esto:</b> destrabar el <b>' + cu.proceso + '</b>. Cada hora que se le devuelva vale <b>' +
       gPlata(C.valorHora) + '</b>, porque hoy hay m&aacute;quinas paradas esper&aacute;ndolo. ' +
-      (cu.hp > 0
-        ? 'Perdi&oacute; <b>' + gN(cu.hp,1) + ' hrs</b> este mes: recuperarlas vale <b>' +
-          gPlata(cu.hp * C.valorHora) + '</b>.'
+      (C.horasRecuperables > 0
+        ? 'Perdi&oacute; <b>' + gN(C.horasRecuperables,1) + ' hrs recuperables</b> este mes (sin lo que es parte de la operaci&oacute;n ni lo externo): recuperarlas vale <b>' +
+          gPlata(C.horasRecuperables * C.valorHora) + '</b>.'
         : '') + '</div>';
   }
   h += '<div style="font-size:9px;color:#999;margin-top:5px;">' +
@@ -17359,6 +17545,7 @@ function gestExportar(){
     ['Falla propia', c.hpPropia, -c.propia, -c.propia*D.tarifa],
     ['Espera de otro proceso', c.hpInducida, -c.inducida, -c.inducida*D.tarifa],
     ['Causa externa', c.hpExterna, -c.externa, -c.externa*D.tarifa],
+    ['Parte de la operación (no recuperable)', c.hpOperacion || 0, -(c.operacion||0), -(c.operacion||0)*D.tarifa],
     ['Ritmo vs estándar', c.hrsTrab, -c.ritmo, -c.ritmo*D.tarifa],
     ['m³ reales (cartola)', c.hrsTrab, c.reales, c.reales*D.tarifa],
     [], ['Plata dejada sobre la mesa', '', D.casc.perdidoTot, D.platoServido]
