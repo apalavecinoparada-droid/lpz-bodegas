@@ -17306,15 +17306,17 @@ function FinResultadoView(p){
           h('option',{value:''},'Ambas empresas (consolidado)'),
           empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);}))),
       data&&h(Btn,{v:'g',sm:true,onClick:calc},'↻ Recalcular'),
-      data&&h(Btn,{v:'teal',sm:true,onClick:function(){if(typeof XLSX==='undefined'){alert('Librería Excel no disponible');return;}var wb=XLSX.utils.book_new();var MESES_L2=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];var serie2=[];for(var mi2=1;mi2<=12;mi2++){var per2=anio+'-'+('0'+mi2).slice(-2);var d2=data.meses[per2]||{ventas:0,ventas_af:0,compras:0,compras_af:0,compras_dif:0,diferido_devengo:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};var rl2=Math.max(0,d2.remu_costo-d2.imposiciones-d2.ret_imp_unico);serie2.push({l:MESES_L2[mi2-1],v:d2.ventas,vaf:d2.ventas_af||0,c:d2.compras,af:d2.compras_af||0,r:rl2,i:d2.imposiciones,h:d2.honorarios});}
+      data&&h(Btn,{v:'teal',sm:true,onClick:function(){if(typeof XLSX==='undefined'){alert('Librería Excel no disponible');return;}var wb=XLSX.utils.book_new();var MESES_L2=['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];var serie2=[];for(var mi2=1;mi2<=12;mi2++){var per2=anio+'-'+('0'+mi2).slice(-2);var d2=data.meses[per2]||{ventas:0,ventas_af:0,compras:0,compras_af:0,compras_dif:0,diferido_devengo:0,remu_costo:0,imposiciones:0,ret_imp_unico:0,honorarios:0};var rl2=Math.max(0,d2.remu_costo-d2.imposiciones-d2.ret_imp_unico);serie2.push({l:MESES_L2[mi2-1],v:d2.ventas,vaf:d2.ventas_af||0,c:d2.compras,af:d2.compras_af||0,r:rl2,i:d2.imposiciones,h:d2.honorarios,dv:d2.diferido_devengo||0,cd:d2.compras_dif||0});}
         var aoa=[['Resultado del Año '+anio],['Concepto'].concat(MESES_L2).concat(['TOTAL'])];
-        [['Ventas (neto + exento)','v'],['Compras (neto + exento, del giro)','c'],['Remuneraciones líquidas','r'],['Imposiciones','i'],['Honorarios','h']].forEach(function(rw){
+        [['Ventas (neto + exento)','v'],['Compras (neto + exento, del giro)','c'],['Remuneraciones líquidas','r'],['Imposiciones','i'],['Honorarios','h'],['Devengo gastos diferidos','dv']].forEach(function(rw){
           var vals=serie2.map(function(s){return Math.round(s[rw[1]]);});
           aoa.push([rw[0]].concat(vals).concat([vals.reduce(function(a,b2){return a+b2;},0)]));});
-        var res2=serie2.map(function(s){return Math.round(s.v-s.c-s.r-s.i-s.h);});
+        var res2=serie2.map(function(s){return Math.round(s.v-s.c-s.r-s.i-s.h-s.dv);});
         aoa.push(['EBITDA DEL MES'].concat(res2).concat([res2.reduce(function(a,b2){return a+b2;},0)]));
         var afs2=serie2.map(function(s){return Math.round(s.af);});
         aoa.push(['Compras activo fijo (inversión, no resta)'].concat(afs2).concat([afs2.reduce(function(a,b2){return a+b2;},0)]));
+        var cds2=serie2.map(function(s){return Math.round(s.cd);});
+        aoa.push(['Compras gasto anticipado (no resta: se devenga)'].concat(cds2).concat([cds2.reduce(function(a,b2){return a+b2;},0)]));
         var vafs2=serie2.map(function(s){return Math.round(s.vaf);});
         aoa.push(['Ventas activo fijo (no suma al EBITDA)'].concat(vafs2).concat([vafs2.reduce(function(a,b2){return a+b2;},0)]));
         XLSX.utils.book_append_sheet(wb,XLSX.utils.aoa_to_sheet(aoa),'Resultado '+anio);
@@ -17378,6 +17380,7 @@ function FinDiferidosView(p){
   var[data,setData]=useState(null);var[loading,setLoading]=useState(false);var[err,setErr]=useState('');
   var[fEmp,setFEmp]=useState('');var[hasta,setHasta]=useState(new Date().toISOString().slice(0,10));
   var[sel,setSel]=useState(null);
+  function nf(n){return new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(n)||0));}
   var mods=(p.user&&p.user.modulos)||[];
   var puedeCerrar=!!(p.user&&(p.user.es_admin||mods.indexOf('ordenes-editar')>=0||(mods.indexOf('ordenes')>=0&&!mods.some(function(m){return String(m).indexOf('ordenes-')===0;}))));
   function load(){setLoading(true);setErr('');api('/fin/diferidos?hasta='+hasta+(fEmp?'&empresa_id='+fEmp:''),'GET',null,p.tok).then(function(r){setData(r);setLoading(false);}).catch(function(e){setErr(e.message);setLoading(false);});}
