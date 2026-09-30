@@ -12074,7 +12074,7 @@ app.get('/api/prevencion/cumplimiento', auth, async(req,res)=>{
 //  · El acta la registra quien dirige la reunión (permiso 'comite-dirigir' o admin). La editan: quien dirige, quien la creó o un admin.
 //  · El acta la ven sus asistentes (usuarios marcados), quien dirige, quien la creó y quienes tienen 'comite-dirigir'/admin.
 //  · El estado de un acuerdo lo cambia su responsable (usuario), además de quien edita el acta o un admin. Cada cambio queda en bitácora.
-const COMITE_AREAS=['OPERACIONES','PREVENCION','AMBIENTE','FINANZAS','ADQUISICIONES','RRHH','OTROS'];
+const COMITE_AREAS=['OPERACIONES','MANTENCION','PREVENCION','AMBIENTE','FINANZAS','ADQUISICIONES','RRHH','OTROS'];
 const COMITE_ESTADOS=['PENDIENTE','EN_CURSO','CUMPLIDO','DESCARTADO'];
 let _comiteOk=false,_comiteOkP=null;
 // Ejecución única: si llegan peticiones en paralelo todas esperan la misma promesa (evita el choque de dos CREATE TABLE simultáneos)
@@ -12149,6 +12149,8 @@ const COMITE_MSG_DIRECTOR='Quien dirige la reunión debe ser Leonidas Poo Zenten
 function comiteEsAsistente(r,uid){return (Array.isArray(r.asistentes)?r.asistentes:[]).some(a=>a&&parseInt(a.usuario_id)===parseInt(uid));}
 function comitePuedeVer(r,u){return comiteDirige(u)||parseInt(r.dirige_usuario_id)===parseInt(u.id)||parseInt(r.creado_por_id)===parseInt(u.id)||comiteEsAsistente(r,u.id);}
 function comitePuedeEditar(r,u){return !!u.es_admin||parseInt(r.dirige_usuario_id)===parseInt(u.id)||parseInt(r.creado_por_id)===parseInt(u.id);}
+// Eliminar: un administrador puede eliminar cualquier acta (borrador o cerrada); quien dirige o la creó solo mientras es borrador
+function comitePuedeEliminar(r,u){return !!u.es_admin||(r.estado!=='CERRADA'&&comitePuedeEditar(r,u));}
 function comiteLimpiaAsistentes(a){
   return (Array.isArray(a)?a:[]).filter(x=>x&&(x.usuario_id||String(x.nombre||'').trim())).map(x=>({usuario_id:x.usuario_id?parseInt(x.usuario_id):null,nombre:String(x.nombre||'').trim().slice(0,150),cargo:String(x.cargo||'').trim().slice(0,100),presente:x.presente!==false}));
 }
@@ -12211,7 +12213,7 @@ app.get('/api/comite/reuniones', auth, requireModulo('comite'), async(req,res)=>
         (SELECT COUNT(*)::int FROM comite_acuerdos a WHERE a.reunion_id=r.reunion_id AND a.estado IN ('PENDIENTE','EN_CURSO')) AS n_abiertos
       FROM comite_reuniones r LEFT JOIN usuarios ud ON r.dirige_usuario_id=ud.usuario_id LEFT JOIN usuarios uc ON r.creado_por_id=uc.usuario_id
       ORDER BY r.fecha DESC,r.reunion_id DESC LIMIT 500`);
-    res.json(r.rows.filter(x=>comitePuedeVer(x,req.user)).map(x=>Object.assign({},x,{puede_editar:comitePuedeEditar(x,req.user)})));
+    res.json(r.rows.filter(x=>comitePuedeVer(x,req.user)).map(x=>Object.assign({},x,{puede_editar:comitePuedeEditar(x,req.user),puede_eliminar:comitePuedeEliminar(x,req.user)})));
   }catch(e){res.status(500).json({error:e.message});}
 });
 // Acta completa: reunión + acuerdos + acuerdos de reuniones anteriores que estaban abiertos a esa fecha
@@ -12225,6 +12227,7 @@ app.get('/api/comite/reuniones/:id', auth, requireModulo('comite'), async(req,re
     const ac=await pool.query(`${COMITE_AC_SELECT} WHERE a.reunion_id=$1 ORDER BY a.orden,a.acuerdo_id`,[reu.reunion_id]);
     const prev=await pool.query(`${COMITE_AC_SELECT} WHERE (r.fecha<$1 OR (r.fecha=$1 AND r.reunion_id<$2)) AND (a.estado IN ('PENDIENTE','EN_CURSO') OR a.fecha_cierre>=$1) ORDER BY r.fecha,r.reunion_id,a.orden`,[reu.fecha,reu.reunion_id]);
     reu.puede_editar=comitePuedeEditar(reu,req.user);
+    reu.puede_eliminar=comitePuedeEliminar(reu,req.user);
     reu.acuerdos=ac.rows.map(a=>comiteAcuerdoSalida(a,req.user));
     reu.anteriores=prev.rows.map(a=>comiteAcuerdoSalida(a,req.user));
     res.json(reu);
@@ -12302,8 +12305,7 @@ app.delete('/api/comite/reuniones/:id', auth, requireModulo('comite'), async(req
     await comiteEnsure();
     const ex=await pool.query('SELECT * FROM comite_reuniones WHERE reunion_id=$1',[req.params.id]);
     if(!ex.rows.length)return res.status(404).json({error:'Reunión no encontrada'});
-    if(!comitePuedeEditar(ex.rows[0],req.user))return res.status(403).json({error:'El acta solo la elimina quien dirige la reunión'});
-    if(ex.rows[0].estado==='CERRADA'&&!req.user.es_admin)return res.status(400).json({error:'Un acta cerrada solo la puede eliminar un administrador'});
+    if(!comitePuedeEliminar(ex.rows[0],req.user))return res.status(403).json({error:ex.rows[0].estado==='CERRADA'?'Un acta cerrada solo la puede eliminar un administrador':'El acta solo la elimina un administrador, quien dirige la reunión o quien la registró'});
     await pool.query('DELETE FROM comite_reuniones WHERE reunion_id=$1',[req.params.id]);
     res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
@@ -12354,6 +12356,509 @@ app.get('/api/comite/mi-resumen', auth, requireModulo('comite'), async(req,res)=
     const r=await pool.query(`SELECT COUNT(*)::int AS abiertos,COUNT(*) FILTER (WHERE fecha_compromiso<CURRENT_DATE)::int AS vencidos FROM comite_acuerdos WHERE responsable_id=$1 AND estado IN ('PENDIENTE','EN_CURSO')`,[req.user.id]);
     res.json(Object.assign({dirige:comiteDirige(req.user)},r.rows[0]));
   }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ═══ CALENDARIO — Tareas, eventos y recordatorios del equipo administrativo ═══
+// Calendario interno (idea del usuario 2026-09-30) para no depender de la memoria en las fechas claves.
+// Reglas acordadas:
+//  · Cada tarea/evento tiene visibilidad PRIVADA (solo quien la creó — ni los administradores la ven),
+//    COMPARTIDA (creador, responsable, participantes y administradores) o EMPRESA (todos los que tienen el módulo).
+//  · Editan: el creador, el responsable o un administrador (las privadas solo su creador).
+//  · Repetición simple (diaria / semanal por días / mensual por día / anual) expandida en el servidor: las ocurrencias
+//    no se guardan; "hecha" se registra por ocurrencia en cal_hechas (evento_id + fecha).
+//  · Recordatorios: en pantalla (GET /resumen, campana + aviso del inicio), por correo (recordatorio por tarea según
+//    minutos de anticipación + resumen diario a las 07:00 hora de Chile) y por suscripción iCal (Google Calendar).
+//    El envío se controla desde tablas (cal_enviados / cal_resumen_enviado): si Railway reinicia no se duplica ni se pierde.
+//  · Fechas AUTOMÁTICAS (solo lectura, con enlace al módulo de origen): compromisos del comité, mantenciones
+//    programadas y OT con fecha, términos de contrato. Se muestran según el módulo que el usuario tenga.
+//  · Semilla tributaria (una sola vez): F29, Previred, remuneraciones, F22, DJ anuales y patentes, como tareas EMPRESA
+//    repetitivas del área FINANZAS, responsable el usuario cuyo nombre contiene PALAVECINO (o nadie).
+const calCrypto=require('crypto');
+const CAL_AREAS=COMITE_AREAS;
+const CAL_VIS=['PRIVADA','COMPARTIDA','EMPRESA'];
+const CAL_TIPOS=['TAREA','EVENTO'];
+const CAL_REP=['NINGUNA','DIARIA','SEMANAL','MENSUAL','ANUAL'];
+const CAL_MAX_OCURRENCIAS=400;
+let _calOk=false,_calOkP=null;
+function calEnsure(){ if(_calOk)return Promise.resolve(); if(!_calOkP)_calOkP=calEnsureRun().then(function(){_calOkP=null;},function(e){_calOkP=null;throw e;}); return _calOkP; }
+async function calEnsureRun(){
+  if(_calOk)return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS cal_eventos (
+    evento_id SERIAL PRIMARY KEY,
+    titulo VARCHAR(200) NOT NULL,
+    descripcion TEXT,
+    tipo VARCHAR(10) NOT NULL DEFAULT 'TAREA',
+    area VARCHAR(20) NOT NULL DEFAULT 'OTROS',
+    empresa_id INT,
+    fecha DATE NOT NULL,
+    hora VARCHAR(5),
+    hora_fin VARCHAR(5),
+    fecha_fin DATE,
+    visibilidad VARCHAR(12) NOT NULL DEFAULT 'COMPARTIDA',
+    responsable_id INT,
+    participantes JSONB NOT NULL DEFAULT '[]',
+    repeticion JSONB,
+    recordatorios JSONB NOT NULL DEFAULT '[]',
+    prioridad VARCHAR(10) NOT NULL DEFAULT 'normal',
+    origen VARCHAR(20),
+    creado_por_id INT,
+    activo BOOLEAN NOT NULL DEFAULT true,
+    creado_en TIMESTAMP DEFAULT NOW(),
+    modificado_en TIMESTAMP)`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS cal_hechas (
+    evento_id INT NOT NULL REFERENCES cal_eventos(evento_id) ON DELETE CASCADE,
+    fecha DATE NOT NULL,
+    usuario_id INT,
+    hecho_en TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY(evento_id,fecha))`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS cal_enviados (
+    evento_id INT NOT NULL REFERENCES cal_eventos(evento_id) ON DELETE CASCADE,
+    fecha DATE NOT NULL,
+    usuario_id INT NOT NULL,
+    minutos INT NOT NULL,
+    enviado_en TIMESTAMP DEFAULT NOW(),
+    PRIMARY KEY(evento_id,fecha,usuario_id,minutos))`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS cal_resumen_enviado (usuario_id INT NOT NULL, fecha DATE NOT NULL, items INT DEFAULT 0, enviado_en TIMESTAMP DEFAULT NOW(), PRIMARY KEY(usuario_id,fecha))`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS cal_usuarios (usuario_id INT PRIMARY KEY, ical_token VARCHAR(64), resumen_correo BOOLEAN NOT NULL DEFAULT true, creado_en TIMESTAMP DEFAULT NOW())`);
+  await pool.query(`CREATE TABLE IF NOT EXISTS cal_config (clave VARCHAR(40) PRIMARY KEY, valor TEXT, creado_en TIMESTAMP DEFAULT NOW())`);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cal_ev_fecha ON cal_eventos(fecha) WHERE activo');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cal_ev_resp ON cal_eventos(responsable_id)');
+  await calSembrarTributario();
+  _calOk=true;
+}
+// ── Fechas (todo en texto AAAA-MM-DD; la aritmética se hace en UTC sobre fechas construidas en UTC, sin zona horaria) ──
+function calIso(f){ if(!f)return ''; if(f instanceof Date){return f.getFullYear()+'-'+('0'+(f.getMonth()+1)).slice(-2)+'-'+('0'+f.getDate()).slice(-2);} return String(f).slice(0,10); }
+function calAddDias(iso,n){ const d=new Date(iso+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+n); return d.toISOString().slice(0,10); }
+function calDiffDias(a,b){ return Math.round((Date.UTC(+b.slice(0,4),+b.slice(5,7)-1,+b.slice(8,10))-Date.UTC(+a.slice(0,4),+a.slice(5,7)-1,+a.slice(8,10)))/86400000); }
+function calDow(iso){ return new Date(iso+'T00:00:00Z').getUTCDay(); } // 0=domingo
+function calUltimoDia(y,m){ return new Date(Date.UTC(y,m,0)).getUTCDate(); } // m 1..12
+function calArmar(y,m,d){ const ud=calUltimoDia(y,m); return y+'-'+('0'+m).slice(-2)+'-'+('0'+Math.min(d,ud)).slice(-2); }
+// Hora actual en Chile (el servidor corre en UTC)
+function calAhoraCL(){
+  const p=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Santiago',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).formatToParts(new Date());
+  const g=function(t){const x=p.find(function(q){return q.type===t;});return x?x.value:'00';};
+  const hh=parseInt(g('hour'))%24,mm=parseInt(g('minute'));
+  return {fecha:g('year')+'-'+g('month')+'-'+g('day'),hora:('0'+hh).slice(-2)+':'+('0'+mm).slice(-2),min:hh*60+mm};
+}
+function calHoraMin(h){ if(!h||!/^\d{2}:\d{2}$/.test(h))return null; return parseInt(h.slice(0,2))*60+parseInt(h.slice(3,5)); }
+function calFechaLarga(iso){ const m=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre']; const d=['domingo','lunes','martes','miércoles','jueves','viernes','sábado']; return d[calDow(iso)]+' '+parseInt(iso.slice(8,10))+' de '+m[parseInt(iso.slice(5,7))-1]+' de '+iso.slice(0,4); }
+// ── Repetición ──
+function calLimpiarRepeticion(r){
+  if(!r||typeof r!=='object'||CAL_REP.indexOf(r.tipo)<0||r.tipo==='NINGUNA')return null;
+  const o={tipo:r.tipo};
+  const n=parseInt(r.intervalo); o.intervalo=(n>=1&&n<=12)?n:1;
+  if(r.tipo==='SEMANAL'){ o.dias=(Array.isArray(r.dias)?r.dias:[]).map(function(x){return parseInt(x);}).filter(function(x){return x>=0&&x<=6;}).filter(function(x,i,l){return l.indexOf(x)===i;}).sort(); }
+  if(r.tipo==='MENSUAL'){ const d=parseInt(r.dia); o.dia=(d>=1&&d<=31)?d:null; }
+  if(r.hasta&&/^\d{4}-\d{2}-\d{2}$/.test(String(r.hasta).slice(0,10)))o.hasta=String(r.hasta).slice(0,10);
+  return o;
+}
+// Ocurrencias de un evento dentro de [desde,hasta] (ambos AAAA-MM-DD, inclusive)
+function calOcurrencias(ev,desde,hasta){
+  const base=calIso(ev.fecha); if(!base)return [];
+  const rep=ev.repeticion&&typeof ev.repeticion==='object'?ev.repeticion:null;
+  const fin=(rep&&rep.hasta&&rep.hasta<hasta)?rep.hasta:hasta;
+  const out=[];
+  if(!rep||rep.tipo==='NINGUNA'){ if(base>=desde&&base<=hasta)out.push(base); return out; }
+  if(fin<base||fin<desde)return out;
+  const ini=base>desde?base:desde;
+  const iv=rep.intervalo||1;
+  if(rep.tipo==='DIARIA'){
+    let k=calDiffDias(base,ini); k=Math.ceil(k/iv)*iv; let f=calAddDias(base,k);
+    while(f<=fin&&out.length<CAL_MAX_OCURRENCIAS){out.push(f);f=calAddDias(f,iv);}
+  }else if(rep.tipo==='SEMANAL'){
+    const dias=(rep.dias&&rep.dias.length)?rep.dias:[calDow(base)];
+    let f=ini;
+    while(f<=fin&&out.length<CAL_MAX_OCURRENCIAS){ if(dias.indexOf(calDow(f))>=0&&f>=base)out.push(f); f=calAddDias(f,1); }
+  }else if(rep.tipo==='MENSUAL'){
+    const dia=rep.dia||parseInt(base.slice(8,10));
+    let y=parseInt(ini.slice(0,4)),m=parseInt(ini.slice(5,7));
+    const by=parseInt(base.slice(0,4)),bm=parseInt(base.slice(5,7));
+    // alinear al intervalo de meses desde la base
+    let k=(y-by)*12+(m-bm); if(k<0)k=0; k=Math.ceil(k/iv)*iv;
+    for(let i=0;i<600&&out.length<CAL_MAX_OCURRENCIAS;i++){
+      const t=bm-1+k+i*iv; const yy=by+Math.floor(t/12),mm=(t%12)+1;
+      const f=calArmar(yy,mm,dia); if(f>fin)break; if(f>=base&&f>=desde)out.push(f);
+    }
+  }else if(rep.tipo==='ANUAL'){
+    const bm=parseInt(base.slice(5,7)),bd=parseInt(base.slice(8,10));
+    for(let y=parseInt(ini.slice(0,4));y<=parseInt(fin.slice(0,4))&&out.length<CAL_MAX_OCURRENCIAS;y+=1){ const f=calArmar(y,bm,bd); if(f>=base&&f>=desde&&f<=fin)out.push(f); }
+  }
+  return out;
+}
+// ── Permisos ──
+function calPuedeVer(e,u){
+  const uid=parseInt(u.id);
+  if(parseInt(e.creado_por_id)===uid)return true;
+  if(e.visibilidad==='PRIVADA')return false;
+  if(parseInt(e.responsable_id)===uid)return true;
+  if((Array.isArray(e.participantes)?e.participantes:[]).some(function(x){return parseInt(x)===uid;}))return true;
+  if(e.visibilidad==='EMPRESA')return true;
+  return !!u.es_admin;
+}
+function calPuedeEditar(e,u){
+  const uid=parseInt(u.id);
+  if(parseInt(e.creado_por_id)===uid)return true;
+  if(e.visibilidad==='PRIVADA')return false;
+  return !!u.es_admin||parseInt(e.responsable_id)===uid;
+}
+function calLimpiar(b,u,ex){
+  const titulo=String(b.titulo||'').trim().slice(0,200); if(!titulo)throw new Error('El título es obligatorio');
+  const fecha=calIso(b.fecha); if(!/^\d{4}-\d{2}-\d{2}$/.test(fecha))throw new Error('La fecha es obligatoria');
+  const hora=b.todo_el_dia?null:(calHoraMin(b.hora)!==null?b.hora:null);
+  const hora_fin=hora&&calHoraMin(b.hora_fin)!==null?b.hora_fin:null;
+  let fecha_fin=calIso(b.fecha_fin)||null; if(fecha_fin&&fecha_fin<fecha)fecha_fin=null;
+  const rec=(Array.isArray(b.recordatorios)?b.recordatorios:[]).map(function(x){return parseInt(typeof x==='object'&&x?x.min:x);}).filter(function(x){return x>=0&&x<=60*24*60;}).filter(function(x,i,l){return l.indexOf(x)===i;}).sort(function(a,c){return a-c;});
+  const parts=(Array.isArray(b.participantes)?b.participantes:[]).map(function(x){return parseInt(typeof x==='object'&&x?x.usuario_id:x);}).filter(function(x){return x>0;}).filter(function(x,i,l){return l.indexOf(x)===i;});
+  return {
+    titulo:titulo, descripcion:String(b.descripcion||'').trim()||null,
+    tipo:CAL_TIPOS.indexOf(b.tipo)>=0?b.tipo:'TAREA',
+    area:CAL_AREAS.indexOf(b.area)>=0?b.area:'OTROS',
+    empresa_id:b.empresa_id?parseInt(b.empresa_id):null,
+    fecha:fecha, hora:hora, hora_fin:hora_fin, fecha_fin:fecha_fin,
+    visibilidad:CAL_VIS.indexOf(b.visibilidad)>=0?b.visibilidad:'COMPARTIDA',
+    responsable_id:b.responsable_id?parseInt(b.responsable_id):(ex?ex.responsable_id:parseInt(u.id)),
+    participantes:JSON.stringify(parts),
+    repeticion:calLimpiarRepeticion(b.repeticion),
+    recordatorios:JSON.stringify(rec),
+    prioridad:['baja','normal','alta'].indexOf(b.prioridad)>=0?b.prioridad:'normal'
+  };
+}
+const CAL_SELECT=`SELECT e.*,ur.nombre AS responsable_nombre,uc.nombre AS creado_por_nombre,emp.razon_social AS empresa_nombre
+  FROM cal_eventos e LEFT JOIN usuarios ur ON e.responsable_id=ur.usuario_id LEFT JOIN usuarios uc ON e.creado_por_id=uc.usuario_id LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id`;
+// Eventos manuales visibles para el usuario que tocan el rango (los repetitivos se filtran al expandir)
+async function calEventosVisibles(u,desde,hasta){
+  const r=await pool.query(`${CAL_SELECT} WHERE e.activo=true AND ((e.repeticion IS NULL AND e.fecha<=$1 AND COALESCE(e.fecha_fin,e.fecha)>=$2) OR (e.repeticion IS NOT NULL AND e.fecha<=$1 AND COALESCE((e.repeticion->>'hasta')::date,'9999-12-31'::date)>=$2)) ORDER BY e.fecha,e.hora NULLS FIRST,e.evento_id`,[hasta,desde]);
+  return r.rows.filter(function(e){return calPuedeVer(e,u);});
+}
+async function calHechasDe(ids,desde,hasta){
+  if(!ids.length)return {};
+  const r=await pool.query('SELECT evento_id,fecha,usuario_id FROM cal_hechas WHERE evento_id=ANY($1) AND fecha BETWEEN $2 AND $3',[ids,desde,hasta]);
+  const m={}; r.rows.forEach(function(x){m[x.evento_id+'|'+calIso(x.fecha)]=x.usuario_id;}); return m;
+}
+// Expande los eventos manuales en ocurrencias {key,evento_id,fecha,...,hecha}
+async function calOcurrenciasManuales(u,desde,hasta){
+  const evs=await calEventosVisibles(u,desde,hasta);
+  const hechas=await calHechasDe(evs.map(function(e){return e.evento_id;}),desde,hasta);
+  const out=[];
+  evs.forEach(function(e){
+    calOcurrencias(e,desde,hasta).forEach(function(f){
+      out.push(Object.assign({},e,{key:'M'+e.evento_id+'|'+f,fecha:f,fecha_base:calIso(e.fecha),fecha_fin:calIso(e.fecha_fin)||null,hecha:hechas[e.evento_id+'|'+f]!==undefined,origen:e.origen||'MANUAL',puede_editar:calPuedeEditar(e,u),es_mio:parseInt(e.responsable_id)===parseInt(u.id)||parseInt(e.creado_por_id)===parseInt(u.id)}));
+    });
+  });
+  return out;
+}
+function calTieneModulo(u,mod){ return !!(u.es_admin||(u.modulos||[]).indexOf(mod)>=0); }
+// Fechas automáticas de otros módulos (solo lectura). Cada fuente en try/catch: si su tabla no existe, se omite.
+async function calAutomaticos(u,desde,hasta){
+  const out=[]; const uid=parseInt(u.id);
+  if(calTieneModulo(u,'comite')){
+    try{
+      const r=await pool.query(`SELECT a.acuerdo_id,a.descripcion,a.area,a.empresa_id,a.fecha_compromiso,a.responsable_id,a.responsable_nombre,a.prioridad,a.estado,r.anio,r.numero,ur.nombre AS resp_usuario,emp.razon_social AS empresa_nombre
+        FROM comite_acuerdos a JOIN comite_reuniones r ON a.reunion_id=r.reunion_id LEFT JOIN usuarios ur ON a.responsable_id=ur.usuario_id LEFT JOIN empresas emp ON a.empresa_id=emp.empresa_id
+        WHERE a.estado IN ('PENDIENTE','EN_CURSO') AND a.fecha_compromiso BETWEEN $1 AND $2`,[desde,hasta]);
+      r.rows.filter(function(a){return parseInt(a.responsable_id)===uid||comiteDirige(u);}).forEach(function(a){
+        out.push({key:'C'+a.acuerdo_id,origen:'COMITE',ref_id:a.acuerdo_id,enlace:'comite',tipo:'TAREA',titulo:a.descripcion,descripcion:'Compromiso del acta N° '+a.anio+'-'+('0'+a.numero).slice(-2)+(a.estado==='EN_CURSO'?' (en curso)':''),area:a.area,empresa_id:a.empresa_id,empresa_nombre:a.empresa_nombre,fecha:calIso(a.fecha_compromiso),hora:null,visibilidad:'COMPARTIDA',responsable_id:a.responsable_id,responsable_nombre:a.resp_usuario||a.responsable_nombre||'',prioridad:a.prioridad||'normal',hecha:false,puede_editar:false,es_mio:parseInt(a.responsable_id)===uid});
+      });
+    }catch(e){}
+  }
+  if(calTieneModulo(u,'mantencion')){
+    try{
+      const r=await pool.query(`SELECT p.prog_id,p.proxima_fecha,p.empresa_id,e.codigo,e.nombre AS equipo_nombre,pl.nombre AS plan_nombre,emp.razon_social AS empresa_nombre
+        FROM mant_programacion p JOIN equipos e ON p.equipo_id=e.equipo_id JOIN mant_planes pl ON p.plan_id=pl.plan_id LEFT JOIN empresas emp ON p.empresa_id=emp.empresa_id
+        WHERE COALESCE(p.estado,'vigente') IN ('vigente','proxima','vencida') AND p.proxima_fecha BETWEEN $1 AND $2 AND e.activo=true`,[desde,hasta]);   // estados del plan maestro: vigente / proxima / vencida (todos pendientes)
+      r.rows.forEach(function(p){ out.push({key:'P'+p.prog_id,origen:'MANTENCION',ref_id:p.prog_id,enlace:'mant-programacion',tipo:'TAREA',titulo:'Mantención '+p.codigo+' '+(p.equipo_nombre||'')+': '+p.plan_nombre,descripcion:'Plan maestro: próxima mantención programada por fecha',area:'MANTENCION',empresa_id:p.empresa_id,empresa_nombre:p.empresa_nombre,fecha:calIso(p.proxima_fecha),hora:null,visibilidad:'EMPRESA',responsable_id:null,responsable_nombre:'',prioridad:'normal',hecha:false,puede_editar:false,es_mio:false}); });
+      const o=await pool.query(`SELECT o.ot_id,o.numero_ot,o.fecha_programada,o.empresa_id,o.estado,o.prioridad,o.mecanico_asignado,e.codigo,e.nombre AS equipo_nombre,emp.razon_social AS empresa_nombre
+        FROM mant_ot o JOIN equipos e ON o.equipo_id=e.equipo_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id
+        WHERE o.fecha_programada BETWEEN $1 AND $2 AND COALESCE(o.estado,'abierta') NOT IN ('cerrada','anulada','cancelada','completada')`,[desde,hasta]);
+      o.rows.forEach(function(x){ out.push({key:'O'+x.ot_id,origen:'MANTENCION',ref_id:x.ot_id,enlace:'mant-ot',tipo:'TAREA',titulo:'OT '+x.numero_ot+' — '+x.codigo+' '+(x.equipo_nombre||''),descripcion:'Orden de trabajo programada'+(x.mecanico_asignado?' · '+x.mecanico_asignado:'')+' (estado: '+x.estado+')',area:'MANTENCION',empresa_id:x.empresa_id,empresa_nombre:x.empresa_nombre,fecha:calIso(x.fecha_programada),hora:null,visibilidad:'EMPRESA',responsable_id:null,responsable_nombre:x.mecanico_asignado||'',prioridad:x.prioridad||'normal',hecha:false,puede_editar:false,es_mio:false}); });
+    }catch(e){}
+  }
+  if(calTieneModulo(u,'contratos')){
+    try{
+      const r=await pool.query(`SELECT p.persona_id,p.nombre_completo,p.cargo,p.tipo_contrato,p.fecha_termino,p.empresa_id,emp.razon_social AS empresa_nombre FROM personal p LEFT JOIN empresas emp ON p.empresa_id=emp.empresa_id
+        WHERE p.activo=true AND p.fecha_termino IS NOT NULL AND COALESCE(p.tipo_contrato,'') NOT ILIKE '%indefinido%' AND p.fecha_termino BETWEEN $1 AND $2`,[desde,hasta]);
+      r.rows.forEach(function(p){ out.push({key:'T'+p.persona_id,origen:'CONTRATO',ref_id:p.persona_id,enlace:'contratos',tipo:'TAREA',titulo:'Término de contrato: '+p.nombre_completo,descripcion:(p.cargo||'')+(p.tipo_contrato?' · '+p.tipo_contrato:'')+' — revisar renovación o finiquito',area:'RRHH',empresa_id:p.empresa_id,empresa_nombre:p.empresa_nombre,fecha:calIso(p.fecha_termino),hora:null,visibilidad:'EMPRESA',responsable_id:null,responsable_nombre:'',prioridad:'alta',hecha:false,puede_editar:false,es_mio:false}); });
+    }catch(e){}
+  }
+  return out;
+}
+function calOrden(a,b){ return (a.fecha<b.fecha?-1:a.fecha>b.fecha?1:0)||((a.hora||'')<(b.hora||'')?-1:(a.hora||'')>(b.hora||'')?1:0)||String(a.titulo).localeCompare(String(b.titulo)); }
+async function calTodo(u,desde,hasta){
+  const m=await calOcurrenciasManuales(u,desde,hasta); const a=await calAutomaticos(u,desde,hasta);
+  return m.concat(a).sort(calOrden);
+}
+// Resumen para la campana / aviso del inicio: hoy, vencidas (tareas manuales sin hacer) y próximos 7 días
+async function calResumen(u){
+  const hoy=calAhoraCL().fecha;
+  const items=await calTodo(u,calAddDias(hoy,-45),calAddDias(hoy,7));
+  const pend=function(x){return x.tipo==='TAREA'&&!x.hecha;};
+  return {
+    hoy:hoy,
+    hoy_items:items.filter(function(x){return x.fecha===hoy&&!x.hecha;}),
+    vencidas:items.filter(function(x){return x.fecha<hoy&&pend(x)&&x.origen!=='MANTENCION'&&x.origen!=='CONTRATO';}),
+    proximos:items.filter(function(x){return x.fecha>hoy&&!x.hecha;})
+  };
+}
+// ── Semilla tributaria (una sola vez) ──
+async function calSembrarTributario(){
+  const ya=await pool.query("SELECT 1 FROM cal_config WHERE clave='semilla_tributaria'");
+  if(ya.rows.length)return;
+  let resp=null;
+  try{ const r=await pool.query("SELECT usuario_id FROM usuarios WHERE activo=true AND UPPER(nombre) LIKE '%PALAVECINO%' ORDER BY usuario_id LIMIT 1"); if(r.rows.length)resp=r.rows[0].usuario_id; }catch(e){}
+  const hoy=calAhoraCL().fecha; const y=parseInt(hoy.slice(0,4)),m=parseInt(hoy.slice(5,7));
+  const mensual=function(dia){return {tipo:'MENSUAL',intervalo:1,dia:dia};};
+  const anual={tipo:'ANUAL',intervalo:1};
+  // La primera ocurrencia es la próxima desde hoy (si el día ya pasó este mes/año, parte el siguiente): así no nacen "vencidas"
+  const proxMes=function(dia){const f=calArmar(y,m,dia);return f>=hoy?f:calArmar(m===12?y+1:y,m===12?1:m+1,dia);};
+  const proxAnio=function(mes,dia){const f=calArmar(y,mes,dia);return f>=hoy?f:calArmar(y+1,mes,dia);};
+  const S=[
+    {titulo:'F29: declaración y pago de IVA',descripcion:'Plazo legal día 12. Declarando y pagando por internet el plazo se extiende hasta el 20. Ambas empresas.',fecha:proxMes(12),rep:mensual(12),rec:[2*1440,0]},
+    {titulo:'Previred: pago de cotizaciones previsionales',descripcion:'Plazo día 13 pagando por medios electrónicos (día 10 en papel). Ambas empresas.',fecha:proxMes(13),rep:mensual(13),rec:[2*1440,0]},
+    {titulo:'Remuneraciones: proceso y pago del mes',descripcion:'Cierre de asistencia, liquidaciones y pago. Ajustar el día según la práctica de la empresa.',fecha:proxMes(30),rep:mensual(30),rec:[3*1440]},
+    {titulo:'F22: declaración anual de renta',descripcion:'Operación Renta: plazo 30 de abril (pago) — revisar calendario SII del año.',fecha:proxAnio(4,30),rep:anual,rec:[15*1440,3*1440]},
+    {titulo:'Declaraciones juradas anuales de renta (DJ 1887 y otras)',descripcion:'Revisar calendario de DJ del SII para el año; la mayoría vence en marzo.',fecha:proxAnio(3,31),rep:anual,rec:[15*1440,3*1440]},
+    {titulo:'Patente municipal: 1ª cuota',descripcion:'Vence el 31 de enero (según municipalidad).',fecha:proxAnio(1,31),rep:anual,rec:[7*1440]},
+    {titulo:'Patente municipal: 2ª cuota',descripcion:'Vence el 31 de julio (según municipalidad).',fecha:proxAnio(7,31),rep:anual,rec:[7*1440]}
+  ];
+  for(const s of S){
+    await pool.query(`INSERT INTO cal_eventos(titulo,descripcion,tipo,area,fecha,visibilidad,responsable_id,participantes,repeticion,recordatorios,prioridad,origen,creado_por_id)
+      VALUES($1,$2,'TAREA','FINANZAS',$3,'EMPRESA',$4,'[]',$5,$6,'alta','SISTEMA',$4)`,[s.titulo,s.descripcion,s.fecha,resp,JSON.stringify(s.rep),JSON.stringify(s.rec)]);
+  }
+  await pool.query("INSERT INTO cal_config(clave,valor) VALUES('semilla_tributaria',$1) ON CONFLICT DO NOTHING",[hoy]);
+}
+// ── Correo ──
+function calBaseUrl(req){ if(process.env.PUBLIC_URL)return process.env.PUBLIC_URL.replace(/\/$/,''); if(req){const proto=(req.headers['x-forwarded-proto']||req.protocol||'https').split(',')[0];return proto+'://'+req.get('host');} return 'https://empresaspoo.up.railway.app'; }
+function calMailWrap(titulo,cuerpo,link){
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;padding:0;background:#F1F5F9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <div style="max-width:600px;margin:20px auto;background:#fff;border-radius:8px;overflow:hidden;border:1px solid #E2E8F0;">
+    <div style="background:#1E3A2D;padding:18px 24px;"><div style="font-size:12px;color:#FCD34D;opacity:.9;">Empresas Poo · Calendario</div><div style="font-size:18px;font-weight:600;margin-top:4px;color:#fff;">${escapeHtml(titulo)}</div></div>
+    <div style="padding:20px 24px;color:#1E293B;font-size:14px;line-height:1.55;">${cuerpo}
+      <div style="text-align:center;margin:22px 0 6px;"><a href="${link}" style="display:inline-block;background:#1E3A2D;color:#fff;padding:11px 26px;border-radius:6px;text-decoration:none;font-size:14px;font-weight:600;">Abrir el calendario →</a></div>
+    </div>
+    <div style="background:#F8FAFC;padding:12px 24px;border-top:1px solid #E2E8F0;font-size:11px;color:#94A3B8;text-align:center;line-height:1.5;">Correo automático del sistema de gestión. No respondas a este correo.<br>Para dejar de recibir el resumen diario, desactívalo en Calendario → ⚙ Correo.</div>
+  </div></body></html>`;
+}
+function calItemHtml(x){
+  const ar=CAL_AREAS.indexOf(x.area)>=0?x.area:'OTROS';
+  return `<div style="padding:8px 10px;border-left:3px solid ${x.prioridad==='alta'?'#DC2626':'#1E3A2D'};background:#F8FAFC;border-radius:4px;margin-bottom:6px;">
+    <div style="font-weight:600;">${x.hora?escapeHtml(x.hora)+' · ':''}${escapeHtml(x.titulo)}</div>
+    <div style="font-size:12px;color:#64748B;">${escapeHtml(ar.charAt(0)+ar.slice(1).toLowerCase())}${x.empresa_nombre?' · '+escapeHtml(x.empresa_nombre):''}${x.responsable_nombre?' · Resp.: '+escapeHtml(x.responsable_nombre):''}${x.origen&&x.origen!=='MANUAL'&&x.origen!=='SISTEMA'?' · origen: '+escapeHtml(x.origen.toLowerCase()):''}</div>
+    ${x.descripcion?`<div style="font-size:12px;color:#475569;margin-top:3px;">${escapeHtml(String(x.descripcion).slice(0,300))}</div>`:''}
+  </div>`;
+}
+async function calDestinatarios(e){
+  const ids=[e.responsable_id,e.creado_por_id].concat(Array.isArray(e.participantes)?e.participantes:[]).map(function(x){return parseInt(x);}).filter(function(x,i,l){return x>0&&l.indexOf(x)===i;});
+  if(!ids.length)return [];
+  const r=await pool.query('SELECT usuario_id,nombre,email FROM usuarios WHERE usuario_id=ANY($1) AND activo=true AND email IS NOT NULL',[ids]);
+  return r.rows.filter(function(x){return /@/.test(x.email||'');});
+}
+// Recordatorios por tarea (según minutos de anticipación). Ventana de gracia: 24 h (no se mandan atrasados más antiguos).
+async function calEnviarRecordatorios(ahora){
+  const hoy=ahora.fecha; const nowMin=ahora.min;
+  const r=await pool.query(`${CAL_SELECT} WHERE e.activo=true AND jsonb_array_length(e.recordatorios)>0 AND e.fecha<=$1 AND (e.repeticion IS NULL OR COALESCE((e.repeticion->>'hasta')::date,'9999-12-31'::date)>=$2)`,[calAddDias(hoy,62),calAddDias(hoy,-1)]);
+  let enviados=0;
+  for(const e of r.rows){
+    const occ=calOcurrencias(e,calAddDias(hoy,-1),calAddDias(hoy,62));
+    if(!occ.length)continue;
+    const rec=(Array.isArray(e.recordatorios)?e.recordatorios:[]).map(function(x){return parseInt(x);}).filter(function(x){return x>=0;});
+    const hechas=await calHechasDe([e.evento_id],occ[0],occ[occ.length-1]);
+    let dest=null;
+    for(const f of occ){
+      if(hechas[e.evento_id+'|'+f]!==undefined)continue;
+      const evMin=calDiffDias(hoy,f)*1440+(e.hora?calHoraMin(e.hora):8*60); // todo el día: se avisa a las 08:00
+      for(const m of rec){
+        const disparo=evMin-m; // minutos desde las 00:00 de hoy
+        if(disparo>nowMin||disparo<nowMin-1440)continue;
+        if(!dest)dest=await calDestinatarios(e);
+        for(const d of dest){
+          const ins=await pool.query('INSERT INTO cal_enviados(evento_id,fecha,usuario_id,minutos) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING 1',[e.evento_id,f,d.usuario_id,m]);
+          if(!ins.rows.length)continue;
+          const cuando=m===0?'ahora':(m<60?'en '+m+' min':m<1440?'en '+Math.round(m/60)+' h':'en '+Math.round(m/1440)+' día'+(Math.round(m/1440)===1?'':'s'));
+          const x=Object.assign({},e,{fecha:f});
+          const html=calMailWrap('Recordatorio: '+e.titulo,`<div style="color:#475569;margin-bottom:12px;">Hola ${escapeHtml(d.nombre||'')}, esto vence <strong>${cuando}</strong>: ${escapeHtml(calFechaLarga(f))}${e.hora?' a las '+escapeHtml(e.hora):''}.</div>${calItemHtml(x)}`,calBaseUrl()+'/?view=calendario');
+          try{ await sendMailResend(d.email,'⏰ '+e.titulo+' — '+f.split('-').reverse().join('/')+(e.hora?' '+e.hora:''),html,e.titulo+' — '+f+(e.hora?' '+e.hora:'')); enviados++; }
+          catch(err){ console.log('[WARN] calendario: recordatorio no enviado a',d.email,err.message); }
+        }
+      }
+    }
+  }
+  return enviados;
+}
+// Resumen diario a las 07:00 (hora Chile) a cada usuario con el módulo (o admin), correo y preferencia activa
+async function calEnviarResumenes(ahora){
+  if(ahora.min<7*60)return 0;
+  const hoy=ahora.fecha;
+  const us=await pool.query(`SELECT u.usuario_id,u.nombre,u.email,u.rol,COALESCE(ro.es_admin,false) AS es_admin,COALESCE(ro.modulos,'[]'::jsonb) AS modulos,COALESCE(cu.resumen_correo,true) AS resumen_correo
+    FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id LEFT JOIN cal_usuarios cu ON cu.usuario_id=u.usuario_id
+    WHERE u.activo=true AND u.email IS NOT NULL AND NOT EXISTS (SELECT 1 FROM cal_resumen_enviado x WHERE x.usuario_id=u.usuario_id AND x.fecha=$1)`,[hoy]);
+  let enviados=0;
+  for(const u0 of us.rows){
+    const u={id:u0.usuario_id,es_admin:!!u0.es_admin||u0.rol==='ADMINISTRADOR',modulos:Array.isArray(u0.modulos)?u0.modulos:[]};
+    if(!calTieneModulo(u,'calendario')||!u0.resumen_correo||!/@/.test(u0.email||'')){ await pool.query('INSERT INTO cal_resumen_enviado(usuario_id,fecha,items) VALUES($1,$2,0) ON CONFLICT DO NOTHING',[u0.usuario_id,hoy]); continue; }
+    let res; try{ res=await calResumen(u); }catch(e){ console.log('[WARN] calendario resumen',u0.email,e.message); continue; }
+    const n=res.hoy_items.length+res.vencidas.length+res.proximos.length;
+    await pool.query('INSERT INTO cal_resumen_enviado(usuario_id,fecha,items) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[u0.usuario_id,hoy,n]);
+    if(!n)continue;
+    const sec=function(t,items,color){ if(!items.length)return ''; return `<div style="font-size:13px;font-weight:700;color:${color};margin:14px 0 6px;text-transform:uppercase;letter-spacing:.3px;">${t} (${items.length})</div>`+items.map(function(x){return calItemHtml(Object.assign({},x,{titulo:(x.fecha!==hoy?x.fecha.split('-').reverse().join('/')+' · ':'')+x.titulo}));}).join(''); };
+    const html=calMailWrap('Tu día: '+calFechaLarga(hoy),`<div style="color:#475569;">Hola ${escapeHtml(u0.nombre||'')}, este es tu resumen del calendario.</div>`+sec('Vencidas sin hacer',res.vencidas,'#B91C1C')+sec('Hoy',res.hoy_items,'#1E3A2D')+sec('Próximos 7 días',res.proximos,'#475569'),calBaseUrl()+'/?view=calendario');
+    const asunto='📅 '+(res.hoy_items.length?res.hoy_items.length+' para hoy':'Sin tareas para hoy')+(res.vencidas.length?' · '+res.vencidas.length+' vencida'+(res.vencidas.length>1?'s':''):'')+' — '+hoy.split('-').reverse().join('/');
+    try{ await sendMailResend(u0.email,asunto,html,asunto); enviados++; }catch(e){ console.log('[WARN] calendario: resumen no enviado a',u0.email,e.message); }
+  }
+  return enviados;
+}
+let _calCronCorriendo=false;
+async function calCronTick(){
+  if(_calCronCorriendo)return; _calCronCorriendo=true;
+  try{
+    if(!mailEnabled)return;
+    await calEnsure();
+    const ahora=calAhoraCL();
+    const a=await calEnviarRecordatorios(ahora); const b=await calEnviarResumenes(ahora);
+    if(a||b)console.log('[calendario] correos enviados: recordatorios '+a+', resúmenes '+b);
+  }catch(e){ console.log('[WARN] calendario cron:',e.message); }
+  finally{ _calCronCorriendo=false; }
+}
+if(typeof CAL_SIN_CRON==='undefined'){ setTimeout(calCronTick,90*1000); setInterval(calCronTick,5*60*1000); }
+// ── iCal (suscripción desde Google Calendar / Outlook / iPhone) ──
+function calIcalEsc(s){ return String(s||'').replace(/\\/g,'\\\\').replace(/;/g,'\\;').replace(/,/g,'\\,').replace(/\r?\n/g,'\\n'); }
+function calIcal(items,nombre){
+  const L=['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//Empresas Poo//Calendario ERP//ES','CALSCALE:GREGORIAN','METHOD:PUBLISH','X-WR-CALNAME:'+calIcalEsc('ERP Empresas Poo'+(nombre?' — '+nombre:'')),'X-WR-TIMEZONE:America/Santiago','X-PUBLISHED-TTL:PT1H'];
+  const stamp=new Date().toISOString().replace(/[-:]/g,'').slice(0,15)+'Z';
+  items.forEach(function(x){
+    const d=x.fecha.replace(/-/g,'');
+    L.push('BEGIN:VEVENT','UID:'+x.key.replace(/[^A-Za-z0-9]/g,'-')+'@empresaspoo','DTSTAMP:'+stamp);
+    if(x.hora){ L.push('DTSTART;TZID=America/Santiago:'+d+'T'+x.hora.replace(':','')+'00'); L.push('DTEND;TZID=America/Santiago:'+d+'T'+(x.hora_fin||x.hora).replace(':','')+'00'); }
+    else{ L.push('DTSTART;VALUE=DATE:'+d); L.push('DTEND;VALUE=DATE:'+calAddDias(x.fecha_fin&&x.fecha_fin>x.fecha?x.fecha_fin:x.fecha,1).replace(/-/g,'')); }
+    L.push('SUMMARY:'+calIcalEsc((x.hecha?'✓ ':'')+x.titulo));
+    const desc=[x.descripcion||'',x.responsable_nombre?'Responsable: '+x.responsable_nombre:'',x.empresa_nombre?'Empresa: '+x.empresa_nombre:'',x.origen&&x.origen!=='MANUAL'&&x.origen!=='SISTEMA'?'Origen: '+x.origen:''].filter(Boolean).join('\n');
+    if(desc)L.push('DESCRIPTION:'+calIcalEsc(desc));
+    L.push('CATEGORIES:'+calIcalEsc(x.area||'OTROS'));
+    if(x.hecha)L.push('STATUS:CANCELLED');
+    L.push('END:VEVENT');
+  });
+  L.push('END:VCALENDAR');
+  return L.map(function(l){ // plegado a 75 octetos según RFC 5545 (aprox. por caracteres)
+    let out='';while(l.length>74){out+=l.slice(0,74)+'\r\n ';l=l.slice(74);}return out+l; }).join('\r\n')+'\r\n';
+}
+async function calUsuarioDeToken(token){
+  if(!token||!/^[a-f0-9]{48}$/.test(token))return null;
+  const r=await pool.query(`SELECT u.usuario_id,u.nombre,u.rol,COALESCE(ro.es_admin,false) AS es_admin,COALESCE(ro.modulos,'[]'::jsonb) AS modulos FROM cal_usuarios cu JOIN usuarios u ON u.usuario_id=cu.usuario_id LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE cu.ical_token=$1 AND u.activo=true`,[token]);
+  if(!r.rows.length)return null; const x=r.rows[0];
+  return {id:x.usuario_id,nombre:x.nombre,es_admin:!!x.es_admin||x.rol==='ADMINISTRADOR',modulos:Array.isArray(x.modulos)?x.modulos:[]};
+}
+// ── Rutas ──
+app.get('/api/calendario/eventos', auth, requireModulo('calendario'), async(req,res)=>{
+  try{
+    await calEnsure();
+    const hoy=calAhoraCL().fecha;
+    const desde=calIso(req.query.desde)||calAddDias(hoy,-7), hasta=calIso(req.query.hasta)||calAddDias(hoy,45);
+    if(!/^\d{4}-\d{2}-\d{2}$/.test(desde)||!/^\d{4}-\d{2}-\d{2}$/.test(hasta)||hasta<desde||calDiffDias(desde,hasta)>400)return res.status(400).json({error:'Rango de fechas inválido'});
+    res.json({desde:desde,hasta:hasta,hoy:hoy,items:await calTodo(req.user,desde,hasta)});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/calendario/resumen', auth, requireModulo('calendario'), async(req,res)=>{
+  try{ await calEnsure(); const r=await calResumen(req.user); res.json(Object.assign(r,{total:r.hoy_items.length+r.vencidas.length})); }
+  catch(e){res.status(500).json({error:e.message});}
+});
+// Usuarios activos para elegir responsable/participantes (cualquier usuario del módulo puede verlos)
+app.get('/api/calendario/usuarios', auth, requireModulo('calendario'), async(req,res)=>{
+  try{ const r=await pool.query('SELECT usuario_id,nombre,(email IS NOT NULL AND email LIKE $1) AS con_correo FROM usuarios WHERE activo=true ORDER BY nombre',['%@%']); res.json(r.rows); }
+  catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/calendario/eventos/:id', auth, requireModulo('calendario'), async(req,res)=>{
+  try{
+    await calEnsure();
+    const r=await pool.query(`${CAL_SELECT} WHERE e.evento_id=$1 AND e.activo=true`,[req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Tarea no encontrada'});
+    const e=r.rows[0]; if(!calPuedeVer(e,req.user))return res.status(403).json({error:'No tienes acceso a esta tarea'});
+    const h=await pool.query('SELECT fecha,usuario_id,hecho_en FROM cal_hechas WHERE evento_id=$1 ORDER BY fecha DESC LIMIT 50',[e.evento_id]);
+    res.json(Object.assign({},e,{fecha:calIso(e.fecha),fecha_fin:calIso(e.fecha_fin)||null,puede_editar:calPuedeEditar(e,req.user),hechas:h.rows.map(function(x){return {fecha:calIso(x.fecha),usuario_id:x.usuario_id,hecho_en:x.hecho_en};})}));
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/calendario/eventos', auth, requireModulo('calendario'), async(req,res)=>{
+  try{
+    await calEnsure();
+    let c; try{c=calLimpiar(req.body||{},req.user,null);}catch(err){return res.status(400).json({error:err.message});}
+    const r=await pool.query(`INSERT INTO cal_eventos(titulo,descripcion,tipo,area,empresa_id,fecha,hora,hora_fin,fecha_fin,visibilidad,responsable_id,participantes,repeticion,recordatorios,prioridad,origen,creado_por_id)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'MANUAL',$16) RETURNING evento_id`,
+      [c.titulo,c.descripcion,c.tipo,c.area,c.empresa_id,c.fecha,c.hora,c.hora_fin,c.fecha_fin,c.visibilidad,c.responsable_id,c.participantes,c.repeticion?JSON.stringify(c.repeticion):null,c.recordatorios,c.prioridad,req.user.id]);
+    res.status(201).json({evento_id:r.rows[0].evento_id});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.put('/api/calendario/eventos/:id', auth, requireModulo('calendario'), async(req,res)=>{
+  try{
+    await calEnsure();
+    const ex=await pool.query('SELECT * FROM cal_eventos WHERE evento_id=$1 AND activo=true',[req.params.id]);
+    if(!ex.rows.length)return res.status(404).json({error:'Tarea no encontrada'});
+    if(!calPuedeEditar(ex.rows[0],req.user))return res.status(403).json({error:'Solo la editan quien la creó, su responsable o un administrador'});
+    let c; try{c=calLimpiar(req.body||{},req.user,ex.rows[0]);}catch(err){return res.status(400).json({error:err.message});}
+    if(ex.rows[0].visibilidad==='PRIVADA'&&c.visibilidad!=='PRIVADA'&&parseInt(ex.rows[0].creado_por_id)!==parseInt(req.user.id))return res.status(403).json({error:'Solo su creador puede compartir una tarea privada'});
+    await pool.query(`UPDATE cal_eventos SET titulo=$1,descripcion=$2,tipo=$3,area=$4,empresa_id=$5,fecha=$6,hora=$7,hora_fin=$8,fecha_fin=$9,visibilidad=$10,responsable_id=$11,participantes=$12,repeticion=$13,recordatorios=$14,prioridad=$15,modificado_en=NOW() WHERE evento_id=$16`,
+      [c.titulo,c.descripcion,c.tipo,c.area,c.empresa_id,c.fecha,c.hora,c.hora_fin,c.fecha_fin,c.visibilidad,c.responsable_id,c.participantes,c.repeticion?JSON.stringify(c.repeticion):null,c.recordatorios,c.prioridad,req.params.id]);
+    res.json({ok:true});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.patch('/api/calendario/eventos/:id/hecha', auth, requireModulo('calendario'), async(req,res)=>{
+  try{
+    await calEnsure();
+    const ex=await pool.query('SELECT * FROM cal_eventos WHERE evento_id=$1 AND activo=true',[req.params.id]);
+    if(!ex.rows.length)return res.status(404).json({error:'Tarea no encontrada'});
+    const e=ex.rows[0]; if(!calPuedeVer(e,req.user))return res.status(403).json({error:'No tienes acceso a esta tarea'});
+    // Marcar hecha: el responsable, el creador, un participante o un admin (quien la ve y no es solo "de la empresa" ajeno)
+    const uid=parseInt(req.user.id); const parte=parseInt(e.creado_por_id)===uid||parseInt(e.responsable_id)===uid||(Array.isArray(e.participantes)?e.participantes:[]).some(function(x){return parseInt(x)===uid;});
+    if(!parte&&!req.user.es_admin&&e.visibilidad!=='EMPRESA')return res.status(403).json({error:'Solo el responsable, el creador o un participante pueden marcarla'});
+    const f=calIso(req.body&&req.body.fecha)||calIso(e.fecha);
+    if(!calOcurrencias(e,f,f).length)return res.status(400).json({error:'Esa fecha no corresponde a una ocurrencia de la tarea'});
+    if(req.body&&req.body.hecha===false){ await pool.query('DELETE FROM cal_hechas WHERE evento_id=$1 AND fecha=$2',[e.evento_id,f]); return res.json({ok:true,hecha:false,fecha:f}); }
+    await pool.query('INSERT INTO cal_hechas(evento_id,fecha,usuario_id) VALUES($1,$2,$3) ON CONFLICT (evento_id,fecha) DO UPDATE SET usuario_id=EXCLUDED.usuario_id,hecho_en=NOW()',[e.evento_id,f,uid]);
+    res.json({ok:true,hecha:true,fecha:f});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.delete('/api/calendario/eventos/:id', auth, requireModulo('calendario'), async(req,res)=>{
+  try{
+    await calEnsure();
+    const ex=await pool.query('SELECT * FROM cal_eventos WHERE evento_id=$1 AND activo=true',[req.params.id]);
+    if(!ex.rows.length)return res.status(404).json({error:'Tarea no encontrada'});
+    if(!calPuedeEditar(ex.rows[0],req.user))return res.status(403).json({error:'Solo la eliminan quien la creó, su responsable o un administrador'});
+    await pool.query('UPDATE cal_eventos SET activo=false,modificado_en=NOW() WHERE evento_id=$1',[req.params.id]);
+    res.json({ok:true});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// Preferencias (resumen diario por correo) y enlace iCal personal
+app.get('/api/calendario/preferencias', auth, requireModulo('calendario'), async(req,res)=>{
+  try{
+    await calEnsure();
+    const r=await pool.query('SELECT cu.ical_token,cu.resumen_correo,u.email FROM usuarios u LEFT JOIN cal_usuarios cu ON cu.usuario_id=u.usuario_id WHERE u.usuario_id=$1',[req.user.id]);
+    const x=r.rows[0]||{};
+    res.json({resumen_correo:x.resumen_correo!==false,correo_activo:!!mailEnabled,email:x.email||'',ical_url:x.ical_token?calBaseUrl(req)+'/api/calendario/ical/'+x.ical_token+'.ics':null});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.put('/api/calendario/preferencias', auth, requireModulo('calendario'), async(req,res)=>{
+  try{
+    await calEnsure();
+    const v=!(req.body&&req.body.resumen_correo===false);
+    await pool.query('INSERT INTO cal_usuarios(usuario_id,resumen_correo) VALUES($1,$2) ON CONFLICT (usuario_id) DO UPDATE SET resumen_correo=EXCLUDED.resumen_correo',[req.user.id,v]);
+    res.json({ok:true,resumen_correo:v});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/calendario/ical-enlace', auth, requireModulo('calendario'), async(req,res)=>{
+  try{
+    await calEnsure();
+    const t=calCrypto.randomBytes(24).toString('hex');
+    await pool.query('INSERT INTO cal_usuarios(usuario_id,ical_token) VALUES($1,$2) ON CONFLICT (usuario_id) DO UPDATE SET ical_token=EXCLUDED.ical_token',[req.user.id,t]);
+    res.json({ical_url:calBaseUrl(req)+'/api/calendario/ical/'+t+'.ics'});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// Público por token (Google Calendar no puede mandar el JWT). Regenerar el enlace invalida el anterior.
+app.get('/api/calendario/ical/:token', async(req,res)=>{
+  try{
+    await calEnsure();
+    const u=await calUsuarioDeToken(String(req.params.token||'').replace(/\.ics$/,''));
+    if(!u||!calTieneModulo(u,'calendario'))return res.status(404).type('text/plain').send('Enlace no válido');
+    const hoy=calAhoraCL().fecha;
+    const items=await calTodo(u,calAddDias(hoy,-60),calAddDias(hoy,365));
+    res.set({'Content-Type':'text/calendar; charset=utf-8','Content-Disposition':'inline; filename="empresaspoo.ics"','Cache-Control':'private, max-age=900'}).send(calIcal(items,u.nombre));
+  }catch(e){res.status(500).type('text/plain').send('Error: '+e.message);}
 });
 
 app.get('/api/fin/remuneraciones/periodos', auth, async(req,res)=>{
