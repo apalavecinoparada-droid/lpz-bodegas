@@ -16598,7 +16598,7 @@ var MODULOS_SISTEMA=[
   {k:'inventario',l:'Inventario'},
   {k:'inventario-editar',l:'Editar Inventario',hint:'Permite editar y anular salidas/traspasos'},
   {k:'mantencion',l:'Mantención'},
-  {k:'comite',l:'Comité de Gestión',hint:'Ver las actas donde figura como asistente y actualizar el estado de los acuerdos de los que es responsable'},{k:'comite-dirigir',l:'Comité: Dirigir y registrar actas',hint:'Crear y editar actas del comité, ver todas las actas y actualizar cualquier acuerdo (quien dirige la reunión)'},
+  {k:'comite',l:'Comité de Gestión',hint:'Ver las actas donde figura como asistente y actualizar el estado de los acuerdos de los que es responsable'},{k:'comite-dirigir',l:'Comité: Registrar actas y ver todas',hint:'Crear y editar actas del comité, ver todas las actas y actualizar cualquier acuerdo. Quien DIRIGE la reunión es siempre Leonidas Poo Zenteno o un usuario administrador, sin importar este permiso'},
   {k:'solicitudes',l:'Solicitudes'},{k:'solicitudes-todas',l:'Solicitudes: Ver todas',hint:'Además de las propias, ve las solicitudes de todos los usuarios (pestaña Todas), como un administrador'},
   {k:'finanzas',l:'Finanzas'},
   {k:'transporte',l:'Transporte'},
@@ -21296,6 +21296,8 @@ function cmFirmaDe(nombre,empresas){
   return f?f.firma:null;
 }
 function cmFirmaAplica(d,empresas){return !!(d&&d.estado==='CERRADA'&&d.cerrada_por_id&&String(d.cerrada_por_id)===String(d.dirige_usuario_id)&&cmFirmaDe(d.dirige_nombre,empresas));}
+// Quien dirige por defecto: Leonidas Poo Zenteno (marcado por el servidor); si no existe su usuario, el primer administrador
+function cmDirDefecto(dirs){var d=(dirs||[]).find(function(x){return x.por_defecto;})||(dirs||[])[0];return d?String(d.usuario_id):'';}
 function cmArea(k){return COMITE_AREAS.find(function(a){return a.k===k;})||COMITE_AREAS[COMITE_AREAS.length-1];}
 function cmHoy(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);}
 function cmIso(f){return f?(f+'').slice(0,10):'';}
@@ -21427,7 +21429,7 @@ function buildComiteActaHTML(d,empresas){
 function ComiteActa(p){
   var ctx=p.ctx,esNueva=p.id==='new';
   var[data,setData]=useState(null);var[cargando,setCargando]=useState(!esNueva);var[err,setErr]=useState('');var[ok,setOk]=useState('');var[guardando,setGuardando]=useState(false);
-  var[form,setForm]=useState({fecha:cmHoy(),hora_inicio:'',hora_termino:'',lugar:'',tipo:'ORDINARIA',dirige_usuario_id:String(ctx.user.id||''),proxima_fecha:'',observaciones:''});
+  var[form,setForm]=useState({fecha:cmHoy(),hora_inicio:'',hora_termino:'',lugar:'',tipo:'ORDINARIA',dirige_usuario_id:cmDirDefecto(ctx.directores),proxima_fecha:'',observaciones:''});
   var[asist,setAsist]=useState([]);var[temas,setTemas]=useState([]);var[acs,setAcs]=useState([]);var[ant,setAnt]=useState([]);
   var[inv,setInv]=useState({nombre:'',cargo:''});var[modalAc,setModalAc]=useState(null);var[buscaU,setBuscaU]=useState('');
   var reunionId=esNueva?(data&&data.reunion_id):p.id;
@@ -21450,6 +21452,8 @@ function ComiteActa(p){
     if(ult&&ult.lugar)uF('lugar',ult.lugar);
     api('/comite/pendientes','GET',null,ctx.tok).then(function(r){setAnt(Array.isArray(r)?r:[]);}).catch(function(){});
   },[]);
+  // Si la lista de candidatos llega después de abrir un acta nueva, se fija el director por defecto
+  useEffect(function(){ if(esNueva&&!data&&!form.dirige_usuario_id&&(ctx.directores||[]).length)uF('dirige_usuario_id',cmDirDefecto(ctx.directores)); },[(ctx.directores||[]).length]);
   function recargarAnt(){ if(reunionId)cargar(reunionId); else api('/comite/pendientes','GET',null,ctx.tok).then(function(r){setAnt(Array.isArray(r)?r:[]);}).catch(function(){}); }
   function toggleU(u){setAsist(function(l){var i=l.findIndex(function(a){return String(a.usuario_id)===String(u.usuario_id);});if(i>=0)return l.filter(function(_,j){return j!==i;});return l.concat([{usuario_id:u.usuario_id,nombre:u.nombre,cargo:u.rol||'',presente:true}]);});}
   function uArr(setter,i,k,v){setter(function(l){var n=l.slice();n[i]=Object.assign({},n[i]);n[i][k]=v;return n;});}
@@ -21514,7 +21518,14 @@ function ComiteActa(p){
         h('div',null,h('label',{style:CM_LBL},'Hora término'),h('input',{type:'time',value:form.hora_termino,disabled:ro,onChange:function(e){uF('hora_termino',e.target.value);},style:CM_INP})),
         h('div',null,h('label',{style:CM_LBL},'Lugar'),h('input',{type:'text',value:form.lugar,disabled:ro,onChange:function(e){uF('lugar',e.target.value);},style:CM_INP,placeholder:'Ej: Oficina central'})),
         h('div',null,h('label',{style:CM_LBL},'Tipo'),h('select',{value:form.tipo,disabled:ro,onChange:function(e){uF('tipo',e.target.value);},style:CM_INP},h('option',{value:'ORDINARIA'},'Ordinaria (semanal)'),h('option',{value:'EXTRAORDINARIA'},'Extraordinaria'))),
-        h('div',null,h('label',{style:CM_LBL},'Dirige la reunión'),h('select',{value:form.dirige_usuario_id,disabled:ro,onChange:function(e){uF('dirige_usuario_id',e.target.value);},style:CM_INP},ctx.usuarios.map(function(u){return h('option',{key:u.usuario_id,value:u.usuario_id},u.nombre);})))
+        h('div',null,h('label',{style:CM_LBL,title:'Por defecto Leonidas Poo Zenteno. Solo puede reemplazarlo un usuario administrador.'},'Dirige la reunión'),h('select',{value:form.dirige_usuario_id,disabled:ro,onChange:function(e){uF('dirige_usuario_id',e.target.value);},style:CM_INP,title:'Por defecto Leonidas Poo Zenteno. Solo puede reemplazarlo un usuario administrador.'},
+          (function(){
+            var ops=(ctx.directores||[]).slice();
+            // Acta antigua cuyo director ya no es candidato: se conserva visible
+            if(form.dirige_usuario_id&&!ops.some(function(d){return String(d.usuario_id)===String(form.dirige_usuario_id);}))ops.push({usuario_id:form.dirige_usuario_id,nombre:(data&&data.dirige_nombre)||((ctx.usuarios.find(function(u){return String(u.usuario_id)===String(form.dirige_usuario_id);})||{}).nombre)||'—',es_admin:false,por_defecto:true});
+            if(!ops.length)return h('option',{value:''},'— sin candidatos —');
+            return ops.map(function(u){return h('option',{key:u.usuario_id,value:u.usuario_id},u.nombre+(u.por_defecto?'':' (administrador)'));});
+          })()))
       ),
       secT('Asistentes ('+asist.length+')',editable&&h('input',{type:'text',value:buscaU,onChange:function(e){setBuscaU(e.target.value);},placeholder:'Buscar usuario…',style:{padding:'4px 8px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:11,width:170}})),
       editable?h('div',null,
@@ -21583,7 +21594,7 @@ function ComiteActa(p){
 function ComiteView(p){
   var user=p.user||{};
   var[tab,setTab]=useState(null);var[reuniones,setReuniones]=useState([]);var[acuerdos,setAcuerdos]=useState([]);var[usuarios,setUsuarios]=useState([]);
-  var[sel,setSel]=useState(null);var[err,setErr]=useState('');var[modalAc,setModalAc]=useState(null);var[cargado,setCargado]=useState(false);
+  var[sel,setSel]=useState(null);var[err,setErr]=useState('');var[modalAc,setModalAc]=useState(null);var[cargado,setCargado]=useState(false);var[directores,setDirectores]=useState([]);
   var[fEst,setFEst]=useState('abiertos');var[fArea,setFArea]=useState('');var[fResp,setFResp]=useState('');var[fEmp,setFEmp]=useState('');var[q,setQ]=useState('');
   var dirige=!!(user.es_admin||(user.modulos||[]).indexOf('comite-dirigir')>=0);
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
@@ -21595,13 +21606,14 @@ function ComiteView(p){
   }
   useEffect(function(){
     api('/usuarios','GET',null,p.tok).then(function(r){setUsuarios((Array.isArray(r)?r:[]).filter(function(u){return u.activo;}));}).catch(function(){});
+    api('/comite/directores','GET',null,p.tok).then(function(r){setDirectores(Array.isArray(r)?r:[]);}).catch(function(){});
     recargar().then(function(ac){var mios=(Array.isArray(ac)?ac:[]).filter(function(a){return a.es_mio&&cmAbierto(a);});setTab(mios.length?'mis':'reuniones');});
   },[]);
   function rapido(a,est){
     if(!confirm('¿Marcar como '+COMITE_EST[est].l.toLowerCase()+'?\n\n'+a.descripcion))return;
     api('/comite/acuerdos/'+a.acuerdo_id+'/estado','PATCH',{estado:est,comentario:''},p.tok).then(function(){recargar();}).catch(function(e){setErr(e.message);});
   }
-  var ctx={tok:p.tok,user:user,usuarios:usuarios,empresas:empresas,reuniones:reuniones,recargar:recargar,dirige:dirige};
+  var ctx={tok:p.tok,user:user,usuarios:usuarios,directores:directores,empresas:empresas,reuniones:reuniones,recargar:recargar,dirige:dirige};
   if(sel)return h(ComiteActa,{key:String(sel),ctx:ctx,id:sel,onBack:function(){setSel(null);recargar();}});
   var mios=acuerdos.filter(function(a){return a.es_mio;});
   var miosAb=mios.filter(cmAbierto),miosVenc=miosAb.filter(cmVencido);
