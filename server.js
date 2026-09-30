@@ -12134,6 +12134,18 @@ async function comiteEnsureRun(){
   _comiteOk=true;
 }
 function comiteDirige(u){return !!(u&&(u.es_admin||(u.modulos||[]).indexOf('comite-dirigir')>=0));}
+// Quién puede figurar como "Dirige la reunión" (regla del usuario 2026-09-30): por defecto SIEMPRE Leonidas Poo Zenteno;
+// los únicos otros candidatos son los usuarios administradores. (Registrar el acta es otro permiso: 'comite-dirigir'.)
+const COMITE_DIRECTOR_DEFECTO=['LEONIDAS','POO'];
+async function comiteDirectores(){
+  const r=await pool.query(`SELECT u.usuario_id,u.nombre,u.rol,COALESCE(ro.es_admin,false) AS es_admin FROM usuarios u LEFT JOIN roles ro ON u.rol_id=ro.rol_id WHERE u.activo=true`);
+  return r.rows.map(function(u){
+    const n=String(u.nombre||'').toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'');
+    return {usuario_id:u.usuario_id,nombre:u.nombre,es_admin:!!u.es_admin||u.rol==='ADMINISTRADOR',por_defecto:COMITE_DIRECTOR_DEFECTO.every(function(w){return n.indexOf(w)>=0;})};
+  }).filter(function(u){return u.por_defecto||u.es_admin;})
+    .sort(function(a,b){return (b.por_defecto?1:0)-(a.por_defecto?1:0)||String(a.nombre).localeCompare(String(b.nombre));});
+}
+const COMITE_MSG_DIRECTOR='Quien dirige la reunión debe ser Leonidas Poo Zenteno o un usuario administrador';
 function comiteEsAsistente(r,uid){return (Array.isArray(r.asistentes)?r.asistentes:[]).some(a=>a&&parseInt(a.usuario_id)===parseInt(uid));}
 function comitePuedeVer(r,u){return comiteDirige(u)||parseInt(r.dirige_usuario_id)===parseInt(u.id)||parseInt(r.creado_por_id)===parseInt(u.id)||comiteEsAsistente(r,u.id);}
 function comitePuedeEditar(r,u){return !!u.es_admin||parseInt(r.dirige_usuario_id)===parseInt(u.id)||parseInt(r.creado_por_id)===parseInt(u.id);}
@@ -12185,6 +12197,11 @@ function comiteAcuerdoSalida(a,u){
   const p=comiteAcuerdoPermisos(a,u); const o=Object.assign({},a,{puede_estado:p.estado,es_mio:!!a.responsable_id&&parseInt(a.responsable_id)===parseInt(u.id)});
   delete o.reunion_asistentes; return o;
 }
+// Candidatos a dirigir la reunión: Leonidas Poo Zenteno (por defecto) + usuarios administradores
+app.get('/api/comite/directores', auth, requireModulo('comite'), async(req,res)=>{
+  try{ await comiteEnsure(); res.json(await comiteDirectores()); }
+  catch(e){res.status(500).json({error:e.message});}
+});
 // Lista de reuniones visibles para el usuario
 app.get('/api/comite/reuniones', auth, requireModulo('comite'), async(req,res)=>{
   try{
@@ -12229,7 +12246,9 @@ app.post('/api/comite/reuniones', auth, requireModulo('comite'), async(req,res)=
     await comiteEnsure();
     if(!comiteDirige(req.user)){return res.status(403).json({error:'Solo quien dirige el comité puede registrar actas (permiso "Comité: Dirigir")'});}
     const c=comiteCabecera(req.body||{});
-    if(!c.dirige_usuario_id)c.dirige_usuario_id=req.user.id;
+    const dirs=await comiteDirectores();
+    if(!c.dirige_usuario_id){const dd=dirs.find(function(x){return x.por_defecto;})||dirs[0];c.dirige_usuario_id=dd?dd.usuario_id:req.user.id;}
+    else if(dirs.length&&!dirs.some(function(x){return x.usuario_id===c.dirige_usuario_id;})){return res.status(400).json({error:COMITE_MSG_DIRECTOR});}
     const anio=parseInt(String(c.fecha).slice(0,4));
     await client.query('BEGIN');
     await client.query('LOCK TABLE comite_reuniones IN SHARE ROW EXCLUSIVE MODE');
@@ -12253,6 +12272,10 @@ app.put('/api/comite/reuniones/:id', auth, requireModulo('comite'), async(req,re
     if(ex.rows[0].estado==='CERRADA'){return res.status(400).json({error:'El acta está cerrada. Reábrela para modificarla.'});}
     const c=comiteCabecera(req.body||{});
     if(!c.dirige_usuario_id)c.dirige_usuario_id=ex.rows[0].dirige_usuario_id;
+    if(parseInt(c.dirige_usuario_id)!==parseInt(ex.rows[0].dirige_usuario_id)){   // solo se valida si cambia (no bloquea actas antiguas)
+      const dirs=await comiteDirectores();
+      if(dirs.length&&!dirs.some(function(x){return x.usuario_id===c.dirige_usuario_id;})){return res.status(400).json({error:COMITE_MSG_DIRECTOR});}
+    }
     await client.query('BEGIN');
     await client.query(`UPDATE comite_reuniones SET fecha=$1,hora_inicio=$2,hora_termino=$3,lugar=$4,tipo=$5,dirige_usuario_id=$6,asistentes=$7,temas=$8,observaciones=$9,proxima_fecha=$10,modificado_en=NOW() WHERE reunion_id=$11`,
       [c.fecha,c.hora_inicio,c.hora_termino,c.lugar,c.tipo,c.dirige_usuario_id,JSON.stringify(c.asistentes),JSON.stringify(c.temas),c.observaciones,c.proxima_fecha,req.params.id]);
