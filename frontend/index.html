@@ -1006,6 +1006,7 @@ function Dashboard(p){
   if(load)return h('div',{className:'spin'},'Cargando...');
   var movsActivos=movs.filter(function(m){return m.estado==='ACTIVO';});
   return h('div',null,
+    h(AlertaCalendario,{tok:p.tok,onIr:function(){p.setView('calendario');}}),
     h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.setView('solicitudes');}}),
     h(AlertaContratos,{tok:p.tok,onIr:function(){p.setView('contratos');}}),
     // ── KPIs principales ──
@@ -8907,6 +8908,7 @@ function OCView(p){
   }
   var sortedOCs=sortOCs(ocs);
   return h('div',null,
+    h(AlertaCalendario,{tok:p.tok,onIr:function(){p.setView&&p.setView('calendario');}}),
     h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.setView&&p.setView('solicitudes');}}),
     h(AlertaContratos,{tok:p.tok,onIr:function(){p.setView&&p.setView('contratos');}}),
     h('div',{style:{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap',alignItems:'center'}},
@@ -16599,6 +16601,7 @@ var MODULOS_SISTEMA=[
   {k:'inventario-editar',l:'Editar Inventario',hint:'Permite editar y anular salidas/traspasos'},
   {k:'mantencion',l:'Mantención'},
   {k:'comite',l:'Comité de Gestión',hint:'Ver las actas donde figura como asistente y actualizar el estado de los acuerdos de los que es responsable'},{k:'comite-dirigir',l:'Comité: Registrar actas y ver todas',hint:'Crear y editar actas del comité, ver todas las actas y actualizar cualquier acuerdo. Quien DIRIGE la reunión es siempre Leonidas Poo Zenteno o un usuario administrador, sin importar este permiso'},
+  {k:'calendario',l:'Calendario',hint:'Tareas, eventos y recordatorios (privadas, compartidas o de toda la empresa); ve además las fechas automáticas de los módulos a los que tenga acceso'},
   {k:'solicitudes',l:'Solicitudes'},{k:'solicitudes-todas',l:'Solicitudes: Ver todas',hint:'Además de las propias, ve las solicitudes de todos los usuarios (pestaña Todas), como un administrador'},
   {k:'finanzas',l:'Finanzas'},
   {k:'transporte',l:'Transporte'},
@@ -21279,7 +21282,7 @@ function PrevPlantillasTab(p){
 
 
 // ══ COMITÉ DE GESTIÓN — actas de la reunión semanal y seguimiento de acuerdos ══
-var COMITE_AREAS=[{k:'OPERACIONES',l:'Operaciones y Producción',i:'🌲',c:'#166534',bg:'#DCFCE7'},{k:'PREVENCION',l:'Prevención de Riesgos',i:'🦺',c:'#B45309',bg:'#FEF3C7'},{k:'AMBIENTE',l:'Medio Ambiente',i:'🍃',c:'#0F766E',bg:'#CCFBF1'},{k:'FINANZAS',l:'Finanzas',i:'💰',c:'#1E40AF',bg:'#DBEAFE'},{k:'ADQUISICIONES',l:'Adquisiciones',i:'📑',c:'#6D28D9',bg:'#EDE9FE'},{k:'RRHH',l:'Recursos Humanos',i:'👥',c:'#BE185D',bg:'#FCE7F3'},{k:'OTROS',l:'Otros temas',i:'📌',c:'#475569',bg:'#F1F5F9'}];
+var COMITE_AREAS=[{k:'OPERACIONES',l:'Operaciones y Producción',i:'🌲',c:'#166534',bg:'#DCFCE7'},{k:'MANTENCION',l:'Mantención',i:'🔧',c:'#9A3412',bg:'#FFEDD5'},{k:'PREVENCION',l:'Prevención de Riesgos',i:'🦺',c:'#B45309',bg:'#FEF3C7'},{k:'AMBIENTE',l:'Medio Ambiente',i:'🍃',c:'#0F766E',bg:'#CCFBF1'},{k:'FINANZAS',l:'Finanzas',i:'💰',c:'#1E40AF',bg:'#DBEAFE'},{k:'ADQUISICIONES',l:'Adquisiciones',i:'📑',c:'#6D28D9',bg:'#EDE9FE'},{k:'RRHH',l:'Recursos Humanos',i:'👥',c:'#BE185D',bg:'#FCE7F3'},{k:'OTROS',l:'Otros temas',i:'📌',c:'#475569',bg:'#F1F5F9'}];
 var COMITE_EST={PENDIENTE:{l:'Pendiente',bg:'#FEF3C7',c:'#92400E'},EN_CURSO:{l:'En curso',bg:'#DBEAFE',c:'#1E40AF'},CUMPLIDO:{l:'Cumplido',bg:'#DCFCE7',c:'#166534'},DESCARTADO:{l:'Descartado',bg:'#F1F5F9',c:'#64748B'}};
 var CM_INP={padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13,width:'100%'};
 var CM_LBL={fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#475569'};
@@ -21508,7 +21511,7 @@ function ComiteActa(p){
         editable&&h(Btn,{onClick:function(){if(confirm('Al cerrar el acta ya no se podrán modificar asistentes, temas ni acuerdos (los responsables sí siguen actualizando el estado de sus acuerdos). ¿Cerrar?'))guardar('cerrar');},disabled:guardando},'🔒 Guardar y cerrar acta'),
         ro&&data&&h(Btn,{v:'a',onClick:function(){imprimirHTMLViaIframe(buildComiteActaHTML(data,ctx.empresas),'Acta_Comite_'+cmActaNum(data));}},'📑 PDF'),
         ro&&data&&data.puede_editar&&h(Btn,{v:'g',onClick:reabrir},'🔓 Reabrir'),
-        data&&data.puede_editar&&(data.estado!=='CERRADA'||ctx.user.es_admin)&&h(Btn,{v:'r',onClick:eliminar},'🗑'))),
+        data&&data.puede_eliminar&&h(Btn,{v:'r',onClick:eliminar},'🗑 Eliminar acta'))),
     err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
     ok&&h('div',{className:'al al-s',style:{marginBottom:10}},ok),
     h('div',{className:'card',style:{padding:16}},
@@ -21591,6 +21594,315 @@ function ComiteActa(p){
   );
 }
 // Vista principal
+// ══ CALENDARIO — tareas, eventos y recordatorios (menú GESTIÓN, también en móvil) ══
+// Reglas: visibilidad PRIVADA (solo el creador) / COMPARTIDA (creador, responsable, participantes, administradores) /
+// EMPRESA (todos los que tienen el módulo). Repetición y "hecha" por ocurrencia las resuelve el servidor (/api/calendario).
+// Además del calendario propio: fechas AUTOMÁTICAS (comité, mantención, contratos) de solo lectura con enlace al módulo,
+// recordatorios por correo, resumen diario 07:00 y enlace iCal para Google Calendar (⚙ Correo y Google Calendar).
+var CAL_VIS_INFO={PRIVADA:{l:'Privada',i:'🔒',d:'Solo tú la ves. Ni siquiera los administradores.'},COMPARTIDA:{l:'Compartida',i:'👥',d:'La ven tú, el responsable, los participantes y los administradores.'},EMPRESA:{l:'Toda la empresa',i:'🏢',d:'La ven todos los usuarios con acceso al calendario.'}};
+var CAL_REC_OPS=[{min:0,l:'A la hora'},{min:60,l:'1 hora antes'},{min:1440,l:'1 día antes'},{min:2880,l:'2 días antes'},{min:10080,l:'1 semana antes'},{min:20160,l:'2 semanas antes'}];
+var CAL_DIAS=['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+var CAL_MESES=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+var CAL_CHK={width:15,height:15,flexShrink:0,cursor:'pointer',margin:0};
+var CAL_ORIGEN={COMITE:{i:'🗂',l:'Comité de Gestión'},MANTENCION:{i:'🔧',l:'Mantención'},CONTRATO:{i:'📄',l:'Contratos'},SISTEMA:{i:'🏛',l:'Fecha tributaria (precargada)'}};
+function calAdd(iso,n){var d=new Date(iso+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10);}
+function calDowL(iso){return (new Date(iso+'T00:00:00Z').getUTCDay()+6)%7;} // 0=lunes
+function calMesIni(iso){return iso.slice(0,7)+'-01';}
+function calMesFin(iso){var y=+iso.slice(0,4),m=+iso.slice(5,7);return y+'-'+('0'+m).slice(-2)+'-'+('0'+new Date(Date.UTC(y,m,0)).getUTCDate()).slice(-2);}
+function calSemIni(iso){return calAdd(iso,-calDowL(iso));}
+function calFechaCorta(iso){if(!iso)return '';return parseInt(iso.slice(8,10))+' '+CAL_MESES[parseInt(iso.slice(5,7))-1].slice(0,3).toLowerCase()+(iso.slice(0,4)!==cmHoy().slice(0,4)?' '+iso.slice(0,4):'');}
+function calFechaLargaF(iso){var D=['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo'];return D[calDowL(iso)]+' '+parseInt(iso.slice(8,10))+' de '+CAL_MESES[parseInt(iso.slice(5,7))-1].toLowerCase()+' de '+iso.slice(0,4);}
+function calVencida(x){return x.tipo==='TAREA'&&!x.hecha&&x.fecha<cmHoy();}
+function calIcono(x){var s='';if(x.origen&&CAL_ORIGEN[x.origen])s+=CAL_ORIGEN[x.origen].i;else if(x.tipo==='EVENTO')s+='📌';if(x.repeticion)s+='🔁';if(x.visibilidad==='PRIVADA')s+='🔒';return s;}
+function calEsAdminU(u){return !!(u&&(u.es_admin||u.rol==='ADMINISTRADOR'||u.rol==='Administrador'));}
+function calPuedeVerModulo(){try{var u=JSON.parse(localStorage.getItem('lpz_user')||'null');if(!u)return false;if(calEsAdminU(u))return true;return Array.isArray(u.modulos)&&u.modulos.indexOf('calendario')>=0;}catch(e){return false;}}
+// Chip de una ocurrencia (mes/semana)
+function CalChip(p){
+  var x=p.item,a=cmArea(x.area),v=calVencida(x);
+  return h('div',{onClick:function(e){e.stopPropagation();p.onOpen(x);},title:(x.hora?x.hora+' · ':'')+x.titulo+(x.responsable_nombre?' · '+x.responsable_nombre:''),
+    style:{background:x.hecha?'#F1F5F9':a.bg,borderLeft:'3px solid '+(v?'#DC2626':a.c),color:x.hecha?'#94A3B8':'#1E293B',textDecoration:x.hecha?'line-through':'none',borderRadius:4,padding:'2px 5px',fontSize:11,marginBottom:2,cursor:'pointer',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',lineHeight:1.35}},
+    x.hora?h('span',{style:{fontWeight:700,marginRight:3}},x.hora):null,calIcono(x)?h('span',{style:{marginRight:3}},calIcono(x)):null,x.titulo);
+}
+// Fila de la agenda
+function CalFila(p){
+  var x=p.item,a=cmArea(x.area),v=calVencida(x);
+  return h('div',{onClick:function(){p.onOpen(x);},style:{display:'flex',gap:10,alignItems:'flex-start',padding:'8px 10px',borderBottom:'1px solid #F1F5F9',cursor:'pointer',background:x.hecha?'#FAFAFA':'#fff'}},
+    x.tipo==='TAREA'&&x.evento_id?h('input',{type:'checkbox',checked:!!x.hecha,onClick:function(e){e.stopPropagation();},onChange:function(){p.onHecha(x,!x.hecha);},style:Object.assign({},CAL_CHK,{marginTop:3}),title:x.hecha?'Desmarcar':'Marcar como hecha'}):h('span',{style:{width:15,flexShrink:0}}),
+    h('div',{style:{width:52,flexShrink:0,fontSize:11,fontWeight:700,color:v?'#DC2626':'#475569',marginTop:2}},x.hora||(x.fecha_fin&&x.fecha_fin>x.fecha?'varios días':'todo el día')),
+    h('div',{style:{flex:1,minWidth:0}},
+      h('div',{style:{fontSize:13,fontWeight:600,color:x.hecha?'#94A3B8':'#1E293B',textDecoration:x.hecha?'line-through':'none'}},calIcono(x)?h('span',{style:{marginRight:4}},calIcono(x)):null,x.titulo,v?h('span',{style:{marginLeft:6,fontSize:10,color:'#DC2626',fontWeight:700}},'VENCIDA'):null),
+      h('div',{style:{fontSize:11,color:'#64748B',marginTop:1,display:'flex',gap:6,flexWrap:'wrap'}},
+        h('span',{style:{background:a.bg,color:a.c,borderRadius:8,padding:'0 6px',fontWeight:600}},a.i+' '+a.l),
+        x.empresa_nombre?h('span',null,x.empresa_nombre):null,
+        x.responsable_nombre?h('span',null,'Resp.: '+x.responsable_nombre):null,
+        x.visibilidad&&CAL_VIS_INFO[x.visibilidad]?h('span',{title:CAL_VIS_INFO[x.visibilidad].d},CAL_VIS_INFO[x.visibilidad].i+' '+CAL_VIS_INFO[x.visibilidad].l):null,
+        x.origen&&CAL_ORIGEN[x.origen]?h('span',null,'· '+CAL_ORIGEN[x.origen].l):null),
+      x.descripcion?h('div',{style:{fontSize:11,color:'#64748B',marginTop:2,whiteSpace:'pre-wrap'}},String(x.descripcion).slice(0,240)):null));
+}
+// Detalle de una fecha automática (solo lectura, con enlace al módulo de origen)
+function CalDetalleAuto(p){
+  var x=p.item,a=cmArea(x.area),o=CAL_ORIGEN[x.origen]||{i:'',l:x.origen};
+  return h(Modal,{title:o.i+' '+x.titulo,onClose:p.onClose},
+    h('div',{style:{padding:'12px 16px 16px'}},
+      h('div',{style:{background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:6,padding:10,fontSize:12,color:'#475569',marginBottom:12}},'Esta fecha viene de ',h('b',null,o.l),'. No se edita desde el calendario: cualquier cambio se hace en su módulo.'),
+      h('div',{style:{fontSize:13,marginBottom:6}},h('b',null,'Fecha: '),calFechaLargaF(x.fecha)),
+      h('div',{style:{fontSize:13,marginBottom:6}},h('b',null,'Área: '),a.i+' '+a.l),
+      x.empresa_nombre?h('div',{style:{fontSize:13,marginBottom:6}},h('b',null,'Empresa: '),x.empresa_nombre):null,
+      x.responsable_nombre?h('div',{style:{fontSize:13,marginBottom:6}},h('b',null,'Responsable: '),x.responsable_nombre):null,
+      x.descripcion?h('div',{style:{fontSize:13,marginBottom:6,whiteSpace:'pre-wrap'}},x.descripcion):null,
+      h('div',{style:{display:'flex',gap:6,justifyContent:'flex-end',marginTop:14}},
+        h(Btn,{v:'g',onClick:p.onClose},'Cerrar'),
+        p.onNav&&x.enlace?h(Btn,{onClick:function(){p.onNav(x.enlace);}},'Abrir en '+o.l+' →'):null)));
+}
+// Formulario de tarea/evento (nuevo o edición). p.ctx={tok,user,usuarios,empresas}; p.id (null = nueva); p.fecha (ocurrencia o fecha inicial)
+function CalEventoModal(p){
+  var ctx=p.ctx,esNueva=!p.id;
+  var[data,setData]=useState(null);var[err,setErr]=useState('');var[guardando,setGuardando]=useState(false);
+  var[f,setF]=useState({titulo:'',descripcion:'',tipo:'TAREA',area:'OTROS',empresa_id:'',fecha:p.fecha||cmHoy(),todo_el_dia:true,hora:'09:00',hora_fin:'',fecha_fin:'',visibilidad:'COMPARTIDA',responsable_id:String(ctx.user.id||''),participantes:[],rep_tipo:'NINGUNA',rep_dias:[],rep_dia:'',rep_intervalo:1,rep_hasta:'',recordatorios:[1440],prioridad:'normal'});
+  function uF(k,v){setF(function(o){var n=Object.assign({},o);n[k]=v;return n;});}
+  useEffect(function(){
+    if(esNueva)return;
+    api('/calendario/eventos/'+p.id,'GET',null,ctx.tok).then(function(d){
+      setData(d);var r=d.repeticion||{};
+      setF({titulo:d.titulo||'',descripcion:d.descripcion||'',tipo:d.tipo||'TAREA',area:d.area||'OTROS',empresa_id:d.empresa_id?String(d.empresa_id):'',fecha:cmIso(d.fecha),todo_el_dia:!d.hora,hora:d.hora||'09:00',hora_fin:d.hora_fin||'',fecha_fin:cmIso(d.fecha_fin)||'',visibilidad:d.visibilidad||'COMPARTIDA',responsable_id:d.responsable_id?String(d.responsable_id):'',participantes:(Array.isArray(d.participantes)?d.participantes:[]).map(String),rep_tipo:r.tipo||'NINGUNA',rep_dias:r.dias||[],rep_dia:r.dia?String(r.dia):'',rep_intervalo:r.intervalo||1,rep_hasta:r.hasta||'',recordatorios:Array.isArray(d.recordatorios)?d.recordatorios.map(function(x){return parseInt(x);}):[],prioridad:d.prioridad||'normal'});
+    }).catch(function(e){setErr(e.message);});
+  },[p.id]);
+  var ro=!esNueva&&data&&data.puede_editar===false;
+  var ocurrencia=p.fecha||f.fecha;
+  var hechaOcurrencia=!!(data&&(data.hechas||[]).some(function(x){return x.fecha===ocurrencia;}));
+  function payload(){
+    var rep=null;
+    if(f.rep_tipo!=='NINGUNA')rep={tipo:f.rep_tipo,intervalo:parseInt(f.rep_intervalo)||1,dias:f.rep_dias,dia:f.rep_dia?parseInt(f.rep_dia):null,hasta:f.rep_hasta||null};
+    return {titulo:f.titulo,descripcion:f.descripcion,tipo:f.tipo,area:f.area,empresa_id:f.empresa_id||null,fecha:f.fecha,todo_el_dia:f.todo_el_dia,hora:f.todo_el_dia?null:f.hora,hora_fin:f.todo_el_dia?null:(f.hora_fin||null),fecha_fin:f.fecha_fin||null,visibilidad:f.visibilidad,responsable_id:f.responsable_id||null,participantes:f.participantes.map(function(x){return parseInt(x);}),repeticion:rep,recordatorios:f.recordatorios,prioridad:f.prioridad};
+  }
+  function guardar(){
+    if(!f.titulo.trim()){setErr('Escribe un título');return;}
+    if(!f.fecha){setErr('Indica la fecha');return;}
+    setGuardando(true);setErr('');
+    (esNueva?api('/calendario/eventos','POST',payload(),ctx.tok):api('/calendario/eventos/'+p.id,'PUT',payload(),ctx.tok))
+      .then(function(){setGuardando(false);p.onSaved();}).catch(function(e){setGuardando(false);setErr(e.message);});
+  }
+  function eliminar(){
+    if(!confirm('¿Eliminar "'+f.titulo+'"'+(f.rep_tipo!=='NINGUNA'?' y todas sus repeticiones':'')+'?'))return;
+    api('/calendario/eventos/'+p.id,'DELETE',null,ctx.tok).then(function(){p.onSaved();}).catch(function(e){setErr(e.message);});
+  }
+  function marcar(v){api('/calendario/eventos/'+p.id+'/hecha','PATCH',{fecha:ocurrencia,hecha:v},ctx.tok).then(function(){p.onSaved();}).catch(function(e){setErr(e.message);});}
+  var L=function(t){return h('label',{style:CM_LBL},t);};
+  var inp=function(k,extra){return h('input',Object.assign({value:f[k],disabled:ro,onChange:function(e){uF(k,e.target.value);},style:CM_INP},extra||{}));};
+  var usuarios=ctx.usuarios||[];
+  var vis=function(k){var v=CAL_VIS_INFO[k],on=f.visibilidad===k;return h('div',{key:k,onClick:function(){if(!ro)uF('visibilidad',k);},style:{flex:1,minWidth:120,border:'1px solid '+(on?'#1E3A2D':'#E2E8F0'),background:on?'#E9F1EC':'#fff',borderRadius:6,padding:'6px 8px',cursor:ro?'default':'pointer'}},h('div',{style:{fontSize:12,fontWeight:700,color:on?'#1E3A2D':'#334155'}},v.i+' '+v.l),h('div',{style:{fontSize:10,color:'#64748B',marginTop:2}},v.d));};
+  return h(Modal,{title:esNueva?'Nueva tarea o evento':(ro?'Ver tarea':'Editar tarea'),lg:true,onClose:p.onClose},
+    h('div',{style:{padding:'10px 16px 16px'}},
+      err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+      ro&&h('div',{style:{background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:6,padding:'6px 10px',fontSize:11,color:'#78350F',marginBottom:10}},'Solo lectura: la editan quien la creó ('+(data.creado_por_nombre||'')+'), su responsable o un administrador.'),
+      !esNueva&&data&&data.origen==='SISTEMA'&&h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6,padding:'6px 10px',fontSize:11,color:'#1E3A8A',marginBottom:10}},'🏛 Fecha tributaria precargada por el sistema. Puedes ajustar el día, el responsable o los avisos según la práctica de la empresa.'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:10,marginBottom:10}},
+        h('div',null,L('Título *'),inp('titulo',{placeholder:'Qué hay que hacer',autoFocus:esNueva})),
+        h('div',null,L('Tipo'),h('select',{value:f.tipo,disabled:ro,onChange:function(e){uF('tipo',e.target.value);},style:CM_INP},h('option',{value:'TAREA'},'Tarea (se marca hecha)'),h('option',{value:'EVENTO'},'Evento / reunión'))),
+        h('div',null,L('Prioridad'),h('select',{value:f.prioridad,disabled:ro,onChange:function(e){uF('prioridad',e.target.value);},style:CM_INP},h('option',{value:'baja'},'Baja'),h('option',{value:'normal'},'Normal'),h('option',{value:'alta'},'Alta')))),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10,marginBottom:10}},
+        h('div',null,L('Fecha *'),inp('fecha',{type:'date'})),
+        h('div',null,L('Horario'),h('label',{style:{display:'flex',alignItems:'center',gap:6,fontSize:12,padding:'7px 0',cursor:'pointer'}},h('input',{type:'checkbox',checked:f.todo_el_dia,disabled:ro,onChange:function(e){uF('todo_el_dia',e.target.checked);},style:CAL_CHK}),'Todo el día')),
+        h('div',null,L('Hora'),inp('hora',{type:'time',disabled:ro||f.todo_el_dia})),
+        h('div',null,L('Hasta (hora)'),inp('hora_fin',{type:'time',disabled:ro||f.todo_el_dia}))),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10,marginBottom:10}},
+        h('div',null,L('Área'),h('select',{value:f.area,disabled:ro,onChange:function(e){uF('area',e.target.value);},style:CM_INP},COMITE_AREAS.map(function(a){return h('option',{key:a.k,value:a.k},a.i+' '+a.l);}))),
+        h('div',null,L('Empresa'),h('select',{value:f.empresa_id,disabled:ro,onChange:function(e){uF('empresa_id',e.target.value);},style:CM_INP},h('option',{value:''},'Ambas / no aplica'),(ctx.empresas||[]).map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.nombre_corto||e.razon_social);}))),
+        h('div',null,L('Fecha de término (opcional)'),inp('fecha_fin',{type:'date',min:f.fecha}))),
+      h('div',{style:{marginBottom:10}},L('Quién la ve'),h('div',{style:{display:'flex',gap:6,flexWrap:'wrap'}},['PRIVADA','COMPARTIDA','EMPRESA'].map(vis))),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 2fr',gap:10,marginBottom:10}},
+        h('div',null,L('Responsable'),h('select',{value:f.responsable_id,disabled:ro,onChange:function(e){uF('responsable_id',e.target.value);},style:CM_INP},h('option',{value:''},'— sin responsable —'),usuarios.map(function(u){return h('option',{key:u.usuario_id,value:u.usuario_id},u.nombre+(u.con_correo?'':' (sin correo)'));}))),
+        h('div',null,L('Participantes (reciben los avisos)'),
+          h('div',{style:{display:'flex',flexWrap:'wrap',gap:4,maxHeight:86,overflowY:'auto',border:'1px solid #E2E8F0',borderRadius:6,padding:6}},
+            usuarios.filter(function(u){return String(u.usuario_id)!==String(f.responsable_id);}).map(function(u){var on=f.participantes.indexOf(String(u.usuario_id))>=0;return h('label',{key:u.usuario_id,style:{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,padding:'2px 7px',borderRadius:10,border:'1px solid '+(on?'#1E3A2D':'#E2E8F0'),background:on?'#E9F1EC':'#fff',cursor:ro?'default':'pointer'}},h('input',{type:'checkbox',checked:on,disabled:ro,onChange:function(e){uF('participantes',e.target.checked?f.participantes.concat([String(u.usuario_id)]):f.participantes.filter(function(x){return x!==String(u.usuario_id);}));},style:{width:12,height:12,margin:0,cursor:'pointer'}}),u.nombre);}),
+            !usuarios.length&&h('span',{style:{fontSize:11,color:'#94A3B8'}},'Cargando usuarios…')))),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
+        h('div',{style:{border:'1px solid #E2E8F0',borderRadius:6,padding:8}},L('🔁 Repetición'),
+          h('div',{style:{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}},
+            h('select',{value:f.rep_tipo,disabled:ro,onChange:function(e){uF('rep_tipo',e.target.value);},style:Object.assign({},CM_INP,{width:'auto'})},h('option',{value:'NINGUNA'},'No se repite'),h('option',{value:'DIARIA'},'Diaria'),h('option',{value:'SEMANAL'},'Semanal'),h('option',{value:'MENSUAL'},'Mensual'),h('option',{value:'ANUAL'},'Anual')),
+            (f.rep_tipo==='DIARIA'||f.rep_tipo==='MENSUAL')&&h('span',{style:{fontSize:11,display:'inline-flex',alignItems:'center',gap:4}},'cada',h('input',{type:'number',min:1,max:12,value:f.rep_intervalo,disabled:ro,onChange:function(e){uF('rep_intervalo',e.target.value);},style:{width:50,padding:'5px 6px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:12}}),f.rep_tipo==='DIARIA'?'día(s)':'mes(es)'),
+            f.rep_tipo==='MENSUAL'&&h('span',{style:{fontSize:11,display:'inline-flex',alignItems:'center',gap:4}},'el día',h('input',{type:'number',min:1,max:31,value:f.rep_dia,placeholder:f.fecha?String(parseInt(f.fecha.slice(8,10))):'',disabled:ro,onChange:function(e){uF('rep_dia',e.target.value);},style:{width:50,padding:'5px 6px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:12}}),'(31 = último)')),
+          f.rep_tipo==='SEMANAL'&&h('div',{style:{display:'flex',gap:3,marginTop:6}},CAL_DIAS.map(function(d,i){var js=(i+1)%7;var on=f.rep_dias.indexOf(js)>=0;return h('button',{key:d,type:'button',disabled:ro,onClick:function(){uF('rep_dias',on?f.rep_dias.filter(function(x){return x!==js;}):f.rep_dias.concat([js]));},style:{padding:'3px 0',flex:1,fontSize:10,border:'1px solid '+(on?'#1E3A2D':'#CBD5E1'),background:on?'#1E3A2D':'#fff',color:on?'#fff':'#475569',borderRadius:4,cursor:'pointer'}},d);})),
+          f.rep_tipo!=='NINGUNA'&&h('div',{style:{marginTop:6,display:'flex',alignItems:'center',gap:6,fontSize:11}},'Hasta',h('input',{type:'date',value:f.rep_hasta,disabled:ro,onChange:function(e){uF('rep_hasta',e.target.value);},style:Object.assign({},CM_INP,{width:'auto'})}),h('span',{style:{color:'#94A3B8'}},'(vacío = sin fin)'))),
+        h('div',{style:{border:'1px solid #E2E8F0',borderRadius:6,padding:8}},L('⏰ Avisar por correo'),
+          h('div',{style:{display:'flex',flexWrap:'wrap',gap:4}},CAL_REC_OPS.map(function(o){var on=f.recordatorios.indexOf(o.min)>=0;return h('label',{key:o.min,style:{display:'inline-flex',alignItems:'center',gap:4,fontSize:11,padding:'2px 7px',borderRadius:10,border:'1px solid '+(on?'#B45309':'#E2E8F0'),background:on?'#FEF3C7':'#fff',cursor:ro?'default':'pointer'}},h('input',{type:'checkbox',checked:on,disabled:ro,onChange:function(e){uF('recordatorios',e.target.checked?f.recordatorios.concat([o.min]):f.recordatorios.filter(function(x){return x!==o.min;}));},style:{width:12,height:12,margin:0,cursor:'pointer'}}),o.l);})),
+          h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:6}},'Al responsable, a quien la creó y a los participantes. Además, todos reciben el resumen diario a las 07:00 y el aviso en pantalla.'))),
+      h('div',{style:{marginBottom:12}},L('Notas'),h('textarea',{value:f.descripcion,disabled:ro,onChange:function(e){uF('descripcion',e.target.value);},rows:3,style:Object.assign({},CM_INP,{resize:'vertical',fontFamily:'inherit'})})),
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:6,flexWrap:'wrap'}},
+        h('div',{style:{display:'flex',gap:6}},!esNueva&&!ro&&h(Btn,{v:'d',onClick:eliminar},'🗑 Eliminar')),
+        h('div',{style:{display:'flex',gap:6,flexWrap:'wrap'}},
+          !esNueva&&f.tipo==='TAREA'&&h(Btn,{v:hechaOcurrencia?'g':'teal',onClick:function(){marcar(!hechaOcurrencia);}},hechaOcurrencia?'↩ Desmarcar '+calFechaCorta(ocurrencia):'✓ Marcar hecha '+(f.rep_tipo!=='NINGUNA'?'('+calFechaCorta(ocurrencia)+')':'')),
+          h(Btn,{v:'g',onClick:p.onClose},ro?'Cerrar':'Cancelar'),
+          !ro&&h(Btn,{onClick:guardar,disabled:guardando},guardando?'Guardando…':'💾 Guardar')))));
+}
+// Preferencias: resumen por correo + enlace para Google Calendar
+function CalPrefsModal(p){
+  var[pref,setPref]=useState(null);var[err,setErr]=useState('');var[msg,setMsg]=useState('');
+  function cargar(){api('/calendario/preferencias','GET',null,p.tok).then(setPref).catch(function(e){setErr(e.message);});}
+  useEffect(cargar,[]);
+  function toggle(v){api('/calendario/preferencias','PUT',{resumen_correo:v},p.tok).then(cargar).catch(function(e){setErr(e.message);});}
+  function generar(){if(pref&&pref.ical_url&&!confirm('Ya tienes un enlace. Si generas otro, el anterior deja de funcionar y tendrás que volver a agregarlo en Google Calendar. ¿Continuar?'))return;api('/calendario/ical-enlace','POST',{},p.tok).then(cargar).catch(function(e){setErr(e.message);});}
+  function copiar(){try{navigator.clipboard.writeText(pref.ical_url).then(function(){setMsg('Enlace copiado');setTimeout(function(){setMsg('');},2000);});}catch(e){}}
+  return h(Modal,{title:'⚙ Correo y Google Calendar',onClose:p.onClose},
+    h('div',{style:{padding:'10px 16px 16px',fontSize:13}},
+      err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+      !pref?h('div',{style:{color:'#94A3B8'}},'Cargando…'):h('div',null,
+        h('div',{style:{fontWeight:700,marginBottom:4}},'📧 Resumen diario por correo'),
+        h('div',{style:{fontSize:12,color:'#475569',marginBottom:8}},'Cada día a las 07:00 recibes tus tareas vencidas, las de hoy y las de los próximos 7 días'+(pref.email?' en '+pref.email:'')+'. Los avisos individuales de cada tarea se definen en la tarea.'),
+        !pref.correo_activo&&h('div',{style:{background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:6,padding:'6px 10px',fontSize:11,color:'#78350F',marginBottom:8}},'El envío de correos no está configurado en el servidor (faltan BREVO_API_KEY / MAIL_FROM_EMAIL). Los avisos en pantalla y Google Calendar funcionan igual.'),
+        !pref.email&&h('div',{style:{background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:6,padding:'6px 10px',fontSize:11,color:'#78350F',marginBottom:8}},'Tu usuario no tiene correo registrado: pídele a un administrador que lo agregue en Usuarios.'),
+        h('label',{style:{display:'flex',alignItems:'center',gap:8,cursor:'pointer',marginBottom:16}},h('input',{type:'checkbox',checked:!!pref.resumen_correo,onChange:function(e){toggle(e.target.checked);},style:CAL_CHK}),'Recibir el resumen diario'),
+        h('div',{style:{fontWeight:700,marginBottom:4}},'📱 Ver el calendario en Google Calendar (celular)'),
+        h('div',{style:{fontSize:12,color:'#475569',marginBottom:8}},'Genera tu enlace privado y agrégalo en Google Calendar desde el computador: menú "Otros calendarios" → + → "Desde URL" → pegar el enlace. En el celular aparece solo (en la app, activa el calendario "ERP Empresas Poo" en Configuración → Mostrar más). Google lo actualiza cada algunas horas: sirve para ver y planificar; los avisos urgentes llegan por correo y en pantalla.'),
+        pref.ical_url?h('div',{style:{display:'flex',gap:6,alignItems:'center',marginBottom:6}},h('input',{readOnly:true,value:pref.ical_url,onFocus:function(e){e.target.select();},style:Object.assign({},CM_INP,{fontSize:11,fontFamily:'monospace'})}),h(Btn,{v:'g',sm:true,onClick:copiar},'Copiar')):null,
+        msg&&h('div',{style:{fontSize:11,color:'#166534',marginBottom:6}},'✓ '+msg),
+        h('div',{style:{display:'flex',gap:6,alignItems:'center'}},h(Btn,{v:pref.ical_url?'g':'p',sm:true,onClick:generar},pref.ical_url?'Generar un enlace nuevo':'Generar mi enlace'),h('span',{style:{fontSize:10,color:'#94A3B8'}},'El enlace es personal: muestra lo que tú puedes ver. No lo compartas.')))));
+}
+function CalendarioView(p){
+  var user=p.user||{};var mobile=!!p.mobile;
+  var[vista,setVista]=useState(mobile?'agenda':'mes');var[cursor,setCursor]=useState(cmHoy());
+  var[items,setItems]=useState([]);var[cargando,setCargando]=useState(false);var[err,setErr]=useState('');
+  var[usuarios,setUsuarios]=useState([]);var[modal,setModal]=useState(null);var[auto,setAuto]=useState(null);var[prefs,setPrefs]=useState(false);
+  var[fArea,setFArea]=useState('');var[fEmp,setFEmp]=useState('');var[soloMias,setSoloMias]=useState(false);var[q,setQ]=useState('');var[verHechas,setVerHechas]=useState(true);
+  var hoy=cmHoy();
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  function rango(){
+    if(vista==='mes'){var ini=calSemIni(calMesIni(cursor));var fin=calAdd(calSemIni(calMesFin(cursor)),6);return [ini,fin];}
+    if(vista==='semana'){var s=calSemIni(cursor);return [s,calAdd(s,6)];}
+    return [calAdd(hoy,-45),calAdd(hoy,60)];
+  }
+  var rg=rango();
+  function cargar(){
+    setCargando(true);
+    api('/calendario/eventos?desde='+rg[0]+'&hasta='+rg[1],'GET',null,p.tok).then(function(r){setItems(Array.isArray(r.items)?r.items:[]);setErr('');}).catch(function(e){setErr('No se pudo cargar el calendario: '+e.message);}).finally(function(){setCargando(false);});
+  }
+  useEffect(cargar,[vista,cursor]);
+  useEffect(function(){api('/calendario/usuarios','GET',null,p.tok).then(function(r){setUsuarios(Array.isArray(r)?r:[]);}).catch(function(){});},[]);
+  function abrir(x){ if(x.origen&&x.origen!=='MANUAL'&&x.origen!=='SISTEMA'){setAuto(x);return;} setModal({id:x.evento_id,fecha:x.fecha}); }
+  function nueva(fecha){setModal({id:null,fecha:fecha||hoy});}
+  function hecha(x,v){api('/calendario/eventos/'+x.evento_id+'/hecha','PATCH',{fecha:x.fecha,hecha:v},p.tok).then(cargar).catch(function(e){setErr(e.message);});}
+  function mover(n){
+    if(vista==='mes'){var y=+cursor.slice(0,4),m=+cursor.slice(5,7)-1+n;setCursor(new Date(Date.UTC(y+Math.floor(m/12),((m%12)+12)%12,1)).toISOString().slice(0,10));}
+    else if(vista==='semana')setCursor(calAdd(cursor,7*n));
+  }
+  var filt=items.filter(function(x){
+    if(fArea&&x.area!==fArea)return false;
+    if(fEmp&&String(x.empresa_id||'')!==fEmp)return false;
+    if(soloMias&&!x.es_mio)return false;
+    if(!verHechas&&x.hecha)return false;
+    if(q&&((x.titulo||'')+' '+(x.descripcion||'')+' '+(x.responsable_nombre||'')).toUpperCase().indexOf(q.toUpperCase())<0)return false;
+    return true;});
+  var porDia={};filt.forEach(function(x){(porDia[x.fecha]=porDia[x.fecha]||[]).push(x);});
+  var ctx={tok:p.tok,user:user,usuarios:usuarios,empresas:empresas};
+  var titulo=vista==='mes'?CAL_MESES[+cursor.slice(5,7)-1]+' '+cursor.slice(0,4):vista==='semana'?'Semana del '+calFechaCorta(calSemIni(cursor))+' al '+calFechaCorta(calAdd(calSemIni(cursor),6)):'Agenda';
+  var vencidas=filt.filter(calVencida);
+  var selS=Object.assign({},CM_INP,{width:'auto',fontSize:12,padding:'5px 8px'});
+  var tabBtn=function(k,l){return h('button',{key:k,onClick:function(){setVista(k);},style:{padding:'5px 10px',borderRadius:6,border:'1px solid '+(vista===k?'#1E3A2D':'#CBD5E1'),background:vista===k?'#1E3A2D':'#fff',color:vista===k?'#fff':'#475569',fontWeight:600,fontSize:12,cursor:'pointer'}},l);};
+  // ── Mes ──
+  function renderMes(){
+    var ini=rg[0];var semanas=[];var f=ini;
+    while(f<=rg[1]){var fila=[];for(var i=0;i<7;i++){fila.push(f);f=calAdd(f,1);}semanas.push(fila);}
+    var mesAct=cursor.slice(0,7);
+    return h('div',{style:{border:'1px solid #E2E8F0',borderRadius:8,overflow:'hidden',background:'#fff'}},
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',background:'#F8FAFC',borderBottom:'1px solid #E2E8F0'}},CAL_DIAS.map(function(d){return h('div',{key:d,style:{padding:'6px 4px',fontSize:11,fontWeight:700,color:'#475569',textAlign:'center'}},d);})),
+      semanas.map(function(sem,si){return h('div',{key:si,style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',borderBottom:si<semanas.length-1?'1px solid #E2E8F0':'none'}},
+        sem.map(function(d){var its=porDia[d]||[];var esHoy=d===hoy;var fuera=d.slice(0,7)!==mesAct;var max=mobile?2:4;
+          return h('div',{key:d,onClick:function(){nueva(d);},title:'Clic para crear una tarea el '+calFechaCorta(d),style:{minHeight:mobile?64:96,padding:4,borderRight:'1px solid #F1F5F9',background:esHoy?'#FFFBEB':(fuera?'#FAFAFA':'#fff'),cursor:'pointer',overflow:'hidden'}},
+            h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:2}},
+              h('span',{style:{fontSize:11,fontWeight:esHoy?800:600,color:esHoy?'#B45309':(fuera?'#CBD5E1':(calDowL(d)>=5?'#94A3B8':'#334155')),background:esHoy?'#FDE68A':'transparent',borderRadius:10,padding:'0 6px'}},parseInt(d.slice(8,10))),
+              its.length>max?h('span',{style:{fontSize:9,color:'#64748B'}},'+'+(its.length-max)):null),
+            its.slice(0,max).map(function(x){return h(CalChip,{key:x.key,item:x,onOpen:abrir});}));}));}));
+  }
+  // ── Semana ──
+  function renderSemana(){
+    var s=calSemIni(cursor);var dias=[];for(var i=0;i<7;i++)dias.push(calAdd(s,i));
+    return h('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',gap:6}},dias.map(function(d){var its=porDia[d]||[];var esHoy=d===hoy;
+      return h('div',{key:d,style:{background:'#fff',border:'1px solid '+(esHoy?'#F59E0B':'#E2E8F0'),borderRadius:8,minHeight:200,padding:6}},
+        h('div',{onClick:function(){nueva(d);},style:{fontSize:11,fontWeight:700,color:esHoy?'#B45309':'#334155',marginBottom:6,cursor:'pointer',borderBottom:'1px solid #F1F5F9',paddingBottom:4}},CAL_DIAS[calDowL(d)]+' '+parseInt(d.slice(8,10))),
+        its.map(function(x){return h(CalChip,{key:x.key,item:x,onOpen:abrir});}),
+        !its.length&&h('div',{onClick:function(){nueva(d);},style:{fontSize:10,color:'#CBD5E1',cursor:'pointer'}},'+ agregar'));}));
+  }
+  // ── Agenda ──
+  function renderAgenda(){
+    var venc=filt.filter(function(x){return calVencida(x)&&x.fecha<hoy;});
+    var dias=Object.keys(porDia).filter(function(d){return d>=hoy;}).sort();
+    return h('div',null,
+      venc.length>0&&h('div',{className:'card',style:{padding:0,marginBottom:12,borderColor:'#FECACA'}},
+        h('div',{style:{padding:'8px 12px',background:'#FEF2F2',color:'#B91C1C',fontWeight:700,fontSize:12,borderBottom:'1px solid #FECACA'}},'⚠ Vencidas sin hacer ('+venc.length+')'),
+        venc.map(function(x){return h('div',{key:x.key,style:{display:'flex'}},h('div',{style:{width:70,flexShrink:0,fontSize:11,color:'#B91C1C',fontWeight:700,padding:'9px 0 0 10px'}},calFechaCorta(x.fecha)),h('div',{style:{flex:1}},h(CalFila,{item:x,onOpen:abrir,onHecha:hecha})));})),
+      !dias.length&&h('div',{className:'card',style:{padding:24,textAlign:'center',color:'#94A3B8',fontSize:12}},'Nada agendado en los próximos 60 días. Usa "+ Nueva tarea" para agregar.'),
+      dias.map(function(d){var its=porDia[d];var esHoy=d===hoy;
+        return h('div',{key:d,className:'card',style:{padding:0,marginBottom:10,borderColor:esHoy?'#F59E0B':'#E2E8F0'}},
+          h('div',{style:{padding:'7px 12px',background:esHoy?'#FFFBEB':'#F8FAFC',fontWeight:700,fontSize:12,color:esHoy?'#B45309':'#334155',borderBottom:'1px solid #E2E8F0',display:'flex',justifyContent:'space-between'}},h('span',null,(esHoy?'HOY · ':'')+calFechaLargaF(d)),h('span',{style:{color:'#94A3B8',fontWeight:500}},its.length)),
+          its.map(function(x){return h(CalFila,{key:x.key,item:x,onOpen:abrir,onHecha:hecha});}));}));
+  }
+  return h('div',null,
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',flexWrap:'wrap',gap:8,marginBottom:10}},
+      h('div',{style:{display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}},
+        vista!=='agenda'&&h(Btn,{v:'g',sm:true,onClick:function(){mover(-1);}},'‹'),
+        vista!=='agenda'&&h(Btn,{v:'g',sm:true,onClick:function(){setCursor(hoy);}},'Hoy'),
+        vista!=='agenda'&&h(Btn,{v:'g',sm:true,onClick:function(){mover(1);}},'›'),
+        h('div',{style:{fontSize:16,fontWeight:800,color:'#1E3A2D',margin:'0 6px'}},titulo),
+        cargando&&h('span',{style:{fontSize:11,color:'#94A3B8'}},'cargando…')),
+      h('div',{style:{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}},
+        tabBtn('mes','Mes'),!mobile&&tabBtn('semana','Semana'),tabBtn('agenda','Agenda'),
+        h(Btn,{v:'g',sm:true,onClick:function(){setPrefs(true);}},'⚙ Correo y Google Calendar'),
+        h(Btn,{onClick:function(){nueva(vista==='mes'&&cursor.slice(0,7)!==hoy.slice(0,7)?calMesIni(cursor):hoy);}},'+ Nueva tarea'))),
+    err&&h('div',{className:'al al-e',style:{marginBottom:10,display:'flex',justifyContent:'space-between',alignItems:'center'}},h('span',null,err),h('button',{onClick:cargar,style:{padding:'4px 10px',border:'1px solid #B91C1C',borderRadius:6,background:'#fff',color:'#B91C1C',fontSize:11,fontWeight:700,cursor:'pointer'}},'↻ Reintentar')),
+    h('div',{style:{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',marginBottom:10}},
+      h('select',{value:fArea,onChange:function(e){setFArea(e.target.value);},style:selS},h('option',{value:''},'Todas las áreas'),COMITE_AREAS.map(function(a){return h('option',{key:a.k,value:a.k},a.i+' '+a.l);})),
+      h('select',{value:fEmp,onChange:function(e){setFEmp(e.target.value);},style:selS},h('option',{value:''},'Todas las empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.nombre_corto||e.razon_social);})),
+      h('label',{style:{display:'flex',alignItems:'center',gap:5,fontSize:12,cursor:'pointer'}},h('input',{type:'checkbox',checked:soloMias,onChange:function(e){setSoloMias(e.target.checked);},style:CAL_CHK}),'Solo mis tareas'),
+      h('label',{style:{display:'flex',alignItems:'center',gap:5,fontSize:12,cursor:'pointer'}},h('input',{type:'checkbox',checked:verHechas,onChange:function(e){setVerHechas(e.target.checked);},style:CAL_CHK}),'Mostrar hechas'),
+      h('input',{type:'text',value:q,onChange:function(e){setQ(e.target.value);},placeholder:'Buscar…',style:Object.assign({},selS,{width:mobile?'100%':160})}),
+      vencidas.length>0&&vista!=='agenda'&&h('span',{onClick:function(){setVista('agenda');},style:{fontSize:11,color:'#B91C1C',fontWeight:700,cursor:'pointer'}},'⚠ '+vencidas.length+' vencida'+(vencidas.length>1?'s':'')+' → ver')),
+    vista==='mes'&&renderMes(),vista==='semana'&&renderSemana(),vista==='agenda'&&renderAgenda(),
+    h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8,display:'flex',gap:10,flexWrap:'wrap'}},h('span',null,'🗂 comité'),h('span',null,'🔧 mantención'),h('span',null,'📄 contratos'),h('span',null,'🏛 tributaria'),h('span',null,'📌 evento'),h('span',null,'🔁 se repite'),h('span',null,'🔒 privada'),h('span',null,'Las fechas de otros módulos se abren en su módulo; clic en un día para crear una tarea.')),
+    modal&&h(CalEventoModal,{key:String(modal.id)+'|'+modal.fecha,ctx:ctx,id:modal.id,fecha:modal.fecha,onClose:function(){setModal(null);},onSaved:function(){setModal(null);cargar();}}),
+    auto&&h(CalDetalleAuto,{item:auto,onClose:function(){setAuto(null);},onNav:p.setView?function(v){setAuto(null);p.setView(v);}:null}),
+    prefs&&h(CalPrefsModal,{tok:p.tok,onClose:function(){setPrefs(false);}}));
+}
+// Aviso del inicio (escritorio y móvil): tareas de hoy y vencidas. Se refresca cada minuto.
+function AlertaCalendario(p){
+  var[data,setData]=useState(null);var[cerrada,setCerrada]=useState(false);var[exp,setExp]=useState(false);
+  var puede=calPuedeVerModulo();
+  useEffect(function(){
+    if(!p.tok||!puede)return;
+    var load=function(){api('/calendario/resumen','GET',null,p.tok).then(setData).catch(function(){});};
+    load();var iv=setInterval(load,60000);return function(){clearInterval(iv);};
+  },[p.tok]);
+  if(!puede||!data||cerrada)return null;
+  var items=(data.vencidas||[]).map(function(x){return Object.assign({},x,{_v:true});}).concat(data.hoy_items||[]);
+  if(!items.length)return null;
+  var mostrar=exp?items:items.slice(0,4);
+  return h('div',{style:{background:'linear-gradient(135deg,#E9F1EC 0%,#D1E7DA 100%)',border:'2px solid #1E3A2D',borderRadius:10,padding:14,marginBottom:16,boxShadow:'0 4px 12px rgba(30,58,45,.18)',animation:'fadeIn 0.4s ease-in'}},
+    h('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:8,gap:8,flexWrap:'wrap'}},
+      h('div',{style:{display:'flex',alignItems:'center',gap:10}},h('div',{style:{fontSize:26}},'📅'),
+        h('div',null,h('div',{style:{fontSize:15,fontWeight:700,color:'#1E3A2D'}},(data.hoy_items||[]).length+' para hoy'+((data.vencidas||[]).length?' · '+(data.vencidas||[]).length+' vencida'+((data.vencidas||[]).length>1?'s':''):'')),
+          h('div',{style:{fontSize:11,color:'#2F5C43',marginTop:2}},'Tus tareas y las fechas de la empresa en el calendario.'))),
+      h('div',{style:{display:'flex',gap:6}},
+        h('button',{onClick:function(){if(p.onIr)p.onIr();},style:{padding:'6px 12px',background:'#1E3A2D',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontSize:11,fontWeight:600}},'Abrir calendario →'),
+        h('button',{onClick:function(){setCerrada(true);},title:'Cerrar (vuelve al recargar)',style:{padding:'6px 10px',background:'transparent',color:'#1E3A2D',border:'1px solid #1E3A2D',borderRadius:5,cursor:'pointer',fontSize:14,fontWeight:700,lineHeight:1}},'✕'))),
+    h('div',{style:{background:'rgba(255,255,255,.7)',borderRadius:6,padding:6}},
+      mostrar.map(function(x,i){var a=cmArea(x.area);return h('div',{key:x.key,style:{display:'flex',alignItems:'center',gap:8,padding:'5px 6px',borderBottom:i<mostrar.length-1?'1px solid rgba(30,58,45,.12)':'none'}},
+        h('span',{style:{fontSize:9,fontWeight:700,padding:'2px 7px',borderRadius:10,background:x._v?'#DC2626':'#1E3A2D',color:'#fff',minWidth:56,textAlign:'center'}},x._v?calFechaCorta(x.fecha).toUpperCase():(x.hora||'HOY')),
+        h('span',{style:{fontSize:12,color:'#1E293B',fontWeight:600,flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},calIcono(x)?calIcono(x)+' ':'',x.titulo),
+        h('span',{style:{fontSize:10,background:a.bg,color:a.c,borderRadius:8,padding:'0 6px',whiteSpace:'nowrap'}},a.i+' '+a.l));}),
+      items.length>4&&h('div',{style:{textAlign:'center',marginTop:4}},h('button',{onClick:function(){setExp(!exp);},style:{background:'transparent',border:'none',color:'#1E3A2D',fontSize:11,fontWeight:600,cursor:'pointer'}},exp?'▲ Menos':'▼ Ver '+(items.length-4)+' más'))));
+}
+// Campana de la barra superior: cuenta tareas de hoy + vencidas; clic abre el calendario
+function CalCampana(p){
+  var[n,setN]=useState(0);var[venc,setVenc]=useState(0);
+  var puede=calPuedeVerModulo();
+  useEffect(function(){
+    if(!p.tok||!puede)return;
+    var load=function(){api('/calendario/resumen','GET',null,p.tok).then(function(r){setN((r.hoy_items||[]).length+(r.vencidas||[]).length);setVenc((r.vencidas||[]).length);}).catch(function(){});};
+    load();var iv=setInterval(load,60000);return function(){clearInterval(iv);};
+  },[p.tok]);
+  if(!puede)return null;
+  return h('button',{onClick:p.onIr,title:n?(n+' pendiente'+(n>1?'s':'')+' en el calendario'+(venc?' ('+venc+' vencida'+(venc>1?'s':'')+')':'')):'Calendario',style:{position:'relative',background:'transparent',border:'none',cursor:'pointer',fontSize:18,padding:'2px 6px',lineHeight:1}},'🔔',
+    n>0&&h('span',{style:{position:'absolute',top:-4,right:-2,background:venc?'#DC2626':'#B45309',color:'#fff',borderRadius:10,fontSize:9,fontWeight:700,padding:'1px 5px',minWidth:14,textAlign:'center'}},n));
+}
 function ComiteView(p){
   var user=p.user||{};
   var[tab,setTab]=useState(null);var[reuniones,setReuniones]=useState([]);var[acuerdos,setAcuerdos]=useState([]);var[usuarios,setUsuarios]=useState([]);
@@ -21612,6 +21924,10 @@ function ComiteView(p){
   function rapido(a,est){
     if(!confirm('¿Marcar como '+COMITE_EST[est].l.toLowerCase()+'?\n\n'+a.descripcion))return;
     api('/comite/acuerdos/'+a.acuerdo_id+'/estado','PATCH',{estado:est,comentario:''},p.tok).then(function(){recargar();}).catch(function(e){setErr(e.message);});
+  }
+  function eliminarActa(r){
+    if(!confirm('¿Eliminar el acta N° '+cmActaNum(r)+' del '+fmtD(r.fecha)+(r.estado==='CERRADA'?' (está CERRADA)':'')+' y sus '+(r.n_acuerdos||0)+' acuerdo(s)? Esta acción no se puede deshacer.'))return;
+    api('/comite/reuniones/'+r.reunion_id,'DELETE',null,p.tok).then(function(){setErr('');recargar();}).catch(function(e){setErr(e.message);});
   }
   var ctx={tok:p.tok,user:user,usuarios:usuarios,directores:directores,empresas:empresas,reuniones:reuniones,recargar:recargar,dirige:dirige};
   if(sel)return h(ComiteActa,{key:String(sel),ctx:ctx,id:sel,onBack:function(){setSel(null);recargar();}});
@@ -21664,7 +21980,8 @@ function ComiteView(p){
         {lbl:'Estado',render:function(r){return h('span',{style:{background:r.estado==='CERRADA'?'#DCFCE7':'#FEF3C7',color:r.estado==='CERRADA'?'#166534':'#92400E',padding:'2px 8px',borderRadius:10,fontSize:10,fontWeight:700}},r.estado==='CERRADA'?'Cerrada':'Borrador');}},
         {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:4}},
           h(Btn,{v:'g',sm:true,onClick:function(){setSel(r.reunion_id);}},r.puede_editar&&r.estado!=='CERRADA'?'✏️ Abrir':'👁 Ver'),
-          h(Btn,{v:'a',sm:true,onClick:function(){api('/comite/reuniones/'+r.reunion_id,'GET',null,p.tok).then(function(d){imprimirHTMLViaIframe(buildComiteActaHTML(d,empresas),'Acta_Comite_'+cmActaNum(d));}).catch(function(e){setErr(e.message);});}},'📑 PDF'));}}
+          h(Btn,{v:'a',sm:true,onClick:function(){api('/comite/reuniones/'+r.reunion_id,'GET',null,p.tok).then(function(d){imprimirHTMLViaIframe(buildComiteActaHTML(d,empresas),'Acta_Comite_'+cmActaNum(d));}).catch(function(e){setErr(e.message);});}},'📑 PDF'),
+          r.puede_eliminar&&h(Btn,{v:'r',sm:true,onClick:function(){eliminarActa(r);}},'🗑'));}}
       ],rows:reuniones})),
     cargado&&tab==='tablero'&&h('div',null,
       h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:8,marginBottom:12}},
@@ -23438,6 +23755,7 @@ function MobileHome(p){
     {id:'terreno',icon:'🌲',label:'Terreno',sub:'Registro diario horómetros',mod:'terreno'},
     {id:'trans-traslados',icon:'🚛',label:'Transporte',sub:'Registrar viaje cama baja',mod:'transporte'},
     {id:'solicitudes',icon:'📋',label:'Solicitudes',sub:'Nueva solicitud',mod:'solicitudes'},
+    {id:'calendario',icon:'📅',label:'Calendario',sub:'Tareas y recordatorios',mod:'calendario'},
     {id:'comite',icon:'🗂',label:'Comité de Gestión',sub:'Mis compromisos y actas',mod:'comite'},
     {id:'rendiciones',icon:'💰',label:'Rendiciones',sub:'Registrar gasto',mod:'rendiciones'}
   ];
@@ -23448,6 +23766,7 @@ function MobileHome(p){
       h('h2',null,'Empresas Poo'),
       h('p',null,'Hola, '+(p.user?p.user.nombre:''))),
     h('div',{style:{padding:'0 10px'}},
+      h(AlertaCalendario,{tok:p.tok,onIr:function(){p.onNav('calendario');}}),
       h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.onNav('solicitudes');}}),
       h(AlertaContratos,{tok:p.tok,onIr:function(){p.onNav('contratos');}})
     ),
@@ -26343,7 +26662,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','calendario':'Calendario — Tareas y recordatorios','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -26941,6 +27260,8 @@ function App(){
     if(mods.indexOf('transporte')>=0)return 'transporte';
     if(mods.indexOf('mantenedores')>=0)return 'mantenedores';
     if(mods.indexOf('finanzas')>=0)return 'finanzas';
+    if(mods.indexOf('calendario')>=0)return 'calendario';
+    if(mods.indexOf('comite')>=0)return 'comite';
     return 'sin-permiso';
   });
   const[m,setM]=useState({bodegas:[],cats:[],subcats:[],prods:[],faenas:[],equipos:[],provs:[],tdocs:[],motivos:[],empresas:[],conds:[]});
@@ -26998,7 +27319,7 @@ function App(){
     'prod-oee':'productividad',
     'ia-chat':'ia',
     'solicitudes':'solicitudes',
-    'comite':'comite',
+    'comite':'comite','calendario':'calendario',
     'transporte':'transporte',
     'personal':'contratos','contratos':'contratos','vacaciones':'contratos','turnos-faena':'contratos','prevencion':'contratos','finiquitos':'contratos','cartas':'contratos',
     'mantenedores':'mantenedores',
@@ -27027,6 +27348,8 @@ function App(){
     if(mods.indexOf('transporte')>=0)return 'transporte';
     if(mods.indexOf('mantenedores')>=0)return 'mantenedores';
     if(mods.indexOf('finanzas')>=0)return 'finanzas';
+    if(mods.indexOf('calendario')>=0)return 'calendario';
+    if(mods.indexOf('comite')>=0)return 'comite';
     return 'sin-permiso';
   }
   // Si la vista actual no es permitida, redirigir a la primera permitida.
@@ -27125,7 +27448,9 @@ function App(){
       h('div',{className:'mob-topbar'},h('button',{onClick:mobileBack},'←'),h('h3',null,mobileTitle)),
       h('div',{style:{padding:8,paddingBottom:40}},
         mobileView==='mant-avisos'&&h(MantAvisos,{tok:tok,m:m}),
-        mobileView==='comb-distribuciones'&&h(CombDistribuciones,{tok:tok,m:m})
+        mobileView==='comb-distribuciones'&&h(CombDistribuciones,{tok:tok,m:m}),
+        mobileView==='calendario'&&h(CalendarioView,{tok:tok,m:m,user:user,mobile:true,setView:function(v){setMobileMode(false);setView(v);}}),
+        mobileView==='comite'&&h(ComiteView,{tok:tok,m:m,user:user})
       )
     );
   }
@@ -27193,9 +27518,9 @@ function App(){
           navI('trans-tarifas','💲','Tarifas Valorización',true)
         ),
         canSee('transporte')&&h('div',{className:'sb-sep'}),
-        canSee('comite')&&grpHdr('ges','GESTIÓN'),
-        canSee('comite')&&grp.ges&&h('div',null,navI('comite','🗂','Comité de Gestión',true)),
-        canSee('comite')&&h('div',{className:'sb-sep'}),
+        (canSee('comite')||canSee('calendario'))&&grpHdr('ges','GESTIÓN'),
+        (canSee('comite')||canSee('calendario'))&&grp.ges&&h('div',null,canSee('calendario')&&navI('calendario','📅','Calendario',true),canSee('comite')&&navI('comite','🗂','Comité de Gestión',true)),
+        (canSee('comite')||canSee('calendario'))&&h('div',{className:'sb-sep'}),
         canSee('solicitudes')&&grpHdr('sol','SOLICITUDES'),
         canSee('solicitudes')&&grp.sol&&h('div',null,navI('solicitudes','📋','Solicitudes',true)),
         canSee('solicitudes')&&h('div',{className:'sb-sep'}),
@@ -27256,7 +27581,7 @@ function App(){
     h('div',{className:'main'},
       h('div',{className:'topbar'},
         h('h2',null,view==='panel'?((user&&user.rol)||TITLES.panel):(TITLES[view]||view)),
-        h('div',{className:'topbar-r'},user&&h('span',null,user.nombre),h('button',{className:'btn btn-g btn-sm',onClick:handleLogout},'Salir'))
+        h('div',{className:'topbar-r'},h(CalCampana,{tok:tok,onIr:function(){setView('calendario');}}),user&&h('span',null,user.nombre),h('button',{className:'btn btn-g btn-sm',onClick:handleLogout},'Salir'))
       ),
       h('div',{className:'content'},
         h(EB,null,
@@ -27311,6 +27636,7 @@ function App(){
           view==='vacaciones'&&h(VacacionesView,{tok,m}),
           view==='solicitudes'&&h(SolicitudesView,{tok,m,user}),
           view==='comite'&&h(ComiteView,{tok,m,user}),
+          view==='calendario'&&h(CalendarioView,{tok,m,user,setView}),
           view==='terreno'&&h(TerrenoView,{tok,m,user}),
           view==='terreno-tiempos'&&h(TerrenoTiemposView,{tok,m,user}),
           view==='prod-oee'&&h(OEEView,{tok,m,user}),
