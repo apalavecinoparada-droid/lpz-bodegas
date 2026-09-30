@@ -10835,7 +10835,7 @@ var GRAFX = null;      // datos hoja Tablaparametros para gráficos Rendimiento 
 var DIESEL_DATA = null; // datos panel "Combustible Consumido vs Programado" (replica TabladinamicaDiesel), array de {equipo,faena,ym,empresa,tipo,cod,lts,hrs,hperd,rendAct,rendStd,difLts,mesTxt}
 /* Sello de version: se imprime en la consola al abrir. Si el numero que aparece
    no es el ultimo, el navegador esta sirviendo una copia vieja del archivo. */
-var APP_BUILD = '30-09-2026 Producción por Turno: m³ vs estándar';
+var APP_BUILD = '30-09-2026 Crónico o evento: solo Procesado';
 console.log('%c[APP] build ' + APP_BUILD, 'background:#1a6b3a;color:#fff;padding:2px 6px;');
 
 
@@ -10986,7 +10986,8 @@ function prodTurnoHtml(ctx, motivo, hayFiltro){
     h += '<div style="background:#fff;border-radius:10px;border-top:5px solid ' + c + ';padding:12px 14px;box-shadow:0 2px 8px rgba(0,0,0,.12);">' +
       '<div style="display:flex;align-items:center;gap:8px;"><span style="background:' + c + ';color:#fff;border-radius:50%;width:34px;height:34px;display:inline-flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;">' + rnEsc(t.turno.length <= 2 ? t.turno : '?') + '</span>' +
         '<div><div style="font-weight:800;font-size:14px;color:#1f2328;">Turno ' + rnEsc(t.turno) + (i === 0 && D.turnos.length > 1 ? ' &#127942;' : '') + '</div>' +
-        '<div style="font-size:11px;color:#57606a;">' + t.lista.length + ' operadores · ' + t.nDias + ' días · ' + rnEsc(t.equipos) + '</div></div></div>' +
+        '<div style="font-size:11px;color:#57606a;">Trabajó <b>' + t.nDias + ' días</b> del mes · ' + t.lista.length + ' operadores (' +
+          rnEsc(t.lista.map(function(o){ return String(o.oper).split(/\s+/)[0]; }).join(', ')) + ') · máquinas: ' + rnEsc(t.equipos.replace(/Procesador /g, 'Proc ')) + '</div></div></div>' +
       '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-top:10px;text-align:center;">' +
         '<div><div style="font-size:19px;font-weight:800;color:#1f2328;">' + nf(t.m3) + '</div><div style="font-size:10px;color:#57606a;">m³ (' + Math.round(part * 100) + '% del mes)</div></div>' +
         '<div><div style="font-size:19px;font-weight:800;color:#1f2328;">' + nf(t.hrs) + '</div><div style="font-size:10px;color:#57606a;">hrs trabajadas</div></div>' +
@@ -11189,13 +11190,13 @@ var WA_DET = [];
    proceso pero es norma de seguridad con torre y no se recupera nunca. */
 var RECUP_NOM = {
   1: 'No deber\u00edan existir', 2: 'Espera por otro proceso',
-  3: 'Parte de la operaci\u00f3n (no recuperable)', 4: 'Externas (no recuperable)'
+  3: 'Parte de la operaci\u00f3n (10% recuperable)', 4: 'Externas (no recuperable)'
 };
 var RECUP_COL = {1:'#b83a2e', 2:'#d68910', 3:'#5b6570', 4:'#8b949e'};
 var RECUP_QUE = {
   1: 'Fallas, "Otros", falta de personal y traslados mal planificados',
   2: 'La m\u00e1quina estaba buena, esperando a otra',
-  3: 'Inevitables: mantenci\u00f3n programada, cambio de cadena, combustible, charlas. Se controlan, pero no se cuentan como recuperables',
+  3: 'Mantenci\u00f3n programada, cambio de cadena, combustible, charlas: son parte del trabajo. Solo un 10% se puede recuperar haci\u00e9ndolas m\u00e1s r\u00e1pido',
   4: 'Clima e incendio'
 };
 var RECUP_MAPA = {
@@ -16345,6 +16346,7 @@ function gestNorm(s){
     .replace(/\s+/g,' ').trim().toUpperCase();
 }
 
+var GEST_OPER_RECUP = 0.10;   // parte recuperable de las horas "parte de la operación" (Gustavo 30-09-2026)
 function gestClaseCausa(causa){
   var c = gestNorm(causa);
   if (GEST_EXTERNA[c])  return {clase:'externa',  culpa:''};
@@ -16360,7 +16362,7 @@ var GEST_CLASE_TXT = {
   propia:  {t:'Falla propia',        c:'#c0392b'},
   inducida:{t:'Espera de otro proceso', c:'#e67e22'},
   externa: {t:'Causa externa',       c:'#7f8c8d'},
-  operacion:{t:'Parte de la operación (no recuperable)', c:'#5b6570'}
+  operacion:{t:'Parte de la operación (10% recuperable)', c:'#5b6570'}
 };
 
 /* ---------- Helpers de formato ---------- */
@@ -16621,19 +16623,24 @@ function gestDatos(faena, esp, ym){
   });
   var std = (D.tramo && D.tramo.Procesador) ? D.tramo.Procesador.m3hr : 0;
   var real = hrsP > 0 ? D.m3/hrsP : 0;
+  /* 30-09-2026 (Gustavo): de las horas que son PARTE DE LA OPERACIÓN solo un 10% se
+     puede recuperar (hacer más rápido el cambio de cadena, la charla, etc.). Ese 10%
+     entra a la cascada y a la plata sobre la mesa; el 90% restante no se considera:
+     sale también de los m³ potenciales, para que la cascada siga cerrando. */
+  var poRec = po * GEST_OPER_RECUP;
   D.casc = {
-    hrsTrab: hrsP, hpPropia: pp, hpInducida: pi, hpExterna: pe, hpOperacion: po,
-    hrsDisp: hrsP + pp + pi + pe + po,
+    hrsTrab: hrsP, hpPropia: pp, hpInducida: pi, hpExterna: pe, hpOperacion: poRec, hpOperacionTot: po,
+    hrsDisp: hrsP + pp + pi + pe + poRec,
     std: std, real: real,
-    pot:      (hrsP + pp + pi + pe + po) * std,
+    pot:      (hrsP + pp + pi + pe + poRec) * std,
     propia:   pp * std,
     inducida: pi * std,
     externa:  pe * std,
-    operacion: po * std,        // inevitable: se muestra, pero NO suma a la plata recuperable
+    operacion: poRec * std,     // el 10% recuperable de la operación
     ritmo:    hrsP * (std - real),          // negativo = va sobre el estándar
     reales:   D.m3
   };
-  D.casc.perdidoTot = D.casc.propia + D.casc.inducida + D.casc.externa +
+  D.casc.perdidoTot = D.casc.propia + D.casc.inducida + D.casc.externa + D.casc.operacion +
                       Math.max(D.casc.ritmo, 0);
   D.platoServido = D.casc.perdidoTot * D.tarifa;   // plata dejada sobre la mesa
   /* Para comparar "fuga de ritmo" contra "detenciones" hay que hacerlo DENTRO del
@@ -16814,8 +16821,9 @@ function gestDatos(faena, esp, ym){
   D.cuello.horasRecuperables = 0;
   if (D.cuello.cuello){
     D.perd.forEach(function(r){
-      if (gestProcCanon(r.proceso) === D.cuello.cuello.proceso && (r.clase === 'propia' || r.clase === 'inducida'))
-        D.cuello.horasRecuperables += r.hrs;
+      if (gestProcCanon(r.proceso) !== D.cuello.cuello.proceso) return;
+      if (r.clase === 'propia' || r.clase === 'inducida') D.cuello.horasRecuperables += r.hrs;
+      else if (r.clase === 'operacion') D.cuello.horasRecuperables += r.hrs * GEST_OPER_RECUP;
     });
   }
 
@@ -16839,9 +16847,20 @@ function gestDatos(faena, esp, ym){
   /* --- 10. ¿Crónico o evento? Qué parte de la pérdida se concentra en pocos días.
           Un motor fundido de 40 hrs en un día se arregla distinto que 40 hrs
           repartidas en 20 días. --- */
-  var pd = {};
-  D.perd.forEach(function(r){ if (r.fecha) pd[r.fecha] = (pd[r.fecha]||0) + r.hrs; });
-  var dias = Object.keys(pd).map(function(f){ return {fecha:f, hrs:pd[f]}; })
+  /* 30-09-2026 (Gustavo): "el que marca la producción del ciclo es el procesador".
+     Se mide con las horas perdidas del PROCESADO (la parte de la operación al 10%,
+     como en la cascada); las horas de toda la faena se muestran solo de referencia.
+     Antes se valorizaban las horas de todas las máquinas al estándar del procesador
+     y un día daba 2.418 m³ perdidos, imposible de producir. */
+  var pd = {}, pdTot = {};
+  D.perd.forEach(function(r){
+    if (!r.fecha) return;
+    pdTot[r.fecha] = (pdTot[r.fecha]||0) + r.hrs;
+    if (!/procesad/i.test(r.proceso)) return;
+    pd[r.fecha] = (pd[r.fecha]||0) + r.hrs * (r.clase === 'operacion' ? GEST_OPER_RECUP : 1);
+  });
+  var dias = Object.keys(pd).filter(function(f){ return pd[f] > 0; })
+                            .map(function(f){ return {fecha:f, hrs:pd[f], hrsFaena:pdTot[f]||0}; })
                             .sort(function(a,b){ return b.hrs - a.hrs; });
   var tot = 0; dias.forEach(function(d){ tot += d.hrs; });
   var acum = 0, n80 = 0;
@@ -17474,7 +17493,7 @@ function gestPintaCascada(D){
     {l:'Falla propia',          v:-c.propia,          tipo:'baja', col:'#c0392b', ay:gN(c.hpPropia,1)+' hrs',   cl:'propia'},
     {l:'Espera de otro proceso',v:-c.inducida,        tipo:'baja', col:'#e67e22', ay:gN(c.hpInducida,1)+' hrs', cl:'inducida'},
     {l:'Causa externa',         v:-c.externa,         tipo:'baja', col:'#7f8c8d', ay:gN(c.hpExterna,1)+' hrs',  cl:'externa'},
-    {l:'Parte de la operación (no recuperable)', v:-(c.operacion||0), tipo:'baja', col:'#5b6570', ay:gN(c.hpOperacion||0,1)+' hrs', cl:'operacion'},
+    {l:'Parte de la operación (10% recuperable)', v:-(c.operacion||0), tipo:'baja', col:'#5b6570', ay:gN(c.hpOperacion||0,1)+' de '+gN(c.hpOperacionTot||0,1)+' hrs', cl:'operacion'},
     {l: ganaRitmo ? 'Ritmo sobre estándar' : 'Ritmo bajo estándar',
                                 v:-c.ritmo,           tipo: ganaRitmo?'sube':'baja', col: ganaRitmo?'#27ae60':'#9b59b6',
      ay:gN(c.hrsTrab,1)+' hrs × '+gN(Math.abs(c.std-c.real),1)+' m³/hr'},
@@ -17925,18 +17944,22 @@ function gestPintaCronico(D){
     '<div style="font-size:22px;font-weight:800;color:'+ver.c+';">'+ver.t+'</div>' +
     '<div style="font-size:10px;color:#666;margin:4px 0 10px;">'+ver.d+'</div>' +
     '<div style="font-size:11px;">Los <b>3 peores días</b> concentran el <b style="color:'+ver.c+'">' +
-      gN(c.pctTop3*100,0) + '%</b> de las horas perdidas del mes.</div>' +
+      gN(c.pctTop3*100,0) + '%</b> de las horas perdidas del <b>Procesado</b> en el mes.</div>' +
     '<div style="font-size:11px;margin-top:3px;">Hacen falta <b>'+c.n80+' de '+c.nDias+' días</b> (' +
       gN(c.pctDias80*100,0) + '%) para juntar el 80%.</div>' +
     '<div class="table-wrap" style="margin-top:8px;"><table><thead><tr><th>Peores días</th>' +
-    '<th style="text-align:right;">Hrs</th><th style="text-align:right;">m³</th>' +
-    '<th style="text-align:right;">$</th></tr></thead><tbody>' +
+    '<th style="text-align:right;" title="Horas perdidas de todas las máquinas de la faena ese día (solo referencia)">Hrs faena</th>' +
+    '<th style="text-align:right;" title="Horas perdidas de los procesadores (la parte de la operación cuenta al 10%)">Hrs Procesado</th>' +
+    '<th style="text-align:right;">m³</th><th style="text-align:right;">$</th></tr></thead><tbody>' +
     c.dias.slice(0,5).map(function(d){
       var m3 = d.hrs * D.casc.std;
-      return '<tr><td>'+d.fecha+'</td><td style="text-align:right;">'+gN(d.hrs,1)+'</td>' +
+      return '<tr><td>'+d.fecha+'</td><td style="text-align:right;color:#8b949e;">'+gN(d.hrsFaena,1)+'</td>' +
+             '<td style="text-align:right;font-weight:700;">'+gN(d.hrs,1)+'</td>' +
              '<td style="text-align:right;">'+gN(m3)+'</td>' +
              '<td style="text-align:right;">'+gPlata(m3*D.tarifa)+'</td></tr>';
-    }).join('') + '</tbody></table></div>';
+    }).join('') + '</tbody></table></div>' +
+    '<div style="font-size:9.5px;color:#8b949e;margin-top:4px;">m³ = horas perdidas del Procesado × ' + gN(D.casc.std,1) +
+      ' m³/hr (estándar del tramo). El procesador marca la producción del ciclo: las horas de las otras máquinas se ven en su espera.</div>';
 }
 
 /* --- BLOQUE 3f: combustible cruzado --- */
@@ -18540,7 +18563,7 @@ function gestExportar(){
     ['Falla propia', c.hpPropia, -c.propia, -c.propia*D.tarifa],
     ['Espera de otro proceso', c.hpInducida, -c.inducida, -c.inducida*D.tarifa],
     ['Causa externa', c.hpExterna, -c.externa, -c.externa*D.tarifa],
-    ['Parte de la operación (no recuperable)', c.hpOperacion || 0, -(c.operacion||0), -(c.operacion||0)*D.tarifa],
+    ['Parte de la operación (10% recuperable de ' + (Math.round((c.hpOperacionTot||0)*10)/10) + ' hrs)', c.hpOperacion || 0, -(c.operacion||0), -(c.operacion||0)*D.tarifa],
     ['Ritmo vs estándar', c.hrsTrab, -c.ritmo, -c.ritmo*D.tarifa],
     ['m³ reales (cartola)', c.hrsTrab, c.reales, c.reales*D.tarifa],
     [], ['Plata dejada sobre la mesa', '', D.casc.perdidoTot, D.platoServido]
