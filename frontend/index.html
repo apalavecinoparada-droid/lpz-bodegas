@@ -6430,7 +6430,7 @@ function SolicitudesView(p){
   var[solicitudes,setSolicitudes]=useState([]);var[usuarios,setUsuarios]=useState([]);
   var[tab,setTab]=useState('recibidas');var[showForm,setShowForm]=useState(false);var[msg,setMsg]=useState('');
   // Filtros completos
-  var[fEstado,setFEstado]=useState('');
+  var[fEstado,setFEstado]=useState('abiertas'); // por defecto solo las sin resolver (pendiente + en curso); '' = todas
   var[fPrioridad,setFPrioridad]=useState('');
   var[fFaena,setFFaena]=useState('');
   var[fEquipo,setFEquipo]=useState('');
@@ -6491,7 +6491,8 @@ function SolicitudesView(p){
   var filtered=solicitudes.filter(function(s){
     if(tab==='recibidas'&&String(s.dirigida_a_id)!==String(userId))return false;
     if(tab==='enviadas'&&String(s.solicitante_id)!==String(userId))return false;
-    if(fEstado&&s.estado!==fEstado)return false;
+    if(fEstado==='abiertas'){ if(s.estado!=='pendiente'&&s.estado!=='en_curso')return false; }
+    else if(fEstado&&s.estado!==fEstado)return false;
     if(fPrioridad&&(s.prioridad||'normal')!==fPrioridad)return false;
     if(fFaena&&String(s.faena_id||'')!==String(fFaena))return false;
     if(fEquipo&&String(s.equipo_id||'')!==String(fEquipo))return false;
@@ -6507,12 +6508,12 @@ function SolicitudesView(p){
     }
     return true;
   });
-  var hayFiltros=fEstado||fPrioridad||fFaena||fEquipo||fSubcat||fSolicita||fDirigida||fDesde||fHasta||fSearch;
-  function limpiarFiltros(){setFEstado('');setFPrioridad('');setFFaena('');setFEquipo('');setFSubcat('');setFSolicita('');setFDirigida('');setFDesde('');setFHasta('');setFSearch('');}
+  var hayFiltros=(fEstado!=='abiertas')||fPrioridad||fFaena||fEquipo||fSubcat||fSolicita||fDirigida||fDesde||fHasta||fSearch;
+  function limpiarFiltros(){setFEstado('abiertas');setFPrioridad('');setFFaena('');setFEquipo('');setFSubcat('');setFSolicita('');setFDirigida('');setFDesde('');setFHasta('');setFSearch('');}
   // ── Exportación / Informe ──
   function _fmtFecha(f){ if(!f) return ''; var s=String(f).slice(0,10); var p2=s.split('-'); return p2.length===3?(p2[2]+'/'+p2[1]+'/'+p2[0]):s; }
   function _dias(f){ if(!f) return ''; var d=new Date(String(f).slice(0,10)); if(isNaN(d.getTime())) return ''; return Math.max(0,Math.floor((Date.now()-d.getTime())/86400000)); }
-  function _estadoLbl(e){ return {pendiente:'Pendiente',en_curso:'En curso',completada:'Completada',rechazada:'Rechazada'}[e]||e||''; }
+  function _estadoLbl(e){ return {abiertas:'Sin resolver (pendientes y en curso)',pendiente:'Pendiente',en_curso:'En curso',completada:'Completada',rechazada:'Rechazada'}[e]||e||''; }
   function _prioLbl(p2){ return {baja:'Baja',normal:'Normal',alta:'Alta',urgente:'Urgente'}[p2||'normal']||p2; }
   function _esc(t){ return String(t==null?'':t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
   function exportarExcel(){
@@ -6637,6 +6638,7 @@ function SolicitudesView(p){
       h('div',{style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap'}},
         h('input',{type:'text',placeholder:'🔍 Buscar texto en detalle/respuesta/persona...',value:fSearch,onChange:function(e){setFSearch(e.target.value);},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,minWidth:240,flex:1}}),
         h('select',{value:fEstado,onChange:function(e){setFEstado(e.target.value);},style:{padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12}},
+          h('option',{value:'abiertas'},'Estado: sin resolver'),
           h('option',{value:''},'Estado: todos'),
           h('option',{value:'pendiente'},'Pendiente'),
           h('option',{value:'en_curso'},'En curso'),
@@ -24970,6 +24972,7 @@ function MobileSolicitudes(p){
   var[editing,setEditing]=useState(null);
   var[solicitudes,setSolicitudes]=useState([]);
   var[subTab,setSubTab]=useState('enviadas'); // 'enviadas' | 'recibidas'
+  var[verResueltas,setVerResueltas]=useState(false); // historial: por defecto solo pendientes y en curso
   // Transferencia y respuesta (recibidas)
   var[transfModal,setTransfModal]=useState(null);var[transfDest,setTransfDest]=useState('');var[transfMotivo,setTransfMotivo]=useState('');
   var[respMov,setRespMov]=useState(null);var[respTxtMov,setRespTxtMov]=useState('');
@@ -25104,6 +25107,8 @@ function MobileSolicitudes(p){
     var pendientesRec=recibidas.filter(function(s){return s.estado==='pendiente';}).length;
     var verTodasM=!!(p.user&&(p.user.es_admin||(p.user.modulos||[]).indexOf('solicitudes-todas')>=0));
     var lista=subTab==='recibidas'?recibidas:(subTab==='todas'&&verTodasM)?solicitudes:misSolicitudes;
+    var resueltasN=lista.filter(function(s){return s.estado==='completada'||s.estado==='rechazada';}).length;
+    if(!verResueltas)lista=lista.filter(function(s){return s.estado!=='completada'&&s.estado!=='rechazada';});
     var estadoColors={pendiente:{b:'#FEF3C7',c:'#92400E',l:'Pendiente'},en_curso:{b:'#DBEAFE',c:'#1E40AF',l:'En curso'},completada:{b:'#DCFCE7',c:'#166534',l:'Completada'},rechazada:{b:'#FEE2E2',c:'#991B1B',l:'Rechazada'}};
     var prioColors={baja:'#94A3B8',normal:'#3B82F6',alta:'#F59E0B',urgente:'#EF4444'};
     return h('div',{className:'mob-wrap'},
@@ -25119,8 +25124,9 @@ function MobileSolicitudes(p){
         h('button',{onClick:function(){setSubTab('recibidas');loadSolicitudes();},style:{flex:1,padding:'10px 8px',background:subTab==='recibidas'?'#1E3A2D':'#fff',color:subTab==='recibidas'?'#fff':'#475569',border:'1px solid '+(subTab==='recibidas'?'#1E3A2D':'#CBD5E1'),borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer',position:'relative'}},'📥 Recibidas ('+recibidas.length+')',pendientesRec>0&&h('span',{style:{position:'absolute',top:-4,right:-4,background:'#DC2626',color:'#fff',padding:'2px 6px',borderRadius:10,fontSize:9,fontWeight:700,minWidth:18}},pendientesRec)),
         verTodasM&&h('button',{onClick:function(){setSubTab('todas');loadSolicitudes();},style:{flex:1,padding:'10px 8px',background:subTab==='todas'?'#1E3A2D':'#fff',color:subTab==='todas'?'#fff':'#475569',border:'1px solid '+(subTab==='todas'?'#1E3A2D':'#CBD5E1'),borderRadius:6,fontSize:12,fontWeight:700,cursor:'pointer'}},'📋 Todas ('+solicitudes.length+')')
       ),
+      h('label',{style:{display:'flex',alignItems:'center',gap:8,padding:'2px 12px 8px',fontSize:13,color:'#475569'}},h('input',{type:'checkbox',checked:verResueltas,onChange:function(e){setVerResueltas(e.target.checked);},style:{width:18,height:18}}),'Mostrar completadas y rechazadas'+(resueltasN?' ('+resueltasN+')':'')),
       h('div',{style:{padding:'0 10px 40px'}},
-        lista.length===0?h('div',{style:{textAlign:'center',padding:40,color:'#94A3B8'}},subTab==='recibidas'?'No tienes solicitudes recibidas':'No tienes solicitudes enviadas'):
+        lista.length===0?h('div',{style:{textAlign:'center',padding:40,color:'#94A3B8'}},(subTab==='recibidas'?'No tienes solicitudes recibidas':'No tienes solicitudes enviadas')+(!verResueltas&&resueltasN?' sin resolver. Marca "Mostrar completadas y rechazadas" para ver el historial.':'')):
         lista.map(function(s){
           var ec=estadoColors[s.estado]||{b:'#F1F5F9',c:'#64748B',l:s.estado};
           var pc=prioColors[s.prioridad]||'#3B82F6';
