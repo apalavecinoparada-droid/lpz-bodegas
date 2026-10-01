@@ -12570,6 +12570,11 @@ async function calAutomaticos(u,desde,hasta){
       const o=await pool.query(`SELECT o.ot_id,o.numero_ot,o.fecha_programada,o.empresa_id,o.estado,o.prioridad,o.mecanico_asignado,e.codigo,e.nombre AS equipo_nombre,emp.razon_social AS empresa_nombre
         FROM mant_ot o JOIN equipos e ON o.equipo_id=e.equipo_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id
         WHERE o.fecha_programada BETWEEN $1 AND $2 AND COALESCE(o.estado,'abierta') NOT IN ('cerrada','anulada','cancelada','completada')`,[desde,hasta]);
+      // Revisión técnica y acreditación de equipos (mant-docs, tabla equipo_documentos)
+      const dv=await pool.query(`SELECT d.doc_id,d.tipo_doc,d.fecha_vencimiento,d.observaciones,e.codigo,e.nombre AS equipo_nombre,e.empresa_id,emp.razon_social AS empresa_nombre
+        FROM equipo_documentos d JOIN equipos e ON d.equipo_id=e.equipo_id LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id
+        WHERE e.activo=true AND d.fecha_vencimiento BETWEEN $1 AND $2`,[desde,hasta]).catch(function(){return {rows:[]};});
+      dv.rows.forEach(function(x){ const td=x.tipo_doc==='REVISION_TECNICA'?'Revisión técnica':x.tipo_doc==='ACREDITACION'?'Acreditación':x.tipo_doc; out.push({key:'V'+x.doc_id,origen:'MANTENCION',ref_id:x.doc_id,enlace:'mant-docs',tipo:'TAREA',titulo:'Vence '+td.toLowerCase()+': '+x.codigo+' '+(x.equipo_nombre||''),descripcion:td+' del equipo — renovar antes del vencimiento'+(x.observaciones?' · '+x.observaciones:''),area:'MANTENCION',empresa_id:x.empresa_id,empresa_nombre:x.empresa_nombre,fecha:calIso(x.fecha_vencimiento),hora:null,visibilidad:'EMPRESA',responsable_id:null,responsable_nombre:'',prioridad:'alta',hecha:false,puede_editar:false,es_mio:false}); });
       o.rows.forEach(function(x){ out.push({key:'O'+x.ot_id,origen:'MANTENCION',ref_id:x.ot_id,enlace:'mant-ot',tipo:'TAREA',titulo:'OT '+x.numero_ot+' — '+x.codigo+' '+(x.equipo_nombre||''),descripcion:'Orden de trabajo programada'+(x.mecanico_asignado?' · '+x.mecanico_asignado:'')+' (estado: '+x.estado+')',area:'MANTENCION',empresa_id:x.empresa_id,empresa_nombre:x.empresa_nombre,fecha:calIso(x.fecha_programada),hora:null,visibilidad:'EMPRESA',responsable_id:null,responsable_nombre:x.mecanico_asignado||'',prioridad:x.prioridad||'normal',hecha:false,puede_editar:false,es_mio:false}); });
     }catch(e){}
   }
