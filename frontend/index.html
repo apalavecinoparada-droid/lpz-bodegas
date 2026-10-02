@@ -20306,70 +20306,89 @@ var PREV_CONOCIDOS=[
 function prevConocido(nombre){var n=(nombre||'').toUpperCase();return PREV_CONOCIDOS.find(function(c){return c.match.every(function(w){return n.indexOf(w)>=0;});})||null;}
 var EPP_PREDEFINIDOS=['CALZADO DE SEGURIDAD','CALZADO DE SEGURIDAD CON CLAVOS','CASCO DE SEGURIDAD','CASCO DE SEGURIDAD CON FONOS Y PROTECCIÓN FACIAL','PANTALÓN','PANTALÓN ANTICORTE / PIERNERAS','GUANTES','GUANTES CABRITILLA','LENTES','CUBRENUCA','GEÓLOGO','CHAQUETA DE MOTOSIERRISTA','TRAJE DE AGUA','CHALECO REFLECTANTE','PROTECTOR AUDITIVO','PROTECTOR SOLAR'];
 function buildEppHTML(d){
+  // Comprobante compacto: debe caber en UNA hoja carta aunque se entreguen muchos elementos.
+  // Densidad adaptativa: hasta 8 ítems filas normales; 9-12 filas apretadas; desde 13 en dos columnas.
   var fmtF=function(s){if(!s)return '';var p=(s+'').slice(0,10).split('-');return p[2]+'-'+p[1]+'-'+p[0];};
   var items=Array.isArray(d.items)?d.items:JSON.parse(d.items||'[]');
-  var filas=items.map(function(it,i){
-    return '<tr style="background:'+(i%2?'#F8FAF9':'#fff')+'">'+
-      '<td style="padding:9px 14px;border-bottom:1px solid #E2E8F0;font-weight:600;color:#1E293B">'+it.nombre+'</td>'+
-      '<td style="padding:9px 14px;border-bottom:1px solid #E2E8F0;text-align:center;color:#334155">'+fmtF(it.fecha||d.fecha)+'</td>'+
-      '<td style="padding:9px 14px;border-bottom:1px solid #E2E8F0"><div style="border-bottom:1px dotted #94A3B8;height:16px;width:85%;margin:0 auto"></div></td></tr>';
-  }).join('');
-  var logo=d.logo_base64?'<img src="'+d.logo_base64+'" style="max-height:60px;max-width:170px">':'<div style="font-weight:800;font-size:14pt;color:#1E3A2D">'+(d.empresa_nombre||'')+'</div>';
+  var n=items.length;
+  var dosCol=n>12, apretado=n>8;
+  var pad=dosCol?'3px 8px':apretado?'4px 10px':'6px 12px';
+  var fs=dosCol?'8.5pt':apretado?'9pt':'9.5pt';
+  var fechasDistintas=items.some(function(it){return it.fecha&&(it.fecha+'').slice(0,10)!==(d.fecha+'').slice(0,10);});
+  var conFecha=!dosCol||fechasDistintas;
+  var logo=d.logo_base64?'<img src="'+d.logo_base64+'" style="max-height:48px;max-width:150px">':'<div style="font-weight:800;font-size:13pt;color:#1E3A2D">'+(d.empresa_nombre||'')+'</div>';
+  function tabla(lista,desde){
+    var filas=lista.map(function(it,i){
+      return '<tr style="background:'+((i+desde)%2?'#F8FAF9':'#fff')+';page-break-inside:avoid">'+
+        '<td style="padding:'+pad+';border-bottom:1px solid #E2E8F0;font-weight:600;color:#1E293B;font-size:'+fs+'">'+it.nombre+'</td>'+
+        (conFecha?'<td style="padding:'+pad+';border-bottom:1px solid #E2E8F0;text-align:center;color:#334155;font-size:'+fs+';white-space:nowrap">'+fmtF(it.fecha||d.fecha)+'</td>':'')+
+        '<td style="padding:'+pad+';border-bottom:1px solid #E2E8F0"><div style="border-bottom:1px dotted #94A3B8;height:'+(dosCol?12:14)+'px;width:88%;margin:0 auto"></div></td></tr>';
+    }).join('');
+    return '<table style="width:100%;border:1px solid #E2E8F0;border-radius:6px;overflow:hidden">'+
+      '<thead><tr style="background:#E9F1EC;color:#1E3A2D;border-bottom:2px solid #1E3A2D">'+
+      '<th style="padding:'+pad+';text-align:left;font-size:8.5pt;letter-spacing:.3px;width:'+(conFecha?'46%':'55%')+'">EPP ENTREGADO</th>'+
+      (conFecha?'<th style="padding:'+pad+';font-size:8.5pt;letter-spacing:.3px;width:19%">FECHA</th>':'')+
+      '<th style="padding:'+pad+';font-size:8.5pt;letter-spacing:.3px">FIRMA DEL TRABAJADOR</th>'+
+      '</tr></thead><tbody>'+filas+'</tbody></table>';
+  }
+  var cuerpoTabla;
+  if(dosCol){
+    var mitad=Math.ceil(n/2);
+    cuerpoTabla='<div style="display:flex;gap:10px;align-items:flex-start">'+
+      '<div style="flex:1;min-width:0">'+tabla(items.slice(0,mitad),0)+'</div>'+
+      '<div style="flex:1;min-width:0">'+tabla(items.slice(mitad),mitad)+'</div></div>';
+  } else cuerpoTabla=tabla(items,0);
   return '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Registro Entrega EPP</title><style>'+
-    '@page{size:letter;margin:1.5cm 1.7cm}'+
-    'body{font-family:Arial,Helvetica,sans-serif;font-size:10.5pt;line-height:1.4;margin:0;color:#1E293B;-webkit-print-color-adjust:exact;print-color-adjust:exact}'+
+    '@page{size:letter;margin:1.1cm 1.4cm}'+
+    'body{font-family:Arial,Helvetica,sans-serif;font-size:9.5pt;line-height:1.3;margin:0;color:#1E293B;-webkit-print-color-adjust:exact;print-color-adjust:exact}'+
     'table{border-collapse:collapse}'+
     '</style></head><body>'+
     // Encabezado corporativo
-    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">'+
+    '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'+
     '<div>'+logo+'</div>'+
     '<div style="text-align:right">'+
-    '<div style="font-weight:700;font-size:11pt;color:#1E3A2D">'+(d.empresa_nombre||'')+'</div>'+
-    '<div style="font-size:9pt;color:#64748B">RUT '+(d.empresa_rut||'')+'</div>'+
-    '<div style="font-size:8.5pt;color:#64748B;margin-top:2px">Inducci\u00f3n \u00b7 Contrataci\u00f3n e inducci\u00f3n de personal</div>'+
+    '<div style="font-weight:700;font-size:10.5pt;color:#1E3A2D">'+(d.empresa_nombre||'')+'</div>'+
+    '<div style="font-size:8.5pt;color:#64748B">RUT '+(d.empresa_rut||'')+'</div>'+
+    '<div style="font-size:8pt;color:#64748B;margin-top:1px">Inducci\u00f3n \u00b7 Contrataci\u00f3n e inducci\u00f3n de personal</div>'+
     '</div></div>'+
-    '<div style="background:#fff;color:#1E3A2D;border:2px solid #1E3A2D;border-radius:8px;padding:12px 18px;margin-bottom:18px">'+
-    '<div style="font-size:13.5pt;font-weight:800;letter-spacing:.4px">REGISTRO DE ENTREGA \u2014 ELEMENTOS DE PROTECCI\u00d3N PERSONAL</div>'+
-    '<div style="font-size:9pt;color:#64748B;margin-top:2px">Prevenci\u00f3n de Riesgos \u00b7 Vigencia: un a\u00f1o desde la fecha de entrega</div>'+
+    '<div style="background:#fff;color:#1E3A2D;border:2px solid #1E3A2D;border-radius:6px;padding:7px 14px;margin-bottom:10px">'+
+    '<div style="font-size:12pt;font-weight:800;letter-spacing:.3px">REGISTRO DE ENTREGA \u2014 ELEMENTOS DE PROTECCI\u00d3N PERSONAL</div>'+
+    '<div style="font-size:8.5pt;color:#64748B;margin-top:1px">Prevenci\u00f3n de Riesgos \u00b7 Vigencia: un a\u00f1o desde la fecha de entrega</div>'+
     '</div>'+
     // Datos del trabajador (tarjeta)
-    '<div style="border:1px solid #E2E8F0;border-radius:8px;padding:12px 16px;margin-bottom:18px;background:#F8FAFC">'+
-    '<div style="display:flex;flex-wrap:wrap;gap:24px">'+
-    '<div style="flex:2;min-width:200px"><div style="font-size:8pt;color:#64748B;text-transform:uppercase;letter-spacing:.5px">Trabajador</div><div style="font-weight:700;font-size:11pt">'+nombresPrimero(d.nombre_completo||'')+'</div></div>'+
-    '<div style="flex:1;min-width:110px"><div style="font-size:8pt;color:#64748B;text-transform:uppercase;letter-spacing:.5px">RUT</div><div style="font-weight:700">'+(d.rut||'')+'</div></div>'+
-    '<div style="flex:1;min-width:140px"><div style="font-size:8pt;color:#64748B;text-transform:uppercase;letter-spacing:.5px">Cargo</div><div style="font-weight:700">'+(d.cargo||'')+'</div></div>'+
-    '<div style="flex:1;min-width:110px"><div style="font-size:8pt;color:#64748B;text-transform:uppercase;letter-spacing:.5px">Fecha entrega</div><div style="font-weight:700">'+fmtF(d.fecha)+'</div></div>'+
+    '<div style="border:1px solid #E2E8F0;border-radius:6px;padding:8px 14px;margin-bottom:10px;background:#F8FAFC">'+
+    '<div style="display:flex;flex-wrap:wrap;gap:18px">'+
+    '<div style="flex:2;min-width:200px"><div style="font-size:7.5pt;color:#64748B;text-transform:uppercase;letter-spacing:.4px">Trabajador</div><div style="font-weight:700;font-size:10.5pt">'+nombresPrimero(d.nombre_completo||'')+'</div></div>'+
+    '<div style="flex:1;min-width:100px"><div style="font-size:7.5pt;color:#64748B;text-transform:uppercase;letter-spacing:.4px">RUT</div><div style="font-weight:700">'+(d.rut||'')+'</div></div>'+
+    '<div style="flex:1;min-width:130px"><div style="font-size:7.5pt;color:#64748B;text-transform:uppercase;letter-spacing:.4px">Cargo</div><div style="font-weight:700">'+(d.cargo||'')+'</div></div>'+
+    '<div style="flex:1;min-width:100px"><div style="font-size:7.5pt;color:#64748B;text-transform:uppercase;letter-spacing:.4px">Fecha entrega</div><div style="font-weight:700">'+fmtF(d.fecha)+'</div></div>'+
     '</div></div>'+
-    // Tabla EPP
-    '<table style="width:100%;margin-bottom:6px;border:1px solid #E2E8F0;border-radius:8px;overflow:hidden">'+
-    '<thead><tr style="background:#E9F1EC;color:#1E3A2D;border-bottom:2px solid #1E3A2D">'+
-    '<th style="padding:9px 14px;text-align:left;font-size:9.5pt;letter-spacing:.4px;width:46%">EPP ENTREGADO</th>'+
-    '<th style="padding:9px 14px;font-size:9.5pt;letter-spacing:.4px;width:20%">FECHA</th>'+
-    '<th style="padding:9px 14px;font-size:9.5pt;letter-spacing:.4px">FIRMA DEL TRABAJADOR</th>'+
-    '</tr></thead><tbody>'+filas+'</tbody></table>'+
-    '<div style="font-size:8.5pt;color:#64748B;margin-bottom:16px">'+items.length+' elemento(s) entregado(s). El trabajador firma cada elemento recibido.</div>'+
+    // Tabla EPP (una o dos columnas según cantidad)
+    cuerpoTabla+
+    '<div style="font-size:8pt;color:#64748B;margin:3px 0 8px">'+n+' elemento(s) entregado(s). El trabajador firma cada elemento recibido.'+(dosCol&&!conFecha?' Todos entregados el '+fmtF(d.fecha)+'.':'')+'</div>'+
     // Nota
-    '<div style="background:#FFFBEB;border:1px solid #FDE68A;border-left:4px solid #F59E0B;border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:9pt;color:#78350F">'+
+    '<div style="background:#FFFBEB;border:1px solid #FDE68A;border-left:4px solid #F59E0B;border-radius:5px;padding:6px 12px;margin-bottom:8px;font-size:8.5pt;color:#78350F">'+
     '<strong>Nota:</strong> La vigencia de este documento ser\u00e1 de un a\u00f1o, debiendo informar los cambios por deterioro de los EPP a trav\u00e9s de un nuevo documento. El trabajador debe solicitar, sin costo para \u00e9l, el cambio de sus EPP cuando estos presenten deterioro o no sean adecuados al riesgo presente.'+
     '</div>'+
-    // Declaración del prevencionista
-    '<div style="border:1px solid #E2E8F0;border-radius:8px;padding:12px 16px;margin-bottom:8px">'+
-    '<div style="font-weight:700;color:#1E3A2D;margin-bottom:6px;font-size:10pt">El Prevencionista de Riesgos declara:</div>'+
-    '<ul style="margin:0;padding-left:18px;font-size:9.5pt;color:#334155">'+
-    '<li style="margin-bottom:3px">Haber capacitado en el uso correcto de los EPP del trabajador.</li>'+
-    '<li style="margin-bottom:3px">Haber revisado el estado de los EPP, encontr\u00e1ndose todos en perfecto estado.</li>'+
-    '<li style="margin-bottom:3px">Que los EPP entregados son los adecuados al riesgo a cubrir.</li>'+
+    // Declaración del prevencionista + firma: bloque indivisible
+    '<div style="page-break-inside:avoid">'+
+    '<div style="border:1px solid #E2E8F0;border-radius:6px;padding:7px 14px;margin-bottom:4px">'+
+    '<div style="font-weight:700;color:#1E3A2D;margin-bottom:3px;font-size:9.5pt">El Prevencionista de Riesgos declara:</div>'+
+    '<ul style="margin:0;padding-left:16px;font-size:8.8pt;color:#334155">'+
+    '<li style="margin-bottom:1px">Haber capacitado en el uso correcto de los EPP del trabajador.</li>'+
+    '<li style="margin-bottom:1px">Haber revisado el estado de los EPP, encontr\u00e1ndose todos en perfecto estado.</li>'+
+    '<li style="margin-bottom:1px">Que los EPP entregados son los adecuados al riesgo a cubrir.</li>'+
     '<li>Los EPP entregados se encuentran certificados, de acuerdo a las normas de calidad de conformidad a lo establecido Decreto Nro. 18.</li>'+
     '</ul></div>'+
     // Firma
-    '<div style="text-align:center;margin-top:'+(d.prevencionista_firma?'26':'70')+'px">'+
-    (d.prevencionista_firma?('<img src="'+d.prevencionista_firma+'" style="max-height:72px;max-width:220px;display:block;margin:0 auto -8px">'):'')+
-    '<div style="border-top:1.5px solid #1E3A2D;width:250px;margin:0 auto;padding-top:6px;font-weight:700;color:#1E3A2D">Firma Prevencionista de Riesgos</div>'+
-    '<div style="margin-top:8px;font-size:10pt;font-weight:600">'+nombresPrimero(d.prevencionista_nombre||'')+'</div>'+
-    (d.prevencionista_inscripcion?('<div style="font-size:9pt;color:#334155">N\u00b0 Inscripci\u00f3n: '+d.prevencionista_inscripcion+'</div>'):'')+
-    '<div style="font-size:8pt;color:#64748B">Registro del Servicio de Salud</div>'+
-    '</div>'+
-    '<div style="position:fixed;bottom:0;left:0;right:0;text-align:center;font-size:7.5pt;color:#94A3B8;border-top:1px solid #E2E8F0;padding-top:4px">Documento generado el '+fmtF(new Date().getFullYear()+'-'+('0'+(new Date().getMonth()+1)).slice(-2)+'-'+('0'+new Date().getDate()).slice(-2))+' \u00b7 Empresas Poo \u2014 Sistema de Gesti\u00f3n</div>'+
+    '<div style="text-align:center;margin-top:'+(d.prevencionista_firma?'8':'40')+'px">'+
+    (d.prevencionista_firma?('<img src="'+d.prevencionista_firma+'" style="max-height:58px;max-width:200px;display:block;margin:0 auto -6px">'):'')+
+    '<div style="border-top:1.5px solid #1E3A2D;width:240px;margin:0 auto;padding-top:4px;font-weight:700;color:#1E3A2D;font-size:9.5pt">Firma Prevencionista de Riesgos</div>'+
+    '<div style="margin-top:4px;font-size:9.5pt;font-weight:600">'+nombresPrimero(d.prevencionista_nombre||'')+'</div>'+
+    (d.prevencionista_inscripcion?('<div style="font-size:8.5pt;color:#334155">N\u00b0 Inscripci\u00f3n: '+d.prevencionista_inscripcion+'</div>'):'')+
+    '<div style="font-size:7.5pt;color:#64748B">Registro del Servicio de Salud</div>'+
+    '</div></div>'+
+    '<div style="position:fixed;bottom:0;left:0;right:0;text-align:center;font-size:7.5pt;color:#94A3B8;border-top:1px solid #E2E8F0;padding-top:3px">Documento generado el '+fmtF(new Date().getFullYear()+'-'+('0'+(new Date().getMonth()+1)).slice(-2)+'-'+('0'+new Date().getDate()).slice(-2))+' \u00b7 Empresas Poo \u2014 Sistema de Gesti\u00f3n</div>'+
     '</body></html>';
 }
 function PrevEppTab(p){
@@ -21075,11 +21094,12 @@ function PrevFichaTab(p){
 function PrevDocsTab(p){
   var ctx=p.ctx;
   var[fEmp,setFEmp]=useState('');var[fTipo,setFTipo]=useState('');var[q,setQ]=useState('');var[selIds,setSelIds]=useState([]);
+  var[fDesde,setFDesde]=useState('');var[fHasta,setFHasta]=useState('');
   // Historial único: documentos (inducción / IRL / reglamento) + entregas de EPP, ordenados por fecha
   var todos=ctx.docs.map(function(d){return Object.assign({},d,{_k:'D'+d.doc_id});})
     .concat(ctx.epp.map(function(r){return Object.assign({},r,{_k:'E'+r.entrega_id,tipo:'EPP',relator_nombre:r.prevencionista_nombre||'',creado_por:null});}))
     .sort(function(a,b){var fa=(a.fecha+'').slice(0,10),fb=(b.fecha+'').slice(0,10);return fa<fb?1:(fa>fb?-1:((b.creado_en||'')<(a.creado_en||'')?-1:1));});
-  var rows=todos.filter(function(d){return (!fEmp||String(d.empresa_id)===String(fEmp))&&(!fTipo||d.tipo===fTipo)&&(!q||((d.nombre_completo||d.externo_nombre||'')+' '+(d.rut||d.externo_rut||'')+' '+(d.cargo||d.externo_cargo||'')).toUpperCase().indexOf(q.toUpperCase())>=0);});
+  var rows=todos.filter(function(d){var f=(d.fecha+'').slice(0,10);return (!fEmp||String(d.empresa_id)===String(fEmp))&&(!fTipo||d.tipo===fTipo)&&(!fDesde||f>=fDesde)&&(!fHasta||f<=fHasta)&&(!q||((d.nombre_completo||d.externo_nombre||'')+' '+(d.rut||d.externo_rut||'')+' '+(d.cargo||d.externo_cargo||'')).toUpperCase().indexOf(q.toUpperCase())>=0);});
   function eliminar(d){
     if(!confirm('¿Eliminar el registro "'+(PREV_DOC_TIPO_LBL[d.tipo]||d.tipo)+'" de '+(d.nombre_completo||d.externo_nombre)+' del '+fmtD(d.fecha)+'?'))return;
     var pr=d.tipo==='EPP'?api('/prevencion/epp/'+d.entrega_id,'DELETE',null,ctx.tok):api('/prevencion/docs/'+d.doc_id,'DELETE',null,ctx.tok);
@@ -21093,6 +21113,9 @@ function PrevDocsTab(p){
     return (Array.isArray(dt.temario)?dt.temario.length:0)+' temas'+(dt.otros?' + otros':'')+(d.externo_empresa?' · '+d.externo_empresa:'');
   }
   function toggleSel(id){setSelIds(function(s){var n=s.slice();var i=n.indexOf(id);if(i>=0)n.splice(i,1);else n.push(id);return n;});}
+  // Marcar/desmarcar todos los filtrados (para reimprimir muchos comprobantes en un solo PDF)
+  var todosMarcados=rows.length>0&&rows.every(function(r){return selIds.indexOf(r._k)>=0;});
+  function marcarTodos(){var ks=rows.map(function(r){return r._k;});setSelIds(todosMarcados?selIds.filter(function(k){return ks.indexOf(k)<0;}):selIds.concat(ks.filter(function(k){return selIds.indexOf(k)<0;})));}
   function excel(){
     exportXLSX(rows,[{header:'Fecha',value:function(r){return (r.fecha+'').slice(0,10);}},{header:'Tipo',value:function(r){return PREV_DOC_TIPO_LBL[r.tipo]||r.tipo;}},{header:'Empresa',value:function(r){return r.empresa_nombre;}},
       {header:'Trabajador',value:function(r){return r.nombre_completo||r.externo_nombre;}},{header:'RUT',value:function(r){return r.rut||r.externo_rut;}},{header:'Cargo',value:function(r){return r.cargo||r.externo_cargo;}},{header:'Faena',value:function(r){return r.faena_nombre||'';}},
@@ -21105,9 +21128,12 @@ function PrevDocsTab(p){
         h('select',{value:fEmp,onChange:function(e){setFEmp(e.target.value);},style:Object.assign({},PREV_INP,{width:'auto',fontSize:12})},h('option',{value:''},'Todas las empresas'),ctx.empresas.map(function(em){return h('option',{key:em.empresa_id,value:em.empresa_id},em.razon_social);})),
         h('select',{value:fTipo,onChange:function(e){setFTipo(e.target.value);},style:Object.assign({},PREV_INP,{width:'auto',fontSize:12})},h('option',{value:''},'Todos los tipos'),Object.keys(PREV_DOC_TIPO_LBL).map(function(k){return h('option',{key:k,value:k},PREV_DOC_TIPO_LBL[k]);})),
         h('input',{type:'text',value:q,onChange:function(e){setQ(e.target.value);},placeholder:'Buscar trabajador / RUT / cargo',style:Object.assign({},PREV_INP,{width:220,fontSize:12})}),
+        h('input',{type:'date',value:fDesde,onChange:function(e){setFDesde(e.target.value);},title:'Desde',style:Object.assign({},PREV_INP,{width:'auto',fontSize:12})}),
+        h('input',{type:'date',value:fHasta,onChange:function(e){setFHasta(e.target.value);},title:'Hasta',style:Object.assign({},PREV_INP,{width:'auto',fontSize:12})}),
+        rows.length>0&&h(Btn,{v:'teal',sm:true,onClick:marcarTodos},todosMarcados?'☐ Quitar selección':'☑ Marcar todos ('+rows.length+')'),
         selIds.length>0&&h(Btn,{v:'a',sm:true,onClick:function(){ctx.imprimirDocs(selIds,'Documentos de prevención');}},'📑 PDF seleccionados ('+selIds.length+')'),
         h(Btn,{v:'g',sm:true,onClick:excel,disabled:!rows.length},'📊 Excel'))),
-    h('div',{style:{fontSize:10,color:'#94A3B8',marginBottom:6}},'Incluye entregas de EPP, charlas de inducción, IRL y entregas de reglamento. Marca varios y usa "PDF seleccionados" para imprimirlos juntos.'),
+    h('div',{style:{fontSize:10,color:'#94A3B8',marginBottom:6}},'Incluye entregas de EPP, charlas de inducción, IRL y entregas de reglamento. Filtra (tipo, empresa, fechas), usa "Marcar todos" y luego "PDF seleccionados": salen todos en un solo PDF, un documento por hoja.'),
     rows.length===0?h('div',{style:{color:'#94A3B8',fontSize:12,padding:20,textAlign:'center'}},'No hay documentos registrados'):
     h(TBL,{cols:[
       {lbl:'',render:function(r){return h('input',{type:'checkbox',checked:selIds.indexOf(r._k)>=0,onChange:function(){toggleSel(r._k);},style:{width:14,height:14}});}},
