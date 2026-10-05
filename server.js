@@ -7206,6 +7206,17 @@ async function setupRendiciones(q){
     usuario_creador VARCHAR(100),
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
+  // Con copia: ids de usuarios que pueden VER la solicitud sin ser responsables de cerrarla
+  try{await q("ALTER TABLE solicitudes ADD COLUMN IF NOT EXISTS copia_ids JSONB DEFAULT '[]'::jsonb");}catch(e){}
+  // Seguimiento: quién respondió (titular, suplente o admin), desde cuándo la tiene el responsable actual, escalamiento y avisos
+  try{await q("ALTER TABLE solicitudes ADD COLUMN IF NOT EXISTS respondido_por_id INT");}catch(e){}
+  try{await q("ALTER TABLE solicitudes ADD COLUMN IF NOT EXISTS asignada_en TIMESTAMP");}catch(e){}
+  try{await q("ALTER TABLE solicitudes ADD COLUMN IF NOT EXISTS escalada_en TIMESTAMP");}catch(e){}
+  try{await q("ALTER TABLE solicitudes ADD COLUMN IF NOT EXISTS avisos JSONB DEFAULT '[]'::jsonb");}catch(e){}
+  // Datos por usuario para solicitudes: WhatsApp, jefe directo (a quién se escala) y suplente (responde en su nombre)
+  try{await q(`CREATE TABLE IF NOT EXISTS sol_usuarios (usuario_id INT PRIMARY KEY REFERENCES usuarios(usuario_id) ON DELETE CASCADE, telefono VARCHAR(20), jefe_id INT, suplente_id INT, actualizado_en TIMESTAMP DEFAULT NOW())`);}catch(e){}
+  try{await q(`CREATE TABLE IF NOT EXISTS sol_config (clave VARCHAR(40) PRIMARY KEY, valor JSONB)`);}catch(e){}
+  try{await q(`CREATE TABLE IF NOT EXISTS sol_resumen_enviado (semana DATE PRIMARY KEY, enviado_en TIMESTAMP DEFAULT NOW(), detalle JSONB)`);}catch(e){}
 
   // ── DTE Recibidos: bandeja de facturas/notas recibidas (parseadas de XML SII de Facto u otra fuente) ──
   await q(`CREATE TABLE IF NOT EXISTS dte_recibidos (
@@ -9970,40 +9981,242 @@ app.get('/api/contratos/por-vencer', auth, requireModulo('contratos'), async(req
   }catch(e){res.status(500).json({error:e.message});}
 });
 
+// ═══ SEGUIMIENTO DE SOLICITUDES: suplentes, escalamiento por antigüedad, resumen semanal y avisos ═══
+const SOL_CFG_DEF={escala_activa:true,escala_dias:3,escala_ids:null,resumen_activo:true,resumen_dia:1,resumen_hora:8};
+function solEsAdmin(u){return !!(u&&(u.es_admin||u.rol==='admin'||u.rol==='superadmin'));}
+async function solConfig(){
+  const r=await pool.query("SELECT valor FROM sol_config WHERE clave='seguimiento'");
+  const c=Object.assign({},SOL_CFG_DEF,r.rows.length?(r.rows[0].valor||{}):{});
+  if(!Array.isArray(c.escala_ids)){
+    // Sin configurar todavía: por defecto se escala al jefe de administración (editable en ⚙ Seguimiento)
+    const u=await pool.query("SELECT usuario_id FROM usuarios WHERE activo=true AND UPPER(nombre) LIKE '%PALAVECINO%' ORDER BY usuario_id LIMIT 1");
+    c.escala_ids=u.rows.map(function(x){return x.usuario_id;}); c.por_defecto=true;
+  }
+  c.escala_dias=Math.min(60,Math.max(1,parseInt(c.escala_dias)||3));
+  c.resumen_dia=Math.min(6,Math.max(0,parseInt(c.resumen_dia)||0));
+  c.resumen_hora=Math.min(23,Math.max(0,parseInt(c.resumen_hora)||0));
+  return c;
+}
+async function solEsSuplenteDe(userId,destId){
+  const r=await pool.query('SELECT 1 FROM sol_usuarios WHERE usuario_id=$1 AND suplente_id=$2',[destId,userId]);
+  return r.rows.length>0;
+}
+// Responde: el destinatario, su suplente o un administrador
+async function solPuedeResponder(req,sol){
+  if(sol.dirigida_a_id===req.user.id||solEsAdmin(req.user))return true;
+  return solEsSuplenteDe(req.user.id,sol.dirigida_a_id);
+}
+async function solPuedeVer(req,sol){
+  if(solicitudesVeTodas(req.user)||sol.solicitante_id===req.user.id||sol.dirigida_a_id===req.user.id)return true;
+  if((Array.isArray(sol.copia_ids)?sol.copia_ids:[]).indexOf(req.user.id)>=0)return true;
+  return solEsSuplenteDe(req.user.id,sol.dirigida_a_id);
+}
+function solMailWrap(titulo,cuerpo){
+  const link=(process.env.PUBLIC_URL||'https://empresaspoo.up.railway.app').replace(/\/$/,'');
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body style="margin:0;padding:0;background:#F1F5F9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+  <div style="max-width:640px;margin:20px auto;background:#fff;border-radius:8px;overflow:hidden;border:1px solid #E2E8F0;">
+    <div style="background:#1E3A2D;padding:18px 24px;"><div style="font-size:12px;color:#FCD34D;opacity:.9;">Empresas Poo · Solicitudes</div><div style="font-size:18px;font-weight:600;margin-top:4px;color:#fff;">${escapeHtml(titulo)}</div></div>
+    <div style="padding:20px 24px;color:#1E293B;font-size:14px;line-height:1.55;">${cuerpo}
+      <div style="text-align:center;margin:22px 0 6px;"><a href="${link}" style="display:inline-block;background:#1E3A2D;color:#fff;padding:11px 26px;border-radius:6px;text-decoration:none;font-size:14px;font-weight:600;">Abrir solicitudes →</a></div>
+    </div>
+    <div style="background:#F8FAFC;padding:12px 24px;border-top:1px solid #E2E8F0;font-size:11px;color:#94A3B8;text-align:center;line-height:1.5;">Correo automático del sistema de gestión. No respondas a este correo.</div>
+  </div></body></html>`;
+}
+// Escalamiento: solicitudes 'pendiente' que llevan N días con su responsable actual sin respuesta → se suma en copia
+// al jefe directo del responsable (si tiene) o a la lista general, y queda marcada (una sola vez por asignación).
+async function solEscalar(){
+  const cfg=await solConfig();
+  if(!cfg.escala_activa)return {escaladas:0,motivo:'El escalamiento está desactivado'};
+  const r=await pool.query(`SELECT s.solicitud_id,s.detalle,s.cantidad,s.prioridad,s.solicitante_id,s.dirigida_a_id,COALESCE(s.copia_ids,'[]'::jsonb) AS copia_ids,su.jefe_id,
+      sol.nombre AS solicitante_nombre,dest.nombre AS dirigida_nombre,
+      FLOOR(EXTRACT(EPOCH FROM (NOW()-COALESCE(s.asignada_en,s.creado_en)))/86400)::int AS dias
+    FROM solicitudes s JOIN usuarios sol ON s.solicitante_id=sol.usuario_id JOIN usuarios dest ON s.dirigida_a_id=dest.usuario_id
+    LEFT JOIN sol_usuarios su ON su.usuario_id=s.dirigida_a_id
+    WHERE s.estado='pendiente' AND s.escalada_en IS NULL AND COALESCE(s.asignada_en,s.creado_en) <= NOW() - ($1::int * INTERVAL '1 day')
+    ORDER BY s.creado_en`,[cfg.escala_dias]);
+  if(!r.rows.length)return {escaladas:0};
+  const act=await pool.query('SELECT usuario_id,nombre,email FROM usuarios WHERE activo=true');
+  const U={}; act.rows.forEach(function(u){U[u.usuario_id]=u;});
+  const porUsuario={}; let n=0;
+  for(const s of r.rows){
+    const base=(s.jefe_id&&U[s.jefe_id])?[s.jefe_id]:cfg.escala_ids;
+    const dest=base.filter(function(id){return U[id]&&id!==s.dirigida_a_id;});
+    if(!dest.length)continue;
+    const cc=solCopiaLimpia((Array.isArray(s.copia_ids)?s.copia_ids:[]).concat(dest),[s.solicitante_id,s.dirigida_a_id]);
+    const aviso=[{canal:'escalamiento',fecha:new Date().toISOString(),dias:s.dias,a:dest.map(function(id){return U[id].nombre;}).join(', ')}];
+    const up=await pool.query("UPDATE solicitudes SET copia_ids=$1::jsonb,escalada_en=NOW(),avisos=COALESCE(avisos,'[]'::jsonb)||$2::jsonb WHERE solicitud_id=$3 AND escalada_en IS NULL",[JSON.stringify(cc),JSON.stringify(aviso),s.solicitud_id]);
+    if(!up.rowCount)continue;
+    n++; dest.forEach(function(id){(porUsuario[id]=porUsuario[id]||[]).push(s);});
+  }
+  if(mailEnabled){
+    for(const id of Object.keys(porUsuario)){
+      const u=U[id]; if(!u||!u.email)continue;
+      const lista=porUsuario[id];
+      const filas=lista.map(function(s){return '<tr><td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;font-weight:600;">#'+s.solicitud_id+' · '+escapeHtml((parseFloat(s.cantidad)>1?parseFloat(s.cantidad)+' × ':'')+s.detalle)+'</td><td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">'+escapeHtml(s.dirigida_nombre)+'</td><td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;">'+escapeHtml(s.solicitante_nombre)+'</td><td style="padding:6px 8px;border-bottom:1px solid #E2E8F0;color:#B91C1C;font-weight:700;white-space:nowrap;">'+s.dias+' días</td></tr>';}).join('');
+      const cuerpo='<p>Hola '+escapeHtml(String(u.nombre).split(' ')[0])+',</p><p>'+(lista.length===1?'Esta solicitud lleva':'Estas '+lista.length+' solicitudes llevan')+' más de '+cfg.escala_dias+' días sin respuesta. Quedaste <b>en copia</b> para que puedas hacerle seguimiento con el responsable.</p>'+
+        '<table style="width:100%;border-collapse:collapse;font-size:13px;"><tr style="background:#F1F5F9;text-align:left;"><th style="padding:6px 8px;">Solicitud</th><th style="padding:6px 8px;">Responsable</th><th style="padding:6px 8px;">Pidió</th><th style="padding:6px 8px;">Sin respuesta</th></tr>'+filas+'</table>';
+      try{ await sendMailResend(u.email,'⬆ '+lista.length+' solicitud'+(lista.length>1?'es':'')+' sin respuesta — quedaste en copia',solMailWrap('Solicitudes escaladas',cuerpo)); }catch(e){}
+    }
+  }
+  return {escaladas:n};
+}
+// Resumen de pendientes agrupado por responsable (para el correo semanal)
+async function solResumenDatos(){
+  const r=await pool.query(`SELECT s.solicitud_id,s.detalle,s.cantidad,s.prioridad,s.estado,s.dirigida_a_id,s.escalada_en,dest.nombre AS dirigida_nombre,sol.nombre AS solicitante_nombre,
+      FLOOR(EXTRACT(EPOCH FROM (NOW()-s.creado_en))/86400)::int AS dias
+    FROM solicitudes s JOIN usuarios sol ON s.solicitante_id=sol.usuario_id JOIN usuarios dest ON s.dirigida_a_id=dest.usuario_id
+    WHERE s.estado IN ('pendiente','en_curso') ORDER BY s.creado_en`);
+  const g={};
+  r.rows.forEach(function(s){
+    const k=s.dirigida_a_id; if(!g[k])g[k]={usuario_id:k,nombre:s.dirigida_nombre,pendientes:0,en_curso:0,max_dias:0,items:[]};
+    if(s.estado==='pendiente')g[k].pendientes++; else g[k].en_curso++;
+    if(s.dias>g[k].max_dias)g[k].max_dias=s.dias;
+    g[k].items.push(s);
+  });
+  const grupos=Object.keys(g).map(function(k){return g[k];}).sort(function(a,b){return (b.pendientes-a.pendientes)||(b.max_dias-a.max_dias);});
+  return {total:r.rows.length,pendientes:r.rows.filter(function(s){return s.estado==='pendiente';}).length,en_curso:r.rows.filter(function(s){return s.estado==='en_curso';}).length,grupos:grupos};
+}
+async function solEnviarResumen(forzar){
+  const cfg=await solConfig(); const d=await solResumenDatos();
+  const us=cfg.escala_ids.length?await pool.query('SELECT usuario_id,nombre,email FROM usuarios WHERE activo=true AND usuario_id = ANY($1::int[])',[cfg.escala_ids]):{rows:[]};
+  const dest=us.rows.filter(function(u){return u.email;});
+  const base={total:d.total,destinatarios:dest.map(function(u){return u.nombre;})};
+  if(!mailEnabled)return Object.assign({enviado:false,motivo:'El envío de correos no está configurado en el servidor (BREVO_API_KEY / MAIL_FROM_EMAIL)'},base);
+  if(!dest.length)return Object.assign({enviado:false,motivo:'No hay destinatarios con correo en la lista de escalamiento'},base);
+  if(!d.total&&!forzar)return Object.assign({enviado:false,motivo:'Sin solicitudes pendientes'},base);
+  const bloques=d.grupos.map(function(gr){
+    const filas=gr.items.slice(0,12).map(function(s){return '<tr><td style="padding:4px 8px;border-bottom:1px solid #F1F5F9;">#'+s.solicitud_id+' · '+escapeHtml((parseFloat(s.cantidad)>1?parseFloat(s.cantidad)+' × ':'')+s.detalle)+(s.escalada_en?' <span style="color:#B91C1C;font-size:11px;">⬆ escalada</span>':'')+'</td><td style="padding:4px 8px;border-bottom:1px solid #F1F5F9;color:#64748B;">'+escapeHtml(s.solicitante_nombre)+'</td><td style="padding:4px 8px;border-bottom:1px solid #F1F5F9;">'+(s.estado==='en_curso'?'en curso':'pendiente')+'</td><td style="padding:4px 8px;border-bottom:1px solid #F1F5F9;white-space:nowrap;'+(s.dias>=cfg.escala_dias?'color:#B91C1C;font-weight:700;':'')+'">'+s.dias+' d</td></tr>';}).join('');
+    return '<div style="margin:14px 0 4px;font-weight:700;color:#1E3A2D;">'+escapeHtml(gr.nombre)+' — '+gr.pendientes+' pendiente'+(gr.pendientes===1?'':'s')+(gr.en_curso?' · '+gr.en_curso+' en curso':'')+' · la más antigua: '+gr.max_dias+' días</div>'+
+      '<table style="width:100%;border-collapse:collapse;font-size:12px;">'+filas+'</table>'+(gr.items.length>12?'<div style="font-size:11px;color:#94A3B8;">… y '+(gr.items.length-12)+' más</div>':'');
+  }).join('');
+  const cuerpo='<p>Resumen de solicitudes sin resolver: <b>'+d.pendientes+' pendientes</b> y <b>'+d.en_curso+' en curso</b>, agrupadas por responsable.</p>'+(bloques||'<p>No hay solicitudes pendientes. ✓</p>');
+  const enviados=[];
+  for(const u of dest){ try{ const x=await sendMailResend(u.email,'📋 Solicitudes pendientes por responsable ('+d.total+')',solMailWrap('Solicitudes pendientes por responsable',cuerpo)); if(x)enviados.push(u.nombre); }catch(e){} }
+  return Object.assign({enviado:enviados.length>0,enviados:enviados},base);
+}
+async function solCronTick(){
+  try{ await solEscalar(); }catch(e){ console.log('[WARN] solicitudes escalar:',e.message); }
+  try{
+    const cfg=await solConfig(); if(!cfg.resumen_activo||!mailEnabled)return;
+    const a=calAhoraCL(); const dow=new Date(a.fecha+'T12:00:00Z').getUTCDay();
+    if(dow!==cfg.resumen_dia||a.min<cfg.resumen_hora*60)return;
+    const ins=await pool.query('INSERT INTO sol_resumen_enviado(semana) VALUES($1) ON CONFLICT DO NOTHING RETURNING semana',[a.fecha]);
+    if(!ins.rows.length)return;
+    const r=await solEnviarResumen(false);
+    await pool.query('UPDATE sol_resumen_enviado SET detalle=$1 WHERE semana=$2',[JSON.stringify(r),a.fecha]);
+  }catch(e){ console.log('[WARN] solicitudes resumen:',e.message); }
+}
+if(typeof SOL_SIN_CRON==='undefined'&&!process.env.SOL_SIN_CRON){ setTimeout(solCronTick,120*1000); setInterval(solCronTick,30*60*1000); }
+
+// Configuración del seguimiento (la ve quien ve todas las solicitudes; la cambia un administrador)
+app.get('/api/solicitudes/seguimiento', auth, async(req,res)=>{
+  try{
+    if(!solicitudesVeTodas(req.user))return res.status(403).json({error:'Sin permiso'});
+    const cfg=await solConfig();
+    const u=await pool.query('SELECT u.usuario_id,u.nombre,u.email,su.telefono,su.jefe_id,su.suplente_id FROM usuarios u LEFT JOIN sol_usuarios su ON su.usuario_id=u.usuario_id WHERE u.activo=true ORDER BY u.nombre');
+    res.json({config:cfg,usuarios:u.rows,mail:mailEnabled,puede_editar:solEsAdmin(req.user)});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.put('/api/solicitudes/seguimiento', auth, async(req,res)=>{
+  try{
+    if(!solEsAdmin(req.user))return res.status(403).json({error:'Solo un administrador puede cambiar el seguimiento'});
+    const b=req.body||{},c=b.config||{};
+    const cfg={escala_activa:!!c.escala_activa,escala_dias:Math.min(60,Math.max(1,parseInt(c.escala_dias)||3)),escala_ids:solCopiaLimpia(c.escala_ids,[]),
+      resumen_activo:!!c.resumen_activo,resumen_dia:Math.min(6,Math.max(0,parseInt(c.resumen_dia)||0)),resumen_hora:Math.min(23,Math.max(0,parseInt(c.resumen_hora)||0))};
+    await pool.query("INSERT INTO sol_config(clave,valor) VALUES('seguimiento',$1::jsonb) ON CONFLICT (clave) DO UPDATE SET valor=EXCLUDED.valor",[JSON.stringify(cfg)]);
+    for(const u of (Array.isArray(b.usuarios)?b.usuarios:[])){
+      const id=parseInt(u.usuario_id); if(!id)continue;
+      let jefe=parseInt(u.jefe_id)||null,sup=parseInt(u.suplente_id)||null; if(jefe===id)jefe=null; if(sup===id)sup=null;
+      const tel=String(u.telefono||'').trim().slice(0,20)||null;
+      await pool.query('INSERT INTO sol_usuarios(usuario_id,telefono,jefe_id,suplente_id,actualizado_en) VALUES($1,$2,$3,$4,NOW()) ON CONFLICT (usuario_id) DO UPDATE SET telefono=EXCLUDED.telefono,jefe_id=EXCLUDED.jefe_id,suplente_id=EXCLUDED.suplente_id,actualizado_en=NOW()',[id,tel,jefe,sup]);
+    }
+    res.json({ok:true,config:cfg});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.post('/api/solicitudes/seguimiento/escalar-ahora', auth, async(req,res)=>{
+  try{ if(!solEsAdmin(req.user))return res.status(403).json({error:'Solo un administrador'}); res.json(await solEscalar()); }catch(e){res.status(400).json({error:e.message});}
+});
+app.post('/api/solicitudes/seguimiento/resumen-ahora', auth, async(req,res)=>{
+  try{ if(!solEsAdmin(req.user))return res.status(403).json({error:'Solo un administrador'}); res.json(await solEnviarResumen(true)); }catch(e){res.status(400).json({error:e.message});}
+});
+// Deja constancia de un aviso al responsable (WhatsApp): quién avisó, a quién y cuándo
+app.post('/api/solicitudes/:id/aviso', auth, async(req,res)=>{
+  try{
+    const c=await pool.query('SELECT solicitante_id,dirigida_a_id,copia_ids FROM solicitudes WHERE solicitud_id=$1',[req.params.id]);
+    if(!c.rows.length)return res.status(404).json({error:'Solicitud no encontrada'});
+    if(!(await solPuedeVer(req,c.rows[0])))return res.status(403).json({error:'Sin permiso sobre esta solicitud'});
+    const aviso=[{canal:'whatsapp',fecha:new Date().toISOString(),por_id:req.user.id,por:req.user.nombre||req.user.email,a:String((req.body&&req.body.a)||'').slice(0,80)}];
+    await pool.query("UPDATE solicitudes SET avisos=COALESCE(avisos,'[]'::jsonb)||$1::jsonb WHERE solicitud_id=$2",[JSON.stringify(aviso),req.params.id]);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+// Responder (en curso / completar / rechazar): el destinatario, su suplente o un administrador. Queda registrado quién respondió.
+async function solResponder(req,res,accion){
+  try{
+    const c=await pool.query('SELECT solicitud_id,dirigida_a_id,solicitante_id FROM solicitudes WHERE solicitud_id=$1',[req.params.id]);
+    if(!c.rows.length)return res.status(404).json({error:'Solicitud no encontrada'});
+    if(!(await solPuedeResponder(req,c.rows[0])))return res.status(403).json({error:'Solo el destinatario, su suplente o un administrador puede responder esta solicitud'});
+    const respuesta=(req.body&&req.body.respuesta)||null;
+    const set=accion==='en_curso'?"estado='en_curso',respuesta=$1,respondido_en=NOW()":accion==='completada'?"estado='completada',respuesta=COALESCE($1,respuesta),completado_en=NOW()":"estado='rechazada',respuesta=$1,respondido_en=NOW()";
+    const r=await pool.query('UPDATE solicitudes SET '+set+',respondido_por_id=$3 WHERE solicitud_id=$2 RETURNING *',[respuesta,req.params.id,req.user.id]);
+    enviarMailSolicitudRespuesta(req.params.id,accion);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+}
+
 app.get('/api/solicitudes/pendientes-resumen', auth, async(req,res)=>{
   try{
     const r=await pool.query(`
       SELECT s.solicitud_id, s.detalle, s.cantidad, s.prioridad, s.creado_en,
              sol.nombre AS solicitante_nombre,
+             dest.nombre AS dirigida_nombre, (s.dirigida_a_id <> $1) AS por_suplencia,
              emp.razon_social AS empresa_nombre,
              f.nombre AS faena_nombre,
              eq.codigo AS equipo_codigo, eq.nombre AS equipo_nombre
       FROM solicitudes s
       JOIN usuarios sol ON s.solicitante_id = sol.usuario_id
+      JOIN usuarios dest ON s.dirigida_a_id = dest.usuario_id
       LEFT JOIN empresas emp ON s.empresa_id = emp.empresa_id
       LEFT JOIN faenas f ON s.faena_id = f.faena_id
       LEFT JOIN equipos eq ON s.equipo_id = eq.equipo_id
-      WHERE s.dirigida_a_id = $1 AND s.estado = 'pendiente'
+      WHERE (s.dirigida_a_id = $1 OR s.dirigida_a_id IN (SELECT usuario_id FROM sol_usuarios WHERE suplente_id = $1)) AND s.estado = 'pendiente'
       ORDER BY
         CASE s.prioridad WHEN 'urgente' THEN 1 WHEN 'alta' THEN 2 WHEN 'normal' THEN 3 ELSE 4 END,
         s.creado_en DESC
     `,[req.user.id]);
-    res.json({total:r.rows.length, items:r.rows});
+    // Solicitudes sin resolver donde el usuario va en copia (las ve, no las responde): la más antigua primero
+    const c=await pool.query(`
+      SELECT s.solicitud_id, s.detalle, s.cantidad, s.prioridad, s.estado, s.creado_en,
+             sol.nombre AS solicitante_nombre, dest.nombre AS dirigida_nombre
+      FROM solicitudes s
+      JOIN usuarios sol ON s.solicitante_id = sol.usuario_id
+      JOIN usuarios dest ON s.dirigida_a_id = dest.usuario_id
+      WHERE COALESCE(s.copia_ids,'[]'::jsonb) @> $1::jsonb AND s.estado IN ('pendiente','en_curso')
+      ORDER BY s.creado_en ASC
+    `,[JSON.stringify([req.user.id])]).catch(function(){return {rows:[]};});
+    res.json({total:r.rows.length, items:r.rows, copia_total:c.rows.length, copia_items:c.rows});
   }catch(e){res.status(500).json({error:e.message});}
 });
 
 // Ver TODAS las solicitudes (las de otros usuarios): administradores o roles con el permiso fino 'solicitudes-todas'.
 // El resto solo ve las que envió o las que le llegaron (se aplica en el servidor, no solo en las pestañas).
 function solicitudesVeTodas(u){return !!(u&&(u.es_admin||(u.modulos||[]).indexOf('solicitudes-todas')>=0));}
+// Con copia: lista limpia de ids (enteros, sin repetir, sin el solicitante ni el destinatario, máx. 10)
+function solCopiaLimpia(v,excluir){
+  const ex=(excluir||[]).map(function(x){return parseInt(x);});
+  const out=[];
+  (Array.isArray(v)?v:[]).forEach(function(x){const n=parseInt(x);if(n>0&&out.indexOf(n)<0&&ex.indexOf(n)<0&&out.length<10)out.push(n);});
+  return out;
+}
 app.get('/api/solicitudes', auth, async(req,res)=>{
   try{
     const{estado,dirigida_a_id,solicitante_id}=req.query;
     let w=['1=1'],v=[];
-    if(!solicitudesVeTodas(req.user)){v.push(req.user.id);w.push(`(s.solicitante_id=$${v.length} OR s.dirigida_a_id=$${v.length})`);}
+    if(!solicitudesVeTodas(req.user)){v.push(req.user.id);v.push(JSON.stringify([req.user.id]));w.push(`(s.solicitante_id=$${v.length-1} OR s.dirigida_a_id=$${v.length-1} OR COALESCE(s.copia_ids,'[]'::jsonb) @> $${v.length}::jsonb OR s.dirigida_a_id IN (SELECT usuario_id FROM sol_usuarios WHERE suplente_id=$${v.length-1}))`);}
     if(estado){v.push(estado);w.push(`s.estado=$${v.length}`);}
     if(dirigida_a_id){v.push(dirigida_a_id);w.push(`s.dirigida_a_id=$${v.length}`);}
     if(solicitante_id){v.push(solicitante_id);w.push(`s.solicitante_id=$${v.length}`);}
-    const r=await pool.query(`SELECT s.*,sol.nombre AS solicitante_nombre,sol.email AS solicitante_email,dest.nombre AS dirigida_nombre,dest.email AS dirigida_email,emp.razon_social AS empresa_nombre,sc.nombre AS subcategoria_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo FROM solicitudes s JOIN usuarios sol ON s.solicitante_id=sol.usuario_id JOIN usuarios dest ON s.dirigida_a_id=dest.usuario_id LEFT JOIN empresas emp ON s.empresa_id=emp.empresa_id LEFT JOIN subcategorias sc ON s.subcategoria_id=sc.subcategoria_id LEFT JOIN faenas f ON s.faena_id=f.faena_id LEFT JOIN equipos eq ON s.equipo_id=eq.equipo_id WHERE ${w.join(' AND ')} ORDER BY s.creado_en DESC`,v);
+    const r=await pool.query(`SELECT s.*,(SELECT COALESCE(json_agg(json_build_object('usuario_id',cu.usuario_id,'nombre',cu.nombre) ORDER BY cu.nombre),'[]'::json) FROM usuarios cu WHERE COALESCE(s.copia_ids,'[]'::jsonb) @> to_jsonb(cu.usuario_id)) AS copia,su.telefono AS dirigida_telefono,su.suplente_id,sup.nombre AS suplente_nombre,sus.telefono AS suplente_telefono,rp.nombre AS respondido_por_nombre,sol.nombre AS solicitante_nombre,sol.email AS solicitante_email,dest.nombre AS dirigida_nombre,dest.email AS dirigida_email,emp.razon_social AS empresa_nombre,sc.nombre AS subcategoria_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo FROM solicitudes s JOIN usuarios sol ON s.solicitante_id=sol.usuario_id JOIN usuarios dest ON s.dirigida_a_id=dest.usuario_id LEFT JOIN sol_usuarios su ON su.usuario_id=s.dirigida_a_id LEFT JOIN usuarios sup ON sup.usuario_id=su.suplente_id LEFT JOIN sol_usuarios sus ON sus.usuario_id=su.suplente_id LEFT JOIN usuarios rp ON rp.usuario_id=s.respondido_por_id LEFT JOIN empresas emp ON s.empresa_id=emp.empresa_id LEFT JOIN subcategorias sc ON s.subcategoria_id=sc.subcategoria_id LEFT JOIN faenas f ON s.faena_id=f.faena_id LEFT JOIN equipos eq ON s.equipo_id=eq.equipo_id WHERE ${w.join(' AND ')} ORDER BY s.creado_en DESC`,v);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -10011,13 +10224,14 @@ app.post('/api/solicitudes', auth, async(req,res)=>{
   try{
     const{empresa_id,dirigida_a_id,cantidad,detalle,subcategoria_id,faena_id,equipo_id,prioridad,observacion,lineas}=req.body;
     if(!dirigida_a_id) return res.status(400).json({error:'Destinatario es obligatorio'});
+    const ccJson=JSON.stringify(solCopiaLimpia(req.body.copia_ids,[req.user.id,dirigida_a_id]));
     // Multi-line support
     if(Array.isArray(lineas)&&lineas.length>0){
       const results=[];
       for(const l of lineas){
         if(!l.detalle)continue;
-        const r=await pool.query('INSERT INTO solicitudes(empresa_id,solicitante_id,dirigida_a_id,cantidad,detalle,subcategoria_id,faena_id,equipo_id,prioridad,observacion,usuario_creador) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',
-          [empresa_id||null,req.user.id,dirigida_a_id,parseFloat(l.cantidad)||1,l.detalle,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,l.prioridad||prioridad||'normal',l.observacion||null,req.user.email]);
+        const r=await pool.query('INSERT INTO solicitudes(empresa_id,solicitante_id,dirigida_a_id,cantidad,detalle,subcategoria_id,faena_id,equipo_id,prioridad,observacion,usuario_creador,copia_ids) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb) RETURNING *',
+          [empresa_id||null,req.user.id,dirigida_a_id,parseFloat(l.cantidad)||1,l.detalle,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,l.prioridad||prioridad||'normal',l.observacion||null,req.user.email,ccJson]);
         results.push(r.rows[0]);
       }
       // Enviar correos en background (no bloquea la respuesta)
@@ -10026,31 +10240,16 @@ app.post('/api/solicitudes', auth, async(req,res)=>{
     }
     // Single line
     if(!detalle) return res.status(400).json({error:'Detalle es obligatorio'});
-    const r=await pool.query('INSERT INTO solicitudes(empresa_id,solicitante_id,dirigida_a_id,cantidad,detalle,subcategoria_id,faena_id,equipo_id,prioridad,observacion,usuario_creador) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',
-      [empresa_id||null,req.user.id,dirigida_a_id,parseFloat(cantidad)||1,detalle,subcategoria_id||null,faena_id||null,equipo_id||null,prioridad||'normal',observacion||null,req.user.email]);
+    const r=await pool.query('INSERT INTO solicitudes(empresa_id,solicitante_id,dirigida_a_id,cantidad,detalle,subcategoria_id,faena_id,equipo_id,prioridad,observacion,usuario_creador,copia_ids) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb) RETURNING *',
+      [empresa_id||null,req.user.id,dirigida_a_id,parseFloat(cantidad)||1,detalle,subcategoria_id||null,faena_id||null,equipo_id||null,prioridad||'normal',observacion||null,req.user.email,ccJson]);
     // Enviar correo en background (no bloquea la respuesta)
     enviarMailSolicitudCreada(r.rows[0].solicitud_id);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
-app.patch('/api/solicitudes/:id/en-curso', auth, async(req,res)=>{
-  try{const{respuesta}=req.body;
-  const r=await pool.query("UPDATE solicitudes SET estado='en_curso',respuesta=$1,respondido_en=NOW() WHERE solicitud_id=$2 RETURNING *",[respuesta||null,req.params.id]);
-  enviarMailSolicitudRespuesta(req.params.id,'en_curso');
-  res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
-});
-app.patch('/api/solicitudes/:id/completar', auth, async(req,res)=>{
-  try{const{respuesta}=req.body;
-  const r=await pool.query("UPDATE solicitudes SET estado='completada',respuesta=COALESCE($1,respuesta),completado_en=NOW() WHERE solicitud_id=$2 RETURNING *",[respuesta||null,req.params.id]);
-  enviarMailSolicitudRespuesta(req.params.id,'completada');
-  res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
-});
-app.patch('/api/solicitudes/:id/rechazar', auth, async(req,res)=>{
-  try{const{respuesta}=req.body;
-  const r=await pool.query("UPDATE solicitudes SET estado='rechazada',respuesta=$1,respondido_en=NOW() WHERE solicitud_id=$2 RETURNING *",[respuesta||null,req.params.id]);
-  enviarMailSolicitudRespuesta(req.params.id,'rechazada');
-  res.json(r.rows[0]);}catch(e){res.status(400).json({error:e.message});}
-});
+app.patch('/api/solicitudes/:id/en-curso', auth, function(req,res){return solResponder(req,res,'en_curso');});
+app.patch('/api/solicitudes/:id/completar', auth, function(req,res){return solResponder(req,res,'completada');});
+app.patch('/api/solicitudes/:id/rechazar', auth, function(req,res){return solResponder(req,res,'rechazada');});
 app.put('/api/solicitudes/:id', auth, async(req,res)=>{
   try{
     // Verificar que sea el solicitante y que esté pendiente
@@ -10068,7 +10267,26 @@ app.put('/api/solicitudes/:id', auth, async(req,res)=>{
       subcategoria_id=$5,faena_id=$6,equipo_id=$7,prioridad=$8,observacion=$9
       WHERE solicitud_id=$10 RETURNING *`,
       [empresa_id||null,dirigida_a_id||null,parseFloat(cantidad)||1,detalle,subcategoria_id||null,faena_id||null,equipo_id||null,prioridad||'normal',observacion||null,req.params.id]);
+    if(Array.isArray(req.body.copia_ids)){
+      const cc=solCopiaLimpia(req.body.copia_ids,[cur.solicitante_id,r.rows[0].dirigida_a_id]);
+      await pool.query('UPDATE solicitudes SET copia_ids=$1::jsonb WHERE solicitud_id=$2',[JSON.stringify(cc),req.params.id]);
+      r.rows[0].copia_ids=cc;
+    }
     res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+
+// Con copia: usuarios que pueden VER la solicitud (no responderla). La cambian quien la envió, quien la recibe o quien ve todas.
+app.patch('/api/solicitudes/:id/copia', auth, async(req,res)=>{
+  try{
+    const c=await pool.query('SELECT solicitante_id,dirigida_a_id FROM solicitudes WHERE solicitud_id=$1',[req.params.id]);
+    if(!c.rows.length) return res.status(404).json({error:'Solicitud no encontrada'});
+    const cur=c.rows[0];
+    if(cur.solicitante_id!==req.user.id&&cur.dirigida_a_id!==req.user.id&&!solicitudesVeTodas(req.user))
+      return res.status(403).json({error:'Solo quien envió la solicitud, quien la recibe o un administrador puede cambiar las copias'});
+    const cc=solCopiaLimpia(req.body.copia_ids,[cur.solicitante_id,cur.dirigida_a_id]);
+    await pool.query('UPDATE solicitudes SET copia_ids=$1::jsonb WHERE solicitud_id=$2',[JSON.stringify(cc),req.params.id]);
+    res.json({ok:true,copia_ids:cc});
   }catch(e){res.status(400).json({error:e.message});}
 });
 
@@ -10084,9 +10302,9 @@ app.patch('/api/solicitudes/:id/transferir', auth, async(req,res)=>{
     // Validar destinatario diferente
     if(parseInt(nuevo_destinatario_id)===cur.dirigida_a_id)return res.status(400).json({error:'El nuevo destinatario debe ser diferente al actual'});
     // Permitir transferir si: es el destinatario actual, el solicitante o admin
-    const esAdmin=req.user.rol==='admin'||req.user.rol==='superadmin';
-    if(cur.dirigida_a_id!==req.user.id&&cur.solicitante_id!==req.user.id&&!esAdmin)
-      return res.status(403).json({error:'Solo el destinatario, solicitante o un administrador puede transferir esta solicitud'});
+    const esAdmin=solEsAdmin(req.user);
+    if(cur.dirigida_a_id!==req.user.id&&cur.solicitante_id!==req.user.id&&!esAdmin&&!(await solEsSuplenteDe(req.user.id,cur.dirigida_a_id)))
+      return res.status(403).json({error:'Solo el destinatario, su suplente, el solicitante o un administrador puede transferir esta solicitud'});
     // Solo pendientes o en curso
     if(cur.estado!=='pendiente'&&cur.estado!=='en_curso')
       return res.status(400).json({error:'Solo se pueden transferir solicitudes pendientes o en curso. Esta solicitud está: '+cur.estado});
@@ -10099,8 +10317,10 @@ app.patch('/api/solicitudes/:id/transferir', auth, async(req,res)=>{
     const notaTransferencia='\n[Transferida el '+fecha+' por '+nombreActual+' a '+nombreNuevo+(motivo?'. Motivo: '+motivo:'')+']';
     const obsNueva=(cur.observacion||'')+notaTransferencia;
     // Actualizar destinatario y reset estado a pendiente para que el nuevo lo vea como tal
-    const r=await pool.query(`UPDATE solicitudes SET dirigida_a_id=$1, estado='pendiente', observacion=$2, respondido_en=NULL WHERE solicitud_id=$3 RETURNING *`,
+    const r=await pool.query(`UPDATE solicitudes SET dirigida_a_id=$1, estado='pendiente', observacion=$2, respondido_en=NULL, asignada_en=NOW(), escalada_en=NULL WHERE solicitud_id=$3 RETURNING *`,
       [nuevo_destinatario_id,obsNueva,req.params.id]);
+    // El nuevo responsable deja de estar "en copia" (ya la recibe directamente)
+    await pool.query("UPDATE solicitudes SET copia_ids=(SELECT COALESCE(jsonb_agg(x),'[]'::jsonb) FROM jsonb_array_elements(COALESCE(copia_ids,'[]'::jsonb)) x WHERE x<>to_jsonb($1::int)) WHERE solicitud_id=$2",[parseInt(nuevo_destinatario_id),req.params.id]).catch(function(){});
     // Notificar por email al nuevo destinatario en background
     try{enviarMailSolicitudCreada(r.rows[0].solicitud_id);}catch(e){}
     res.json({ok:true,solicitud:r.rows[0]});
