@@ -8276,6 +8276,282 @@ function calcularDepreciacion(activo, desde, hasta){
   return {cuota_periodo:cuotaPeriodo, dep_acumulada_total:depAcum, valor_neto:valorNeto, dep_diaria:Math.round(depDiaria), dias_periodo:diasPeriodo, dias_vida_total:diasVidaTotal};
 }
 
+// ═══ CONTROL DE DURACIÓN DE REPUESTOS (versión simple, 2026-10) ═══
+// Repuestos comprados por OC que se quieren seguir: vida útil y garantía del fabricante (en horas o km) contra el uso REAL.
+// El uso en horas se toma solo de los registros diarios de Terreno (suma de horas trabajadas del equipo desde la instalación);
+// en km, de los kilometrajes de las cargas de combustible y lecturas de mantención. El registro guarda una FOTO de la línea de la
+// OC (descripción, costo, n° OC): las líneas de una OC se borran y reinsertan al editarla, así que no se enlaza por detalle_id.
+let _repEnsureP=null;
+function repEnsure(){
+  if(!_repEnsureP){
+    _repEnsureP=(async function(){
+      await pool.query(`CREATE TABLE IF NOT EXISTS rep_control (
+        control_id SERIAL PRIMARY KEY,
+        oc_id INT, linea_num INT, numero_oc VARCHAR(30),
+        empresa_id INT, proveedor_id INT, equipo_id INT NOT NULL, faena_id INT,
+        descripcion VARCHAR(300) NOT NULL, posicion VARCHAR(80), costo NUMERIC(14,2) DEFAULT 0,
+        medida VARCHAR(6) NOT NULL DEFAULT 'HORAS', vida_esperada NUMERIC(12,1) NOT NULL,
+        garantia_valor NUMERIC(12,1), garantia_meses INT,
+        fecha_instalacion DATE NOT NULL, lectura_instalacion NUMERIC(12,1),
+        lectura_manual NUMERIC(12,1), lectura_manual_fecha DATE,
+        estado VARCHAR(10) NOT NULL DEFAULT 'EN_USO',
+        fecha_retiro DATE, lectura_retiro NUMERIC(12,1), motivo_retiro VARCHAR(20), obs_retiro TEXT, uso_final NUMERIC(12,1),
+        garantia_estado VARCHAR(12), garantia_nota TEXT,
+        observaciones TEXT, usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), actualizado_en TIMESTAMP
+      )`);
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_rep_control_oc ON rep_control(oc_id)');
+      await pool.query('CREATE INDEX IF NOT EXISTS idx_rep_control_eq ON rep_control(equipo_id,estado)');
+    })().catch(function(e){_repEnsureP=null;throw e;});
+  }
+  return _repEnsureP;
+}
+const REP_MOTIVOS=['FALLA','DESGASTE','PREVENTIVO','ACCIDENTE','OTRO'];
+const REP_GARANTIA=['PENDIENTE','RECLAMADA','ACEPTADA','RECHAZADA','NO_APLICA'];
+function repNum(v){ if(v===null||v===undefined||v==='')return null; const n=parseFloat(String(v).replace(',','.')); return isNaN(n)?null:n; }
+function repIso(v){ if(!v)return null; const s=String(v).slice(0,10); return /^\d{4}-\d{2}-\d{2}$/.test(s)?s:null; }
+function repHoy(){ return calAhoraCL().fecha; }
+function repMeses(desde,hasta){ if(!desde||!hasta)return 0; const a=desde.split('-').map(Number),b=hasta.split('-').map(Number); return Math.max(0,(b[0]-a[0])*12+(b[1]-a[1])-(b[2]<a[2]?1:0)); }
+function repDias(desde,hasta){ if(!desde||!hasta)return 0; return Math.max(0,Math.round((new Date(hasta+'T12:00:00Z')-new Date(desde+'T12:00:00Z'))/86400000)); }
+// Última lectura conocida del equipo (horómetro o kilometraje) hasta una fecha: Terreno, combustible o mantención
+async function repLectura(equipoId,fecha,medida){
+  const col=medida==='KM'?'kilometraje':'horometro';
+  const partes=[];
+  if(medida!=='KM')partes.push("SELECT horometro_final::float AS v, fecha AS f, 'Terreno' AS src FROM terreno_registros WHERE equipo_id=$1 AND fecha<=$2::date");
+  partes.push("SELECT "+col+"::float AS v, fecha AS f, 'Combustible' AS src FROM comb_movimientos WHERE equipo_id=$1 AND estado='ACTIVO' AND fecha<=$2::date AND "+col+">0");
+  partes.push("SELECT "+col+"::float AS v, fecha AS f, 'Mantención' AS src FROM mant_lecturas WHERE equipo_id=$1 AND fecha<=$2::date AND "+col+">0");
+  let r;
+  try{ r=await pool.query("SELECT v, to_char(f,'YYYY-MM-DD') AS fecha, src FROM ("+partes.join(' UNION ALL ')+") x ORDER BY f DESC, v DESC LIMIT 1",[equipoId,fecha]); }
+  catch(e){ r={rows:[]}; }
+  if(r.rows.length)return {lectura:r.rows[0].v,fecha:r.rows[0].fecha,fuente:r.rows[0].src};
+  try{
+    const e=await pool.query('SELECT '+(medida==='KM'?'kilometraje_actual':'horometro_actual')+'::float AS v FROM equipos WHERE equipo_id=$1',[equipoId]);
+    if(e.rows.length&&e.rows[0].v>0)return {lectura:e.rows[0].v,fecha:null,fuente:'Ficha del equipo'};
+  }catch(e){}
+  return {lectura:null,fecha:null,fuente:null};
+}
+// Uso real de un repuesto entre su instalación y una fecha (hoy, o la del retiro)
+async function repUso(c,hasta){
+  const ini=c.fecha_instalacion, lecIni=repNum(c.lectura_instalacion);
+  const col=c.medida==='KM'?'kilometraje':'horometro';
+  let auto=null,fuente='sin datos',nTerreno=0,ult=null;
+  if(c.medida!=='KM'){
+    const t=await pool.query(`SELECT COALESCE(SUM(CASE
+        WHEN t.fecha=$2::date AND $4::numeric IS NOT NULL THEN GREATEST(0,LEAST(t.horas_trabajadas,t.horometro_final-$4::numeric))
+        WHEN t.fecha=$2::date THEN 0
+        ELSE GREATEST(0,t.horas_trabajadas) END),0)::float AS horas, COUNT(*)::int AS n, to_char(MAX(t.fecha),'YYYY-MM-DD') AS ult
+      FROM terreno_registros t WHERE t.equipo_id=$1 AND t.fecha>=$2::date AND t.fecha<=$3::date`,[c.equipo_id,ini,hasta,lecIni]);
+    nTerreno=t.rows[0].n; ult=t.rows[0].ult;
+    if(nTerreno>0){ auto=t.rows[0].horas; fuente='Terreno'; }
+  }
+  // Lecturas sueltas (combustible / mantención) y la lectura manual: sirven para km y para equipos sin registros de Terreno
+  let lecAct=null;
+  try{
+    const l=await pool.query(`SELECT MAX(v)::float AS v FROM (
+        SELECT MAX(${col}) AS v FROM comb_movimientos WHERE equipo_id=$1 AND estado='ACTIVO' AND fecha>=$2::date AND fecha<=$3::date AND ${col}>0
+        UNION ALL SELECT MAX(${col}) FROM mant_lecturas WHERE equipo_id=$1 AND fecha>=$2::date AND fecha<=$3::date AND ${col}>0) x`,[c.equipo_id,ini,hasta]);
+    lecAct=l.rows[0].v;
+  }catch(e){}
+  const man=repNum(c.lectura_manual);
+  if(man!==null&&c.lectura_manual_fecha&&c.lectura_manual_fecha<=hasta&&(lecAct===null||man>lecAct)){ lecAct=man; }
+  let porLectura=null;
+  if(lecIni!==null&&lecAct!==null&&lecAct>=lecIni)porLectura=lecAct-lecIni;
+  let uso=auto;
+  if(uso===null){ if(porLectura!==null){ uso=porLectura; fuente=(man!==null&&lecAct===man)?'Lectura manual':'Lecturas'; } }
+  else if(porLectura!==null&&man!==null&&lecAct===man&&porLectura>uso){ uso=porLectura; fuente='Lectura manual'; }
+  return {uso:uso===null?0:Math.round(uso*10)/10,fuente:fuente,lectura_actual:lecAct,sin_datos:uso===null,ult_registro:ult};
+}
+function repGarantiaVigente(c,uso,hasta){
+  const gv=repNum(c.garantia_valor),gm=c.garantia_meses===null||c.garantia_meses===undefined?null:parseInt(c.garantia_meses);
+  if(gv===null&&gm===null)return null;                       // sin garantía informada
+  if(gv!==null&&uso>=gv)return false;
+  if(gm!==null&&repMeses(c.fecha_instalacion,hasta)>=gm)return false;
+  return true;
+}
+const REP_SELECT=`SELECT c.control_id,c.oc_id,c.linea_num,c.numero_oc,c.empresa_id,c.proveedor_id,c.equipo_id,c.faena_id,c.descripcion,c.posicion,c.costo::float AS costo,
+    c.medida,c.vida_esperada::float AS vida_esperada,c.garantia_valor::float AS garantia_valor,c.garantia_meses,
+    to_char(c.fecha_instalacion,'YYYY-MM-DD') AS fecha_instalacion,c.lectura_instalacion::float AS lectura_instalacion,
+    c.lectura_manual::float AS lectura_manual,to_char(c.lectura_manual_fecha,'YYYY-MM-DD') AS lectura_manual_fecha,
+    c.estado,to_char(c.fecha_retiro,'YYYY-MM-DD') AS fecha_retiro,c.lectura_retiro::float AS lectura_retiro,c.motivo_retiro,c.obs_retiro,c.uso_final::float AS uso_final,
+    c.garantia_estado,c.garantia_nota,c.observaciones,c.usuario,
+    eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,pr.nombre AS proveedor_nombre,f.nombre AS faena_nombre,e.razon_social AS empresa_nombre
+  FROM rep_control c LEFT JOIN equipos eq ON c.equipo_id=eq.equipo_id LEFT JOIN proveedores pr ON c.proveedor_id=pr.proveedor_id
+  LEFT JOIN faenas f ON c.faena_id=f.faena_id LEFT JOIN empresas e ON c.empresa_id=e.empresa_id`;
+// Completa un registro con el uso real y sus indicadores
+async function repDerivar(c){
+  const hoy=repHoy();
+  if(c.estado==='RETIRADO'){
+    c.uso=c.uso_final===null?0:c.uso_final; c.fuente='Al retirar';
+    c.dias=repDias(c.fecha_instalacion,c.fecha_retiro||hoy);
+  }else{
+    const u=await repUso(c,hoy); c.uso=u.uso; c.fuente=u.fuente; c.sin_datos=u.sin_datos; c.lectura_actual=u.lectura_actual; c.ult_registro=u.ult_registro;
+    c.dias=repDias(c.fecha_instalacion,hoy);
+    c.garantia_vigente=repGarantiaVigente(c,c.uso,hoy);
+  }
+  c.pct=c.vida_esperada>0?Math.round(c.uso/c.vida_esperada*1000)/10:0;
+  c.costo_esperado=c.vida_esperada>0?c.costo/c.vida_esperada:null;      // $ por hora (o km) que promete el fabricante
+  c.costo_real=c.uso>0?c.costo/c.uso:null;                               // $ por hora (o km) con lo que lleva o duró
+  if(c.estado==='RETIRADO')c.situacion=c.uso>=c.vida_esperada?'CUMPLIO':((c.motivo_retiro==='FALLA'||c.motivo_retiro==='DESGASTE')?'NO_CUMPLIO':'NO_EVALUABLE');
+  else c.situacion=c.pct>=100?'SUPERO':(c.pct>=80?'POR_CUMPLIR':'EN_USO');
+  return c;
+}
+async function repListar(where,vals){
+  await repEnsure();
+  const r=await pool.query(REP_SELECT+(where?' WHERE '+where:'')+" ORDER BY (c.estado='EN_USO') DESC, c.fecha_instalacion DESC, c.control_id DESC",vals||[]);
+  const out=[];
+  for(const c of r.rows){ try{ out.push(await repDerivar(c)); }catch(e){ c.uso=0;c.pct=0;c.fuente='error';c.situacion='EN_USO';out.push(c); } }
+  return out;
+}
+function repLimpiar(b){
+  const medida=b.medida==='KM'?'KM':'HORAS';
+  const vida=repNum(b.vida_esperada);
+  if(!b.equipo_id)return {error:'Indica el equipo donde se instala el repuesto'};
+  if(!String(b.descripcion||'').trim())return {error:'Indica la descripción del repuesto'};
+  if(vida===null||vida<=0)return {error:'Indica la vida útil que promete el fabricante (en '+(medida==='KM'?'kilómetros':'horas')+')'};
+  const fi=repIso(b.fecha_instalacion); if(!fi)return {error:'Indica la fecha de instalación'};
+  const lec=repNum(b.lectura_instalacion);
+  if(medida==='KM'&&lec===null)return {error:'Para controlar por kilómetros se necesita el kilometraje del vehículo al instalar'};
+  const gm=b.garantia_meses===''||b.garantia_meses===null||b.garantia_meses===undefined?null:parseInt(b.garantia_meses);
+  return {equipo_id:parseInt(b.equipo_id),faena_id:b.faena_id?parseInt(b.faena_id):null,empresa_id:b.empresa_id?parseInt(b.empresa_id):null,proveedor_id:b.proveedor_id?parseInt(b.proveedor_id):null,
+    descripcion:String(b.descripcion).trim().slice(0,300),costo:repNum(b.costo)||0,medida:medida,vida_esperada:vida,garantia_valor:repNum(b.garantia_valor),garantia_meses:(gm>0?gm:null),
+    fecha_instalacion:fi,lectura_instalacion:lec,observaciones:String(b.observaciones||'').trim()||null};
+}
+
+app.get('/api/repuestos-control', auth, requireModulo('ordenes'), async(req,res)=>{
+  try{
+    const w=[],v=[];
+    if(req.query.estado==='EN_USO'||req.query.estado==='RETIRADO'){v.push(req.query.estado);w.push('c.estado=$'+v.length);}
+    if(req.query.equipo_id){v.push(parseInt(req.query.equipo_id));w.push('c.equipo_id=$'+v.length);}
+    if(req.query.proveedor_id){v.push(parseInt(req.query.proveedor_id));w.push('c.proveedor_id=$'+v.length);}
+    res.json(await repListar(w.join(' AND '),v));
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// Lo que requiere atención: garantías por reclamar, repuestos cerca de cumplir su vida y los que no la cumplieron
+app.get('/api/repuestos-control/resumen', auth, requireModulo('ordenes'), async(req,res)=>{
+  try{
+    const l=await repListar('',[]);
+    res.json({total:l.length,en_uso:l.filter(function(c){return c.estado==='EN_USO';}).length,
+      garantia_pendiente:l.filter(function(c){return c.garantia_estado==='PENDIENTE';}).length,
+      por_cumplir:l.filter(function(c){return c.situacion==='POR_CUMPLIR';}).length,
+      no_cumplieron:l.filter(function(c){return c.situacion==='NO_CUMPLIO';}).length});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// Lectura sugerida (última conocida) del equipo a una fecha, para no digitarla
+app.get('/api/repuestos-control/lectura', auth, requireModulo('ordenes'), async(req,res)=>{
+  try{
+    const f=repIso(req.query.fecha)||repHoy();
+    if(!req.query.equipo_id)return res.json({lectura:null});
+    res.json(await repLectura(parseInt(req.query.equipo_id),f,req.query.medida==='KM'?'KM':'HORAS'));
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// Líneas de una OC + repuestos de esa OC que ya están en control
+app.get('/api/repuestos-control/oc/:oc_id', auth, requireModulo('ordenes'), async(req,res)=>{
+  try{
+    await repEnsure();
+    const o=await pool.query(`SELECT oc.oc_id,oc.numero_oc,oc.estado,oc.empresa_id,oc.proveedor_id,to_char(oc.fecha_emision,'YYYY-MM-DD') AS fecha_emision,to_char(oc.fecha_documento,'YYYY-MM-DD') AS fecha_documento,
+      pr.nombre AS proveedor_nombre,e.razon_social AS empresa_nombre FROM ordenes_compra oc LEFT JOIN proveedores pr ON oc.proveedor_id=pr.proveedor_id LEFT JOIN empresas e ON oc.empresa_id=e.empresa_id WHERE oc.oc_id=$1`,[req.params.oc_id]);
+    if(!o.rows.length)return res.status(404).json({error:'OC no encontrada'});
+    const l=await pool.query(`SELECT d.linea_num,COALESCE(NULLIF(TRIM(d.descripcion),''),p.nombre,'(sin descripción)') AS descripcion,d.cantidad::float AS cantidad,d.precio_unitario::float AS precio_unitario,
+      d.equipo_id,d.faena_id,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,f.nombre AS faena_nombre
+      FROM ordenes_compra_detalle d LEFT JOIN productos p ON d.producto_id=p.producto_id LEFT JOIN equipos eq ON d.equipo_id=eq.equipo_id LEFT JOIN faenas f ON d.faena_id=f.faena_id
+      WHERE d.oc_id=$1 ORDER BY d.linea_num,d.detalle_id`,[req.params.oc_id]);
+    // Sugerencia: lo que se usó la última vez para un repuesto con la misma descripción
+    for(const x of l.rows){
+      const s=await pool.query('SELECT medida,vida_esperada::float AS vida_esperada,garantia_valor::float AS garantia_valor,garantia_meses FROM rep_control WHERE LOWER(TRIM(descripcion))=LOWER(TRIM($1)) ORDER BY control_id DESC LIMIT 1',[x.descripcion]);
+      x.sugerido=s.rows[0]||null;
+    }
+    res.json({oc:o.rows[0],lineas:l.rows,controles:await repListar('c.oc_id=$1',[req.params.oc_id])});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/repuestos-control', auth, requireModulo('ordenes'), async(req,res)=>{
+  try{
+    await repEnsure();
+    const b=req.body||{}; const d=repLimpiar(b); if(d.error)return res.status(400).json({error:d.error});
+    let numero=null,ocId=b.oc_id?parseInt(b.oc_id):null;
+    if(ocId){
+      const o=await pool.query('SELECT numero_oc,empresa_id,proveedor_id FROM ordenes_compra WHERE oc_id=$1',[ocId]);
+      if(!o.rows.length)return res.status(400).json({error:'La OC indicada no existe'});
+      numero=o.rows[0].numero_oc; if(!d.empresa_id)d.empresa_id=o.rows[0].empresa_id; if(!d.proveedor_id)d.proveedor_id=o.rows[0].proveedor_id;
+    }
+    // Varias unidades iguales (ej. 4 neumáticos): un registro por unidad, cada una con su posición
+    let pos=Array.isArray(b.posiciones)?b.posiciones.map(function(x){return String(x||'').trim().slice(0,80);}):[];
+    const n=Math.min(24,Math.max(1,parseInt(b.unidades)||pos.length||1));
+    const ids=[];
+    for(let i=0;i<n;i++){
+      const r=await pool.query(`INSERT INTO rep_control(oc_id,linea_num,numero_oc,empresa_id,proveedor_id,equipo_id,faena_id,descripcion,posicion,costo,medida,vida_esperada,garantia_valor,garantia_meses,fecha_instalacion,lectura_instalacion,observaciones,usuario)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING control_id`,
+        [ocId,b.linea_num?parseInt(b.linea_num):null,numero,d.empresa_id,d.proveedor_id,d.equipo_id,d.faena_id,d.descripcion,pos[i]||(n>1?('Unidad '+(i+1)):null),d.costo,d.medida,d.vida_esperada,d.garantia_valor,d.garantia_meses,d.fecha_instalacion,d.lectura_instalacion,d.observaciones,req.user.email]);
+      ids.push(r.rows[0].control_id);
+    }
+    res.status(201).json({ok:true,ids:ids});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/repuestos-control/:id', auth, requireModulo('ordenes'), async(req,res)=>{
+  try{
+    await repEnsure();
+    const b=req.body||{}; const d=repLimpiar(b); if(d.error)return res.status(400).json({error:d.error});
+    const r=await pool.query(`UPDATE rep_control SET equipo_id=$1,faena_id=$2,descripcion=$3,posicion=$4,costo=$5,medida=$6,vida_esperada=$7,garantia_valor=$8,garantia_meses=$9,fecha_instalacion=$10,lectura_instalacion=$11,observaciones=$12,actualizado_en=NOW()
+      WHERE control_id=$13 RETURNING control_id`,[d.equipo_id,d.faena_id,d.descripcion,String(b.posicion||'').trim().slice(0,80)||null,d.costo,d.medida,d.vida_esperada,d.garantia_valor,d.garantia_meses,d.fecha_instalacion,d.lectura_instalacion,d.observaciones,req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Registro no encontrado'});
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+// Lectura manual (equipos sin registros diarios, o para corregir)
+app.patch('/api/repuestos-control/:id/lectura', auth, requireModulo('ordenes'), async(req,res)=>{
+  try{
+    await repEnsure();
+    const lec=repNum(req.body&&req.body.lectura); if(lec===null||lec<0)return res.status(400).json({error:'Indica la lectura'});
+    const r=await pool.query('UPDATE rep_control SET lectura_manual=$1,lectura_manual_fecha=$2,actualizado_en=NOW() WHERE control_id=$3 RETURNING control_id',[lec,repIso(req.body.fecha)||repHoy(),req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Registro no encontrado'});
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+// Retirar: congela cuánto duró. Si falló o se desgastó dentro de la garantía, queda 'por reclamar'.
+app.post('/api/repuestos-control/:id/retirar', auth, requireModulo('ordenes'), async(req,res)=>{
+  try{
+    const l=await repListar('c.control_id=$1',[req.params.id]);
+    if(!l.length)return res.status(404).json({error:'Registro no encontrado'});
+    const c=l[0]; if(c.estado==='RETIRADO')return res.status(400).json({error:'Este repuesto ya está retirado'});
+    const b=req.body||{};
+    const fr=repIso(b.fecha_retiro)||repHoy();
+    if(fr<c.fecha_instalacion)return res.status(400).json({error:'La fecha de retiro no puede ser anterior a la instalación'});
+    const motivo=REP_MOTIVOS.indexOf(b.motivo_retiro)>=0?b.motivo_retiro:null;
+    if(!motivo)return res.status(400).json({error:'Indica el motivo del retiro'});
+    const lr=repNum(b.lectura_retiro);
+    if(lr!==null&&c.lectura_instalacion!==null&&lr<c.lectura_instalacion)return res.status(400).json({error:'La lectura al retirar ('+lr+') es menor que la de instalación ('+c.lectura_instalacion+')'});
+    // Duración: la diferencia de lecturas si se informaron ambas; si no, lo que registró Terreno hasta ese día
+    let uso;
+    if(lr!==null&&c.lectura_instalacion!==null)uso=Math.round((lr-c.lectura_instalacion)*10)/10;
+    else uso=(await repUso(c,fr)).uso;
+    const enGarantia=repGarantiaVigente(c,uso,fr)===true;
+    const gar=(enGarantia&&(motivo==='FALLA'||motivo==='DESGASTE'))?'PENDIENTE':null;
+    await pool.query("UPDATE rep_control SET estado='RETIRADO',fecha_retiro=$1,lectura_retiro=$2,motivo_retiro=$3,obs_retiro=$4,uso_final=$5,garantia_estado=$6,actualizado_en=NOW() WHERE control_id=$7",
+      [fr,lr,motivo,String(b.obs_retiro||'').trim()||null,uso,gar,req.params.id]);
+    res.json({ok:true,uso_final:uso,en_garantia:enGarantia,garantia_estado:gar});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.post('/api/repuestos-control/:id/reactivar', auth, requireModulo('ordenes'), async(req,res)=>{
+  try{
+    await repEnsure();
+    const r=await pool.query("UPDATE rep_control SET estado='EN_USO',fecha_retiro=NULL,lectura_retiro=NULL,motivo_retiro=NULL,obs_retiro=NULL,uso_final=NULL,garantia_estado=NULL,garantia_nota=NULL,actualizado_en=NOW() WHERE control_id=$1 AND estado='RETIRADO' RETURNING control_id",[req.params.id]);
+    if(!r.rows.length)return res.status(400).json({error:'El repuesto no está retirado'});
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.patch('/api/repuestos-control/:id/garantia', auth, requireModulo('ordenes'), async(req,res)=>{
+  try{
+    await repEnsure();
+    const g=REP_GARANTIA.indexOf(req.body&&req.body.garantia_estado)>=0?req.body.garantia_estado:null;
+    if(!g)return res.status(400).json({error:'Estado de garantía no válido'});
+    const r=await pool.query('UPDATE rep_control SET garantia_estado=$1,garantia_nota=$2,actualizado_en=NOW() WHERE control_id=$3 RETURNING control_id',[g,String((req.body&&req.body.garantia_nota)||'').trim()||null,req.params.id]);
+    if(!r.rows.length)return res.status(404).json({error:'Registro no encontrado'});
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/repuestos-control/:id', auth, requireModulo('ordenes'), async(req,res)=>{
+  try{ await repEnsure(); await pool.query('DELETE FROM rep_control WHERE control_id=$1',[req.params.id]); res.json({ok:true}); }
+  catch(e){res.status(400).json({error:e.message});}
+});
+
 app.get('/api/activos-fijos', auth, async(req,res)=>{
   try{
     const{estado,empresa_id,desde,hasta}=req.query;
