@@ -4716,6 +4716,230 @@ function FinChequesImportModal(p){
 // ═══════════════════════════════════════════════════════════════════════
 // ACTIVOS FIJOS — registro y depreciación
 // ═══════════════════════════════════════════════════════════════════════
+// ══ CONTROL DE DURACIÓN DE REPUESTOS (OC) — vida útil y garantía del fabricante contra el uso real ══
+var REP_MOTIVOS=[{v:'FALLA',l:'Falla prematura'},{v:'DESGASTE',l:'Desgaste (se gastó)'},{v:'PREVENTIVO',l:'Cambio preventivo'},{v:'ACCIDENTE',l:'Accidente o mal uso'},{v:'OTRO',l:'Otro'}];
+var REP_GAR=[{v:'PENDIENTE',l:'Por reclamar',c:'#B91C1C',b:'#FEE2E2'},{v:'RECLAMADA',l:'Reclamada',c:'#92400E',b:'#FEF3C7'},{v:'ACEPTADA',l:'Aceptada',c:'#166534',b:'#DCFCE7'},{v:'RECHAZADA',l:'Rechazada',c:'#475569',b:'#F1F5F9'},{v:'NO_APLICA',l:'No aplica',c:'#475569',b:'#F1F5F9'}];
+function repHoy(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);}
+function repN(n,dec){var x=parseFloat(n);if(isNaN(x))return '—';return x.toLocaleString('es-CL',{minimumFractionDigits:dec||0,maximumFractionDigits:dec||0});}
+function repU(m){return m==='KM'?'km':'h';}
+function repF(f){if(!f)return '—';var p=String(f).slice(0,10).split('-');return p.length===3?p[2]+'/'+p[1]+'/'+p[0]:f;}
+function repPlata(n){var x=parseFloat(n);if(isNaN(x))return '—';return '$'+Math.round(x).toLocaleString('es-CL');}
+// Aviso corto para la pantalla de compras: lo que requiere atención
+function AlertaRepuestos(p){
+  var[d,setD]=useState(null);
+  var puede=(function(){try{var u=JSON.parse(localStorage.getItem('lpz_user')||'null');if(!u)return false;if(u.es_admin||u.rol==='ADMINISTRADOR'||u.rol==='Administrador')return true;return Array.isArray(u.modulos)&&u.modulos.indexOf('ordenes')>=0;}catch(e){return false;}})();
+  useEffect(function(){if(!p.tok||!puede)return;api('/repuestos-control/resumen','GET',null,p.tok).then(setD).catch(function(){});},[p.tok]);
+  if(!d||!(d.garantia_pendiente||d.por_cumplir))return null;
+  return h('div',{style:{background:'#FFF7ED',border:'1px solid #FDBA74',borderLeft:'4px solid #EA580C',borderRadius:8,padding:'9px 12px',marginBottom:12,display:'flex',justifyContent:'space-between',alignItems:'center',gap:10,flexWrap:'wrap'}},
+    h('div',{style:{fontSize:13,color:'#9A3412'}},h('strong',null,'⏱ Duración de repuestos: '),
+      d.garantia_pendiente?h('span',{style:{fontWeight:700,color:'#B91C1C',marginRight:10}},d.garantia_pendiente+' con garantía por reclamar'):null,
+      d.por_cumplir?h('span',null,d.por_cumplir+' cerca de cumplir su vida útil'):null),
+    h('button',{onClick:function(){if(p.onIr)p.onIr();},style:{padding:'5px 12px',background:'#EA580C',color:'#fff',border:'none',borderRadius:5,cursor:'pointer',fontSize:11,fontWeight:600}},'Ver →'));
+}
+// Formulario: poner un repuesto en control (desde una línea de OC, manual, o editar). p: tok, m, base, onClose, onSave
+function RepControlForm(p){
+  var b=p.base||{};var edita=!!b.control_id;
+  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo||String(e.equipo_id)===String(b.equipo_id);});
+  var faenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
+  var un0=edita?1:Math.min(12,Math.max(1,Math.round(parseFloat(b.cantidad)||1)));
+  var[f,setF]=useState({descripcion:b.descripcion||'',equipo_id:b.equipo_id?String(b.equipo_id):'',faena_id:b.faena_id?String(b.faena_id):'',costo:b.costo!=null?String(b.costo):(b.precio_unitario!=null?String(b.precio_unitario):''),
+    medida:b.medida||(b.sugerido&&b.sugerido.medida)||'HORAS',vida_esperada:b.vida_esperada!=null?String(b.vida_esperada):(b.sugerido&&b.sugerido.vida_esperada!=null?String(b.sugerido.vida_esperada):''),
+    garantia_valor:b.garantia_valor!=null?String(b.garantia_valor):(b.sugerido&&b.sugerido.garantia_valor!=null?String(b.sugerido.garantia_valor):''),
+    garantia_meses:b.garantia_meses!=null?String(b.garantia_meses):(b.sugerido&&b.sugerido.garantia_meses!=null?String(b.sugerido.garantia_meses):''),
+    fecha_instalacion:b.fecha_instalacion||b.fecha||repHoy(),lectura_instalacion:b.lectura_instalacion!=null?String(b.lectura_instalacion):'',posicion:b.posicion||'',observaciones:b.observaciones||'',unidades:un0,posiciones:[]});
+  var[sug,setSug]=useState(null);var[err,setErr]=useState('');var[guardando,setGuardando]=useState(false);
+  function u(k,v){setF(function(o){var n=Object.assign({},o);n[k]=v;return n;});}
+  // Lectura sugerida del equipo a la fecha de instalación (Terreno / combustible / mantención)
+  useEffect(function(){
+    if(!f.equipo_id||!f.fecha_instalacion){setSug(null);return;}
+    var vivo=true;
+    api('/repuestos-control/lectura?equipo_id='+f.equipo_id+'&fecha='+f.fecha_instalacion+'&medida='+f.medida,'GET',null,p.tok).then(function(r){if(vivo)setSug(r&&r.lectura!=null?r:null);}).catch(function(){});
+    return function(){vivo=false;};
+  },[f.equipo_id,f.fecha_instalacion,f.medida]);
+  function guardar(){
+    setErr('');
+    if(!f.descripcion.trim()){setErr('Indica la descripción del repuesto');return;}
+    if(!f.equipo_id){setErr('Selecciona el equipo donde se instala');return;}
+    if(!(parseFloat(f.vida_esperada)>0)){setErr('Indica la vida útil que promete el fabricante');return;}
+    var body={oc_id:b.oc_id||null,linea_num:b.linea_num||null,descripcion:f.descripcion,equipo_id:f.equipo_id,faena_id:f.faena_id||null,costo:f.costo,medida:f.medida,vida_esperada:f.vida_esperada,garantia_valor:f.garantia_valor,garantia_meses:f.garantia_meses,
+      fecha_instalacion:f.fecha_instalacion,lectura_instalacion:f.lectura_instalacion,observaciones:f.observaciones,posicion:f.posicion,unidades:f.unidades,posiciones:f.unidades>1?f.posiciones:[f.posicion]};
+    setGuardando(true);
+    (edita?api('/repuestos-control/'+b.control_id,'PUT',body,p.tok):api('/repuestos-control','POST',body,p.tok))
+      .then(function(){setGuardando(false);p.onSave();}).catch(function(e){setGuardando(false);setErr(e.message);});
+  }
+  var un=repU(f.medida),inp={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var L=function(t,c,nota){return h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#475569'}},t),c,nota&&h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:2}},nota));};
+  var nU=parseInt(f.unidades)||1;
+  return h(Modal,{title:(edita?'✏ Editar':'⏱ Controlar duración')+(b.numero_oc?' — OC '+b.numero_oc:''),lg:true,onClose:p.onClose},
+    h('div',{style:{padding:'0 4px'}},
+      err&&h('div',{className:'al al-e',style:{marginBottom:8}},err),
+      h('div',{style:{display:'grid',gridTemplateColumns:'2fr 1fr',gap:10,marginBottom:10}},
+        L('Repuesto *',h('input',{value:f.descripcion,onChange:function(e){u('descripcion',e.target.value);},style:inp,placeholder:'Ej: Neumático 23.5-25'})),
+        L('Costo unitario neto',h('input',{type:'number',value:f.costo,onChange:function(e){u('costo',e.target.value);},style:inp}))),
+      h('div',{style:{display:'grid',gridTemplateColumns:'2fr 1fr',gap:10,marginBottom:10}},
+        L('Equipo donde se instala *',h('select',{value:f.equipo_id,onChange:function(e){u('equipo_id',e.target.value);},style:inp},h('option',{value:''},'— Selecciona —'),equipos.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);}))),
+        L('Faena',h('select',{value:f.faena_id,onChange:function(e){u('faena_id',e.target.value);},style:inp},h('option',{value:''},'—'),faenas.map(function(x){return h('option',{key:x.faena_id,value:x.faena_id},x.nombre);})))),
+      h('div',{style:{background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:6,padding:10,marginBottom:10}},
+        h('div',{style:{fontSize:12,fontWeight:700,color:'#1E3A2D',marginBottom:8}},'Lo que promete el fabricante'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1.1fr 1fr 1fr 1fr',gap:10}},
+          L('Se mide en',h('div',{style:{display:'flex',gap:4}},[{v:'HORAS',l:'Horas (horómetro)'},{v:'KM',l:'Kilómetros'}].map(function(o){var on=f.medida===o.v;return h('button',{key:o.v,type:'button',onClick:function(){u('medida',o.v);},style:{flex:1,padding:'7px 4px',fontSize:11,fontWeight:600,borderRadius:5,cursor:'pointer',border:'1px solid '+(on?'#1E3A2D':'#CBD5E1'),background:on?'#1E3A2D':'#fff',color:on?'#fff':'#475569'}},o.l);}))),
+          L('Vida útil esperada ('+un+') *',h('input',{type:'number',min:0,value:f.vida_esperada,onChange:function(e){u('vida_esperada',e.target.value);},style:inp,placeholder:f.medida==='KM'?'ej. 60000':'ej. 4000'})),
+          L('Garantía ('+un+')',h('input',{type:'number',min:0,value:f.garantia_valor,onChange:function(e){u('garantia_valor',e.target.value);},style:inp,placeholder:'opcional'})),
+          L('Garantía (meses)',h('input',{type:'number',min:0,value:f.garantia_meses,onChange:function(e){u('garantia_meses',e.target.value);},style:inp,placeholder:'opcional'}))),
+        b.sugerido&&!edita&&h('div',{style:{fontSize:10,color:'#1E40AF',marginTop:6}},'Se cargó lo que usaste la última vez para este mismo repuesto. Puedes cambiarlo.'),
+        h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:4}},'La garantía vence por lo que ocurra primero: las '+(f.medida==='KM'?'kilómetros':'horas')+' o los meses.')),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
+        L('Fecha de instalación *',h('input',{type:'date',value:f.fecha_instalacion,onChange:function(e){u('fecha_instalacion',e.target.value);},style:inp}),'Normalmente la fecha de la compra: el repuesto se compra y se instala.'),
+        L((f.medida==='KM'?'Kilometraje':'Horómetro')+' al instalar'+(f.medida==='KM'?' *':''),h('input',{type:'number',min:0,value:f.lectura_instalacion,onChange:function(e){u('lectura_instalacion',e.target.value);},style:inp,placeholder:sug?('sugerido: '+repN(sug.lectura,1)):''}),
+          sug?h('span',null,'Última lectura conocida: ',h('strong',null,repN(sug.lectura,1)+' '+un),' ('+sug.fuente+(sug.fecha?', '+repF(sug.fecha):'')+') ',
+            h('button',{type:'button',onClick:function(){u('lectura_instalacion',String(sug.lectura));},style:{border:'none',background:'transparent',color:'#1E40AF',fontWeight:700,cursor:'pointer',fontSize:10,textDecoration:'underline',padding:0}},'usar')):(f.equipo_id?'No hay lecturas anteriores de este equipo: escríbela si la conoces.':null))),
+      !edita&&h('div',{style:{display:'grid',gridTemplateColumns:'140px 1fr',gap:10,marginBottom:10}},
+        L('Unidades a controlar',h('input',{type:'number',min:1,max:24,value:f.unidades,onChange:function(e){u('unidades',Math.min(24,Math.max(1,parseInt(e.target.value)||1)));},style:inp}),'Una ficha por unidad.'),
+        L(nU>1?'Posición de cada unidad (opcional)':'Posición (opcional)',nU>1?h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(150px,1fr))',gap:6}},Array.from({length:nU}).map(function(_,i){return h('input',{key:i,value:f.posiciones[i]||'',onChange:function(e){var a=f.posiciones.slice();a[i]=e.target.value;u('posiciones',a);},style:inp,placeholder:'Unidad '+(i+1)+': ej. delantero izq.'});})):
+          h('input',{value:f.posicion,onChange:function(e){u('posicion',e.target.value);},style:inp,placeholder:'ej. delantero izquierdo'}))),
+      edita&&h('div',{style:{marginBottom:10}},L('Posición',h('input',{value:f.posicion,onChange:function(e){u('posicion',e.target.value);},style:inp}))),
+      L('Observaciones',h('textarea',{value:f.observaciones,onChange:function(e){u('observaciones',e.target.value);},rows:2,style:Object.assign({},inp,{fontFamily:'inherit'})})),
+      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:12}},
+        h('button',{onClick:p.onClose,style:{padding:'6px 14px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12,background:'#fff'}},'Cancelar'),
+        h(Btn,{onClick:guardar,disabled:guardando},guardando?'Guardando…':(edita?'💾 Guardar':'⏱ Poner en control'+(nU>1?' ('+nU+' unidades)':''))))));
+}
+// Retiro: cuánto duró y por qué salió. p: tok, control, onClose, onSave
+function RepRetiroModal(p){
+  var c=p.control,un=repU(c.medida);
+  var[f,setF]=useState({fecha_retiro:repHoy(),lectura_retiro:'',motivo_retiro:'',obs_retiro:''});
+  var[sug,setSug]=useState(null);var[err,setErr]=useState('');var[res,setRes]=useState(null);
+  function u(k,v){setF(function(o){var n=Object.assign({},o);n[k]=v;return n;});}
+  useEffect(function(){var vivo=true;api('/repuestos-control/lectura?equipo_id='+c.equipo_id+'&fecha='+f.fecha_retiro+'&medida='+c.medida,'GET',null,p.tok).then(function(r){if(vivo)setSug(r&&r.lectura!=null?r:null);}).catch(function(){});return function(){vivo=false;};},[f.fecha_retiro]);
+  var lr=parseFloat(f.lectura_retiro);
+  var dur=(!isNaN(lr)&&c.lectura_instalacion!=null)?(lr-c.lectura_instalacion):c.uso;
+  var pct=c.vida_esperada>0?dur/c.vida_esperada*100:0;
+  function guardar(){setErr('');if(!f.motivo_retiro){setErr('Indica por qué se retira');return;}
+    api('/repuestos-control/'+c.control_id+'/retirar','POST',f,p.tok).then(function(r){if(r.garantia_estado==='PENDIENTE')setRes(r);else p.onSave();}).catch(function(e){setErr(e.message);});}
+  var inp={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var L=function(t,x,nota){return h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#475569'}},t),x,nota&&h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:2}},nota));};
+  if(res)return h(Modal,{title:'⚠ Este repuesto falló dentro de la garantía',onClose:p.onSave},h('div',{style:{padding:'0 4px'}},
+    h('div',{style:{background:'#FEF2F2',border:'1px solid #FECACA',borderRadius:8,padding:14,fontSize:13,color:'#7F1D1D',lineHeight:1.5}},
+      h('div',{style:{fontWeight:700,fontSize:14,marginBottom:6}},c.descripcion+(c.posicion?' — '+c.posicion:'')),
+      'Duró ',h('strong',null,repN(res.uso_final,1)+' '+un),' de las ',h('strong',null,repN(c.vida_esperada)+' '+un),' prometidas, y la garantía cubría ',
+      h('strong',null,(c.garantia_valor!=null?repN(c.garantia_valor)+' '+un:'')+(c.garantia_valor!=null&&c.garantia_meses?' o ':'')+(c.garantia_meses?c.garantia_meses+' meses':'')),'.',
+      h('div',{style:{marginTop:8}},'Quedó marcado como ',h('strong',null,'garantía por reclamar'),' a ',h('strong',null,c.proveedor_nombre||'el proveedor'),c.numero_oc?' (OC '+c.numero_oc+').':'.')),
+    h('div',{style:{display:'flex',justifyContent:'flex-end',marginTop:12}},h(Btn,{onClick:p.onSave},'Entendido'))));
+  return h(Modal,{title:'Retirar repuesto — '+c.descripcion+(c.posicion?' ('+c.posicion+')':''),onClose:p.onClose},
+    h('div',{style:{padding:'0 4px'}},
+      err&&h('div',{className:'al al-e',style:{marginBottom:8}},err),
+      h('div',{style:{background:'#F8FAFC',borderRadius:6,padding:'8px 12px',fontSize:12,marginBottom:10}},(c.equipo_codigo||'')+' '+(c.equipo_nombre||'')+' · instalado el '+repF(c.fecha_instalacion)+(c.lectura_instalacion!=null?' con '+repN(c.lectura_instalacion,1)+' '+un:'')),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10,marginBottom:10}},
+        L('Fecha de retiro *',h('input',{type:'date',value:f.fecha_retiro,onChange:function(e){u('fecha_retiro',e.target.value);},style:inp})),
+        L((c.medida==='KM'?'Kilometraje':'Horómetro')+' al retirar',h('input',{type:'number',min:0,value:f.lectura_retiro,onChange:function(e){u('lectura_retiro',e.target.value);},style:inp,placeholder:sug?('sugerido: '+repN(sug.lectura,1)):'opcional'}),
+          sug?h('span',null,'Última lectura: ',h('strong',null,repN(sug.lectura,1)+' '+un),' ('+sug.fuente+') ',h('button',{type:'button',onClick:function(){u('lectura_retiro',String(sug.lectura));},style:{border:'none',background:'transparent',color:'#1E40AF',fontWeight:700,cursor:'pointer',fontSize:10,textDecoration:'underline',padding:0}},'usar')):'Si la dejas vacía se usa lo registrado en Terreno.')),
+      L('¿Por qué se retira? *',h('div',{style:{display:'flex',gap:5,flexWrap:'wrap'}},REP_MOTIVOS.map(function(m){var on=f.motivo_retiro===m.v;return h('button',{key:m.v,type:'button',onClick:function(){u('motivo_retiro',m.v);},style:{padding:'7px 11px',fontSize:12,fontWeight:600,borderRadius:16,cursor:'pointer',border:'1px solid '+(on?'#1E3A2D':'#CBD5E1'),background:on?'#1E3A2D':'#fff',color:on?'#fff':'#475569'}},m.l);})),'Accidente y cambio preventivo no cuentan contra el fabricante.'),
+      h('div',{style:{margin:'10px 0'}},L('Observación',h('textarea',{value:f.obs_retiro,onChange:function(e){u('obs_retiro',e.target.value);},rows:2,style:Object.assign({},inp,{fontFamily:'inherit'}),placeholder:'Qué se observó al retirarlo'}))),
+      h('div',{style:{background:pct>=100?'#F0FDF4':'#FFFBEB',border:'1px solid '+(pct>=100?'#BBF7D0':'#FDE68A'),borderRadius:6,padding:'8px 12px',fontSize:13}},
+        'Duración: ',h('strong',null,repN(dur,1)+' '+un),' de '+repN(c.vida_esperada)+' '+un+' esperadas (',h('strong',{style:{color:pct>=100?'#166534':'#B45309'}},repN(pct)+'%'),')'),
+      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:12}},
+        h('button',{onClick:p.onClose,style:{padding:'6px 14px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12,background:'#fff'}},'Cancelar'),
+        h(Btn,{v:'d',onClick:guardar},'Registrar retiro'))));
+}
+// Barra de avance del uso contra la vida esperada
+function RepBarra(p){
+  var c=p.c,pct=Math.max(0,c.pct||0),col=c.estado==='RETIRADO'?(c.situacion==='NO_CUMPLIO'?'#DC2626':c.situacion==='CUMPLIO'?'#16A34A':'#94A3B8'):(pct>=100?'#2563EB':pct>=80?'#F59E0B':'#16A34A');
+  return h('div',{style:{minWidth:150}},
+    h('div',{style:{display:'flex',justifyContent:'space-between',fontSize:11}},h('span',{style:{fontWeight:700,color:col}},repN(c.uso,c.medida==='KM'?0:1)+' '+repU(c.medida)),h('span',{style:{color:'#64748B'}},'de '+repN(c.vida_esperada)+' · '+repN(pct)+'%')),
+    h('div',{style:{height:7,background:'#E2E8F0',borderRadius:4,overflow:'hidden',marginTop:3}},h('div',{style:{width:Math.min(100,pct)+'%',height:'100%',background:col}})),
+    c.estado!=='RETIRADO'&&h('div',{style:{fontSize:9,color:c.sin_datos?'#B45309':'#94A3B8',marginTop:2}},c.sin_datos?'Sin lecturas todavía':('Fuente: '+c.fuente+(c.ult_registro?' · al '+repF(c.ult_registro):''))));
+}
+// Repuestos en control de una OC: líneas para marcar + los ya marcados. p: tok, m, oc, onClose
+function RepOCModal(p){
+  var[d,setD]=useState(null);var[err,setErr]=useState('');var[form,setForm]=useState(null);
+  function cargar(){api('/repuestos-control/oc/'+p.oc.oc_id,'GET',null,p.tok).then(setD).catch(function(e){setErr(e.message);});}
+  useEffect(cargar,[]);
+  if(form)return h(RepControlForm,{tok:p.tok,m:p.m,base:form,onClose:function(){setForm(null);},onSave:function(){setForm(null);cargar();}});
+  return h(Modal,{title:'⏱ Duración de repuestos — OC '+(p.oc.numero_oc||''),xl:true,onClose:p.onClose},
+    h('div',{style:{padding:'0 4px'}},
+      err&&h('div',{className:'al al-e'},err),
+      !d?h('div',{style:{padding:20,color:'#94A3B8'}},'Cargando…'):h('div',null,
+        h('div',{style:{fontSize:12,color:'#64748B',marginBottom:10}},(d.oc.proveedor_nombre||'')+' · '+repF(d.oc.fecha_documento||d.oc.fecha_emision)+'. Elige qué líneas de esta compra quieres controlar: el sistema medirá cuánto dura cada repuesto contra lo que promete el fabricante.'),
+        h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:12,marginBottom:14}},
+          h('thead',null,h('tr',{style:{background:'#F1F5F9',textAlign:'left'}},['Línea','Cant.','Precio unit.','Equipo',''].map(function(x){return h('th',{key:x,style:{padding:'6px 8px'}},x);}))),
+          h('tbody',null,d.lineas.map(function(l,i){var ya=d.controles.filter(function(c){return c.linea_num===l.linea_num;}).length;
+            return h('tr',{key:i,style:{borderTop:'1px solid #F1F5F9'}},
+              h('td',{style:{padding:'6px 8px',fontWeight:600}},l.descripcion),
+              h('td',{style:{padding:'6px 8px'}},repN(l.cantidad,l.cantidad%1?2:0)),
+              h('td',{style:{padding:'6px 8px'}},repPlata(l.precio_unitario)),
+              h('td',{style:{padding:'6px 8px'}},l.equipo_codigo?(l.equipo_codigo+' — '+l.equipo_nombre):h('span',{style:{color:'#B45309'}},'sin equipo: se elige al controlar')),
+              h('td',{style:{padding:'6px 8px',textAlign:'right',whiteSpace:'nowrap'}},ya>0&&h('span',{style:{fontSize:10,color:'#166534',fontWeight:700,marginRight:8}},'✓ '+ya+' en control'),
+                h('button',{className:'btn btn-blue btn-xs',onClick:function(){setForm({oc_id:d.oc.oc_id,numero_oc:d.oc.numero_oc,linea_num:l.linea_num,descripcion:l.descripcion,cantidad:l.cantidad,precio_unitario:l.precio_unitario,equipo_id:l.equipo_id,faena_id:l.faena_id,fecha:d.oc.fecha_documento||d.oc.fecha_emision,sugerido:l.sugerido});}},'⏱ Controlar')));}))),
+        d.controles.length>0&&h('div',null,h('div',{style:{fontSize:12,fontWeight:700,marginBottom:6}},'En control de esta compra ('+d.controles.length+')'),
+          d.controles.map(function(c){return h('div',{key:c.control_id,style:{display:'flex',gap:12,alignItems:'center',padding:'6px 8px',border:'1px solid #E2E8F0',borderRadius:6,marginBottom:5}},
+            h('div',{style:{flex:1,minWidth:0}},h('div',{style:{fontSize:12,fontWeight:600}},c.descripcion+(c.posicion?' — '+c.posicion:'')),h('div',{style:{fontSize:10,color:'#64748B'}},(c.equipo_codigo||'')+' · instalado '+repF(c.fecha_instalacion)+(c.estado==='RETIRADO'?' · retirado '+repF(c.fecha_retiro):''))),
+            h(RepBarra,{c:c}));})),
+        h('div',{style:{display:'flex',justifyContent:'flex-end',marginTop:12}},h('button',{onClick:p.onClose,style:{padding:'6px 14px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12,background:'#fff'}},'Cerrar')))));
+}
+function RepuestosControlView(p){
+  var[rows,setRows]=useState([]);var[cargando,setCargando]=useState(false);var[err,setErr]=useState('');
+  var[fEst,setFEst]=useState('EN_USO');var[fEq,setFEq]=useState('');var[fProv,setFProv]=useState('');var[q,setQ]=useState('');
+  var[form,setForm]=useState(null);var[retiro,setRetiro]=useState(null);
+  function load(){setCargando(true);api('/repuestos-control','GET',null,p.tok).then(function(r){setRows(Array.isArray(r)?r:[]);setErr('');}).catch(function(e){setErr(e.message);}).finally(function(){setCargando(false);});}
+  useEffect(load,[p.tok]);
+  var eqs={},provs={};rows.forEach(function(c){if(c.equipo_id)eqs[c.equipo_id]=(c.equipo_codigo||'')+' — '+(c.equipo_nombre||'');if(c.proveedor_id)provs[c.proveedor_id]=c.proveedor_nombre||'';});
+  var atencion=function(c){return c.garantia_estado==='PENDIENTE'||c.situacion==='POR_CUMPLIR';};
+  var vis=rows.filter(function(c){
+    if(fEst==='ATENCION'){if(!atencion(c))return false;}else if(fEst&&c.estado!==fEst)return false;
+    if(fEq&&String(c.equipo_id)!==String(fEq))return false;
+    if(fProv&&String(c.proveedor_id)!==String(fProv))return false;
+    if(q&&((c.descripcion||'')+' '+(c.posicion||'')+' '+(c.numero_oc||'')+' '+(c.equipo_codigo||'')+' '+(c.proveedor_nombre||'')).toUpperCase().indexOf(q.toUpperCase())<0)return false;
+    return true;});
+  var k={uso:rows.filter(function(c){return c.estado==='EN_USO';}).length,porc:rows.filter(function(c){return c.situacion==='POR_CUMPLIR';}).length,gar:rows.filter(function(c){return c.garantia_estado==='PENDIENTE';}).length,noc:rows.filter(function(c){return c.situacion==='NO_CUMPLIO';}).length};
+  function accion(ruta,metodo,body,conf){if(conf&&!confirm(conf))return;api(ruta,metodo,body||null,p.tok).then(load).catch(function(e){alert(e.message);});}
+  function lecturaManual(c){var v=prompt((c.medida==='KM'?'Kilometraje':'Horómetro')+' actual de '+(c.equipo_codigo||'el equipo')+':',c.lectura_actual!=null?String(c.lectura_actual):'');if(v===null||v==='')return;accion('/repuestos-control/'+c.control_id+'/lectura','PATCH',{lectura:v,fecha:repHoy()});}
+  function excel(){exportXLSX(vis,[{header:'Repuesto',value:function(c){return c.descripcion;}},{header:'Posición',value:function(c){return c.posicion||'';}},{header:'OC',value:function(c){return c.numero_oc||'';}},{header:'Proveedor',value:function(c){return c.proveedor_nombre||'';}},
+    {header:'Equipo',value:function(c){return (c.equipo_codigo||'')+' '+(c.equipo_nombre||'');}},{header:'Faena',value:function(c){return c.faena_nombre||'';}},{header:'Instalado',value:function(c){return c.fecha_instalacion;}},{header:'Lectura instalación',value:function(c){return c.lectura_instalacion;}},
+    {header:'Medida',value:function(c){return c.medida==='KM'?'Kilómetros':'Horas';}},{header:'Vida esperada',value:function(c){return c.vida_esperada;}},{header:'Uso real',value:function(c){return c.uso;}},{header:'% de la vida',value:function(c){return c.pct;}},
+    {header:'Costo',value:function(c){return c.costo;}},{header:'Costo esperado por h/km',value:function(c){return c.costo_esperado!=null?Math.round(c.costo_esperado*100)/100:'';}},{header:'Costo real por h/km',value:function(c){return c.costo_real!=null?Math.round(c.costo_real*100)/100:'';}},
+    {header:'Estado',value:function(c){return c.estado==='RETIRADO'?'Retirado':'En uso';}},{header:'Retirado',value:function(c){return c.fecha_retiro||'';}},{header:'Motivo',value:function(c){var m=REP_MOTIVOS.find(function(x){return x.v===c.motivo_retiro;});return m?m.l:'';}},
+    {header:'Garantía',value:function(c){var g=REP_GAR.find(function(x){return x.v===c.garantia_estado;});return g?g.l:(c.garantia_vigente===true?'Vigente':c.garantia_vigente===false?'Vencida':'');}},{header:'Observación',value:function(c){return (c.obs_retiro||c.observaciones||'');}}],'duracion_repuestos_'+repHoy());}
+  var kpi=function(n,l,col,est){return h('div',{className:'card',onClick:function(){setFEst(est);},style:{textAlign:'center',borderLeft:'4px solid '+col,cursor:'pointer',flex:'1 1 150px'}},h('div',{style:{fontSize:22,fontWeight:700,color:col}},n),h('div',{style:{fontSize:11,color:'#64748B'}},l));};
+  var selS={padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
+  return h('div',null,
+    h('div',{className:'al al-i',style:{marginBottom:12,fontSize:12}},'Aquí se sigue cuánto duran los repuestos que decides controlar. Se marcan desde ',h('strong',null,'Órdenes de Compra, botón ⏱ de cada orden'),'. Las horas de uso se toman solas de los registros diarios de Terreno; los kilómetros, de las cargas de combustible.'),
+    err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+    h('div',{style:{display:'flex',gap:10,flexWrap:'wrap',marginBottom:14}},kpi(k.uso,'En uso','#16A34A','EN_USO'),kpi(k.porc,'Cerca de cumplir su vida','#F59E0B','ATENCION'),kpi(k.gar,'Garantía por reclamar','#DC2626','ATENCION'),kpi(k.noc,'No cumplieron lo prometido','#7F1D1D','RETIRADO')),
+    h('div',{className:'card',style:{padding:10,marginBottom:10,background:'#F8FAFC',display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}},
+      h('select',{value:fEst,onChange:function(e){setFEst(e.target.value);},style:selS},h('option',{value:'EN_USO'},'En uso'),h('option',{value:'ATENCION'},'Requieren atención'),h('option',{value:'RETIRADO'},'Retirados'),h('option',{value:''},'Todos')),
+      h('select',{value:fEq,onChange:function(e){setFEq(e.target.value);},style:Object.assign({},selS,{maxWidth:220})},h('option',{value:''},'Equipo: todos'),Object.keys(eqs).map(function(id){return h('option',{key:id,value:id},eqs[id]);})),
+      h('select',{value:fProv,onChange:function(e){setFProv(e.target.value);},style:Object.assign({},selS,{maxWidth:220})},h('option',{value:''},'Proveedor: todos'),Object.keys(provs).map(function(id){return h('option',{key:id,value:id},provs[id]);})),
+      h('input',{value:q,onChange:function(e){setQ(e.target.value);},placeholder:'🔍 Buscar repuesto, OC, equipo…',style:Object.assign({},selS,{flex:1,minWidth:180})}),
+      h('span',{style:{fontSize:11,color:'#64748B'}},cargando?'cargando…':vis.length+' de '+rows.length),
+      h(Btn,{v:'a',sm:true,onClick:excel,disabled:!vis.length},'⬇ Excel'),
+      h(Btn,{sm:true,onClick:function(){setForm({});}},'+ Registrar manual')),
+    h('div',{className:'card'},h(TBL,{cols:[
+      {lbl:'Repuesto',render:function(c){return h('div',null,h('div',{style:{fontSize:12,fontWeight:600}},c.descripcion),h('div',{style:{fontSize:10,color:'#64748B'}},(c.posicion?c.posicion+' · ':'')+(c.numero_oc?'OC '+c.numero_oc:'registro manual')+(c.proveedor_nombre?' · '+c.proveedor_nombre:'')));}},
+      {lbl:'Equipo',render:function(c){return h('div',null,h('div',{style:{fontSize:12,fontWeight:600}},c.equipo_codigo||'—'),h('div',{style:{fontSize:10,color:'#64748B'}},c.faena_nombre||''));}},
+      {lbl:'Instalado',render:function(c){return h('div',null,repF(c.fecha_instalacion),h('div',{style:{fontSize:10,color:'#64748B'}},(c.lectura_instalacion!=null?repN(c.lectura_instalacion,1)+' '+repU(c.medida)+' · ':'')+c.dias+' días'));}},
+      {lbl:'Uso real / vida esperada',render:function(c){return h(RepBarra,{c:c});}},
+      {lbl:'Costo por h o km',r:true,render:function(c){
+        // En uso: solo el costo que promete el fabricante (el real recién tiene sentido cuando el repuesto termina su vida)
+        if(c.estado!=='RETIRADO')return h('div',null,h('div',{style:{fontSize:12,fontWeight:600,color:'#475569'}},c.costo_esperado!=null?repPlata(c.costo_esperado):'—'),h('div',{style:{fontSize:10,color:'#94A3B8'}},'esperado · el real al retirar'));
+        var peor=c.costo_real!=null&&c.costo_esperado!=null&&c.costo_real>c.costo_esperado*1.05;
+        return h('div',null,h('div',{style:{fontSize:12,fontWeight:700,color:peor?'#B91C1C':'#166534'}},c.costo_real!=null?repPlata(c.costo_real):'—'),h('div',{style:{fontSize:10,color:'#64748B'}},'esperado '+(c.costo_esperado!=null?repPlata(c.costo_esperado):'—')));}},
+      {lbl:'Garantía',render:function(c){
+        if(c.estado==='RETIRADO'){var g=REP_GAR.find(function(x){return x.v===c.garantia_estado;});if(!g)return h('span',{style:{fontSize:11,color:'#94A3B8'}},'—');
+          return h('select',{value:c.garantia_estado,onChange:function(e){accion('/repuestos-control/'+c.control_id+'/garantia','PATCH',{garantia_estado:e.target.value,garantia_nota:c.garantia_nota||''});},style:{padding:'3px 6px',fontSize:11,fontWeight:700,borderRadius:10,border:'1px solid '+g.c,background:g.b,color:g.c}},REP_GAR.map(function(x){return h('option',{key:x.v,value:x.v},x.l);}));}
+        if(c.garantia_vigente===null||c.garantia_vigente===undefined)return h('span',{style:{fontSize:11,color:'#94A3B8'}},'sin garantía');
+        return h('div',null,h('span',{style:{fontSize:11,fontWeight:700,color:c.garantia_vigente?'#166534':'#94A3B8'}},c.garantia_vigente?'✓ Vigente':'Vencida'),h('div',{style:{fontSize:10,color:'#64748B'}},(c.garantia_valor!=null?repN(c.garantia_valor)+' '+repU(c.medida):'')+(c.garantia_valor!=null&&c.garantia_meses?' / ':'')+(c.garantia_meses?c.garantia_meses+' meses':'')));}},
+      {lbl:'Estado',render:function(c){
+        if(c.estado==='RETIRADO'){var m=REP_MOTIVOS.find(function(x){return x.v===c.motivo_retiro;});return h('div',null,h(Bg,{c:c.situacion==='NO_CUMPLIO'?'r':c.situacion==='CUMPLIO'?'g':'gray'},c.situacion==='NO_CUMPLIO'?'no cumplió':c.situacion==='CUMPLIO'?'cumplió':'retirado'),h('div',{style:{fontSize:10,color:'#64748B',marginTop:2},title:c.obs_retiro||''},repF(c.fecha_retiro)+(m?' · '+m.l:'')));}
+        return h(Bg,{c:c.situacion==='SUPERO'?'b':c.situacion==='POR_CUMPLIR'?'y':'g'},c.situacion==='SUPERO'?'superó lo esperado':c.situacion==='POR_CUMPLIR'?'cerca de cumplir':'en uso');}},
+      {lbl:'',render:function(c){return h('div',{style:{display:'flex',gap:3,flexWrap:'wrap'}},
+        c.estado==='EN_USO'&&h('button',{className:'btn btn-d btn-xs',onClick:function(){setRetiro(c);},title:'Registrar que el repuesto se retiró o falló'},'Retirar'),
+        c.estado==='EN_USO'&&h('button',{className:'btn btn-blue btn-xs',onClick:function(){lecturaManual(c);},title:'Anotar una lectura a mano (equipos sin registros diarios)'},'📟'),
+        c.estado==='RETIRADO'&&h('button',{className:'btn btn-blue btn-xs',onClick:function(){accion('/repuestos-control/'+c.control_id+'/reactivar','POST',{},'¿Deshacer el retiro y dejarlo de nuevo en uso?');},title:'Deshacer el retiro'},'↩'),
+        h('button',{className:'btn btn-g btn-xs',onClick:function(){setForm(c);},title:'Editar'},'✏'),
+        h('button',{className:'btn btn-xs',onClick:function(){accion('/repuestos-control/'+c.control_id,'DELETE',null,'¿Quitar "'+c.descripcion+'" del control? No afecta la orden de compra.');},style:{background:'none',border:'none',color:'#94A3B8',cursor:'pointer'},title:'Quitar del control'},'🗑'));}}
+    ],rows:vis,empty:rows.length?'Ningún repuesto con este filtro':'Aún no hay repuestos en control. Márcalos desde Órdenes de Compra con el botón ⏱.'})),
+    form&&h(RepControlForm,{tok:p.tok,m:p.m,base:form,onClose:function(){setForm(null);},onSave:function(){setForm(null);load();}}),
+    retiro&&h(RepRetiroModal,{tok:p.tok,control:retiro,onClose:function(){setRetiro(null);},onSave:function(){setRetiro(null);load();}}));
+}
 function ActivosFijosView(p){
   const[activos,setActivos]=useState([]);
   const[loading,setLoading]=useState(false);
@@ -8985,6 +9209,7 @@ function OCView(p){
   }
   useEffect(function(){load2();},[p.tok,filtEst,filtProv,filtDesde,filtHasta,filtEmp,filtSubcat,filtFaena,filtEquipo,filtNdoc,filtFactura,filtNoc,filtDocResp]);
   var esAdminOC=!!(p.user&&(p.user.es_admin||p.user.rol==='ADMINISTRADOR'||p.user.rol==='Administrador'));
+  var[repOC,setRepOC]=useState(null); // OC abierta en '⏱ Duración de repuestos'
   function anular(id){
     var motivo=window.prompt('Anular esta OC (queda registrada como ANULADA, con auditoría).\n\nMotivo de la anulación (obligatorio):');
     if(motivo===null)return;
@@ -9127,6 +9352,7 @@ function OCView(p){
   return h('div',null,
     h(AlertaCalendario,{tok:p.tok,onIr:function(){p.setView&&p.setView('calendario');}}),
     h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.setView&&p.setView('solicitudes');}}),
+    h(AlertaRepuestos,{tok:p.tok,onIr:function(){p.setView&&p.setView('oc-repuestos');}}),
     h(AlertaContratos,{tok:p.tok,onIr:function(){p.setView&&p.setView('contratos');}}),
     h('div',{style:{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap',alignItems:'center'}},
       h(Btn,{onClick:function(){setFormOC({});}},'+ Nueva OC'),
@@ -9184,6 +9410,7 @@ function OCView(p){
       {lbl:h(SortHdr,{field:'total',label:'Total'}),r:true,mono:true,render:function(r){var isNC=(r.tipo_doc_nombre||'').toLowerCase().indexOf('cr')>=0;return h('strong',{style:{color:isNC?'#DC2626':'inherit'}},CLP(r.total));}},
       {lbl:'Acciones',render:function(r){
         return h('div',{style:{display:'flex',gap:3,flexWrap:'wrap'}},
+          r.estado!=='ANULADA'&&h('button',{className:'btn btn-blue btn-xs',onClick:function(){setRepOC(r);},title:'Controlar cuánto duran los repuestos de esta compra (horas o km contra lo que promete el fabricante)'},'⏱'),
           r.estado==='PENDIENTE'&&h('button',{className:'btn btn-g btn-xs',onClick:function(){
             api('/ordenes-compra/'+r.oc_id,'GET',null,p.tok).then(function(full){setFormOC(full);}).catch(function(ex){alert('Error al cargar OC: '+ex.message);});
           }},null,'✏'),
@@ -9276,6 +9503,7 @@ function OCView(p){
         })
       )),
     formOC!==null&&h(OCFormModal,{key:'ocform-'+(formOC.oc_id||'new'),tok:p.tok,oc:formOC,m:p.m,onClose:function(){setFormOC(null);},onSave:function(){setFormOC(null);load2();}}),
+    repOC&&h(RepOCModal,{tok:p.tok,m:p.m,oc:repOC,onClose:function(){setRepOC(null);}}),
     cerrarOC&&h(OCCerrarModal,{tok:p.tok,oc:cerrarOC,m:p.m,onClose:function(){setCerrarOC(null);},onSave:function(){setCerrarOC(null);load2();}}),
     recibirOC&&h(OCRecibirModal,{tok:p.tok,oc:recibirOC,m:p.m,onClose:function(){setRecibirOC(null);},onSave:function(){setRecibirOC(null);load2();}}),
     reabrirOC&&h(OCReabrirModal,{tok:p.tok,oc:reabrirOC,onClose:function(){setReabrirOC(null);},onSave:function(){setReabrirOC(null);load2();}}),
@@ -27091,7 +27319,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','calendario':'Calendario — Tareas y recordatorios','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','calendario':'Calendario — Tareas y recordatorios','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','oc-repuestos':'Duración de Repuestos — vida útil y garantía contra el uso real','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -27739,7 +27967,7 @@ function App(){
   function canSee(mod){if(!user)return false;if(user.es_admin)return true;if(!user.modulos||user.modulos.length===0)return false;return user.modulos.indexOf(mod)>=0;}
   // Mapa view → módulo requerido. Si la view no está aquí, no requiere módulo.
   var VIEW_MOD={
-    'ordenes':'ordenes','oc-guias':'ordenes','dte-recibidos':'ordenes','bandeja-dte-oc':'ordenes','compra-auditoria':'ordenes','oc-libro-productos':'ordenes',
+    'ordenes':'ordenes','oc-guias':'ordenes','oc-repuestos':'ordenes','dte-recibidos':'ordenes','bandeja-dte-oc':'ordenes','compra-auditoria':'ordenes','oc-libro-productos':'ordenes',
     'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-auditoria':'combustibles','comb-rendimientos':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
     'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-auditoria':'inventario','inv-reportes':'inventario',
     'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion','mant-planes':'mantencion','mant-vencimientos':'mantencion','mant-docs':'mantencion','mant-programacion':'mantencion','mant-avisos':'mantencion',
@@ -27895,7 +28123,7 @@ function App(){
       h('div',{className:'sb-logo'},h('h1',null,'Empresas Poo'),h('p',null,'Sistema de Gestión')),
       h('div',{style:{padding:'4px 0',flex:1}},
         canSee('ordenes')&&grpHdr('oc','ORDENES DE COMPRA'),
-        canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true),navI('oc-guias','📋','Guías de Despacho',true),navI('dte-recibidos','📥','DTE Recibidos',true),navI('bandeja-dte-oc','🔗','Bandeja DTE-OC',true),navI('compra-auditoria','🔍','Auditoría Compras',true),navI('oc-libro-productos','📒','Libro Mayor Productos',true)),
+        canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true),navI('oc-guias','📋','Guías de Despacho',true),navI('oc-repuestos','⏱','Duración de Repuestos',true),navI('dte-recibidos','📥','DTE Recibidos',true),navI('bandeja-dte-oc','🔗','Bandeja DTE-OC',true),navI('compra-auditoria','🔍','Auditoría Compras',true),navI('oc-libro-productos','📒','Libro Mayor Productos',true)),
         canSee('ordenes')&&h('div',{className:'sb-sep'}),
         canSee('combustibles')&&grpHdr('comb','CONTROL DE COMBUSTIBLES'),
         canSee('combustibles')&&grp.comb&&h('div',null,
@@ -28059,6 +28287,7 @@ function App(){
           view==='compra-auditoria'&&h(CompraAuditoriaView,{tok,m}),
           view==='oc-libro-productos'&&h(LibroProductosView,{tok,m}),
           view==='oc-guias'&&h(OCGuiasView,{tok,m}),
+          view==='oc-repuestos'&&h(RepuestosControlView,{tok,m,user}),
           view==='dte-recibidos'&&h(DTERecibidosView,{tok,m,user,setView}),
           view==='bandeja-dte-oc'&&h(BandejaDTEOC,{tok,m,user,setView}),
           view==='rendiciones'&&h(RendicionesView,{tok,m}),
