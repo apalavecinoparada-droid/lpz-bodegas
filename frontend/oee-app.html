@@ -19909,6 +19909,105 @@ function gestExportar(){
     }catch(e){}
   }
   try{ new MutationObserver(function(){ postH(); ajModal(); }).observe(document.body,{subtree:true,childList:true,attributes:true}); }catch(e){}
+  // ── Dictado por voz robusto (contrato ERP, 2026-10-05) ── reemplaza rnDictar del OEE ──
+  // El rnDictar original fallaba en la práctica: (1) en Android Chrome con continuous=true cada resultado repite todo lo ya
+  // dicho y el texto salía duplicado y pegado; (2) el navegador corta el reconocimiento tras cada pausa y el botón se apagaba
+  // solo; (3) solo avisaba 2 de los errores posibles (sin micrófono, idioma no instalado, etc. fallaban en silencio).
+  // Aquí: sesiones que se reanudan solas hasta apretar Detener, texto sin repeticiones, respaldo de idioma y aviso bajo el campo.
+  (function(){
+    var UA=navigator.userAgent||'';
+    var IOS=/iPhone|iPad|iPod/i.test(UA)||(navigator.maxTouchPoints>1&&/Macintosh/.test(UA));
+    var MOVIL=IOS||/Android/i.test(UA);
+    var LANGS=['es-CL','es-ES','es-US'];
+    var ses=null;
+    function nota(ta,msg,err){
+      try{
+        var n=document.getElementById(ta.id+'-dict');
+        if(!msg){ if(n) n.style.display='none'; return; }
+        if(!n){ n=document.createElement('div'); n.id=ta.id+'-dict'; n.style.cssText='font-size:11px;margin-top:3px;line-height:1.3;'; ta.parentNode.insertBefore(n,ta.nextSibling); }
+        n.style.display=''; n.style.color=err?'#b83a2e':'#146c43'; n.style.fontWeight=err?'700':'400'; n.textContent=msg;
+      }catch(e){}
+    }
+    function unir(base,t){
+      base=String(base||'').replace(/\s+$/,''); t=String(t||'').replace(/\s+/g,' ').replace(/^ | $/g,'');
+      if(!t) return base;
+      if(!base) return t.charAt(0).toUpperCase()+t.slice(1);
+      return base+' '+t;
+    }
+    // Une los resultados sin repetir: si un resultado empieza con el anterior (Android acumula), lo reemplaza
+    function textoDe(ev){
+      var partes=[];
+      for(var i=0;i<ev.results.length;i++){
+        var tr=(ev.results[i][0]&&ev.results[i][0].transcript||'').replace(/\s+/g,' ').replace(/^ | $/g,'');
+        if(!tr) continue;
+        var u=partes.length?partes[partes.length-1]:null;
+        if(u!==null&&tr.toLowerCase().indexOf(u.toLowerCase())===0) partes[partes.length-1]=tr;
+        else if(u!==null&&u.toLowerCase().indexOf(tr.toLowerCase())===0){ /* repetido más corto: se ignora */ }
+        else partes.push(tr);
+      }
+      return partes.join(' ');
+    }
+    function mensajeError(c){
+      if(c==='not-allowed'||c==='service-not-allowed'){
+        if(IOS&&navigator.standalone) return 'En iPhone la app instalada no puede usar este dictado. Usa el micrófono del teclado (junto a la barra espaciadora).';
+        return 'El micrófono está bloqueado para este sitio. Toca el candado de la barra de direcciones, permite el Micrófono y recarga la página.';
+      }
+      if(c==='audio-capture') return 'No se encontró un micrófono en este equipo (o lo está usando otra aplicación).';
+      if(c==='network') return 'El dictado necesita internet: usa el servicio de voz del navegador.';
+      if(c==='language-not-supported') return 'Este equipo no tiene el dictado en español. En el celular puedes usar el micrófono del teclado.';
+      return 'No se pudo dictar ('+c+'). Intenta de nuevo o usa el micrófono del teclado.';
+    }
+    function terminar(s,msg,err){
+      s.activo=false;
+      try{ s.btn.classList.remove('on'); s.btn.innerHTML=s.txtBtn; }catch(e){}
+      if(window.RN_REC===s.rec) window.RN_REC=null;
+      if(ses===s) ses=null;
+      nota(s.ta,msg||'',err);
+    }
+    function arrancar(s){
+      var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+      var rec=new SR(); rec.lang=LANGS[s.lang]; rec.continuous=!MOVIL; rec.interimResults=true; rec.maxAlternatives=1; rec._btn=s.btn;
+      var base=s.ta.value, oyo=false, fatal=null;
+      rec.onresult=function(ev){
+        var tx=textoDe(ev);
+        if(tx){ oyo=true; s.ta.value=unir(base,tx); try{ s.ta.dispatchEvent(new Event('input',{bubbles:true})); }catch(e){} }
+      };
+      rec.onerror=function(e){ var c=e&&e.error; if(c==='no-speech'||c==='aborted') return; fatal=c||'error'; };
+      rec.onend=function(){
+        if(s.rec!==rec) return;
+        // Detenido por el usuario, por el OEE (cerrar formulario/modal pone RN_REC=null) o porque el campo ya no existe
+        if(!s.activo||window.RN_REC!==rec||!document.body.contains(s.ta)){ terminar(s,''); return; }
+        if(fatal==='language-not-supported'&&s.lang<LANGS.length-1){ s.lang++; fatal=null; }
+        else if(fatal){ terminar(s,mensajeError(fatal),true); return; }
+        else {
+          s.vacias=oyo?0:s.vacias+1;
+          if(s.vacias>=2){ terminar(s,'Dictado detenido: no se escuchó nada. Toca Dictar para seguir.',false); return; }
+        }
+        try{ arrancar(s); }catch(e){ terminar(s,oyo?'':'No se pudo reanudar el dictado. Toca Dictar para seguir.',!oyo); }
+      };
+      s.rec=rec; window.RN_REC=rec;
+      rec.start();
+    }
+    window.rnDictar=function(id,btn){
+      var ta=document.getElementById(id); if(!ta) return;
+      var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+      if(ses){
+        var prev=ses, mismo=(prev.btn===btn);
+        prev.activo=false; try{ prev.rec.stop(); }catch(e){}
+        terminar(prev,'');
+        if(mismo) return;
+      }
+      if(!SR){
+        nota(ta,(IOS&&navigator.standalone)?'En iPhone la app instalada no permite dictar aquí. Usa el micrófono del teclado (junto a la barra espaciadora).':'Este navegador no permite dictar. Usa Chrome o Edge; en el celular también sirve el micrófono del teclado.',true);
+        return;
+      }
+      var s={ta:ta,btn:btn,txtBtn:btn.innerHTML,activo:true,vacias:0,lang:0,rec:null};
+      try{ arrancar(s); }
+      catch(e){ terminar(s,'No se pudo iniciar el micrófono: '+(e&&e.message||e),true); return; }
+      ses=s; btn.classList.add('on'); btn.innerHTML='&#9209; Detener';
+      nota(ta,'Escuchando… habla ahora. Toca Detener para terminar.',false);
+    };
+  })();
 })();
 </script>
 </body>
