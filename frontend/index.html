@@ -22231,7 +22231,7 @@ function CalPrefsModal(p){
 }
 // ── Calendario: importar tareas desde Excel / CSV / texto pegado (ej. vencimientos SAT) ──
 var CAL_IMP_COLS={fecha:['fecha','vence','vencimiento','fecha vencimiento','fecha_vencimiento','dia','día'],titulo:['titulo','título','tarea','asunto','nombre','evento'],descripcion:['descripcion','descripción','detalle','notas','nota','observacion','observación'],
-  area:['area','área'],empresa:['empresa'],responsable:['responsable','encargado','usuario'],aviso_dias:['aviso_dias','aviso','aviso (dias antes)','aviso (días antes)','dias antes','días antes','recordatorio'],prioridad:['prioridad'],tipo:['tipo'],visibilidad:['visibilidad','quien la ve','quién la ve'],clave:['clave','id','codigo','código'],hora:['hora']};
+  area:['area','área'],empresa:['empresa'],responsable:['responsable','encargado','usuario'],aviso_dias:['aviso_dias','aviso','aviso (dias antes)','aviso (días antes)','dias antes','días antes','recordatorio'],prioridad:['prioridad'],tipo:['tipo'],visibilidad:['visibilidad','quien la ve','quién la ve'],clave:['clave','id','codigo','código'],hora:['hora'],participantes:['participantes','compartir con','compartida con','ver','usuarios']};
 function calImpNorm(s){return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim();}
 function calImpFecha(v){
   if(v===null||v===undefined||v==='')return '';
@@ -22253,7 +22253,7 @@ function calImpMapear(matriz){
   for(var r=1;r<matriz.length;r++){var row=matriz[r]||[];if(!row.some(function(c){return String(c===null||c===undefined?'':c).trim()!=='';}))continue;
     var o={};Object.keys(idx).forEach(function(k){o[k]=idx[k]>=0?row[idx[k]]:'';});
     o.fecha=calImpFecha(o.fecha);o.titulo=String(o.titulo||'').trim();
-    ['descripcion','area','empresa','responsable','prioridad','tipo','visibilidad','clave','hora'].forEach(function(k){o[k]=o[k]===null||o[k]===undefined?'':String(o[k]).trim();});
+    ['descripcion','area','empresa','responsable','prioridad','tipo','visibilidad','clave','hora','participantes'].forEach(function(k){o[k]=o[k]===null||o[k]===undefined?'':String(o[k]).trim();});
     o.aviso_dias=o.aviso_dias===''||o.aviso_dias===null||o.aviso_dias===undefined?'':String(o.aviso_dias).trim();
     o._fila=r+1;o._error=!o.fecha?'fecha inválida':(!o.titulo?'sin título':'');
     filas.push(o);}
@@ -22261,6 +22261,8 @@ function calImpMapear(matriz){
 }
 function CalImportModal(p){
   var[texto,setTexto]=useState('');var[datos,setDatos]=useState(null);var[origen,setOrigen]=useState('');var[res,setRes]=useState(null);var[err,setErr]=useState('');var[cargando,setCargando]=useState(false);
+  var[usuarios,setUsuarios]=useState([]);var[visDef,setVisDef]=useState('COMPARTIDA');var[partDef,setPartDef]=useState([]);
+  useEffect(function(){api('/calendario/usuarios','GET',null,p.tok).then(function(r){setUsuarios(Array.isArray(r)?r:[]);}).catch(function(){});},[]);
   function procesarMatriz(m,nombre){var d=calImpMapear(m);setDatos(d);setOrigen(nombre);setRes(null);setErr(d.faltan.length?'Faltan columnas obligatorias: '+d.faltan.join(', ')+'. La primera fila debe traer los encabezados (ej. Fecha, Titulo, Descripcion, Area, Empresa, Responsable, Aviso_dias, Clave).':'');}
   function pegar(t){setTexto(t);if(!t.trim()){setDatos(null);return;}var sep=t.indexOf('\t')>=0?'\t':(t.indexOf(';')>=0?';':',');procesarMatriz(t.split(/\r?\n/).map(function(l){return l.split(sep);}),'texto pegado');}
   function archivo(e){var f=e.target.files&&e.target.files[0];if(!f)return;var rd=new FileReader();
@@ -22269,25 +22271,32 @@ function CalImportModal(p){
   function enviar(prueba){
     var validas=(datos&&datos.filas||[]).filter(function(f){return !f._error;});if(!validas.length){setErr('No hay filas válidas');return;}
     setCargando(true);setErr('');
-    api('/calendario/eventos/importar','POST',{items:validas,solo_prueba:prueba},p.tok).then(function(r){setCargando(false);setRes(r);if(!prueba&&r.creados)p.onImportado&&p.onImportado();}).catch(function(e){setCargando(false);setErr(e.message);});
+    api('/calendario/eventos/importar','POST',{items:validas,solo_prueba:prueba,visibilidad_defecto:visDef,participantes_defecto:partDef.map(function(x){return parseInt(x);})},p.tok).then(function(r){setCargando(false);setRes(r);if(!prueba&&r.creados)p.onImportado&&p.onImportado();}).catch(function(e){setCargando(false);setErr(e.message);});
   }
   var filas=datos?datos.filas:[],malas=filas.filter(function(f){return f._error;}).length;
   var inp={width:'100%',padding:'8px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:12,boxSizing:'border-box',fontFamily:'inherit'};
   return h(Modal,{title:'📥 Importar tareas al calendario',xl:true,onClose:p.onClose},
     h('div',{style:{padding:'0 4px'}},
-      h('div',{style:{fontSize:12,color:'#475569',marginBottom:10,lineHeight:1.5}},'Sube un Excel o pega las celdas copiadas desde Excel. La primera fila son los encabezados. Obligatorias: ',h('strong',null,'Fecha'),' y ',h('strong',null,'Titulo'),'. Opcionales: Descripcion, Area, Empresa, Responsable (nombre o correo), Aviso_dias (días antes del aviso por correo), Prioridad, Tipo (TAREA/EVENTO), Visibilidad (EMPRESA/COMPARTIDA/PRIVADA), Clave. Con Clave, volver a importar el mismo archivo no duplica: las filas que ya existen se omiten.'),
+      h('div',{style:{fontSize:12,color:'#475569',marginBottom:10,lineHeight:1.5}},'Sube un Excel o pega las celdas copiadas desde Excel. La primera fila son los encabezados. Obligatorias: ',h('strong',null,'Fecha'),' y ',h('strong',null,'Titulo'),'. Opcionales: Descripcion, Area, Empresa, Responsable (nombre o correo), Aviso_dias (días antes del aviso por correo; varios con punto y coma, ej. 7;1), Prioridad, Tipo (TAREA/EVENTO), Visibilidad (EMPRESA/COMPARTIDA/PRIVADA), Participantes (nombres o correos separados por ;), Clave. Con Clave, volver a importar el mismo archivo no duplica: las filas que ya existen se omiten.'),
       h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:10}},
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:4}},'Archivo Excel o CSV'),h('input',{type:'file',accept:'.xlsx,.xls,.csv',onChange:archivo,style:{fontSize:12}})),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:4}},'…o pega aquí las celdas (con encabezados)'),h('textarea',{value:texto,onChange:function(e){pegar(e.target.value);},rows:4,style:inp,placeholder:'Fecha\tTitulo\tDescripcion\n15-11-2026\tVence certificado médico: PÉREZ, JUAN\tRenovar y subir al SAT'}))),
+      h('div',{style:{background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:6,padding:10,marginBottom:10}},
+        h('div',{style:{fontSize:12,fontWeight:700,color:'#1E3A2D',marginBottom:6}},'¿Quién verá estas tareas? (se aplica a las filas que no traigan su propia columna Visibilidad / Participantes)'),
+        h('div',{style:{display:'flex',gap:6,flexWrap:'wrap',marginBottom:6}},['PRIVADA','COMPARTIDA','EMPRESA'].map(function(k){var v=CAL_VIS_INFO[k],on=visDef===k;return h('button',{key:k,type:'button',onClick:function(){setVisDef(k);},title:v.d,style:{padding:'6px 10px',borderRadius:6,fontSize:12,fontWeight:600,cursor:'pointer',border:'1px solid '+(on?'#1E3A2D':'#CBD5E1'),background:on?'#1E3A2D':'#fff',color:on?'#fff':'#475569'}},v.i+' '+v.l);})),
+        visDef==='COMPARTIDA'&&h('div',null,h('div',{style:{fontSize:11,fontWeight:600,color:'#475569',marginBottom:4}},'Compartir con (además del responsable):'),
+          h(SolCopiaPicker,{usuarios:usuarios,value:partDef,onChange:setPartDef,excluir:[]}),
+          !partDef.length&&h('div',{style:{fontSize:10,color:'#B45309',marginTop:4}},'Sin personas elegidas, solo las verán quien importa y el responsable de cada fila.')),
+        visDef==='EMPRESA'&&h('div',{style:{fontSize:10,color:'#64748B'}},'Las verán todos los usuarios con acceso al calendario.')),
       err&&h('div',{className:'al al-e',style:{marginBottom:8}},err),
       datos&&!datos.faltan.length&&h('div',null,
         h('div',{style:{fontSize:12,marginBottom:6}},h('strong',null,filas.length+' filas'),' leídas de '+origen+(malas?h('span',{style:{color:'#B91C1C'}},' · '+malas+' con error (no se importan)'):'')+' · columnas: '+datos.columnas.join(', ')),
         h('div',{style:{maxHeight:260,overflowY:'auto',border:'1px solid #E2E8F0',borderRadius:6}},
           h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
-            h('thead',null,h('tr',{style:{background:'#F1F5F9',textAlign:'left',position:'sticky',top:0}},['#','Fecha','Título','Área','Empresa','Responsable','Aviso','Clave',''].map(function(x){return h('th',{key:x,style:{padding:'5px 7px'}},x);}))),
+            h('thead',null,h('tr',{style:{background:'#F1F5F9',textAlign:'left',position:'sticky',top:0}},['#','Fecha','Título','Área','Empresa','Responsable','Compartir con','Aviso','Clave',''].map(function(x){return h('th',{key:x,style:{padding:'5px 7px'}},x);}))),
             h('tbody',null,filas.slice(0,300).map(function(f){return h('tr',{key:f._fila,style:{borderTop:'1px solid #F1F5F9',background:f._error?'#FEF2F2':'#fff'}},
               h('td',{style:{padding:'4px 7px',color:'#94A3B8'}},f._fila),h('td',{style:{padding:'4px 7px',whiteSpace:'nowrap'}},f.fecha||h('span',{style:{color:'#B91C1C'}},'?')),h('td',{style:{padding:'4px 7px'}},f.titulo),
-              h('td',{style:{padding:'4px 7px'}},f.area),h('td',{style:{padding:'4px 7px'}},f.empresa),h('td',{style:{padding:'4px 7px'}},f.responsable),h('td',{style:{padding:'4px 7px'}},f.aviso_dias!==''?f.aviso_dias+' d':''),h('td',{style:{padding:'4px 7px',color:'#94A3B8',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},title:f.clave},f.clave),
+              h('td',{style:{padding:'4px 7px'}},f.area),h('td',{style:{padding:'4px 7px'}},f.empresa),h('td',{style:{padding:'4px 7px'}},f.responsable),h('td',{style:{padding:'4px 7px',color:f.participantes?'#1E293B':'#94A3B8'}},f.participantes||(visDef==='COMPARTIDA'&&partDef.length?'(los elegidos arriba)':'')),h('td',{style:{padding:'4px 7px'}},f.aviso_dias!==''?f.aviso_dias+' d':''),h('td',{style:{padding:'4px 7px',color:'#94A3B8',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},title:f.clave},f.clave),
               h('td',{style:{padding:'4px 7px',color:'#B91C1C',fontSize:10}},f._error));}))),
           filas.length>300&&h('div',{style:{fontSize:10,color:'#94A3B8',padding:6}},'… y '+(filas.length-300)+' más'))),
       res&&h('div',{className:'al '+(res.errores&&res.errores.length?'al-e':'al-s'),style:{marginTop:10,fontSize:12}},
