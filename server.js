@@ -13343,6 +13343,46 @@ app.put('/api/calendario/preferencias', auth, requireModulo('calendario'), async
     res.json({ok:true,resumen_correo:v});
   }catch(e){res.status(500).json({error:e.message});}
 });
+// ═══ INICIO — pendientes de todos los módulos en una sola llamada (pantalla de entrada del sistema) ═══
+// Cada bloque se calcula solo si el usuario tiene el módulo; si una tabla no existe o falla, ese bloque trae {error} y los demás siguen.
+app.get('/api/inicio/resumen', auth, async(req,res)=>{
+  const u=req.user||{}; const mods=Array.isArray(u.modulos)?u.modulos:[];
+  const tiene=function(m){return !!u.es_admin||mods.indexOf(m)>=0;};
+  const out={};
+  const n=function(r,k){return parseInt((r.rows[0]||{})[k])||0;};
+  async function bloque(mod,clave,fn){ if(!tiene(mod))return; try{ out[clave]=await fn(); }catch(e){ out[clave]={error:e.message}; } }
+  await Promise.all([
+    bloque('ordenes','compras',async function(){
+      const oc=await pool.query(`SELECT COUNT(*) FILTER(WHERE estado='PENDIENTE') AS pendientes,
+        COUNT(*) FILTER(WHERE estado='PENDIENTE' AND COALESCE(numero_documento,'')='') AS sin_documento,
+        COUNT(*) FILTER(WHERE estado='PENDIENTE' AND fecha_emision<CURRENT_DATE-30) AS antiguas FROM ordenes_compra`);
+      let dte=0; try{ dte=n(await pool.query(`SELECT COUNT(*) AS n FROM dte_recibidos d WHERE d.oc_id IS NULL AND NOT EXISTS(SELECT 1 FROM dte_oc x WHERE x.dte_id=d.dte_id) AND LOWER(COALESCE(d.estado,'pendiente')) IN ('pendiente','sin_vincular')`),'n'); }catch(e){}
+      return {pendientes:n(oc,'pendientes'),sin_documento:n(oc,'sin_documento'),antiguas:n(oc,'antiguas'),dte_sin_vincular:dte};
+    }),
+    bloque('inventario','inventario',async function(){
+      const r=await pool.query(`SELECT COUNT(*) AS n FROM stock_actual sa JOIN productos p ON sa.producto_id=p.producto_id WHERE sa.cantidad_disponible<=p.stock_minimo AND p.activo=true`);
+      return {bajo_minimo:n(r,'n')};
+    }),
+    bloque('mantencion','mantencion',async function(){
+      const prog=await pool.query(`SELECT COUNT(*) FILTER(WHERE p.estado='vencida') AS vencidas,COUNT(*) FILTER(WHERE p.estado='proxima') AS proximas FROM mant_programacion p JOIN equipos eq ON p.equipo_id=eq.equipo_id WHERE eq.activo=true`);
+      const av=await pool.query(`SELECT COUNT(*) AS n FROM mant_avisos WHERE estado='pendiente'`);
+      const ot=await pool.query(`SELECT COUNT(*) AS n FROM mant_ot WHERE estado IN ('abierta','en_ejecucion')`);
+      let dv=0,dp=0; try{ await mantDocsEnsure(); const d=await pool.query(`SELECT COUNT(*) FILTER(WHERE d.fecha_vencimiento<CURRENT_DATE) AS vencidos,COUNT(*) FILTER(WHERE d.fecha_vencimiento>=CURRENT_DATE AND d.fecha_vencimiento<=CURRENT_DATE+30) AS por_vencer FROM equipo_documentos d JOIN equipos eq ON d.equipo_id=eq.equipo_id WHERE eq.activo=true`); dv=n(d,'vencidos'); dp=n(d,'por_vencer'); }catch(e){}
+      return {vencidas:n(prog,'vencidas'),proximas:n(prog,'proximas'),avisos:n(av,'n'),ot_abiertas:n(ot,'n'),docs_vencidos:dv,docs_por_vencer:dp};
+    }),
+    bloque('rendiciones','rendiciones',async function(){
+      const r=await pool.query(`SELECT COUNT(*) AS n,COALESCE(SUM(monto),0) AS monto FROM rend_gastos WHERE estado='pendiente'`);
+      return {pendientes:n(r,'n'),monto:parseFloat((r.rows[0]||{}).monto)||0};
+    }),
+    bloque('comite','comite',async function(){
+      const r=await pool.query(`SELECT COUNT(*) AS total,COUNT(*) FILTER(WHERE responsable_id=$1) AS mios,
+        COUNT(*) FILTER(WHERE responsable_id=$1 AND fecha_compromiso<CURRENT_DATE) AS mios_vencidos,
+        COUNT(*) FILTER(WHERE fecha_compromiso<CURRENT_DATE) AS vencidos FROM comite_acuerdos WHERE estado='PENDIENTE'`,[parseInt(u.id)||0]);
+      return {total:n(r,'total'),mios:n(r,'mios'),mios_vencidos:n(r,'mios_vencidos'),vencidos:n(r,'vencidos')};
+    })
+  ]);
+  res.json(out);
+});
 // ── Importación masiva al calendario (Excel/CSV pegado o subido; ej. vencimientos SAT) ──
 // Cada fila trae titulo + fecha (+ descripcion, area, empresa, responsable, aviso_dias, prioridad, tipo, visibilidad, clave).
 // Idempotente: si la fila trae `clave` y ya existe una tarea activa con esa clave, se omite; si no trae clave, se omite
@@ -13368,23 +13408,28 @@ app.post('/api/calendario/eventos/importar', auth, requireModulo('calendario'), 
     if(!items.length)return res.status(400).json({error:'No hay filas para importar'});
     if(items.length>2000)return res.status(400).json({error:'Máximo 2000 filas por importación'});
     const soloPrueba=!!(req.body&&req.body.solo_prueba);
+    // Re-importación: con actualizar_existentes las filas que ya existen se reescriben con los datos del archivo en vez de omitirse
+    const actualizar=!!(req.body&&req.body.actualizar_existentes);
     // Valores por defecto para las filas que no traen la columna: con quién se comparte y qué visibilidad
     const visDef=CAL_VIS.indexOf(String(req.body.visibilidad_defecto||'').toUpperCase())>=0?String(req.body.visibilidad_defecto).toUpperCase():'COMPARTIDA';
     const partDefRaw=Array.isArray(req.body.participantes_defecto)?req.body.participantes_defecto:[];
-    const us=(await pool.query('SELECT usuario_id,nombre,email FROM usuarios WHERE activo=true')).rows;
+    const us=(await pool.query("SELECT usuario_id,nombre,email,COALESCE(username,'') AS username FROM usuarios WHERE activo=true")).rows;
+    const noEncontrados=[];
     const emps=(await pool.query('SELECT empresa_id,razon_social FROM empresas')).rows;
     const areasPorNombre={}; CAL_AREAS.forEach(function(a){areasPorNombre[calNorm(a)]=a;});
     try{ COMITE_AREAS_SRV.forEach(function(a){areasPorNombre[calNorm(a.l)]=a.k;}); }catch(e){}
     function buscarUsuario(v){
       if(!v)return null; const s=String(v).trim(); if(/^\d+$/.test(s)){const u=us.find(function(x){return x.usuario_id===parseInt(s);});return u?u.usuario_id:null;}
       const n=calNorm(s); let u=us.find(function(x){return calNorm(x.email)===n;}); if(u)return u.usuario_id;
+      u=us.find(function(x){return calNorm(x.username)===n;}); if(u)return u.usuario_id;                       // nombre de usuario (ej. "lmella")
+      u=us.find(function(x){return calNorm(String(x.email||'').split('@')[0])===n;}); if(u)return u.usuario_id; // parte local del correo
       u=us.find(function(x){return calNorm(x.nombre)===n;}); if(u)return u.usuario_id;
       const c=us.filter(function(x){return calNorm(x.nombre).indexOf(n)>=0||n.indexOf(calNorm(x.nombre))>=0;}); return c.length===1?c[0].usuario_id:null;
     }
     // "Juan Pérez; maria@empresa.cl; 7" → ids de usuario (los que no se encuentran se ignoran)
     function buscarUsuarios(v){
       const lista=Array.isArray(v)?v:String(v||'').split(/[;,|]/);
-      const ids=[]; lista.forEach(function(x){const id=buscarUsuario(x); if(id&&ids.indexOf(id)<0)ids.push(id);}); return ids;
+      const ids=[]; lista.forEach(function(x){const id=buscarUsuario(x); if(id){if(ids.indexOf(id)<0)ids.push(id);}else if(String(x||'').trim()&&noEncontrados.indexOf(String(x).trim())<0)noEncontrados.push(String(x).trim());}); return ids;
     }
     const partDef=buscarUsuarios(partDefRaw);
     function buscarEmpresa(v){
@@ -13392,23 +13437,36 @@ app.post('/api/calendario/eventos/importar', auth, requireModulo('calendario'), 
       const n=calNorm(s); const c=emps.filter(function(e){return calNorm(e.razon_social).indexOf(n)>=0;});
       return c.length===1?c[0].empresa_id:(c.length>1?c[0].empresa_id:null);
     }
-    let creados=0,omitidos=0; const errores=[],detalle=[];
+    let creados=0,omitidos=0,actualizados=0; const errores=[],detalle=[];
     for(let i=0;i<items.length;i++){
       const it=items[i]||{};
       try{
         // Aviso_dias: uno o varios días antes separados por ; , / o espacio ("7;1" = correo 7 días antes y 1 día antes; 0 = el mismo día)
         const diasLista=String(it.aviso_dias===null||it.aviso_dias===undefined?'':it.aviso_dias).split(/[;,\/ ]+/).map(function(x){return parseInt(x);}).filter(function(x){return !isNaN(x)&&x>=0&&x<=365;});
+        const respFila=buscarUsuario(it.responsable);
+        const trajoParts=(it.participantes!==undefined&&it.participantes!==null&&String(it.participantes).trim()!=='');
         const b={titulo:it.titulo,descripcion:it.descripcion,fecha:calFechaFlex(it.fecha),todo_el_dia:!it.hora,hora:it.hora||null,
           tipo:String(it.tipo||'TAREA').toUpperCase(),area:areasPorNombre[calNorm(it.area)]||(CAL_AREAS.indexOf(String(it.area||'').toUpperCase())>=0?String(it.area).toUpperCase():'OTROS'),
           empresa_id:buscarEmpresa(it.empresa),visibilidad:String(it.visibilidad||visDef).toUpperCase(),
-          responsable_id:buscarUsuario(it.responsable)||parseInt(req.user.id),participantes:(it.participantes!==undefined&&it.participantes!==null&&String(it.participantes).trim()!=='')?buscarUsuarios(it.participantes):partDef,
+          responsable_id:respFila||parseInt(req.user.id),participantes:trajoParts?buscarUsuarios(it.participantes):partDef,
           recordatorios:diasLista.map(function(d){return d*1440;}),prioridad:String(it.prioridad||'normal').toLowerCase()};
         const c=calLimpiar(b,req.user,null);
         const clave=String(it.clave||'').trim().slice(0,160)||null;
         let ex;
         if(clave)ex=await pool.query('SELECT evento_id FROM cal_eventos WHERE activo=true AND clave=$1 LIMIT 1',[clave]);
         else ex=await pool.query('SELECT evento_id FROM cal_eventos WHERE activo=true AND fecha=$1 AND LOWER(titulo)=LOWER($2) LIMIT 1',[c.fecha,c.titulo]);
-        if(ex.rows.length){omitidos++;detalle.push({fila:i+1,titulo:c.titulo,fecha:c.fecha,estado:'ya existía'});continue;}
+        if(ex.rows.length){
+          if(!actualizar){omitidos++;detalle.push({fila:i+1,titulo:c.titulo,fecha:c.fecha,estado:'ya existía'});continue;}
+          // Ya existe → se actualiza con los datos del archivo. Si la fila no trae responsable ni personas, se conservan los de la tarea.
+          const ant=(await pool.query('SELECT responsable_id,participantes FROM cal_eventos WHERE evento_id=$1',[ex.rows[0].evento_id])).rows[0]||{};
+          const respNuevo=respFila||ant.responsable_id||c.responsable_id;
+          const partsNuevos=(trajoParts||partDef.length)?c.participantes:JSON.stringify(Array.isArray(ant.participantes)?ant.participantes:[]);
+          if(!soloPrueba){
+            await pool.query(`UPDATE cal_eventos SET titulo=$1,descripcion=$2,tipo=$3,area=$4,empresa_id=$5,fecha=$6,hora=$7,hora_fin=$8,fecha_fin=$9,visibilidad=$10,responsable_id=$11,participantes=$12,recordatorios=$13,prioridad=$14,clave=COALESCE($15,clave),modificado_en=NOW() WHERE evento_id=$16`,
+              [c.titulo,c.descripcion,c.tipo,c.area,c.empresa_id,c.fecha,c.hora,c.hora_fin,c.fecha_fin,c.visibilidad,respNuevo,partsNuevos,c.recordatorios,c.prioridad,clave,ex.rows[0].evento_id]);
+          }
+          actualizados++; detalle.push({fila:i+1,titulo:c.titulo,fecha:c.fecha,estado:soloPrueba?'se actualizaría':'actualizada',evento_id:ex.rows[0].evento_id}); continue;
+        }
         if(!soloPrueba){
           await pool.query(`INSERT INTO cal_eventos(titulo,descripcion,tipo,area,empresa_id,fecha,hora,hora_fin,fecha_fin,visibilidad,responsable_id,participantes,repeticion,recordatorios,prioridad,origen,creado_por_id,clave)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'MANUAL',$16,$17)`,
@@ -13417,7 +13475,7 @@ app.post('/api/calendario/eventos/importar', auth, requireModulo('calendario'), 
         creados++; detalle.push({fila:i+1,titulo:c.titulo,fecha:c.fecha,estado:soloPrueba?'se crearía':'creada',responsable_id:c.responsable_id,area:c.area,empresa_id:c.empresa_id});
       }catch(e){errores.push({fila:i+1,titulo:String(it.titulo||'').slice(0,80),error:e.message});}
     }
-    res.json({ok:true,prueba:soloPrueba,creados:creados,omitidos:omitidos,errores:errores,detalle:detalle.slice(0,500)});
+    res.json({ok:true,prueba:soloPrueba,creados:creados,actualizados:actualizados,omitidos:omitidos,errores:errores,usuarios_no_encontrados:noEncontrados.slice(0,50),detalle:detalle.slice(0,500)});
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.post('/api/calendario/ical-enlace', auth, requireModulo('calendario'), async(req,res)=>{
