@@ -22229,11 +22229,80 @@ function CalPrefsModal(p){
         msg&&h('div',{style:{fontSize:11,color:'#166534',marginBottom:6}},'✓ '+msg),
         h('div',{style:{display:'flex',gap:6,alignItems:'center'}},h(Btn,{v:pref.ical_url?'g':'p',sm:true,onClick:generar},pref.ical_url?'Generar un enlace nuevo':'Generar mi enlace'),h('span',{style:{fontSize:10,color:'#94A3B8'}},'El enlace es personal: muestra lo que tú puedes ver. No lo compartas.')))));
 }
+// ── Calendario: importar tareas desde Excel / CSV / texto pegado (ej. vencimientos SAT) ──
+var CAL_IMP_COLS={fecha:['fecha','vence','vencimiento','fecha vencimiento','fecha_vencimiento','dia','día'],titulo:['titulo','título','tarea','asunto','nombre','evento'],descripcion:['descripcion','descripción','detalle','notas','nota','observacion','observación'],
+  area:['area','área'],empresa:['empresa'],responsable:['responsable','encargado','usuario'],aviso_dias:['aviso_dias','aviso','aviso (dias antes)','aviso (días antes)','dias antes','días antes','recordatorio'],prioridad:['prioridad'],tipo:['tipo'],visibilidad:['visibilidad','quien la ve','quién la ve'],clave:['clave','id','codigo','código'],hora:['hora']};
+function calImpNorm(s){return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim();}
+function calImpFecha(v){
+  if(v===null||v===undefined||v==='')return '';
+  if(v instanceof Date&&!isNaN(v))return v.getFullYear()+'-'+('0'+(v.getMonth()+1)).slice(-2)+'-'+('0'+v.getDate()).slice(-2);
+  if(typeof v==='number'){var d=new Date(Date.UTC(1899,11,30)+Math.round(v)*86400000);return d.toISOString().slice(0,10);}
+  var s=String(v).trim().replace(/\*+$/,'').trim(),m;
+  if((m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)))return m[1]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[3]).slice(-2);
+  if((m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/)))return m[3]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[1]).slice(-2);
+  if((m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2})$/)))return '20'+m[3]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[1]).slice(-2);
+  return '';
+}
+// Matriz (primera fila = encabezados) → filas con las columnas conocidas
+function calImpMapear(matriz){
+  if(!matriz.length)return {filas:[],faltan:['fecha','titulo']};
+  var head=matriz[0].map(function(h){return calImpNorm(h);});
+  var idx={};Object.keys(CAL_IMP_COLS).forEach(function(k){var i=-1;CAL_IMP_COLS[k].forEach(function(al){if(i<0)i=head.indexOf(calImpNorm(al));});idx[k]=i;});
+  var faltan=[];if(idx.fecha<0)faltan.push('fecha');if(idx.titulo<0)faltan.push('titulo');
+  var filas=[];
+  for(var r=1;r<matriz.length;r++){var row=matriz[r]||[];if(!row.some(function(c){return String(c===null||c===undefined?'':c).trim()!=='';}))continue;
+    var o={};Object.keys(idx).forEach(function(k){o[k]=idx[k]>=0?row[idx[k]]:'';});
+    o.fecha=calImpFecha(o.fecha);o.titulo=String(o.titulo||'').trim();
+    ['descripcion','area','empresa','responsable','prioridad','tipo','visibilidad','clave','hora'].forEach(function(k){o[k]=o[k]===null||o[k]===undefined?'':String(o[k]).trim();});
+    o.aviso_dias=o.aviso_dias===''||o.aviso_dias===null||o.aviso_dias===undefined?'':String(o.aviso_dias).trim();
+    o._fila=r+1;o._error=!o.fecha?'fecha inválida':(!o.titulo?'sin título':'');
+    filas.push(o);}
+  return {filas:filas,faltan:faltan,columnas:Object.keys(idx).filter(function(k){return idx[k]>=0;})};
+}
+function CalImportModal(p){
+  var[texto,setTexto]=useState('');var[datos,setDatos]=useState(null);var[origen,setOrigen]=useState('');var[res,setRes]=useState(null);var[err,setErr]=useState('');var[cargando,setCargando]=useState(false);
+  function procesarMatriz(m,nombre){var d=calImpMapear(m);setDatos(d);setOrigen(nombre);setRes(null);setErr(d.faltan.length?'Faltan columnas obligatorias: '+d.faltan.join(', ')+'. La primera fila debe traer los encabezados (ej. Fecha, Titulo, Descripcion, Area, Empresa, Responsable, Aviso_dias, Clave).':'');}
+  function pegar(t){setTexto(t);if(!t.trim()){setDatos(null);return;}var sep=t.indexOf('\t')>=0?'\t':(t.indexOf(';')>=0?';':',');procesarMatriz(t.split(/\r?\n/).map(function(l){return l.split(sep);}),'texto pegado');}
+  function archivo(e){var f=e.target.files&&e.target.files[0];if(!f)return;var rd=new FileReader();
+    rd.onload=function(ev){try{var wb=XLSX.read(new Uint8Array(ev.target.result),{type:'array',cellDates:true});var ws=wb.Sheets[wb.SheetNames[0]];var m=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:''});procesarMatriz(m,f.name);}catch(x){setErr('No se pudo leer el archivo: '+x.message);}};
+    rd.readAsArrayBuffer(f);}
+  function enviar(prueba){
+    var validas=(datos&&datos.filas||[]).filter(function(f){return !f._error;});if(!validas.length){setErr('No hay filas válidas');return;}
+    setCargando(true);setErr('');
+    api('/calendario/eventos/importar','POST',{items:validas,solo_prueba:prueba},p.tok).then(function(r){setCargando(false);setRes(r);if(!prueba&&r.creados)p.onImportado&&p.onImportado();}).catch(function(e){setCargando(false);setErr(e.message);});
+  }
+  var filas=datos?datos.filas:[],malas=filas.filter(function(f){return f._error;}).length;
+  var inp={width:'100%',padding:'8px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:12,boxSizing:'border-box',fontFamily:'inherit'};
+  return h(Modal,{title:'📥 Importar tareas al calendario',xl:true,onClose:p.onClose},
+    h('div',{style:{padding:'0 4px'}},
+      h('div',{style:{fontSize:12,color:'#475569',marginBottom:10,lineHeight:1.5}},'Sube un Excel o pega las celdas copiadas desde Excel. La primera fila son los encabezados. Obligatorias: ',h('strong',null,'Fecha'),' y ',h('strong',null,'Titulo'),'. Opcionales: Descripcion, Area, Empresa, Responsable (nombre o correo), Aviso_dias (días antes del aviso por correo), Prioridad, Tipo (TAREA/EVENTO), Visibilidad (EMPRESA/COMPARTIDA/PRIVADA), Clave. Con Clave, volver a importar el mismo archivo no duplica: las filas que ya existen se omiten.'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:10}},
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:4}},'Archivo Excel o CSV'),h('input',{type:'file',accept:'.xlsx,.xls,.csv',onChange:archivo,style:{fontSize:12}})),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:4}},'…o pega aquí las celdas (con encabezados)'),h('textarea',{value:texto,onChange:function(e){pegar(e.target.value);},rows:4,style:inp,placeholder:'Fecha\tTitulo\tDescripcion\n15-11-2026\tVence certificado médico: PÉREZ, JUAN\tRenovar y subir al SAT'}))),
+      err&&h('div',{className:'al al-e',style:{marginBottom:8}},err),
+      datos&&!datos.faltan.length&&h('div',null,
+        h('div',{style:{fontSize:12,marginBottom:6}},h('strong',null,filas.length+' filas'),' leídas de '+origen+(malas?h('span',{style:{color:'#B91C1C'}},' · '+malas+' con error (no se importan)'):'')+' · columnas: '+datos.columnas.join(', ')),
+        h('div',{style:{maxHeight:260,overflowY:'auto',border:'1px solid #E2E8F0',borderRadius:6}},
+          h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+            h('thead',null,h('tr',{style:{background:'#F1F5F9',textAlign:'left',position:'sticky',top:0}},['#','Fecha','Título','Área','Empresa','Responsable','Aviso','Clave',''].map(function(x){return h('th',{key:x,style:{padding:'5px 7px'}},x);}))),
+            h('tbody',null,filas.slice(0,300).map(function(f){return h('tr',{key:f._fila,style:{borderTop:'1px solid #F1F5F9',background:f._error?'#FEF2F2':'#fff'}},
+              h('td',{style:{padding:'4px 7px',color:'#94A3B8'}},f._fila),h('td',{style:{padding:'4px 7px',whiteSpace:'nowrap'}},f.fecha||h('span',{style:{color:'#B91C1C'}},'?')),h('td',{style:{padding:'4px 7px'}},f.titulo),
+              h('td',{style:{padding:'4px 7px'}},f.area),h('td',{style:{padding:'4px 7px'}},f.empresa),h('td',{style:{padding:'4px 7px'}},f.responsable),h('td',{style:{padding:'4px 7px'}},f.aviso_dias!==''?f.aviso_dias+' d':''),h('td',{style:{padding:'4px 7px',color:'#94A3B8',maxWidth:160,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},title:f.clave},f.clave),
+              h('td',{style:{padding:'4px 7px',color:'#B91C1C',fontSize:10}},f._error));}))),
+          filas.length>300&&h('div',{style:{fontSize:10,color:'#94A3B8',padding:6}},'… y '+(filas.length-300)+' más'))),
+      res&&h('div',{className:'al '+(res.errores&&res.errores.length?'al-e':'al-s'),style:{marginTop:10,fontSize:12}},
+        h('div',null,h('strong',null,res.prueba?'Simulación: ':'Importado: '),(res.prueba?'se crearían ':'se crearon ')+res.creados+' tarea(s)'+(res.omitidos?', '+res.omitidos+' ya existían y se omitieron':'')+(res.errores&&res.errores.length?', '+res.errores.length+' con error':'')+'.'),
+        res.errores&&res.errores.length>0&&h('ul',{style:{margin:'6px 0 0 16px'}},res.errores.slice(0,10).map(function(e,i){return h('li',{key:i},'Fila '+e.fila+': '+e.error);}))),
+      h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:12}},
+        h('button',{onClick:p.onClose,style:{padding:'6px 14px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12,background:'#fff'}},res&&!res.prueba&&res.creados?'Cerrar':'Cancelar'),
+        h(Btn,{v:'g',onClick:function(){enviar(true);},disabled:cargando||!filas.length||!!(datos&&datos.faltan.length)},'🔍 Simular (sin guardar)'),
+        h(Btn,{onClick:function(){enviar(false);},disabled:cargando||!filas.length||!!(datos&&datos.faltan.length)},cargando?'Importando…':'📥 Importar '+(filas.length-malas)+' tarea(s)'))));
+}
 function CalendarioView(p){
   var user=p.user||{};var mobile=!!p.mobile;
   var[vista,setVista]=useState(mobile?'agenda':'mes');var[cursor,setCursor]=useState(cmHoy());
   var[items,setItems]=useState([]);var[cargando,setCargando]=useState(false);var[err,setErr]=useState('');
-  var[usuarios,setUsuarios]=useState([]);var[modal,setModal]=useState(null);var[auto,setAuto]=useState(null);var[prefs,setPrefs]=useState(false);
+  var[usuarios,setUsuarios]=useState([]);var[modal,setModal]=useState(null);var[auto,setAuto]=useState(null);var[prefs,setPrefs]=useState(false);var[imp,setImp]=useState(false);
   var[fArea,setFArea]=useState('');var[fEmp,setFEmp]=useState('');var[soloMias,setSoloMias]=useState(false);var[q,setQ]=useState('');var[verHechas,setVerHechas]=useState(true);
   var hoy=cmHoy();
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
@@ -22318,6 +22387,7 @@ function CalendarioView(p){
       h('div',{style:{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}},
         tabBtn('mes','Mes'),!mobile&&tabBtn('semana','Semana'),tabBtn('agenda','Agenda'),
         h(Btn,{v:'g',sm:true,onClick:function(){setPrefs(true);}},'⚙ Correo y Google Calendar'),
+        !mobile&&h(Btn,{v:'g',sm:true,onClick:function(){setImp(true);},title:'Cargar muchas tareas de una vez desde Excel (ej. vencimientos SAT)'},'📥 Importar'),
         h(Btn,{onClick:function(){nueva(vista==='mes'&&cursor.slice(0,7)!==hoy.slice(0,7)?calMesIni(cursor):hoy);}},'+ Nueva tarea'))),
     err&&h('div',{className:'al al-e',style:{marginBottom:10,display:'flex',justifyContent:'space-between',alignItems:'center'}},h('span',null,err),h('button',{onClick:cargar,style:{padding:'4px 10px',border:'1px solid #B91C1C',borderRadius:6,background:'#fff',color:'#B91C1C',fontSize:11,fontWeight:700,cursor:'pointer'}},'↻ Reintentar')),
     h('div',{style:{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center',marginBottom:10}},
@@ -22331,7 +22401,8 @@ function CalendarioView(p){
     h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8,display:'flex',gap:10,flexWrap:'wrap'}},h('span',null,'🗂 comité'),h('span',null,'🔧 mantención'),h('span',null,'📄 contratos'),h('span',null,'🏛 tributaria'),h('span',null,'📌 evento'),h('span',null,'🔁 se repite'),h('span',null,'🔒 privada'),h('span',null,'Las fechas de otros módulos se abren en su módulo; clic en un día para crear una tarea.')),
     modal&&h(CalEventoModal,{key:String(modal.id)+'|'+modal.fecha,ctx:ctx,id:modal.id,fecha:modal.fecha,onClose:function(){setModal(null);},onSaved:function(){setModal(null);cargar();}}),
     auto&&h(CalDetalleAuto,{item:auto,onClose:function(){setAuto(null);},onNav:p.setView?function(v){setAuto(null);p.setView(v);}:null}),
-    prefs&&h(CalPrefsModal,{tok:p.tok,onClose:function(){setPrefs(false);}}));
+    prefs&&h(CalPrefsModal,{tok:p.tok,onClose:function(){setPrefs(false);}}),
+    imp&&h(CalImportModal,{tok:p.tok,onClose:function(){setImp(false);},onImportado:cargar}));
 }
 // Aviso del inicio (escritorio y móvil): tareas de hoy y vencidas. Se refresca cada minuto.
 function AlertaCalendario(p){
