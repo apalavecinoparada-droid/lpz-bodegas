@@ -278,6 +278,7 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
       <button class="nav-tab" onclick="showPanel('poli',this)" style="background:#f9f3e8;border:1px solid #e67e22;">&#128202; Polinomio Reajuste</button>
       <button class="nav-tab" onclick="showPanel('gest',this)" style="background:#eef6f1;border:1px solid #1a6b3a;font-weight:700;">&#128274; &#127919; Ficha de Gesti&oacute;n</button>
       <button class="nav-tab" onclick="showPanel('recup',this)" style="background:#fdf0ee;border:1px solid #b83a2e;font-weight:700;">&#9201; Horas Recuperables</button>
+      <button class="nav-tab" onclick="showPanel('estd',this)" style="background:#eaf2fc;border:1px solid #1f6fd1;font-weight:700;">&#128207; Est&aacute;ndares TOB</button>
     </div>
 
     <!-- PANEL DASHBOARD -->
@@ -758,6 +759,25 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
         <div id="rec-sello" style="font-size:11px;color:#8b949e;"></div>
       </div>
       <div id="rec-body"></div>
+    </div>
+
+    <!-- ===== Estándares TOB (06-10-2026): real vs estándar de horas perdidas, versión 2 (horas contratadas) ===== -->
+    <div id="panel-estd" class="panel" style="display:none;">
+      <div style="background:linear-gradient(135deg,#1f6fd1,#174ea6);color:#fff;border-radius:10px;padding:12px 16px;margin-bottom:10px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+        <span style="font-size:28px;">&#128207;</span>
+        <div style="flex:1;min-width:220px;">
+          <div style="font-size:15px;font-weight:700;">Est&aacute;ndares de horas perdidas (TOB) &mdash; real vs est&aacute;ndar</div>
+          <div style="font-size:10.5px;opacity:.85;">Tope = (1 &minus; meta FD) &times; horas contratadas del proceso &middot; base mayo&ndash;septiembre 2026 &middot; vigente desde octubre 2026</div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+          <div><div style="font-size:8.5px;opacity:.8;text-transform:uppercase;">Faena</div>
+            <select id="estd-faena" onchange="EST_SEL.proc='';estRender()" style="border:none;border-radius:5px;padding:5px 8px;font-weight:700;color:#174ea6;">
+              <option>Mec 3</option><option>Mec 4</option><option>Mec 5</option></select></div>
+          <div><div style="font-size:8.5px;opacity:.8;text-transform:uppercase;">Mes</div>
+            <select id="estd-mes" onchange="estRender()" style="border:none;border-radius:5px;padding:5px 8px;font-weight:700;color:#174ea6;min-width:150px;"></select></div>
+        </div>
+      </div>
+      <div id="estd-body"></div>
     </div>
 
     <div id="panel-aserv" class="panel">
@@ -4676,6 +4696,10 @@ document.getElementById('especie-pills').style.display='none';
           <div style="font-size:15px;font-weight:700;">Informe Producción Diaria de Faenas</div>
           <div style="font-size:10px;opacity:.85;">Programa vs Producción real m³ · Tiempos Detenidos por faena</div>
         </div>
+        <div style="flex:1;text-align:center;">
+          <button onclick="fundoProdAbrir()" title="Producción por fundo, mes a mes, y la faena que trabajó en él"
+                  style="background:#1f6fd1;color:#fff;border:2px solid #fff;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.25);">🌲 Producción por Fundo</button>
+        </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <div style="display:flex;flex-direction:column;gap:2px;">
             <span style="font-size:8px;opacity:.8;text-transform:uppercase;letter-spacing:.4px;">Año</span>
@@ -5399,6 +5423,7 @@ function showPanel(id, btn) {
   if(id==='tob') { setTimeout(function(){ try{ renderDetalleCausas(); }catch(e){ console.warn('[DC]', e.message); } }, 50); }
   if(id==='gest'){ setTimeout(function(){ try{ gestRender(); }catch(e){ console.warn('[GEST]', e.message); } }, 50); }
   if(id==='recup'){ setTimeout(function(){ try{ recupLlenarPeriodos(); recupRender(); }catch(e){ console.warn('[RECUP]', e.message); } }, 50); }
+  if(id==='estd'){ setTimeout(function(){ try{ estLlenarMeses(); estRender(); }catch(e){ console.warn('[ESTD]', e.message, e.stack); } }, 50); }
   if(id==='poli') {
     if(!POLI_AUTH) {
       document.getElementById('poli-lock').style.display = '';
@@ -10899,7 +10924,420 @@ var GRAFX = null;      // datos hoja Tablaparametros para gráficos Rendimiento 
 var DIESEL_DATA = null; // datos panel "Combustible Consumido vs Programado" (replica TabladinamicaDiesel), array de {equipo,faena,ym,empresa,tipo,cod,lts,hrs,hperd,rendAct,rendStd,difLts,mesTxt}
 /* Sello de version: se imprime en la consola al abrir. Si el numero que aparece
    no es el ultimo, el navegador esta sirviendo una copia vieja del archivo. */
-var APP_BUILD = '02-10-2026 Residuos: contaminados suman en huaipes';
+/* =====================================================================
+   ESTANDARES TOB (06-10-2026, pedido de Gustavo) — VERSION 2: horas contratadas
+   Reemplaza a la planilla Estandares_Horas_Perdidas_FD_2026_v2_HrsContratadas.xlsx
+   (misma logica que C:\TrabajoOEE\Estandares\calc2.py + calc_asignar.py).
+   - Tope mensual por proceso = (1 - meta FD de la faena) x horas contratadas del proceso
+     (promedio de los meses base; horas = las "Hrs Licitadas" de gxCalc: VMA del mes y especie).
+   - Horas perdidas: BaseHorasPerdUnif, cada dia repartido entre sus causas (perdRepartir),
+     sin tope de 10 h; Torre Alpine y Carro Bereuter son el mismo equipo (por dia la mayor).
+   - No cuentan: clima / incendio / paso de vehiculos (grupo 4) y cargo Formin (grupo 5).
+   - Reparto del tope: "Otros" se reparte entre las causas clasificadas; operacion con topes
+     (cadena 14 h/proceso, charlas 5 h/maquina) y maximo 50% del tope; el resto a evitables
+     y esperas proporcional a su real; si cabe, queda margen.
+   - Seguimiento: el mes elegido contra el estandar prorrateado al ultimo dia con datos.
+   Datos: HPERD_UNIF, BHT_DIAS y GRAFX.bases (ya estan en el cache). Memo EST_CACHE: se
+   suelta en gestInvalidarCaches().
+   ===================================================================== */
+var EST_PARAM = {
+  baseDesde: '2026-05', baseHasta: '2026-09',     // historial con que se fijo el estandar
+  vigenteDesde: '2026-10',
+  operMax: 0.50,                                  // la operacion usa como maximo la mitad del tope
+  topeProceso: {'CAMBIO DE CADENA O ESPADA': 14}, // h/mes por proceso
+  topeMaquina: {'CHARLA, CAPACITACIONES O REUNIONES': 5}, // h/mes por maquina
+  minDias: 5,                                     // dias en el ultimo mes base para contar en la dotacion
+  diasStd: 30
+};
+var EST_FAENAS = ['Mec 3', 'Mec 4', 'Mec 5'];
+var EST_ORD = ['Volteo', 'Madereo', 'Procesado', 'Clasificado', 'Apoyo'];
+var EST_MISMO = {'CARRO BERERUTER ALPINE': 'TORRE ALPINE'};                 // el carro ES la torre
+var EST_FUERA = {'PROCESADOR 08': 1, 'CARRO DE ARRASTRE': 1, 'FALCON WINCH 1': 1}; // respaldo / sin horas contratadas
+var EST_EXTRA = {'CONTROL A FAENA': 3, 'INSTALACION DE ASISTENCIA': 3, 'HABILITACION DE HUELLAS DE MADEREO Y/O CANCHA': 3};
+var EST_OTROS = {'OTROS': 1, 'OTROS / SIN CLASIFICAR': 1, 'SIN CAUSA': 1};
+var EST_GN = {1: 'Evitable', 2: 'Espera otro proceso', 3: 'Parte de la operación'};
+var EST_CACHE = null;
+var EST_SEL = {proc: ''};
+var EST_CHART = null;
+
+function estEq(e){ e = String(e || '').toUpperCase().replace(/\s+/g, ' ').trim(); return EST_MISMO[e] || e; }
+function estProc(eq){
+  var e = eq.toLowerCase();
+  if (/procesador|harvester/.test(e)) return 'Procesado';
+  if (/skidder|torre/.test(e)) return 'Madereo';
+  if (/feller|shovel/.test(e)) return 'Volteo';
+  if (/^\s*eg\b/.test(e)) return 'Clasificado';
+  return 'Apoyo';
+}
+function estGrupo(c){
+  var n = recupNorm(c);
+  if (n === 'MONITOREO Y/O PARALIZACION FORMIN') return 5;
+  if (EST_EXTRA[n]) return EST_EXTRA[n];
+  if (!n) return 1;
+  return RECUP_MAPA[n] || 1;
+}
+function estDiasMes(ym){ return new Date(+ym.substring(0, 4), +ym.substring(5, 7), 0).getDate(); }
+function estMesTxt(ym){
+  var M = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  return M[+ym.substring(5, 7) - 1] + ' ' + ym.substring(0, 4);
+}
+
+/* Filas de horas perdidas: una por equipo-dia-causa, ya repartidas */
+function estFilas(){
+  var dia = {};
+  Object.keys(window.HPERD_UNIF || {}).forEach(function(k){
+    var p = k.split('|'); if (p.length < 3) return;
+    var m = p[1].match(/MEC\s*(\d)/i); if (!m) return;
+    var fa = 'Mec ' + m[1]; if (EST_FAENAS.indexOf(fa) < 0) return;
+    var eq = estEq(p[0]); if (EST_FUERA[eq]) return;
+    (HPERD_UNIF[k].dias || []).forEach(function(d){
+      if (!d.fecha || !(d.hrs > 0)) return;
+      var kk = fa + '|' + eq + '|' + d.fecha;
+      if (!dia[kk] || d.hrs > dia[kk].d.hrs) dia[kk] = {fa: fa, eq: eq, d: d};   // torre+carro: la mayor
+    });
+  });
+  var out = [];
+  Object.keys(dia).forEach(function(kk){
+    var o = dia[kk], d = o.d;
+    var rep = perdRepartir({hrs: d.hrs, causa: d.causa || 'OTROS', fuente: d.fuente, detFO: d.detFO, detBP: d.detBP, txt: d.txt});
+    rep.forEach(function(pz){
+      var c = recupNorm(pz.causa) || 'SIN CAUSA';
+      out.push({fa: o.fa, eq: o.eq, proc: estProc(o.eq), fecha: d.fecha, ym: d.fecha.substring(0, 7),
+                causa: c, g: estGrupo(c), hrs: pz.hrs});
+    });
+  });
+  return out;
+}
+/* Dias con actividad por faena|proceso|equipo|mes (trabajo en BaseHorasTrab o alguna hora perdida) */
+function estActividad(filas){
+  var act = {};
+  var marca = function(fa, eq, f){
+    if (EST_FUERA[eq]) return;
+    var k = fa + '|' + estProc(eq) + '|' + eq + '|' + f.substring(0, 7);
+    (act[k] = act[k] || {})[f] = 1;
+  };
+  (window.BHT_DIAS || []).forEach(function(r){
+    if (!r || !r.fecha || !(r.hrs > 0)) return;
+    if (r.tipo && r.tipo !== 'maquinaria') return;
+    if (EST_FAENAS.indexOf(r.faena) < 0) return;
+    marca(r.faena, estEq(r.equipo), r.fecha);
+  });
+  filas.forEach(function(r){ marca(r.fa, r.eq, r.fecha); });
+  var n = {};
+  Object.keys(act).forEach(function(k){ n[k] = Object.keys(act[k]).length; });
+  return n;
+}
+/* Horas contratadas del mes (igual que gxCalc / contrato.py) */
+function estContrato(fa, ym){
+  var B = (window.GRAFX && GRAFX.bases) || null; if (!B) return null;
+  var num = ym.substring(0, 4) + ym.substring(5, 7);
+  var vma = (B.vmaMes || {})[fa + '|' + num] || 0;
+  if (!(vma > 0)) return null;
+  var esp = (B.esp || {})[fa + '|' + num] || (B.esp || {})[fa] || '';
+  var vs = (B.vma || {})['Faena ' + fa] || {};
+  var grid = (fa === 'Mec 4' && /nitens/i.test(esp) && vs.nitens) ? vs.nitens : vs.norm;
+  if (!grid) return null;
+  var row = null;
+  for (var i = 0; i < grid.length; i++){ if (grid[i].b <= vma) row = grid[i]; else break; }
+  if (!row) return null;
+  var n = function(L, m){ return row[L] != null ? row[L] * (m == null ? 30 : m) : 0; };
+  var h, maq = {};
+  if (fa === 'Mec 4'){
+    h = {Procesado: n('O', 1), Volteo: n('R'), Madereo: n('T') + n('V'), Clasificado: n('X'), Apoyo: 0.75 * n('T') + 0.75 * n('R')};
+    maq = {'SKIDDER 13': n('T'), 'TORRE ALPINE': n('V'), 'T-WINCH 10.2': 0.75 * n('T'), 'T-WINCH 30.2': 0.75 * n('R')};
+  } else {
+    h = {Procesado: n('O', 1), Volteo: n('R'), Madereo: n('T'), Clasificado: n('V')};
+  }
+  return {hrs: h, maq: maq, vma: vma, esp: esp, tramo: row.b};
+}
+function estRepartirOtros(hist){
+  var ot = 0, S = 0, out = {};
+  Object.keys(hist).forEach(function(c){ if (EST_OTROS[c]) ot += hist[c].h; else S += hist[c].h; });
+  if (!ot || !S) return hist;
+  Object.keys(hist).forEach(function(c){ if (!EST_OTROS[c]) out[c] = {g: hist[c].g, h: hist[c].h * (1 + ot / S)}; });
+  return out;
+}
+/* Reparte el tope B entre las causas (igual que calc_asignar.asignar) */
+function estAsignar(B, hist, nmaqProc, esMaquina){
+  var tope = function(c){
+    var t = [];
+    if (EST_PARAM.topeProceso[c] != null) t.push(EST_PARAM.topeProceso[c] / (esMaquina ? nmaqProc : 1));
+    if (EST_PARAM.topeMaquina[c] != null) t.push(EST_PARAM.topeMaquina[c] * (esMaquina ? 1 : nmaqProc));
+    return t.length ? Math.min.apply(null, t) : null;
+  };
+  var g3 = {}, S3 = 0, resto = {}, S = 0, std = {};
+  Object.keys(hist).forEach(function(c){
+    var o = hist[c];
+    if (o.g === 3){ var t = tope(c); g3[c] = t != null ? Math.min(o.h, t) : o.h; S3 += g3[c]; }
+    else if ((o.g === 1 || o.g === 2) && !EST_OTROS[c]){ resto[c] = o.h; S += o.h; }
+  });
+  var f3 = 1;
+  if (S3 > EST_PARAM.operMax * B){ f3 = EST_PARAM.operMax * B / S3; }
+  var R = B - S3 * f3;
+  var f = S ? Math.min(1, R / S) : 0;
+  Object.keys(hist).forEach(function(c){
+    var o = hist[c];
+    if (o.g === 3) std[c] = g3[c] * f3;
+    else if (EST_OTROS[c]) std[c] = 0;
+    else std[c] = o.h * f;
+  });
+  var margen = R - S * f;
+  return {std: std, margen: margen > 0.05 ? margen : 0, fOper: f3, fEvit: f, oper: S3, evit: S};
+}
+/* Estandares de las tres faenas (memo) */
+function estEstandares(){
+  if (EST_CACHE) return EST_CACHE;
+  var t0 = Date.now();
+  var filas = estFilas(), act = estActividad(filas);
+  var std = {};
+  EST_FAENAS.forEach(function(fa){
+    var meta = FD_META_FAENA[fa];
+    var yms = [], K = {};
+    for (var y = EST_PARAM.baseDesde; y <= EST_PARAM.baseHasta; ){
+      var c = estContrato(fa, y); if (c){ yms.push(y); K[y] = c; }
+      var yy = +y.substring(0, 4), mm = +y.substring(5, 7) + 1; if (mm > 12){ mm = 1; yy++; }
+      y = yy + '-' + (mm < 10 ? '0' : '') + mm;
+    }
+    var F = std[fa] = {meta: meta, procesos: {}, meses: yms};
+    EST_ORD.forEach(function(pr){
+      var meses = yms.filter(function(ym){ return (K[ym].hrs[pr] || 0) > 0; });
+      if (!meses.length) return;
+      var n = meses.length;
+      var prog = meses.reduce(function(s, ym){ return s + K[ym].hrs[pr]; }, 0) / n;
+      var dp = filas.filter(function(r){ return r.fa === fa && r.proc === pr && meses.indexOf(r.ym) >= 0 && r.g !== 4 && r.g !== 5; });
+      var hist = {};
+      dp.forEach(function(r){ (hist[r.causa] = hist[r.causa] || {g: r.g, h: 0}).h += r.hrs / n; });
+      var real = Object.keys(hist).reduce(function(s, c){ return s + hist[c].h; }, 0);
+      var maqs = Object.keys(act).filter(function(k){
+        var p = k.split('|'); return p[0] === fa && p[1] === pr && p[3] === EST_PARAM.baseHasta && act[k] >= EST_PARAM.minDias;
+      }).map(function(k){ return k.split('|')[2]; }).sort();
+      var B = (1 - meta) * prog;
+      var hr = estRepartirOtros(hist);
+      var A = estAsignar(B, hr, Math.max(1, maqs.length), false);
+      var P = F.procesos[pr] = {prog: prog, B: B, real: real, maqs: maqs, hist: hr, A: A, maquinas: {}};
+      // por maquina
+      maqs.forEach(function(eq){
+        var ce = [], mm2 = [];
+        meses.forEach(function(ym){
+          if ((act[fa + '|' + pr + '|' + eq + '|' + ym] || 0) < EST_PARAM.minDias) return;
+          var v;
+          if (K[ym].maq[eq] != null) v = K[ym].maq[eq];
+          else {
+            var nm = Object.keys(act).filter(function(k){ var q = k.split('|'); return q[0] === fa && q[1] === pr && q[3] === ym && act[k] >= EST_PARAM.minDias; }).length;
+            v = K[ym].hrs[pr] / Math.max(1, nm);
+          }
+          ce.push(v); mm2.push(ym);
+        });
+        if (!ce.length) return;
+        var pe = ce.reduce(function(s, v){ return s + v; }, 0) / ce.length;
+        var he = {};
+        dp.forEach(function(r){ if (r.eq === eq && mm2.indexOf(r.ym) >= 0) (he[r.causa] = he[r.causa] || {g: r.g, h: 0}).h += r.hrs / mm2.length; });
+        var Be = (1 - meta) * pe;
+        P.maquinas[eq] = {prog: pe, B: Be, A: estAsignar(Be, estRepartirOtros(he), Math.max(1, maqs.length), true),
+                          real: Object.keys(he).reduce(function(s, c){ return s + he[c].h; }, 0), meses: mm2.length};
+      });
+    });
+  });
+  EST_CACHE = {std: std, filas: filas, act: act};
+  console.log('[ESTD] estandares calculados en ' + (Date.now() - t0) + ' ms · ' + filas.length + ' filas');
+  return EST_CACHE;
+}
+function estLlenarMeses(){
+  var sel = document.getElementById('estd-mes'); if (!sel) return;
+  var E = estEstandares(), ms = {};
+  E.filas.forEach(function(r){ if (r.ym >= EST_PARAM.baseDesde) ms[r.ym] = 1; });
+  var lista = Object.keys(ms).sort().reverse();
+  var prev = sel.value;
+  sel.innerHTML = lista.map(function(ym){
+    return '<option value="' + ym + '">' + estMesTxt(ym) + (ym < EST_PARAM.vigenteDesde ? ' (base)' : '') + '</option>';
+  }).join('');
+  if (prev && lista.indexOf(prev) >= 0) sel.value = prev;
+}
+/* Seguimiento del mes: real por proceso, causa, maquina y dia */
+function estSeguimiento(fa, ym){
+  var E = estEstandares();
+  var fil = E.filas.filter(function(r){ return r.fa === fa && r.ym === ym; });
+  var diaUlt = 0;
+  fil.forEach(function(r){ diaUlt = Math.max(diaUlt, +r.fecha.substring(8, 10)); });
+  (window.BHT_DIAS || []).forEach(function(r){
+    if (r && r.faena === fa && r.fecha && r.fecha.substring(0, 7) === ym && r.hrs > 0) diaUlt = Math.max(diaUlt, +r.fecha.substring(8, 10));
+  });
+  var S = {diaUlt: diaUlt, diasMes: estDiasMes(ym), proc: {}, excl: 0, exclDet: {}};
+  fil.forEach(function(r){
+    if (r.g === 4 || r.g === 5){ S.excl += r.hrs; S.exclDet[r.causa] = (S.exclDet[r.causa] || 0) + r.hrs; return; }
+    var P = S.proc[r.proc] || (S.proc[r.proc] = {real: 0, causa: {}, maq: {}, dia: {}});
+    P.real += r.hrs;
+    P.causa[r.causa] = (P.causa[r.causa] || 0) + r.hrs;
+    var M = P.maq[r.eq] || (P.maq[r.eq] = {real: 0, causa: {}});
+    M.real += r.hrs; M.causa[r.causa] = (M.causa[r.causa] || 0) + r.hrs;
+    P.dia[r.fecha] = (P.dia[r.fecha] || 0) + r.hrs;
+  });
+  return S;
+}
+function estSemaforo(pct){
+  if (!(pct >= 0)) return {c: '#888', t: '—', bg: '#f2f2f2'};
+  if (pct <= 1) return {c: '#1a7f37', t: 'Dentro', bg: '#e2efda'};
+  if (pct <= 1.2) return {c: '#b9770e', t: 'Alerta', bg: '#fff2cc'};
+  return {c: '#c0392b', t: 'Sobre', bg: '#fce4d6'};
+}
+function estRender(){
+  var body = document.getElementById('estd-body'); if (!body) return;
+  if (!Object.keys(window.HPERD_UNIF || {}).length || !(window.GRAFX && GRAFX.bases)){
+    body.innerHTML = '<div style="padding:16px;background:#fff8e1;border-left:3px solid #e67e22;font-size:12px;">Faltan datos: aprieta <b>"Cargar Excel"</b> ' +
+      '(se usan BaseHorasPerdUnif, BaseHorasTrab y las hojas VMAMec).</div>';
+    return;
+  }
+  var fa = document.getElementById('estd-faena').value;
+  var sel = document.getElementById('estd-mes');
+  if (!sel.options.length) estLlenarMeses();
+  var ym = sel.value;
+  if (!ym){ body.innerHTML = '<div style="padding:16px;">Sin meses con datos.</div>'; return; }
+  var E = estEstandares(), F = E.std[fa];
+  if (!F || !Object.keys(F.procesos).length){
+    body.innerHTML = '<div style="padding:16px;background:#fff8e1;">No se pudieron calcular estándares para ' + fa + ' (¿faltan horas contratadas / VMA en los meses base?).</div>';
+    return;
+  }
+  var S = estSeguimiento(fa, ym);
+  var fr = S.diaUlt ? S.diaUlt / S.diasMes : 0;
+  var fmt = function(n, d){ return Number(n || 0).toLocaleString('es-CL', {minimumFractionDigits: d == null ? 1 : d, maximumFractionDigits: d == null ? 1 : d}); };
+  var pct = function(n){ return isFinite(n) ? Math.round(100 * n) + '%' : '—'; };
+  var procs = EST_ORD.filter(function(p){ return F.procesos[p] || S.proc[p]; });
+  if (!EST_SEL.proc || procs.indexOf(EST_SEL.proc) < 0) EST_SEL.proc = F.procesos.Procesado ? 'Procesado' : procs[0];
+
+  // ---- totales de la faena
+  var T = {B: 0, real: 0, prog: 0};
+  procs.forEach(function(p){ var P = F.procesos[p]; if (P){ T.B += P.B; T.prog += P.prog; } T.real += (S.proc[p] || {}).real || 0; });
+  var Tfecha = T.B * fr, proy = S.diaUlt ? T.real / S.diaUlt * S.diasMes : 0, sem = estSemaforo(Tfecha ? T.real / Tfecha : NaN);
+  var card = function(t, v, s, c, bg){
+    return '<div style="flex:1;min-width:160px;background:' + (bg || '#f4f8fd') + ';border-left:4px solid ' + c + ';padding:9px 12px;border-radius:5px;">' +
+      '<div style="font-size:9.5px;color:#666;text-transform:uppercase;">' + t + '</div>' +
+      '<div style="font-size:21px;font-weight:800;color:' + c + ';">' + v + '</div><div style="font-size:10px;color:#777;">' + s + '</div></div>';
+  };
+  var h = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;">' +
+    card('Tope del mes · ' + fa, fmt(T.B, 0) + ' h', 'meta FD ' + Math.round(F.meta * 100) + '% · ' + fmt(T.B / EST_PARAM.diasStd) + ' h/día', '#1f6fd1') +
+    card('Tope a la fecha', fmt(Tfecha, 0) + ' h', S.diaUlt ? 'al día ' + S.diaUlt + ' de ' + S.diasMes : 'sin datos en el mes', '#174ea6') +
+    card('Perdido a la fecha', fmt(T.real, 0) + ' h', pct(Tfecha ? T.real / Tfecha : NaN) + ' del tope a la fecha · ' + sem.t, sem.c, sem.bg) +
+    card('Proyección fin de mes', fmt(proy, 0) + ' h', 'FD proyectado ' + (T.prog ? pct(1 - proy / T.prog) : '—') + ' (meta ' + Math.round(F.meta * 100) + '%)', proy <= T.B ? '#1a7f37' : '#c0392b') +
+    '</div>';
+  if (ym < EST_PARAM.vigenteDesde)
+    h += '<div style="background:#eef3fb;border-left:3px solid #1f6fd1;padding:6px 12px;font-size:11px;margin-bottom:8px;">Este mes es parte de la <b>base</b> con que se calculó el estándar (mayo–septiembre 2026). El estándar rige desde octubre 2026.</div>';
+
+  // ---- tabla por proceso
+  var th = function(t, al){ return '<th style="background:#1f6fd1;color:#fff;padding:6px 8px;font-size:10.5px;text-align:' + (al || 'center') + ';">' + t + '</th>'; };
+  var td = function(v, st){ return '<td style="padding:5px 8px;border-bottom:1px solid #e6eef8;font-size:11px;text-align:center;' + (st || '') + '">' + v + '</td>'; };
+  h += '<div style="font-size:12px;font-weight:700;color:#174ea6;margin:6px 0 4px;">Por proceso <span style="font-weight:400;color:#888;font-size:10.5px;">· clic en una fila para ver sus causas</span></div>' +
+       '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;"><thead><tr>' +
+       th('Proceso', 'left') + th('Máquinas') + th('Hrs contratadas / mes') + th('TOPE mes') + th('Tope a la fecha') + th('Perdido a la fecha') +
+       th('% del tope a la fecha') + th('Proyección mes') + th('Estado') + '</tr></thead><tbody>';
+  procs.forEach(function(p){
+    var P = F.procesos[p], R = S.proc[p] || {real: 0};
+    var tf = P ? P.B * fr : 0, pr = P && tf ? R.real / tf : NaN, se = estSemaforo(pr);
+    var pj = S.diaUlt ? R.real / S.diaUlt * S.diasMes : 0, act = p === EST_SEL.proc;
+    h += '<tr onclick="EST_SEL.proc=\'' + p + '\';estRender()" style="cursor:pointer;background:' + (act ? '#dbe8fb' : '#fff') + ';">' +
+      td((act ? '▶ ' : '') + p, 'text-align:left;font-weight:700;') +
+      td(P ? P.maqs.map(function(m){ return m.replace(/\b\w/g, function(x){ return x; }); }).join(', ').toLowerCase().replace(/(^|, )(\w)/g, function(a, b, c){ return b + c.toUpperCase(); }) : '<i>sin estándar</i>', 'font-size:10px;color:#555;') +
+      td(P ? fmt(P.prog) : '—') + td(P ? fmt(P.B) : '—', 'font-weight:700;') + td(P ? fmt(tf) : '—') +
+      td(fmt(R.real), 'font-weight:800;color:' + se.c + ';') +
+      td('<div style="display:flex;align-items:center;gap:5px;"><div style="flex:1;background:#eee;border-radius:3px;height:9px;min-width:60px;">' +
+         '<div style="width:' + Math.min(100, Math.round(100 * (pr || 0) / 1.5)) + '%;height:100%;background:' + se.c + ';border-radius:3px;"></div></div>' +
+         '<span style="font-weight:700;color:' + se.c + ';">' + pct(pr) + '</span></div>') +
+      td(fmt(pj), 'color:' + (P && pj <= P.B ? '#1a7f37' : '#c0392b') + ';') +
+      td('<span style="background:' + se.bg + ';color:' + se.c + ';border-radius:10px;padding:2px 9px;font-weight:700;">' + se.t + '</span>') + '</tr>';
+  });
+  h += '<tr style="background:#d6e6fa;font-weight:800;">' + td('TOTAL ' + fa, 'text-align:left;') + td('') + td(fmt(T.prog)) + td(fmt(T.B)) +
+       td(fmt(Tfecha)) + td(fmt(T.real)) + td(pct(Tfecha ? T.real / Tfecha : NaN)) + td(fmt(proy)) +
+       td('<span style="background:' + sem.bg + ';color:' + sem.c + ';border-radius:10px;padding:2px 9px;">' + sem.t + '</span>') + '</tr></tbody></table></div>';
+
+  // ---- causas del proceso elegido
+  var P = F.procesos[EST_SEL.proc], R = S.proc[EST_SEL.proc] || {real: 0, causa: {}, maq: {}, dia: {}};
+  h += '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:14px;">';
+  h += '<div style="flex:1.3;min-width:420px;"><div style="font-size:12px;font-weight:700;color:#174ea6;margin:0 0 4px;">Causas · ' + EST_SEL.proc + '</div>' +
+       '<table style="width:100%;border-collapse:collapse;"><thead><tr>' + th('Tipo', 'left') + th('Causa', 'left') + th('Estándar mes') +
+       th('Estándar a la fecha') + th('Real a la fecha') + th('Diferencia') + '</tr></thead><tbody>';
+  var causas = {};
+  if (P) Object.keys(P.A.std).forEach(function(c){ causas[c] = 1; });
+  Object.keys(R.causa).forEach(function(c){ causas[c] = 1; });
+  var lc = Object.keys(causas).map(function(c){
+    var g = P && P.hist[c] ? P.hist[c].g : estGrupo(c);
+    return {c: c, g: EST_OTROS[c] ? 0 : g, s: P ? (P.A.std[c] || 0) : 0, r: R.causa[c] || 0};
+  }).filter(function(x){ return x.s >= 0.05 || x.r >= 0.05; })
+    .sort(function(a, b){ return (a.g || 9) - (b.g || 9) || (b.s + b.r) - (a.s + a.r); });
+  // las causas chicas sin horas en el mes se juntan en una linea, para no llenar la tabla de ceros
+  var chicas = lc.filter(function(x){ return x.s < 0.5 && x.r < 0.05; });
+  lc = lc.filter(function(x){ return !(x.s < 0.5 && x.r < 0.05); });
+  if (chicas.length) lc.push({c: 'OTRAS ' + chicas.length + ' CAUSAS MENORES (SIN HORAS EN EL MES)', g: 9, r: 0,
+                              s: chicas.reduce(function(a, x){ return a + x.s; }, 0)});
+  lc.forEach(function(x){
+    var sf = x.s * fr, dif = x.r - sf, col = dif > 0.05 ? '#c0392b' : '#1a7f37';
+    var tipo = x.g === 0 ? '<span style="color:#b9770e;">Sin clasificar</span>' : EST_GN[x.g] || '';
+    h += '<tr>' + td(tipo, 'text-align:left;font-size:10px;color:#666;') +
+      td(x.c.charAt(0) + x.c.substring(1).toLowerCase() + (x.g === 0 ? ' <span title="En el estándar estas horas se repartieron entre las causas clasificadas: hay que anotar la causa real" style="color:#b9770e;">⚠ anotar causa</span>' : ''), 'text-align:left;') +
+      td(fmt(x.s)) + td(fmt(sf)) + td(fmt(x.r), 'font-weight:700;') + td((dif > 0 ? '+' : '') + fmt(dif), 'font-weight:700;color:' + col + ';') + '</tr>';
+  });
+  if (P && P.A.margen > 0) h += '<tr style="background:#e2efda;">' + td('Margen', 'text-align:left;font-size:10px;') + td('Margen libre del tope', 'text-align:left;') +
+    td(fmt(P.A.margen)) + td(fmt(P.A.margen * fr)) + td('') + td('') + '</tr>';
+  h += '<tr style="background:#d6e6fa;font-weight:800;">' + td('') + td('TOTAL', 'text-align:left;') + td(P ? fmt(P.B) : '—') + td(P ? fmt(P.B * fr) : '—') +
+       td(fmt(R.real)) + td(P ? ((R.real - P.B * fr > 0 ? '+' : '') + fmt(R.real - P.B * fr)) : '') + '</tr></tbody></table></div>';
+  // grafico acumulado
+  h += '<div style="flex:1;min-width:340px;"><div style="font-size:12px;font-weight:700;color:#174ea6;margin:0 0 4px;">Acumulado día a día · ' + EST_SEL.proc + '</div>' +
+       '<div style="background:#fff;border:1px solid #e1e8f2;border-radius:6px;padding:6px;height:280px;"><canvas id="estd-chart"></canvas></div></div>';
+  h += '</div>';
+
+  // ---- por maquina
+  h += '<div style="font-size:12px;font-weight:700;color:#174ea6;margin:14px 0 4px;">Por máquina · ' + fa + '</div>' +
+       '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;"><thead><tr>' + th('Máquina', 'left') + th('Proceso') +
+       th('Hrs contratadas / mes') + th('TOPE mes') + th('Tope a la fecha') + th('Perdido a la fecha') + th('% del tope') + th('Mayor causa del mes', 'left') + '</tr></thead><tbody>';
+  procs.forEach(function(p){
+    var Pp = F.procesos[p], Rp = S.proc[p] || {maq: {}}, eqs = {};
+    if (Pp) Object.keys(Pp.maquinas).forEach(function(e){ eqs[e] = 1; });
+    Object.keys(Rp.maq || {}).forEach(function(e){ eqs[e] = 1; });
+    Object.keys(eqs).sort().forEach(function(e){
+      var Mq = Pp && Pp.maquinas[e], Rm = (Rp.maq || {})[e] || {real: 0, causa: {}};
+      var tf = Mq ? Mq.B * fr : 0, pr = Mq && tf ? Rm.real / tf : NaN, se = estSemaforo(pr);
+      var top = Object.keys(Rm.causa).sort(function(a, b){ return Rm.causa[b] - Rm.causa[a]; })[0];
+      h += '<tr>' + td(e.toLowerCase().replace(/(^|\s)(\w)/g, function(a, b, c){ return b + c.toUpperCase(); }), 'text-align:left;font-weight:700;') + td(p, 'color:#666;') +
+        td(Mq ? fmt(Mq.prog) : '—') + td(Mq ? fmt(Mq.B) : '<i style="color:#999;">sin estándar</i>') + td(Mq ? fmt(tf) : '—') +
+        td(fmt(Rm.real), 'font-weight:800;color:' + se.c + ';') +
+        td('<span style="background:' + se.bg + ';color:' + se.c + ';border-radius:10px;padding:2px 8px;font-weight:700;">' + pct(pr) + '</span>') +
+        td(top ? top.charAt(0) + top.substring(1).toLowerCase() + ' (' + fmt(Rm.causa[top]) + ' h)' : '—', 'text-align:left;font-size:10.5px;color:#555;') + '</tr>';
+    });
+  });
+  h += '</tbody></table></div>';
+  if (S.excl > 0.05)
+    h += '<div style="font-size:10.5px;color:#666;margin-top:6px;">No cuentan en el mes (clima / incendio / paso de vehículos / cargo Formin): <b>' + fmt(S.excl) + ' h</b> — ' +
+         Object.keys(S.exclDet).map(function(c){ return c.toLowerCase() + ' ' + fmt(S.exclDet[c]); }).join(' · ') + '</div>';
+  h += '<div style="font-size:9.5px;color:#999;margin-top:10px;line-height:1.55;">' +
+       '<b>Cómo se calcula:</b> TOPE mes = (1 − meta FD) × horas contratadas del proceso (promedio mayo–septiembre 2026 según el VMA y la especie de cada mes, hojas VMAMec). ' +
+       'Tope y estándar <b>a la fecha</b> = valor del mes × (día ' + (S.diaUlt || 0) + ' ÷ ' + S.diasMes + ' días), hasta el último día con datos. Proyección = perdido a la fecha ÷ días transcurridos × días del mes. ' +
+       'Horas perdidas: BaseHorasPerdUnif (la mayor fuente por máquina-día), cada día repartido entre sus causas, sin tope de 10 h. Torre Alpine y Carro Bereuter son un mismo equipo. ' +
+       'Reparto del tope: "Otros" repartido entre las causas clasificadas; operación con topes (cadena ' + EST_PARAM.topeProceso['CAMBIO DE CADENA O ESPADA'] +
+       ' h/proceso, charlas ' + EST_PARAM.topeMaquina['CHARLA, CAPACITACIONES O REUNIONES'] + ' h/máquina) y máximo ' + Math.round(EST_PARAM.operMax * 100) +
+       '% del tope; el resto a evitables y esperas en proporción a su real. Fuera: Procesador 08 (respaldo), Carro de arrastre y Falcon Winch (sin horas contratadas). ' +
+       'Semáforo: dentro ≤ 100% del tope a la fecha · alerta hasta 120% · sobre &gt; 120%.</div>';
+  body.innerHTML = h;
+
+  // grafico
+  try {
+    if (EST_CHART){ EST_CHART.destroy(); EST_CHART = null; }
+    var cv = document.getElementById('estd-chart'); if (!cv || typeof Chart === 'undefined') return;
+    var lab = [], real = [], est = [], acc = 0, Bp = P ? P.B : 0;
+    for (var d = 1; d <= S.diasMes; d++){
+      var f = ym + '-' + (d < 10 ? '0' : '') + d;
+      lab.push(d);
+      acc += (R.dia || {})[f] || 0;
+      real.push(d <= S.diaUlt ? Math.round(acc * 10) / 10 : null);
+      est.push(Math.round(Bp * d / S.diasMes * 10) / 10);
+    }
+    EST_CHART = new Chart(cv, {type: 'line', data: {labels: lab, datasets: [
+      {label: 'Perdido acumulado', data: real, borderColor: '#c0392b', backgroundColor: 'rgba(192,57,43,.12)', fill: true, tension: .15, pointRadius: 2},
+      {label: 'Estándar acumulado', data: est, borderColor: '#1f6fd1', borderDash: [6, 4], pointRadius: 0, fill: false}]},
+      options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {labels: {font: {size: 10}, boxWidth: 12}}},
+        scales: {x: {title: {display: true, text: 'Día del mes', font: {size: 10}}, ticks: {font: {size: 9}}},
+                 y: {beginAtZero: true, title: {display: true, text: 'horas', font: {size: 10}}, ticks: {font: {size: 9}}}}}});
+  } catch(eC){ console.warn('[ESTD] grafico:', eC.message); }
+}
+
+var APP_BUILD = '06-10-2026 Estandares TOB + destinatarios ACR por turno';
 console.log('%c[APP] build ' + APP_BUILD, 'background:#1a6b3a;color:#fff;padding:2px 6px;');
 
 
@@ -11874,7 +12312,7 @@ var RN_PERSONAS = ['Alan Delgado Morales','Alejandro Sepúlveda Martínez','Alva
    Los nombres van escritos igual que en los usuarios de la web, para que calcen los correos. */
 var RN_CARGOS = {
   'Jefes de faena': ['Elias Díaz Cares', 'Alvaro González Sepúlveda', 'José Peña Rivera', 'Luis Perez Gutierrez',
-                     'Ricardo Riveros Herrera', 'Luis Silva Muñoz', 'Oscar Silva Muñoz'],
+                     'Ricardo Riveros Herrera', 'Luis Silva Muñoz', 'Oscar Silva Muñoz', 'Abraham Tapia Montecino'],
   'Supervisores': ['Sebastian Poo Tajan', 'Luis Saez Lavandero', 'Alejandro Sepúlveda Martínez'],
   'Coordinador de mantención': ['Juan Paulo Silva Contreras'],
   'Mecánicos': ['Alan Delgado Morales'],
@@ -12199,15 +12637,66 @@ function rnConfig(){
       var prev = (p === 'Guillermo Mendez Cano' || p === 'Marta Alarcón Quezada') ? ' <b style="color:#b83a2e;">(prevencionista)</b>' : '';
       return '<div style="display:flex;gap:6px;align-items:center;margin-bottom:3px;font-size:11.5px;"><span style="width:230px;">' + rnEsc(p) + prev + '</span>' +
         '<input data-i="' + i + '" class="rn-cfg-m" value="' + rnEsc(rnMail(p)) + '" placeholder="correo@..." style="flex:1;padding:3px;"></div>'; }).join('') + '</div>' +
+    rnAcrHtml() +
     '<div style="text-align:right;margin-top:8px;"><button class="rn-btn" style="background:#eee;padding:6px 12px;" onclick="rnModalCerrar()">Cancelar</button>' +
+    '<button class="rn-btn" style="background:#1f6fd1;color:#fff;padding:6px 12px;" onclick="rnConfigOk(true)" title="Guarda y descarga alerta_destinatarios.json para el programa de alertas">&#128190; Guardar y exportar para alertas ACR</button>' +
     '<button class="rn-btn" style="background:#1a6b3a;color:#fff;padding:6px 12px;" onclick="rnConfigOk()">Guardar</button></div>';
   rnModal(h); document.getElementById('rn-cfg-cp').value = RN.copiaPrev || 'empresa';
 }
-function rnConfigOk(){
+/* ── Destinatarios de la alerta ACR por incumplir los Estándares TOB (06-10-2026) ──
+   Por faena: supervisor y jefe de faena (Para) + copia general (gerencia). Los correos salen de la lista de arriba.
+   "Guardar y exportar" descarga alerta_destinatarios.json; C:\TrabajoOEE\Estandares\alerta_acr.py lo toma solo
+   desde la carpeta Descargas (el más reciente). */
+var RN_ACR_FAENAS = ['Mec 3', 'Mec 4', 'Mec 5'];
+/* Precarga [supervisor, jefe turno A, jefe turno B] desde la hoja "Personal por faena" del Best (06-10-2026).
+   Mec 5 no tiene supervisor en la hoja y Mec 4 trae un solo jefe de faena: se completan en pantalla. */
+var RN_ACR_DEF = {'Mec 3': ['Sebastian Poo Tajan', 'Ricardo Riveros Herrera', 'Abraham Tapia Montecino'],
+                  'Mec 4': ['Luis Saez Lavandero', 'José Peña Rivera', ''],
+                  'Mec 5': ['', 'Luis Perez Gutierrez', 'Oscar Silva Muñoz']};
+function rnAcrHtml(){
+  var A = RN.acr || {para: RN_ACR_DEF, copia: []};
+  var opts = function(sel){ return '<option value="">(nadie)</option>' + rnListaCargos().map(function(p){
+    return '<option' + (p === sel ? ' selected' : '') + '>' + rnEsc(p) + '</option>'; }).join(''); };
+  var h = '<div style="margin-top:12px;padding:8px 10px;background:#eaf2fc;border:1px solid #1f6fd1;border-radius:6px;">' +
+    '<div style="font-weight:800;font-size:12.5px;color:#174ea6;margin-bottom:4px;">&#128207; Alerta ACR &mdash; Estándares TOB</div>' +
+    '<div style="font-size:10.5px;color:#555;margin-bottom:6px;">A quién le llega la solicitud de Análisis de Causa Raíz cuando un proceso de la faena pasa de 120% del tope a la fecha: al supervisor y al jefe de faena <b>del turno que está trabajando</b> ese día (ciclo 7x7 de la hoja Configuración del Best). Viene precargado desde la hoja &laquo;Personal por faena&raquo;; revisa y completa lo que falte.</div>' +
+    '<table style="width:100%;font-size:11.5px;border-collapse:collapse;"><tr><th style="text-align:left;">Faena</th><th style="text-align:left;">Supervisor</th><th style="text-align:left;">Jefe de faena turno A</th><th style="text-align:left;">Jefe de faena turno B</th></tr>';
+  RN_ACR_FAENAS.forEach(function(fa){
+    var p = (A.para || {})[fa] || [];
+    h += '<tr><td style="padding:2px 4px;font-weight:700;white-space:nowrap;">' + fa + '</td>' +
+      '<td style="padding:2px 4px;"><select class="rn-acr" data-fa="' + fa + '" data-n="0" style="width:100%;">' + opts(p[0]) + '</select></td>' +
+      '<td style="padding:2px 4px;"><select class="rn-acr" data-fa="' + fa + '" data-n="1" style="width:100%;">' + opts(p[1]) + '</select></td>' +
+      '<td style="padding:2px 4px;"><select class="rn-acr" data-fa="' + fa + '" data-n="2" style="width:100%;">' + opts(p[2]) + '</select></td></tr>';
+  });
+  h += '</table><div style="font-size:11.5px;margin-top:6px;"><b>Con copia a</b> (gerencia):</div><div style="display:flex;flex-wrap:wrap;gap:4px 12px;font-size:11px;">';
+  rnListaCargos().forEach(function(p, i){
+    if (!/Gerente|administración|Coordinador de operaciones/.test(Object.keys(RN_CARGOS).filter(function(g){ return RN_CARGOS[g].indexOf(p) >= 0; }).join(' '))) return;
+    h += '<label><input type="checkbox" class="rn-acr-cc" value="' + rnEsc(p) + '"' + ((A.copia || []).indexOf(p) >= 0 ? ' checked' : '') + '> ' + rnEsc(p) + '</label>';
+  });
+  return h + '</div></div>';
+}
+function rnAcrExportar(){
+  var A = RN.acr || {para: {}, copia: []}, falta = [];
+  var persona = function(p, rol){ var m = rnMail(p); if (!m) falta.push(p); var o = {nombre: p, correo: m}; if (rol) o.rol = rol; return o; };
+  var ROL = ['supervisor', 'jefe A', 'jefe B'];   // el programa manda al supervisor + al jefe del turno que esta trabajando
+  var out = {generado: new Date().toISOString(), faenas: {}, copia: (A.copia || []).map(persona)};
+  RN_ACR_FAENAS.forEach(function(fa){ out.faenas[fa] = ((A.para || {})[fa] || []).map(function(p, i){ return p ? persona(p, ROL[i]) : null; }).filter(Boolean); });
+  var blob = new Blob([JSON.stringify(out, null, 1)], {type: 'application/json'});
+  var a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'alerta_destinatarios.json';
+  document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  if (falta.length) alert('Ojo: falta el correo de ' + falta.join(', ') + '. Anótalo en la lista y vuelve a exportar.');
+}
+function rnConfigOk(exportar){
   RN.correos = RN.correos || {};
   document.querySelectorAll('.rn-cfg-m').forEach(function(inp){ var p = rnListaCargos()[+inp.getAttribute('data-i')], v = inp.value.trim();
     if (v) RN.correos[p] = v; else delete RN.correos[p]; });
-  RN.copiaPrev = document.getElementById('rn-cfg-cp').value; rnSave(); rnModalCerrar(); rnRender();
+  RN.acr = {para: {}, copia: []};
+  document.querySelectorAll('.rn-acr').forEach(function(s){ var fa = s.getAttribute('data-fa');
+    (RN.acr.para[fa] = RN.acr.para[fa] || ['', '', ''])[+s.getAttribute('data-n')] = s.value; });
+  document.querySelectorAll('.rn-acr-cc').forEach(function(c){ if (c.checked) RN.acr.copia.push(c.value); });
+  RN.copiaPrev = document.getElementById('rn-cfg-cp').value; rnSave();
+  if (exportar) rnAcrExportar();
+  rnModalCerrar(); rnRender();
 }
 
 /* ── pantalla ── */
@@ -16645,6 +17134,118 @@ function brRecorrer(){
 var ML_FULL = ['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 var PD_FAENA_COLORS = ['#27ae60','#2471a3','#e67e22','#c0392b','#8e44ad','#16a085','#d35400'];
 
+/* ============================================================
+   PRODUCCION POR FUNDO (06-10-2026, pedido de Gustavo)
+   Boton azul en el encabezado de "Informe Produccion Diaria de Faenas".
+   Fuente: PROD_RODAL (hoja produc: Cancha = fundo, Rodal, Vol.Total, Faena),
+   que ya se guarda en el cache, asi que no hay que tocar IndexedDB.
+   Al elegir un fundo: resumen por mes y faena (m3, dias con produccion, rodales).
+   ============================================================ */
+var FUNDO_SEL = '';
+var FUNDO_MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
+function fundoProdDatos(){
+  var F = {};                                   // fundo -> {tot, filas:{ym|faena:{m3,dias,rod}}, ini, fin}
+  var PR = window.PROD_RODAL || {};
+  Object.keys(PR).forEach(function(k){
+    var p = k.split('|');                       // faena|cancha|rodal
+    if (p.length < 3 || !p[1]) return;
+    var fa = p[0], fu = p[1], ro = p[2];
+    var o = F[fu] || (F[fu] = {tot:0, filas:{}, ini:'', fin:'', faenas:{}});
+    Object.keys(PR[k]).forEach(function(fecha){
+      var m3 = PR[k][fecha] || 0;
+      if (!(m3 > 0)) return;
+      var ym = fecha.substring(0, 7), kk = ym + '|' + fa;
+      var r = o.filas[kk] || (o.filas[kk] = {ym:ym, faena:fa, m3:0, dias:{}, rod:{}});
+      r.m3 += m3; r.dias[fecha] = 1; r.rod[ro] = (r.rod[ro] || 0) + m3;
+      o.tot += m3; o.faenas[fa] = 1;
+      if (!o.ini || fecha < o.ini) o.ini = fecha;
+      if (!o.fin || fecha > o.fin) o.fin = fecha;
+    });
+  });
+  return F;
+}
+function fundoProdAbrir(){
+  var F = fundoProdDatos();
+  var lista = Object.keys(F).sort(function(a, b){ return F[b].fin.localeCompare(F[a].fin) || a.localeCompare(b); });
+  var old = document.getElementById('fundo-modal'); if (old) old.remove();
+  var bg = document.createElement('div');
+  bg.id = 'fundo-modal'; bg.className = 'pd-modal-bg';
+  bg.onclick = function(e){ if (e.target === bg) bg.remove(); };
+  if (!lista.length){
+    bg.innerHTML = '<div class="pd-modal-box"><div class="pd-modal-hdr"><div class="pd-modal-title">🌲 Producción por Fundo</div>' +
+      '<button class="pd-modal-close" onclick="document.getElementById(\'fundo-modal\').remove()">✕ Cerrar</button></div>' +
+      '<div style="padding:14px;background:#fff8e1;border-left:3px solid #e67e22;font-size:12px;">No hay producción por fundo cargada. ' +
+      'Aprieta <b>"Cargar Excel"</b> (se lee de la hoja <b>produc</b>).</div></div>';
+    document.body.appendChild(bg); return;
+  }
+  if (!FUNDO_SEL || !F[FUNDO_SEL]) FUNDO_SEL = lista[0];
+  var fmt = function(n){ return Math.round(n).toLocaleString('es-CL'); };
+  bg.innerHTML = '<div class="pd-modal-box" style="max-width:900px;max-height:88vh;overflow:auto;">' +
+    '<div class="pd-modal-hdr"><div class="pd-modal-title" style="color:#1f6fd1;">🌲 Producción por Fundo</div>' +
+    '<button class="pd-modal-close" onclick="document.getElementById(\'fundo-modal\').remove()">✕ Cerrar</button></div>' +
+    '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">' +
+    '<label style="font-size:11px;font-weight:700;color:#555;">Fundo:</label>' +
+    '<select id="fundo-sel" onchange="FUNDO_SEL=this.value;fundoProdRender()" ' +
+    'style="border:2px solid #1f6fd1;border-radius:6px;padding:5px 10px;font-size:12px;font-weight:700;color:#1f6fd1;min-width:280px;">' +
+    lista.map(function(f){
+      return '<option value="' + f.replace(/"/g, '&quot;') + '"' + (f === FUNDO_SEL ? ' selected' : '') + '>' + f +
+             ' — ' + fmt(F[f].tot) + ' m³ · ' + Object.keys(F[f].faenas).sort().join(', ') + '</option>';
+    }).join('') + '</select>' +
+    '<span style="font-size:10px;color:#888;">Ordenados del más reciente al más antiguo</span></div>' +
+    '<div id="fundo-body"></div>' +
+    '<div style="font-size:9.5px;color:#999;margin-top:8px;">Fuente: hoja <b>produc</b> (Vol. Total por cancha y rodal, cartola Mininco). ' +
+    'Si en un mes trabajaron dos faenas el mismo fundo, salen en filas separadas.</div></div>';
+  document.body.appendChild(bg);
+  fundoProdRender(F);
+}
+function fundoProdRender(F){
+  F = F || fundoProdDatos();
+  var body = document.getElementById('fundo-body');
+  var o = F[FUNDO_SEL];
+  if (!body || !o) return;
+  var fmt = function(n, d){ return Number(n).toLocaleString('es-CL', {minimumFractionDigits:d || 0, maximumFractionDigits:d || 0}); };
+  var fFecha = function(s){ return s ? s.substring(8, 10) + '-' + s.substring(5, 7) + '-' + s.substring(0, 4) : ''; };
+  var filas = Object.keys(o.filas).map(function(k){ return o.filas[k]; })
+    .sort(function(a, b){ return a.ym.localeCompare(b.ym) || a.faena.localeCompare(b.faena); });
+  var nDias = 0, rodT = {};
+  filas.forEach(function(r){ nDias += Object.keys(r.dias).length; Object.keys(r.rod).forEach(function(x){ rodT[x] = 1; }); });
+  var meses = {}; filas.forEach(function(r){ meses[r.ym] = 1; });
+  var tarjeta = function(t, v, s, c){
+    return '<div style="flex:1;min-width:140px;background:#f4f8fd;border-left:3px solid ' + c + ';padding:8px 12px;border-radius:4px;">' +
+      '<div style="font-size:9.5px;color:#666;text-transform:uppercase;">' + t + '</div>' +
+      '<div style="font-size:19px;font-weight:800;color:' + c + ';">' + v + '</div>' +
+      '<div style="font-size:9.5px;color:#888;">' + s + '</div></div>';
+  };
+  var h = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">' +
+    tarjeta('Producción total', fmt(o.tot) + ' m³', fmt(nDias) + ' días con producción', '#1f6fd1') +
+    tarjeta('Meses trabajados', Object.keys(meses).length, fFecha(o.ini) + ' al ' + fFecha(o.fin), '#1a6b3a') +
+    tarjeta('Faena(s)', Object.keys(o.faenas).sort().join(' · '), Object.keys(rodT).length + ' rodales', '#b9770e') +
+    tarjeta('Promedio diario', fmt(nDias ? o.tot / nDias : 0) + ' m³', 'por día con producción', '#8e44ad') +
+    '</div>';
+  var th = function(t, al){ return '<th style="background:#1f6fd1;color:#fff;padding:6px 8px;font-size:10.5px;text-align:' + (al || 'center') + ';">' + t + '</th>'; };
+  var td = function(v, st){ return '<td style="padding:5px 8px;border-bottom:1px solid #e6eef8;font-size:11px;text-align:center;' + (st || '') + '">' + v + '</td>'; };
+  var mx = filas.reduce(function(m, r){ return Math.max(m, r.m3); }, 1);
+  h += '<table style="width:100%;border-collapse:collapse;"><thead><tr>' + th('Mes', 'left') + th('Faena') + th('m³ producidos') +
+       th('', 'left') + th('Días con producción') + th('m³ / día') + th('Rodales') + th('% del fundo') + '</tr></thead><tbody>';
+  filas.forEach(function(r, i){
+    var d = Object.keys(r.dias).length;
+    var rods = Object.keys(r.rod).sort(function(a, b){ return r.rod[b] - r.rod[a]; });
+    h += '<tr style="background:' + (i % 2 ? '#f7faff' : '#fff') + ';">' +
+      td(FUNDO_MESES[parseInt(r.ym.substring(5, 7), 10) - 1] + ' ' + r.ym.substring(0, 4), 'text-align:left;font-weight:700;') +
+      td('<span style="background:#e8f4fd;color:#1a5276;border-radius:10px;padding:2px 8px;font-weight:700;">' + r.faena + '</span>') +
+      td(fmt(r.m3), 'font-weight:800;color:#1f6fd1;') +
+      td('<div style="background:#e6eef8;border-radius:3px;height:9px;min-width:80px;"><div style="width:' + Math.round(100 * r.m3 / mx) +
+         '%;height:100%;background:#1f6fd1;border-radius:3px;"></div></div>', 'text-align:left;width:22%;') +
+      td(d) + td(fmt(d ? r.m3 / d : 0)) +
+      td(rods.join(', '), 'font-size:10px;color:#555;') +
+      td(fmt(100 * r.m3 / o.tot, 1) + '%', 'color:#777;') + '</tr>';
+  });
+  h += '<tr style="background:#d6e6fa;font-weight:800;">' + td('TOTAL', 'text-align:left;') + td(Object.keys(o.faenas).sort().join(' · ')) +
+       td(fmt(o.tot), 'color:#1f6fd1;') + td('') + td(fmt(nDias)) + td(fmt(nDias ? o.tot / nDias : 0)) +
+       td(Object.keys(rodT).length) + td('100%') + '</tr></tbody></table>';
+  body.innerHTML = h;
+}
+
 function buildProdDiaria() {
   var anio = parseInt(document.getElementById('pd-anio').value) || 2026;
   var mes  = parseInt(document.getElementById('pd-mes').value)  || 5;
@@ -17279,6 +17880,7 @@ function gestInvalidarCaches(){
   PROD_M3_DIA = null;
   PROD_ROD_DIA = null;
   PROD_FUN_DIA = null;
+  EST_CACHE = null;          // ficha Estándares TOB (06-10-2026)
 }
 var GEST_ULTIMO  = null;       // datos del mes en pantalla, para exportar
 
