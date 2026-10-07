@@ -1024,10 +1024,7 @@ function Dashboard(p){
   if(load)return h('div',{className:'spin'},'Cargando...');
   var movsActivos=movs.filter(function(m){return m.estado==='ACTIVO';});
   return h('div',null,
-    h(AlertaCalendario,{tok:p.tok,onIr:function(){p.setView('calendario');}}),
-    h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.setView('solicitudes');}}),
-    h(AlertaContratos,{tok:p.tok,onIr:function(){p.setView('contratos');}}),
-    // ── KPIs principales ──
+    // ── KPIs principales ── (las alertas generales están en Inicio)
     h('div',{className:'kpis'},
       h('div',{className:'kpi kpi-b'},h('div',{className:'kpi-lbl'},'Valor total stock'),h('div',{className:'kpi-val'},CLP(stats&&stats.total||0)),h('div',{className:'kpi-sub'},'Costo promedio ponderado')),
       h('div',{className:'kpi kpi-'+(p.alerts>0?'a':'g'),style:{cursor:'pointer'},onClick:function(){p.setView('stock');}},h('div',{className:'kpi-lbl'},'Alertas stock'),h('div',{className:'kpi-val'},p.alerts),h('div',{className:'kpi-sub'},'Bajo mínimo')),
@@ -9350,10 +9347,7 @@ function OCView(p){
   }
   var sortedOCs=sortOCs(ocs);
   return h('div',null,
-    h(AlertaCalendario,{tok:p.tok,onIr:function(){p.setView&&p.setView('calendario');}}),
-    h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.setView&&p.setView('solicitudes');}}),
-    h(AlertaRepuestos,{tok:p.tok,onIr:function(){p.setView&&p.setView('oc-repuestos');}}),
-    h(AlertaContratos,{tok:p.tok,onIr:function(){p.setView&&p.setView('contratos');}}),
+    // Las alertas (calendario, solicitudes, repuestos, contratos) viven ahora en la pantalla de Inicio (InicioView)
     h('div',{style:{display:'flex',gap:6,marginBottom:8,flexWrap:'wrap',alignItems:'center'}},
       h(Btn,{onClick:function(){setFormOC({});}},'+ Nueva OC'),
       h(Btn,{v:'a',onClick:function(){setShowZipImport(true);}},'📦 Importar ZIP'),
@@ -22261,7 +22255,7 @@ function calImpMapear(matriz){
 }
 function CalImportModal(p){
   var[texto,setTexto]=useState('');var[datos,setDatos]=useState(null);var[origen,setOrigen]=useState('');var[res,setRes]=useState(null);var[err,setErr]=useState('');var[cargando,setCargando]=useState(false);
-  var[usuarios,setUsuarios]=useState([]);var[visDef,setVisDef]=useState('COMPARTIDA');var[partDef,setPartDef]=useState([]);
+  var[usuarios,setUsuarios]=useState([]);var[visDef,setVisDef]=useState('COMPARTIDA');var[partDef,setPartDef]=useState([]);var[actualizar,setActualizar]=useState(false);
   useEffect(function(){api('/calendario/usuarios','GET',null,p.tok).then(function(r){setUsuarios(Array.isArray(r)?r:[]);}).catch(function(){});},[]);
   function procesarMatriz(m,nombre){var d=calImpMapear(m);setDatos(d);setOrigen(nombre);setRes(null);setErr(d.faltan.length?'Faltan columnas obligatorias: '+d.faltan.join(', ')+'. La primera fila debe traer los encabezados (ej. Fecha, Titulo, Descripcion, Area, Empresa, Responsable, Aviso_dias, Clave).':'');}
   function pegar(t){setTexto(t);if(!t.trim()){setDatos(null);return;}var sep=t.indexOf('\t')>=0?'\t':(t.indexOf(';')>=0?';':',');procesarMatriz(t.split(/\r?\n/).map(function(l){return l.split(sep);}),'texto pegado');}
@@ -22271,13 +22265,13 @@ function CalImportModal(p){
   function enviar(prueba){
     var validas=(datos&&datos.filas||[]).filter(function(f){return !f._error;});if(!validas.length){setErr('No hay filas válidas');return;}
     setCargando(true);setErr('');
-    api('/calendario/eventos/importar','POST',{items:validas,solo_prueba:prueba,visibilidad_defecto:visDef,participantes_defecto:partDef.map(function(x){return parseInt(x);})},p.tok).then(function(r){setCargando(false);setRes(r);if(!prueba&&r.creados)p.onImportado&&p.onImportado();}).catch(function(e){setCargando(false);setErr(e.message);});
+    api('/calendario/eventos/importar','POST',{items:validas,solo_prueba:prueba,visibilidad_defecto:visDef,participantes_defecto:partDef.map(function(x){return parseInt(x);}),actualizar_existentes:actualizar},p.tok).then(function(r){setCargando(false);setRes(r);if(!prueba&&(r.creados||r.actualizados))p.onImportado&&p.onImportado();}).catch(function(e){setCargando(false);setErr(e.message);});
   }
   var filas=datos?datos.filas:[],malas=filas.filter(function(f){return f._error;}).length;
   var inp={width:'100%',padding:'8px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:12,boxSizing:'border-box',fontFamily:'inherit'};
   return h(Modal,{title:'📥 Importar tareas al calendario',xl:true,onClose:p.onClose},
     h('div',{style:{padding:'0 4px'}},
-      h('div',{style:{fontSize:12,color:'#475569',marginBottom:10,lineHeight:1.5}},'Sube un Excel o pega las celdas copiadas desde Excel. La primera fila son los encabezados. Obligatorias: ',h('strong',null,'Fecha'),' y ',h('strong',null,'Titulo'),'. Opcionales: Descripcion, Area, Empresa, Responsable (nombre o correo), Aviso_dias (días antes del aviso por correo; varios con punto y coma, ej. 7;1), Prioridad, Tipo (TAREA/EVENTO), Visibilidad (EMPRESA/COMPARTIDA/PRIVADA), Participantes (nombres o correos separados por ;), Clave. Con Clave, volver a importar el mismo archivo no duplica: las filas que ya existen se omiten.'),
+      h('div',{style:{fontSize:12,color:'#475569',marginBottom:10,lineHeight:1.5}},'Sube un Excel o pega las celdas copiadas desde Excel. La primera fila son los encabezados. Obligatorias: ',h('strong',null,'Fecha'),' y ',h('strong',null,'Titulo'),'. Opcionales: Descripcion, Area, Empresa, Responsable (nombre o correo), Aviso_dias (días antes del aviso por correo; varios con punto y coma, ej. 7;1), Prioridad, Tipo (TAREA/EVENTO), Visibilidad (EMPRESA/COMPARTIDA/PRIVADA), Participantes (nombres de usuario, correos o nombres separados por ;), Clave. Con Clave, volver a importar el mismo archivo no duplica: las filas que ya existen se omiten, o se actualizan con los datos del archivo si marcas la casilla.'),
       h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:10}},
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:4}},'Archivo Excel o CSV'),h('input',{type:'file',accept:'.xlsx,.xls,.csv',onChange:archivo,style:{fontSize:12}})),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:4}},'…o pega aquí las celdas (con encabezados)'),h('textarea',{value:texto,onChange:function(e){pegar(e.target.value);},rows:4,style:inp,placeholder:'Fecha\tTitulo\tDescripcion\n15-11-2026\tVence certificado médico: PÉREZ, JUAN\tRenovar y subir al SAT'}))),
@@ -22288,6 +22282,10 @@ function CalImportModal(p){
           h(SolCopiaPicker,{usuarios:usuarios,value:partDef,onChange:setPartDef,excluir:[]}),
           !partDef.length&&h('div',{style:{fontSize:10,color:'#B45309',marginTop:4}},'Sin personas elegidas, solo las verán quien importa y el responsable de cada fila.')),
         visDef==='EMPRESA'&&h('div',{style:{fontSize:10,color:'#64748B'}},'Las verán todos los usuarios con acceso al calendario.')),
+      h('label',{style:{display:'flex',alignItems:'flex-start',gap:8,fontSize:12,color:'#1E293B',background:actualizar?'#FFFBEB':'#F8FAFC',border:'1px solid '+(actualizar?'#FCD34D':'#E2E8F0'),borderRadius:6,padding:'8px 10px',marginBottom:10,cursor:'pointer'}},
+        h('input',{type:'checkbox',checked:actualizar,onChange:function(e){setActualizar(e.target.checked);},style:{marginTop:2}}),
+        h('div',null,h('div',{style:{fontWeight:700}},'🔄 Actualizar las tareas que ya existen'),
+          h('div',{style:{fontSize:11,color:'#64748B',marginTop:2}},'Las filas que ya están en el calendario (misma Clave, o mismo título y fecha) se reescriben con los datos del archivo: título, descripción, fecha, avisos, prioridad, visibilidad y personas. Sin marcar, esas filas se omiten. Sirve para volver a subir un archivo corregido.'))),
       err&&h('div',{className:'al al-e',style:{marginBottom:8}},err),
       datos&&!datos.faltan.length&&h('div',null,
         h('div',{style:{fontSize:12,marginBottom:6}},h('strong',null,filas.length+' filas'),' leídas de '+origen+(malas?h('span',{style:{color:'#B91C1C'}},' · '+malas+' con error (no se importan)'):'')+' · columnas: '+datos.columnas.join(', ')),
@@ -22300,7 +22298,8 @@ function CalImportModal(p){
               h('td',{style:{padding:'4px 7px',color:'#B91C1C',fontSize:10}},f._error));}))),
           filas.length>300&&h('div',{style:{fontSize:10,color:'#94A3B8',padding:6}},'… y '+(filas.length-300)+' más'))),
       res&&h('div',{className:'al '+(res.errores&&res.errores.length?'al-e':'al-s'),style:{marginTop:10,fontSize:12}},
-        h('div',null,h('strong',null,res.prueba?'Simulación: ':'Importado: '),(res.prueba?'se crearían ':'se crearon ')+res.creados+' tarea(s)'+(res.omitidos?', '+res.omitidos+' ya existían y se omitieron':'')+(res.errores&&res.errores.length?', '+res.errores.length+' con error':'')+'.'),
+        h('div',null,h('strong',null,res.prueba?'Simulación: ':'Importado: '),(res.prueba?'se crearían ':'se crearon ')+res.creados+' tarea(s)'+(res.actualizados?', '+res.actualizados+(res.prueba?' ya existían y se actualizarían':' ya existían y se actualizaron'):'')+(res.omitidos?', '+res.omitidos+' ya existían y se omitieron':'')+(res.errores&&res.errores.length?', '+res.errores.length+' con error':'')+'.'),
+        res.usuarios_no_encontrados&&res.usuarios_no_encontrados.length>0&&h('div',{style:{marginTop:6,color:'#B45309',fontWeight:600}},'⚠ No existen estos usuarios en el sistema y se ignoraron al compartir: '+res.usuarios_no_encontrados.join(', ')+'. Se busca por nombre de usuario, correo o nombre completo.'),
         res.errores&&res.errores.length>0&&h('ul',{style:{margin:'6px 0 0 16px'}},res.errores.slice(0,10).map(function(e,i){return h('li',{key:i},'Fila '+e.fila+': '+e.error);}))),
       h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:12}},
         h('button',{onClick:p.onClose,style:{padding:'6px 14px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12,background:'#fff'}},res&&!res.prueba&&res.creados?'Cerrar':'Cancelar'),
@@ -24445,6 +24444,56 @@ function buildCartaTerminoHTML(c){
     '</body></html>';
 }
 
+// ══ INICIO — pantalla de entrada: los avisos de todos los módulos en un solo lugar ══
+// Tarjetas de pendientes por módulo (una llamada a /inicio/resumen). p={tok,onIr(view),compacto}
+function InicioCards(p){
+  var[d,setD]=useState(null);var[err,setErr]=useState('');
+  function cargar(){api('/inicio/resumen','GET',null,p.tok).then(function(r){setD(r||{});setErr('');}).catch(function(e){setErr(e.message);});}
+  useEffect(function(){if(!p.tok)return;cargar();var iv=setInterval(cargar,120000);return function(){clearInterval(iv);};},[p.tok]);
+  if(err)return h('div',{className:'al al-e',style:{fontSize:12}},'No se pudo cargar el resumen de pendientes: '+err);
+  if(!d)return h('div',{style:{fontSize:12,color:'#64748B',padding:'10px 0'}},'Cargando pendientes…');
+  var cards=[];
+  var c=d.compras; if(c&&!c.error){
+    cards.push({k:'oc',icon:'☐',l:'Órdenes de compra pendientes',n:c.pendientes,sub:[c.sin_documento?c.sin_documento+' sin documento':'',c.antiguas?c.antiguas+' con más de 30 días':''].filter(Boolean).join(' · '),view:'ordenes',tone:c.antiguas?'a':'b'});
+    cards.push({k:'dte',icon:'🔗',l:'Facturas sin vincular a OC',n:c.dte_sin_vincular,sub:'Bandeja DTE-OC',view:'bandeja-dte-oc',tone:'b'});}
+  var i=d.inventario; if(i&&!i.error)cards.push({k:'stock',icon:'■',l:'Productos bajo stock mínimo',n:i.bajo_minimo,sub:'Inventario → Stock actual',view:'stock',tone:'a'});
+  var m=d.mantencion; if(m&&!m.error){
+    cards.push({k:'mantv',icon:'⏰',l:'Mantenciones vencidas',n:m.vencidas,sub:m.proximas?m.proximas+' próxima'+(m.proximas>1?'s':'')+' a vencer':'',view:'mant-vencimientos',tone:'r'});
+    cards.push({k:'avisos',icon:'⚠',l:'Avisos de falla pendientes',n:m.avisos,sub:m.ot_abiertas?m.ot_abiertas+' OT abierta'+(m.ot_abiertas>1?'s':''):'',view:'mant-avisos',tone:'a'});
+    cards.push({k:'docs',icon:'🪪',l:'Rev. técnica / acreditación',n:(m.docs_vencidos||0)+(m.docs_por_vencer||0),sub:[m.docs_vencidos?m.docs_vencidos+' vencida'+(m.docs_vencidos>1?'s':''):'',m.docs_por_vencer?m.docs_por_vencer+' vence'+(m.docs_por_vencer>1?'n':'')+' en 30 días':''].filter(Boolean).join(' · '),view:'mant-docs',tone:m.docs_vencidos?'r':'a'});}
+  var r=d.rendiciones; if(r&&!r.error)cards.push({k:'rend',icon:'💰',l:'Gastos de rendición por aprobar',n:r.pendientes,sub:r.monto?CLP(r.monto):'',view:'rendiciones',tone:'b'});
+  var co=d.comite; if(co&&!co.error)cards.push({k:'comite',icon:'🗂',l:'Mis compromisos del comité',n:co.mios,sub:[co.mios_vencidos?co.mios_vencidos+' atrasado'+(co.mios_vencidos>1?'s':''):'',co.total?co.total+' pendiente'+(co.total>1?'s':'')+' en total':''].filter(Boolean).join(' · '),view:'comite',tone:co.mios_vencidos?'r':'g'});
+  if(!cards.length)return null;
+  var TONO={b:{bg:'#EFF6FF',bd:'#BFDBFE',c:'#1D4ED8'},g:{bg:'#F0FDF4',bd:'#BBF7D0',c:'#15803D'},a:{bg:'#FFFBEB',bd:'#FDE68A',c:'#B45309'},r:{bg:'#FEF2F2',bd:'#FECACA',c:'#B91C1C'}};
+  var conPend=cards.filter(function(x){return x.n>0;}),alDia=cards.filter(function(x){return !(x.n>0);});
+  function card(x){var t=x.n>0?TONO[x.tone]:{bg:'#F8FAFC',bd:'#E2E8F0',c:'#94A3B8'};
+    return h('div',{key:x.k,onClick:function(){if(p.onIr)p.onIr(x.view);},title:'Abrir '+x.l,style:{background:t.bg,border:'1px solid '+t.bd,borderLeft:'4px solid '+t.c,borderRadius:8,padding:p.compacto?'8px 10px':'10px 12px',cursor:'pointer',display:'flex',alignItems:'center',gap:10,opacity:x.n>0?1:.75}},
+      h('div',{style:{fontSize:p.compacto?18:22,width:28,textAlign:'center'}},x.icon),
+      h('div',{style:{flex:1,minWidth:0}},h('div',{style:{fontSize:12,fontWeight:700,color:'#1E293B'}},x.l),h('div',{style:{fontSize:10,color:'#64748B',marginTop:1}},x.n>0?(x.sub||'Ver detalle →'):'Al día')),
+      h('div',{style:{fontSize:p.compacto?20:24,fontWeight:800,color:t.c,minWidth:34,textAlign:'right'}},x.n||0));}
+  return h('div',null,
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}},
+      h('div',{style:{fontSize:11,fontWeight:700,color:p.compacto?'#E2E8F0':'#64748B',textTransform:'uppercase',letterSpacing:.5}},'Pendientes por módulo'),
+      h('button',{onClick:cargar,title:'Volver a consultar',style:{background:'transparent',border:'1px solid '+(p.compacto?'#94A3B8':'#CBD5E1'),borderRadius:5,fontSize:11,padding:'2px 8px',cursor:'pointer',color:p.compacto?'#E2E8F0':'#475569'}},'↻ Actualizar')),
+    !conPend.length&&h('div',{style:{background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:8,padding:'10px 12px',fontSize:13,color:'#15803D',fontWeight:600,marginBottom:8}},'✅ Todo al día: no hay pendientes en tus módulos.'),
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax('+(p.compacto?'100%':'250px')+',1fr))',gap:8}},conPend.map(card).concat(alDia.map(card))));
+}
+// Vista de escritorio: saludo + alertas (calendario, solicitudes, repuestos, contratos) + tarjetas. p={tok,user,setView}
+function InicioView(p){
+  var u=p.user||{};var hoy=new Date();var hr=hoy.getHours();
+  var saludo=hr<12?'Buenos días':hr<20?'Buenas tardes':'Buenas noches';
+  var fechaTxt=hoy.toLocaleDateString('es-CL',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  var ir=function(v){if(p.setView)p.setView(v);};
+  return h('div',null,
+    h('div',{style:{marginBottom:14}},
+      h('div',{style:{fontSize:20,fontWeight:800,color:'#1E3A2D'}},saludo+', '+String(u.nombre||'').split(' ')[0]),
+      h('div',{style:{fontSize:12,color:'#64748B',textTransform:'capitalize'}},fechaTxt)),
+    h(AlertaCalendario,{tok:p.tok,onIr:function(){ir('calendario');}}),
+    h(AlertaSolicitudes,{tok:p.tok,onIr:function(){ir('solicitudes');}}),
+    h(AlertaRepuestos,{tok:p.tok,onIr:function(){ir('oc-repuestos');}}),
+    h(AlertaContratos,{tok:p.tok,onIr:function(){ir('contratos');}}),
+    h(InicioCards,{tok:p.tok,onIr:ir}));
+}
 // ══ MOBILE HOME — INTERFAZ SIMPLIFICADA PARA CELULAR ══
 function MobileHome(p){
   var ACCIONES=[
@@ -24468,7 +24517,8 @@ function MobileHome(p){
     h('div',{style:{padding:'0 10px'}},
       h(AlertaCalendario,{tok:p.tok,onIr:function(){p.onNav('calendario');}}),
       h(AlertaSolicitudes,{tok:p.tok,onIr:function(){p.onNav('solicitudes');}}),
-      h(AlertaContratos,{tok:p.tok,onIr:function(){p.onNav('contratos');}})
+      h(AlertaContratos,{tok:p.tok,onIr:function(){p.onNav('contratos');}}),
+      h('div',{style:{marginBottom:12}},h(InicioCards,{tok:p.tok,compacto:true,onIr:function(v){if(p.onIrPendiente)p.onIrPendiente(v);else p.onNav(v);}}))
     ),
     h('div',{className:'mob-grid'},
       accesibles.map(function(a){
@@ -27399,7 +27449,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','calendario':'Calendario — Tareas y recordatorios','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','oc-repuestos':'Duración de Repuestos — vida útil y garantía contra el uso real','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={inicio:'Inicio — Avisos y pendientes',dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','calendario':'Calendario — Tareas y recordatorios','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','oc-repuestos':'Duración de Repuestos — vida útil y garantía contra el uso real','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -27983,9 +28033,11 @@ function App(){
   const[view,setView]=useState(function(){
     // Default view inteligente: si el usuario no es admin y no tiene 'ordenes' en sus módulos,
     // arrancar en la primera vista permitida. Usa los datos del localStorage (su).
-    if(!su)return 'ordenes';
-    if(su.es_admin)return 'ordenes';
+    // La pantalla de Inicio (avisos y pendientes de todos los módulos) es la entrada para cualquier usuario con módulos
+    if(!su)return 'inicio';
+    if(su.es_admin)return 'inicio';
     var mods=su.modulos||[];
+    if(mods.length)return 'inicio';
     if(mods.indexOf('ordenes')>=0)return 'ordenes';
     if(mods.indexOf('inventario')>=0)return 'panel';
     if(mods.indexOf('rendiciones')>=0)return 'rendiciones';
@@ -28071,9 +28123,10 @@ function App(){
     return canSee(m);
   }
   function firstAllowedView(){
-    if(!user)return 'ordenes';
-    if(user.es_admin)return 'ordenes';
+    if(!user)return 'inicio';
+    if(user.es_admin)return 'inicio';
     var mods=user.modulos||[];
+    if(mods.length)return 'inicio';
     if(mods.indexOf('ordenes')>=0)return 'ordenes';
     if(mods.indexOf('inventario')>=0)return 'panel';
     if(mods.indexOf('rendiciones')>=0)return 'rendiciones';
@@ -28106,7 +28159,7 @@ function App(){
     function mobileNav(viewId){setMobileView(viewId);}
     function mobileBack(){setMobileView('home');}
     function goDesktop(){setMobileMode(false);}
-    if(mobileView==='home')return h(MobileHome,{user:user,tok:tok,m:m,onNav:mobileNav,onLogout:handleLogout,onDesktop:goDesktop});
+    if(mobileView==='home')return h(MobileHome,{user:user,tok:tok,m:m,onNav:mobileNav,onLogout:handleLogout,onDesktop:goDesktop,onIrPendiente:function(v){if(v==='ordenes')mobileNav('ordenes');else{setMobileMode(false);setView(v);}}});
     // Órdenes de Compra en móvil: experiencia nativa con wizard de creación + lista + compartir PDF
     if(mobileView==='ordenes')return h(MobileOC,{tok:tok,m:m,user:user,onBack:mobileBack,onDesktop:function(){setMobileMode(false);setView('ordenes');}});
     // Inventario en móvil: muestra menú de submódulos que dirigen a la versión escritorio
@@ -28202,6 +28255,8 @@ function App(){
     h('div',{className:'sb'+(menuOpen?' open':'')},
       h('div',{className:'sb-logo'},h('h1',null,'Empresas Poo'),h('p',null,'Sistema de Gestión')),
       h('div',{style:{padding:'4px 0',flex:1}},
+        navI('inicio','🏠','Inicio'),
+        h('div',{className:'sb-sep'}),
         canSee('ordenes')&&grpHdr('oc','ORDENES DE COMPRA'),
         canSee('ordenes')&&grp.oc&&h('div',null,navI('ordenes','☐','Ordenes de Compra',true),navI('oc-guias','📋','Guías de Despacho',true),navI('oc-repuestos','⏱','Duración de Repuestos',true),navI('dte-recibidos','📥','DTE Recibidos',true),navI('bandeja-dte-oc','🔗','Bandeja DTE-OC',true),navI('compra-auditoria','🔍','Auditoría Compras',true),navI('oc-libro-productos','📒','Libro Mayor Productos',true)),
         canSee('ordenes')&&h('div',{className:'sb-sep'}),
@@ -28363,6 +28418,7 @@ function App(){
           view==='kardex'&&h(KardexView,{tok,m}),
           view==='inv-auditoria'&&h(InvAuditoriaView,{tok,m}),
           view==='reportes'&&h(ReportesView,{tok,m}),
+          view==='inicio'&&h(InicioView,{tok,user,setView}),
           view==='ordenes'&&h(OCView,{tok,m,user,setView}),
           view==='compra-auditoria'&&h(CompraAuditoriaView,{tok,m}),
           view==='oc-libro-productos'&&h(LibroProductosView,{tok,m}),
