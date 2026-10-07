@@ -13368,6 +13368,9 @@ app.post('/api/calendario/eventos/importar', auth, requireModulo('calendario'), 
     if(!items.length)return res.status(400).json({error:'No hay filas para importar'});
     if(items.length>2000)return res.status(400).json({error:'Máximo 2000 filas por importación'});
     const soloPrueba=!!(req.body&&req.body.solo_prueba);
+    // Valores por defecto para las filas que no traen la columna: con quién se comparte y qué visibilidad
+    const visDef=CAL_VIS.indexOf(String(req.body.visibilidad_defecto||'').toUpperCase())>=0?String(req.body.visibilidad_defecto).toUpperCase():'COMPARTIDA';
+    const partDefRaw=Array.isArray(req.body.participantes_defecto)?req.body.participantes_defecto:[];
     const us=(await pool.query('SELECT usuario_id,nombre,email FROM usuarios WHERE activo=true')).rows;
     const emps=(await pool.query('SELECT empresa_id,razon_social FROM empresas')).rows;
     const areasPorNombre={}; CAL_AREAS.forEach(function(a){areasPorNombre[calNorm(a)]=a;});
@@ -13378,6 +13381,12 @@ app.post('/api/calendario/eventos/importar', auth, requireModulo('calendario'), 
       u=us.find(function(x){return calNorm(x.nombre)===n;}); if(u)return u.usuario_id;
       const c=us.filter(function(x){return calNorm(x.nombre).indexOf(n)>=0||n.indexOf(calNorm(x.nombre))>=0;}); return c.length===1?c[0].usuario_id:null;
     }
+    // "Juan Pérez; maria@empresa.cl; 7" → ids de usuario (los que no se encuentran se ignoran)
+    function buscarUsuarios(v){
+      const lista=Array.isArray(v)?v:String(v||'').split(/[;,|]/);
+      const ids=[]; lista.forEach(function(x){const id=buscarUsuario(x); if(id&&ids.indexOf(id)<0)ids.push(id);}); return ids;
+    }
+    const partDef=buscarUsuarios(partDefRaw);
     function buscarEmpresa(v){
       if(!v)return null; const s=String(v).trim(); if(/^\d+$/.test(s))return parseInt(s);
       const n=calNorm(s); const c=emps.filter(function(e){return calNorm(e.razon_social).indexOf(n)>=0;});
@@ -13387,12 +13396,13 @@ app.post('/api/calendario/eventos/importar', auth, requireModulo('calendario'), 
     for(let i=0;i<items.length;i++){
       const it=items[i]||{};
       try{
-        const dias=it.aviso_dias===''||it.aviso_dias===null||it.aviso_dias===undefined?null:parseInt(it.aviso_dias);
+        // Aviso_dias: uno o varios días antes separados por ; , / o espacio ("7;1" = correo 7 días antes y 1 día antes; 0 = el mismo día)
+        const diasLista=String(it.aviso_dias===null||it.aviso_dias===undefined?'':it.aviso_dias).split(/[;,\/ ]+/).map(function(x){return parseInt(x);}).filter(function(x){return !isNaN(x)&&x>=0&&x<=365;});
         const b={titulo:it.titulo,descripcion:it.descripcion,fecha:calFechaFlex(it.fecha),todo_el_dia:!it.hora,hora:it.hora||null,
           tipo:String(it.tipo||'TAREA').toUpperCase(),area:areasPorNombre[calNorm(it.area)]||(CAL_AREAS.indexOf(String(it.area||'').toUpperCase())>=0?String(it.area).toUpperCase():'OTROS'),
-          empresa_id:buscarEmpresa(it.empresa),visibilidad:String(it.visibilidad||'EMPRESA').toUpperCase(),
-          responsable_id:buscarUsuario(it.responsable)||parseInt(req.user.id),participantes:[],
-          recordatorios:(dias===null||isNaN(dias)||dias<0)?[]:[dias*1440],prioridad:String(it.prioridad||'normal').toLowerCase()};
+          empresa_id:buscarEmpresa(it.empresa),visibilidad:String(it.visibilidad||visDef).toUpperCase(),
+          responsable_id:buscarUsuario(it.responsable)||parseInt(req.user.id),participantes:(it.participantes!==undefined&&it.participantes!==null&&String(it.participantes).trim()!=='')?buscarUsuarios(it.participantes):partDef,
+          recordatorios:diasLista.map(function(d){return d*1440;}),prioridad:String(it.prioridad||'normal').toLowerCase()};
         const c=calLimpiar(b,req.user,null);
         const clave=String(it.clave||'').trim().slice(0,160)||null;
         let ex;
