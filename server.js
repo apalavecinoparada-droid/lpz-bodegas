@@ -12871,6 +12871,7 @@ app.get('/api/comite/mi-resumen', auth, requireModulo('comite'), async(req,res)=
 //    repetitivas del área FINANZAS, responsable el usuario cuyo nombre contiene PALAVECINO (o nadie).
 const calCrypto=require('crypto');
 const CAL_AREAS=COMITE_AREAS;
+const COMITE_AREAS_SRV=[{k:'OPERACIONES',l:'Operaciones y Producción'},{k:'MANTENCION',l:'Mantención'},{k:'PREVENCION',l:'Prevención de Riesgos'},{k:'AMBIENTE',l:'Medio Ambiente'},{k:'FINANZAS',l:'Finanzas'},{k:'ADQUISICIONES',l:'Adquisiciones'},{k:'RRHH',l:'Recursos Humanos'},{k:'OTROS',l:'Otros temas'}];
 const CAL_VIS=['PRIVADA','COMPARTIDA','EMPRESA'];
 const CAL_TIPOS=['TAREA','EVENTO'];
 const CAL_REP=['NINGUNA','DIARIA','SEMANAL','MENSUAL','ANUAL'];
@@ -13340,6 +13341,73 @@ app.put('/api/calendario/preferencias', auth, requireModulo('calendario'), async
     const v=!(req.body&&req.body.resumen_correo===false);
     await pool.query('INSERT INTO cal_usuarios(usuario_id,resumen_correo) VALUES($1,$2) ON CONFLICT (usuario_id) DO UPDATE SET resumen_correo=EXCLUDED.resumen_correo',[req.user.id,v]);
     res.json({ok:true,resumen_correo:v});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// ── Importación masiva al calendario (Excel/CSV pegado o subido; ej. vencimientos SAT) ──
+// Cada fila trae titulo + fecha (+ descripcion, area, empresa, responsable, aviso_dias, prioridad, tipo, visibilidad, clave).
+// Idempotente: si la fila trae `clave` y ya existe una tarea activa con esa clave, se omite; si no trae clave, se omite
+// cuando ya hay una tarea activa con el mismo título y fecha. Así se puede re-importar el mismo archivo sin duplicar.
+let _calClaveOk=false;
+async function calClaveEnsure(){ if(_calClaveOk)return; await pool.query("ALTER TABLE cal_eventos ADD COLUMN IF NOT EXISTS clave VARCHAR(160)"); try{await pool.query('CREATE INDEX IF NOT EXISTS idx_cal_eventos_clave ON cal_eventos(clave)');}catch(e){} _calClaveOk=true; }
+function calNorm(s){ return String(s||'').normalize('NFD').replace(/[̀-ͯ]/g,'').toLowerCase().trim(); }
+// Fecha flexible para importaciones: 2026-11-20, 20-11-2026, 20/11/2026, 20.11.26, con o sin asteriscos del SAT
+function calFechaFlex(v){
+  if(v===null||v===undefined||v==='')return '';
+  if(v instanceof Date&&!isNaN(v))return calIso(v);
+  if(typeof v==='number'&&v>20000&&v<80000){const d=new Date(Date.UTC(1899,11,30)+Math.round(v)*86400000);return d.toISOString().slice(0,10);}
+  const s=String(v).trim().replace(/\*+$/,'').trim(); let m;
+  if((m=s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/)))return m[1]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[3]).slice(-2);
+  if((m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})/)))return m[3]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[1]).slice(-2);
+  if((m=s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2})$/)))return '20'+m[3]+'-'+('0'+m[2]).slice(-2)+'-'+('0'+m[1]).slice(-2);
+  return '';
+}
+app.post('/api/calendario/eventos/importar', auth, requireModulo('calendario'), async(req,res)=>{
+  try{
+    await calEnsure(); await calClaveEnsure();
+    const items=Array.isArray(req.body&&req.body.items)?req.body.items:[];
+    if(!items.length)return res.status(400).json({error:'No hay filas para importar'});
+    if(items.length>2000)return res.status(400).json({error:'Máximo 2000 filas por importación'});
+    const soloPrueba=!!(req.body&&req.body.solo_prueba);
+    const us=(await pool.query('SELECT usuario_id,nombre,email FROM usuarios WHERE activo=true')).rows;
+    const emps=(await pool.query('SELECT empresa_id,razon_social FROM empresas')).rows;
+    const areasPorNombre={}; CAL_AREAS.forEach(function(a){areasPorNombre[calNorm(a)]=a;});
+    try{ COMITE_AREAS_SRV.forEach(function(a){areasPorNombre[calNorm(a.l)]=a.k;}); }catch(e){}
+    function buscarUsuario(v){
+      if(!v)return null; const s=String(v).trim(); if(/^\d+$/.test(s)){const u=us.find(function(x){return x.usuario_id===parseInt(s);});return u?u.usuario_id:null;}
+      const n=calNorm(s); let u=us.find(function(x){return calNorm(x.email)===n;}); if(u)return u.usuario_id;
+      u=us.find(function(x){return calNorm(x.nombre)===n;}); if(u)return u.usuario_id;
+      const c=us.filter(function(x){return calNorm(x.nombre).indexOf(n)>=0||n.indexOf(calNorm(x.nombre))>=0;}); return c.length===1?c[0].usuario_id:null;
+    }
+    function buscarEmpresa(v){
+      if(!v)return null; const s=String(v).trim(); if(/^\d+$/.test(s))return parseInt(s);
+      const n=calNorm(s); const c=emps.filter(function(e){return calNorm(e.razon_social).indexOf(n)>=0;});
+      return c.length===1?c[0].empresa_id:(c.length>1?c[0].empresa_id:null);
+    }
+    let creados=0,omitidos=0; const errores=[],detalle=[];
+    for(let i=0;i<items.length;i++){
+      const it=items[i]||{};
+      try{
+        const dias=it.aviso_dias===''||it.aviso_dias===null||it.aviso_dias===undefined?null:parseInt(it.aviso_dias);
+        const b={titulo:it.titulo,descripcion:it.descripcion,fecha:calFechaFlex(it.fecha),todo_el_dia:!it.hora,hora:it.hora||null,
+          tipo:String(it.tipo||'TAREA').toUpperCase(),area:areasPorNombre[calNorm(it.area)]||(CAL_AREAS.indexOf(String(it.area||'').toUpperCase())>=0?String(it.area).toUpperCase():'OTROS'),
+          empresa_id:buscarEmpresa(it.empresa),visibilidad:String(it.visibilidad||'EMPRESA').toUpperCase(),
+          responsable_id:buscarUsuario(it.responsable)||parseInt(req.user.id),participantes:[],
+          recordatorios:(dias===null||isNaN(dias)||dias<0)?[]:[dias*1440],prioridad:String(it.prioridad||'normal').toLowerCase()};
+        const c=calLimpiar(b,req.user,null);
+        const clave=String(it.clave||'').trim().slice(0,160)||null;
+        let ex;
+        if(clave)ex=await pool.query('SELECT evento_id FROM cal_eventos WHERE activo=true AND clave=$1 LIMIT 1',[clave]);
+        else ex=await pool.query('SELECT evento_id FROM cal_eventos WHERE activo=true AND fecha=$1 AND LOWER(titulo)=LOWER($2) LIMIT 1',[c.fecha,c.titulo]);
+        if(ex.rows.length){omitidos++;detalle.push({fila:i+1,titulo:c.titulo,fecha:c.fecha,estado:'ya existía'});continue;}
+        if(!soloPrueba){
+          await pool.query(`INSERT INTO cal_eventos(titulo,descripcion,tipo,area,empresa_id,fecha,hora,hora_fin,fecha_fin,visibilidad,responsable_id,participantes,repeticion,recordatorios,prioridad,origen,creado_por_id,clave)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'MANUAL',$16,$17)`,
+            [c.titulo,c.descripcion,c.tipo,c.area,c.empresa_id,c.fecha,c.hora,c.hora_fin,c.fecha_fin,c.visibilidad,c.responsable_id,c.participantes,null,c.recordatorios,c.prioridad,req.user.id,clave]);
+        }
+        creados++; detalle.push({fila:i+1,titulo:c.titulo,fecha:c.fecha,estado:soloPrueba?'se crearía':'creada',responsable_id:c.responsable_id,area:c.area,empresa_id:c.empresa_id});
+      }catch(e){errores.push({fila:i+1,titulo:String(it.titulo||'').slice(0,80),error:e.message});}
+    }
+    res.json({ok:true,prueba:soloPrueba,creados:creados,omitidos:omitidos,errores:errores,detalle:detalle.slice(0,500)});
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.post('/api/calendario/ical-enlace', auth, requireModulo('calendario'), async(req,res)=>{
