@@ -1240,6 +1240,8 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
 .rs-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;}
 .rs-form label{font-size:10px;color:#555;font-weight:700;display:block;margin-bottom:2px;}
 .rs-form input,.rs-form select,.rs-form textarea{width:100%;box-sizing:border-box;padding:6px;border:1px solid #c9c2a8;border-radius:5px;font-size:12px;}
+#rs-modal .rsp-fila select:disabled,#rs-modal .rsp-fila input:disabled{color:#111;-webkit-text-fill-color:#111;opacity:1;font-weight:600;}
+#rs-modal .rsp-fila input[type=checkbox]:disabled{opacity:1;accent-color:#1f2a24;}
 .rs-alerta{border-radius:8px;padding:7px 10px;margin-bottom:6px;font-size:12px;}
 .rs-chip{display:inline-block;border-radius:10px;padding:2px 8px;font-size:10.5px;font-weight:700;}
 @media (max-width:760px){
@@ -1265,6 +1267,7 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
       <button class="rs-btn" style="background:#e8eefc;border:1px solid #9db3e8;color:#0b2a6b;" onclick="rsFirmasConfig()">&#128395; Firmas</button>
       <button class="rs-btn" style="background:#eef2f6;border:1px solid #ccc;" onclick="rsRespaldo()">&#128190; Respaldo</button>
       <label class="rs-btn" style="background:#eef2f6;border:1px solid #ccc;">&#128194; Restaurar<input type="file" accept=".json" style="display:none;" onchange="rsRestaurar(this);this.value=''"></label>
+      <button class="rs-btn" style="background:#fdecea;border:1px solid #f1b0a8;color:#8a1f11;" onclick="rsVaciar()" title="Borra todos los residuos registrados (por ejemplo, los de prueba). Antes descarga un respaldo.">&#128465;&#65039; Vaciar registro</button>
     </div>
   </div>
   <div id="rs-body"></div>
@@ -1803,7 +1806,7 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
         <select id="rendoper-rodal" onchange="renderRendOper()" style="background:#21262d;color:#e6edf3;border:1px solid #58a6ff;border-radius:5px;padding:4px 10px;font-size:12px;"><option value="all">Todos los rodales</option></select>
         <div style="font-size:11px;color:#8b949e;">VMA:</div>
         <select id="rendoper-vma" onchange="rendOperVmaChange()" title="VMA del d&iacute;a. La lista sale de lo que hay en el fundo y el rodal elegidos; con 'Todos los fundos' muestra todos los VMA del mes de esa faena." style="background:#21262d;color:#e6edf3;border:1px solid #58a6ff;border-radius:5px;padding:4px 10px;font-size:12px;"><option value="all">Todos los VMA</option></select>
-        <button id="rendoper-fuente-btn" onclick="rendOperFuenteToggle()" title="Con qu&eacute; hoja se reparte la producci&oacute;n entre los operadores. Por defecto usa BaseHorasTrab y, en los d&iacute;as que esa planilla no trae, rescata las horas de 'Base datos Procesador Mecaniz' (Formin). Con un clic pasa a usar SOLO BaseHorasTrab." style="background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:5px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer;margin-left:6px;">&#129534; Fuente: BHT + Formin</button>
+        <button id="rendoper-fuente-btn" onclick="rendOperFuenteToggle()" title="Con qu&eacute; hoja se reparte la producci&oacute;n entre los operadores. Por defecto usa BaseHorasTrab y, en los d&iacute;as que esa planilla no trae, rescata las horas de 'Base datos Procesador Mecaniz' (Formin). Con un clic pasa a usar SOLO BaseHorasTrab." style="background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:5px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer;margin-left:6px;">&#129534; Fuente: BaseHorasTrab</button>
         <button id="rendoper-control-btn" onclick="rendOperControlToggle()" title="Tabla de control con SOLO los datos de Formin ('Base datos Procesador Mecaniz'): horas, &aacute;rboles y m&sup3; de la cartola repartidos por % de &aacute;rboles (m&eacute;todo antiguo). BaseHorasTrab solo se usa para confirmar el nombre del operador." style="background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:5px;padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer;margin-left:6px;">&#128269; Control Formin</button>
       </div>
       <div id="rendoper-body"></div>
@@ -3127,17 +3130,19 @@ function roToggleIdx(){
 
 /* ============================================================================
    FUENTE DE LAS HORAS CON QUE SE REPARTE LA PRODUCCION ENTRE LOS OPERADORES
-   'mix' (por defecto) = BaseHorasTrab y, en los dias que esa hoja no trae, el rescate
-                         desde "Base datos Procesador Mecaniz" (Formin). Es la regla de
-                         la casa y la que hace cuadrar el mes con la cartola.
-   'bht'               = SOLO BaseHorasTrab. Los dias que la planilla de terreno todavia
+   'bht' (por defecto) = SOLO BaseHorasTrab. Los dias que la planilla de terreno todavia
                          no tiene quedan fuera y su produccion no se le asigna a nadie
                          (sale listada en la nota "Faltan m3 por repartir").
-   Sirve para ver el mes con una sola fuente, sin mezcla, cuando se esta revisando la
-   planilla de terreno o discutiendo horas con Mininco.
-   NO se guarda en el cache: al recargar la App vuelve sola a 'mix'.
+   'mix'               = BaseHorasTrab y, en los dias que esa hoja no trae, el rescate
+                         desde "Base datos Procesador Mecaniz" (Formin).
+   08-10-2026 (Gustavo): el default pasa a 'bht'. Formin NO informa operador: en los dias
+   sin planilla la columna NombreOperador del Best se rellena con el ROL TEORICO de turnos
+   ("Personal por faena"), y salian operadores con m3 sin nada informado (Mec 5, 06-10:
+   Ancapi, Magnu, Campos, Saez con 0 hrs de turno). Esos dias quedan fuera del ranking hasta
+   que llegue la planilla de terreno. 'mix' queda como opcion, avisando que es rol teorico.
+   NO se guarda en el cache: al recargar la App vuelve sola a 'bht'.
    ============================================================================ */
-window.OPER_FUENTE = 'mix';
+window.OPER_FUENTE = 'bht';
 
 function rendOperFuenteToggle(){
   window.OPER_FUENTE = (window.OPER_FUENTE === 'bht') ? 'mix' : 'bht';
@@ -3153,9 +3158,12 @@ function rendOperFuenteBtn(){
   var b = document.getElementById('rendoper-fuente-btn');
   if (!b) return;
   var solo = (window.OPER_FUENTE === 'bht');
-  b.innerHTML = solo ? '&#129534; Fuente: solo BaseHorasTrab' : '&#129534; Fuente: BHT + Formin';
-  b.style.background  = solo ? '#1f6feb' : '#21262d';
-  b.style.borderColor = solo ? '#58a6ff' : '#30363d';
+  b.innerHTML = solo ? '&#129534; Fuente: BaseHorasTrab' : '&#129534; Fuente: BHT + Formin (rol te&oacute;rico)';
+  b.title = solo
+    ? 'Reparte solo con la planilla de terreno. Con un clic suma los dias que solo estan en Formin, con el operador del rol de turnos (no informado).'
+    : 'Incluye dias que solo estan en Formin con el operador del ROL DE TURNOS. Con un clic vuelve a usar solo BaseHorasTrab.';
+  b.style.background  = solo ? '#21262d' : '#9a3412';
+  b.style.borderColor = solo ? '#30363d' : '#f0a04b';
 }
 
 /* ============================================================================
@@ -3776,22 +3784,18 @@ function renderRendOper(){
   }
 
   var html = '';
-  if(window.OPER_FUENTE === 'bht'){
-    html += '<div style="background:#eef5fd;border:1px solid #a8cdf0;border-left:6px solid #1f6feb;border-radius:8px;'
-          + 'padding:11px 14px;margin-bottom:10px;line-height:1.65;color:#14507d;">'
-          + '<div style="font-size:14px;font-weight:700;color:#0b4a8f;margin-bottom:3px;">'
-          + '&#129534; Repartiendo <u>solo</u> con BaseHorasTrab</div>'
-          + '<div style="font-size:11.5px;">Esta vista usa <b>&uacute;nicamente la planilla de terreno</b>. '
-          + 'Los d&iacute;as que <b>BaseHorasTrab</b> todav&iacute;a no trae quedan <b>fuera</b>: no se rescatan '
-          + 'de <i>Base datos Procesador Mecaniz</i> (Formin) como en la vista normal, as&iacute; que su '
-          + 'producci&oacute;n <b>no se le asigna a ning&uacute;n operador</b> y aparece abajo en '
-          + '&laquo;Faltan m&sup3; por repartir&raquo;.</div>'
-          + '<div style="font-size:11.5px;margin-top:4px;">Sirve para revisar la planilla o discutir horas con '
-          + 'Mininco con una sola fuente. <b>Para el cierre del mes usa la vista normal</b>, que es la que hace '
-          + 'cuadrar el total con la cartola.</div>'
-          + '<button onclick="rendOperFuenteToggle()" style="margin-top:7px;background:#1f6feb;color:#fff;border:none;'
+  if(window.OPER_FUENTE === 'mix'){
+    html += '<div style="background:#fff4e5;border:1px solid #f0a04b;border-left:6px solid #9a3412;border-radius:8px;'
+          + 'padding:11px 14px;margin-bottom:10px;line-height:1.65;color:#7a3b00;">'
+          + '<div style="font-size:14px;font-weight:700;color:#9a3412;margin-bottom:3px;">'
+          + '&#9888;&#65039; Incluye d&iacute;as con operador del <u>rol te&oacute;rico</u></div>'
+          + '<div style="font-size:11.5px;">Los d&iacute;as que <b>BaseHorasTrab</b> todav&iacute;a no trae se rescatan '
+          + 'de <i>Base datos Procesador Mecaniz</i> (Formin). Formin <b>no informa operador</b>: en esos d&iacute;as el '
+          + 'nombre sale del <b>rol de turnos</b> (hoja Personal por faena), no de lo que pas&oacute; en terreno. '
+          + 'Por eso aparecen con <b>0 hrs de turno</b> y sin m&aacute;quina.</div>'
+          + '<button onclick="rendOperFuenteToggle()" style="margin-top:7px;background:#9a3412;color:#fff;border:none;'
           + 'border-radius:5px;padding:5px 13px;font-size:11.5px;font-weight:600;cursor:pointer;">'
-          + '&#8592; Volver a BHT + Formin</button>'
+          + '&#8592; Volver a solo BaseHorasTrab</button>'
           + '</div>';
   }
   if(window._RENDOPER_AVISO_FAENA){
@@ -4114,7 +4118,7 @@ function renderRendOper(){
               + '<div style="font-size:11.5px;">Estos días <b>ya tienen cartola</b>, pero todavía no llegan sus '
               + '<b>horas</b> '
               + (window.OPER_FUENTE === 'bht'
-                   ? 'en <b>BaseHorasTrab</b> (esta vista no usa el respaldo de Formin)'
+                   ? 'en <b>BaseHorasTrab</b> (la planilla de terreno de esos d&iacute;as a&uacute;n no se carga; Formin no informa operador)'
                    : '(ni <b>BaseHorasTrab</b> ni <b>Base datos Procesador Mecaniz</b>)')
               + ', así que no hay a quién asignarle esa producción y quedan fuera de la tabla:</div>'
               + '<div style="margin:4px 0 5px 0;">' + _chips + '</div>'
@@ -4155,8 +4159,8 @@ function renderRendOper(){
         + (window._RENDOPER_MEDIDO ? 'BaseHorasTrab (operador y máquina) + tabla de Formin (meta)'
              : (desdeBHT ? 'BaseHorasTrab' : 'Base datos Procesador Mecaniz + InformeHrsProc'))
         + '</b>'
-        + (window.OPER_FUENTE === 'bht'
-             ? ' <span style="color:#1f6feb;font-weight:700;">· solo BaseHorasTrab (sin rescate de Formin)</span>'
+        + (window.OPER_FUENTE === 'mix'
+             ? ' <span style="color:#9a3412;font-weight:700;">· incluye d&iacute;as solo-Formin con operador del rol te&oacute;rico</span>'
              : '')+(mSel==='all'?'':' · '+mSel.substring(4,6)+'-'+mSel.substring(0,4))+'</div>';
     if(!faenaDataKey || !especie){
       html+='<div style="margin-top:8px;font-size:10px;color:#e67e22;">⚠ Para ver m³/hr Estándar, seleccione Faena y Especie en los filtros de arriba.</div>';
@@ -4699,6 +4703,8 @@ document.getElementById('especie-pills').style.display='none';
         <div style="flex:1;text-align:center;">
           <button onclick="fundoProdAbrir()" title="Producción por fundo, mes a mes, y la faena que trabajó en él"
                   style="background:#1f6fd1;color:#fff;border:2px solid #fff;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.25);">🌲 Producción por Fundo</button>
+          <button onclick="bodAbrir()" title="Control de bodega operativa por fundo: producido, despachado, stock POO e inventarios de Mininco"
+                  style="background:#8a5a14;color:#fff;border:2px solid #fff;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.25);margin-left:8px;">📦 Bodega Operativa</button>
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
           <div style="display:flex;flex-direction:column;gap:2px;">
@@ -8595,6 +8601,8 @@ function loadExcel(input) {
         }
         PROD_RODAL = newProdRodal;
         console.log('Produc Vol.Real cargado: ' + prodCount + ' registros, PROD_RODAL keys: ' + Object.keys(newProdRodal).length);
+        try { bodLeerDelLibro(wb, rowsPR); }
+        catch (eBod) { console.warn('[BODEGA] no se pudo leer: ' + eBod.message); }
         // Diagnóstico v11: ¿qué faenas hay en PROD_RODAL?
         var prFaenas = {};
         var prCanchas = {};
@@ -9756,6 +9764,7 @@ function loadExcel(input) {
         bht_dias: (typeof BHT_DIAS!=='undefined'?BHT_DIAS:[]),
         prod_faena_mes: (typeof PROD_FAENA_MES!=='undefined'?PROD_FAENA_MES:{}),
         fmn_dias: (typeof FMN_DIAS!=='undefined'?FMN_DIAS:[]),
+        bodega: (typeof BODEGA!=='undefined'&&BODEGA?BODEGA:null),
         ofsnap: {snaps:(typeof OFERTA_SNAPSHOTS!=='undefined'&&OFERTA_SNAPSHOTS?OFERTA_SNAPSHOTS:[]), fechaAct:(typeof OFERTA_FECHA_ACT!=='undefined'?OFERTA_FECHA_ACT:'')}
       }}, '*'); }catch(e){}
       applyFilters();
@@ -10920,6 +10929,7 @@ function bhtCubre(faena, ym){
 var OFERTA_SNAPSHOTS = []; // historial crudo de capturas BaseOfertaFaenas para trazabilidad de cambios
 var OFERTA_FECHA_ACT = ''; // fecha_actualizacion más reciente (frescura del dato)
 var PROD_RODAL = {};   // {"faena|cancha|rodal": {"YYYY-MM-DD": m3}} produc x rodal
+var BODEGA = null;     // control de bodega operativa (ver bodLeerDelLibro): guias, inventarios y produccion por cancha
 var GRAFX = null;      // datos hoja Tablaparametros para gráficos Rendimiento m³ / Combustible (hoja "Graficos" del Excel)
 var DIESEL_DATA = null; // datos panel "Combustible Consumido vs Programado" (replica TabladinamicaDiesel), array de {equipo,faena,ym,empresa,tipo,cod,lts,hrs,hperd,rendAct,rendStd,difLts,mesTxt}
 /* Sello de version: se imprime en la consola al abrir. Si el numero que aparece
@@ -11337,7 +11347,7 @@ function estRender(){
   } catch(eC){ console.warn('[ESTD] grafico:', eC.message); }
 }
 
-var APP_BUILD = '06-10-2026 Estandares TOB + destinatarios ACR por turno';
+var APP_BUILD = '09-10-2026 Residuos: ver FR719 2025';
 console.log('%c[APP] build ' + APP_BUILD, 'background:#1a6b3a;color:#fff;padding:2px 6px;');
 
 
@@ -12590,7 +12600,45 @@ function rnHist(id){
 }
 
 /* ── correos: se abren listos en el programa de correo ── */
-function rnMail(nombre){ return (RN.correos || {})[nombre] || ''; }
+/* Correos de base, copiados de Sistema → Usuarios de la web (09-10-2026, solo personas). Lo que se anote a mano
+   en ⚙ Correos manda sobre esto. */
+var RN_CORREOS_DEF = {
+  'Alan Delgado Morales': 'alan.delgado.0410@gmail.com',
+  'Alejandro Sepúlveda Martínez': 'alejandrosepulveda10@gmail.com',
+  'Alvaro González Sepúlveda': 'centralpoo1111@gmail.com',
+  'Andrés Palavecino Parada': 'apalavecino@empresaspoo.cl',
+  'Constanza San Martín Rodriguez': 'rodriguezsanmartinc@gmail.com',
+  'Danilo Hidalgo Sanzana': '123@empresaspoo.cl',
+  'Edgar González Sepúlveda': 'centralpoo2@gmail.com',
+  'Elías Alejandro González Mendoza': 'exemonse6@gmail.com',
+  'Elias Díaz Cares': 'elias.diaz10@gmail.com',
+  'Elvis Sepulveda Martínez': 'elvissepulveda.8877@gmail.com',
+  'Emiliano Abraham Tapia Montecino': 'lucasemilianot@gmail.com',
+  'Abraham Tapia Montecino': 'lucasemilianot@gmail.com',
+  'Fredy San Martin Castro': 'fredysanmartincastro@hotmail.com',
+  'Gonzalo Cid Viveros': 'gonzalocidriveros@gmail.com',
+  'Guillermo Mendez Cano': 'gmendez@empresaspoo.cl',
+  'Gustavo Reyes Salamanca': 'gustavo.reyess@gmail.com',
+  'Halil Kerem Oguz': 'halilkeremoguz@gmail.com',
+  'Ignacio Carrasco Ferreira': 'carrascoferreiraignacioalexis@gmail.com',
+  'Javier Carrasco Garavito': 'javiercarrascog7@gmail.com',
+  'Jennifer Carrasco Ordenes': 'jennifercarrascoo97@gmail.com',
+  'Jonathan Riquelme': 'riquelme17756@gmail.com',
+  'José Peña Rivera': 'j.penarivera84@gmail.com',
+  'Juan Carlos Bustamante': 'jcb1424@hotmail.com',
+  'Juan Paulo Silva Contreras': 'jpaulosilva.1979@gmail.com',
+  'Karen Zúñiga Riquelme': 'kzuniga@empresaspoo.cl',
+  'Leonidas Poo Zenteno': 'leonidasfernando.poo@gmail.com',
+  'Luis Perez Gutierrez': 'emiliano078perez@gmail.com',
+  'Luis Saez Lavandero': 'luisaureliosaezlavandero@gmail.com',
+  'Luis Silva Muñoz': 'lsm_00@hotmail.cl',
+  'Luisa Mella Sanhueza': 'luisamellasanhueza@gmail.com',
+  'Marta Alarcón Quezada': 'martaelena.alarconq@gmail.com',
+  'Oscar Silva Muñoz': 'osilvamunoz647@gmail.com',
+  'Ricardo Riveros Herrera': 'faenamecanizada2@gmail.com',
+  'Sebastian Poo Tajan': 'spootajan@empresaspoo.cl'
+};
+function rnMail(nombre){ return (RN.correos || {})[nombre] || RN_CORREOS_DEF[nombre] || ''; }
 function rnCorreoDatos(r, tipo){
   var para = [], cc = [], asunto = '', intro = '';
   var d = rnDias(r.fechaComp);
@@ -12907,7 +12955,75 @@ function rsResumenHtml(items){
 setTimeout(function(){ Object.keys(RS_PROD).forEach(function(k){ var p = RS_PROD[k]; if (!p.grupo) return; var g = RS_PROD[p.grupo];
   ['listaA','cod','pel','hds','u','noPel'].forEach(function(c){ if (p[c] === undefined && g[c] !== undefined) p[c] = g[c]; }); }); }, 0);
 function rsCodG(cod){ var p = RS_PROD[cod]; return (p && p.grupo) ? String(p.grupo) : String(cod); }
-var RS_FAENAS = (typeof RN_FAENAS !== 'undefined') ? RN_FAENAS : ['Faena Mec 3','Faena Mec 4','Faena Mec 5','Taller Lpoo'];
+/* 09-10-2026 (Gustavo): en Residuos quedan solo las faenas activas. Las inactivas siguen apareciendo (marcadas)
+   mientras tengan residuos en su bodega, para poder moverlos a la faena correcta desde la planilla. */
+var RS_FAENAS_INACTIVAS = ['Administración Emprecon', 'Administración Lpoo', 'Transporte Maquinaria Lpoo'];
+var RS_FAENAS = ((typeof RN_FAENAS !== 'undefined') ? RN_FAENAS : ['Faena Mec 3','Faena Mec 4','Faena Mec 5','Taller Lpoo'])
+  .filter(function(x){ return RS_FAENAS_INACTIVAS.indexOf(x) < 0; });
+/* Areas de Mininco (Informe de Bodega) sin RALEO NORTE, TRANSPORTE ni ABASTECIMIENTO (09-10-2026) */
+var RS_AREAS = ['AREA CAB-LAN','AREA COLL-VIC','AREA COLLIPULLI','AREA FAJA','AREA MUL-QUILA','AREA NACTO.CONC','AREA OSORNO',
+  'AREA PASTENES','AREA PATRIMONIO','AREA RALEO','CONTROL','FAJA','FAJAS','FAJAS SUR','GESTION LIQ','N/A','OTROS','PERDIDAS','RALEO','RALEO SUR'];
+/* Empresa (09-10-2026): cada faena es de Lpoo o de Emprecon; el selector de empresa filtra las faenas y
+   la empresa elegida va al FR719 como "Empresa de Servicio". */
+var RS_EMPRESAS = ['Leonidas Poo Zenteno y Cía. Ltda.', 'Emprecon SpA'];
+var RS_EMPRESA_SEL = RS_EMPRESAS[0];
+try { var _rse = localStorage.getItem('rs_empresa'); if (RS_EMPRESAS.indexOf(_rse) >= 0) RS_EMPRESA_SEL = _rse; } catch(e){}
+function rsEmpresaDe(faena){ return /emprecon|faja|movimiento de tierra|obras de arte/i.test(faena || '') ? RS_EMPRESAS[1] : RS_EMPRESAS[0]; }
+function rsEmpresaCambio(v){ RS_EMPRESA_SEL = v; try { localStorage.setItem('rs_empresa', v); } catch(e){} RS_FAENA_SEL = ''; rsRender(); }
+function rsFaenasLista(){                 // faenas activas + inactivas que todavia tienen residuos en su bodega (de la empresa elegida)
+  var l = RS_FAENAS.filter(function(x){ return rsEmpresaDe(x) === RS_EMPRESA_SEL; });
+  RS_FAENAS_INACTIVAS.forEach(function(x){ var lo = RS && rsLoteAbierto(x); if (lo && lo.items.length && rsEmpresaDe(x) === RS_EMPRESA_SEL) l.push(x); });
+  // faenas que solo tienen traslados cargados del Excel (ej. "Histórico 2025 Lpoo"), para ver sus FR719
+  if (RS) RS.lotes.forEach(function(lo){ var t = lo.traslado; if (t && t.historico && l.indexOf(lo.faena) < 0 && t.empresa === RS_EMPRESA_SEL) l.push(lo.faena); });
+  return l;
+}
+function rsFaenaEtiqueta(x){
+  if (RS_FAENAS_INACTIVAS.indexOf(x) < 0) return x;
+  var lo = RS && rsLoteAbierto(x);
+  return x + ' (inactiva · ' + (lo ? lo.items.length : 0) + ' residuos por mover)';
+}
+/* Fundos activos de una faena: cancha con produccion de esa faena y SIN inventario de cierre de POO (datos de la
+   Bodega Operativa). Las faenas que no son de cosecha no tienen fundos: se escribe a mano. */
+function rsFundosActivos(faena){
+  var B = (typeof BODEGA !== 'undefined') ? BODEGA : null, m = String(faena || '').match(/Mec\s*\d+/i);
+  if (!B || !B.prod || !m) return [];
+  var fa = m[0].replace(/\s+/, ' '), cierre = {}, ult = {};
+  (B.inv || []).forEach(function(x){ if (x[2] === 'Cierre' && /POO/i.test(x[3])) cierre[x[0]] = 1; });
+  Object.keys(B.prod).forEach(function(c){
+    if ((B.faena || {})[c] !== fa || cierre[c]) return;
+    Object.keys(B.prod[c]).forEach(function(f){ if (!ult[c] || f > ult[c]) ult[c] = f; });
+  });
+  return Object.keys(ult).sort(function(a, b){ return ult[b].localeCompare(ult[a]); })
+    .map(function(c){ return (B.nom[c] || c) + ' (' + c + ')'; });
+}
+function rsOptsFundo(faena, sel){
+  var fs = rsFundosActivos(faena);
+  if (sel && fs.indexOf(sel) < 0) fs.unshift(sel);
+  return '<option value=""></option>' + fs.map(function(x){ return '<option' + (x === sel ? ' selected' : '') + '>' + rsE(x) + '</option>'; }).join('') +
+         '<option value="__otro">Otro (escribir)…</option>';
+}
+function rsPlanillaFaenaCambio(){
+  /* 09-10-2026 (Gustavo): al elegir otra faena la planilla cambia al instante a esa faena (sus residuos pendientes,
+     sus fundos y su area). Si hay filas nuevas anotadas sin guardar, se pide guardarlas primero. */
+  var sel = document.getElementById('rsp-faena'), nf = sel.value;
+  var pend = 0;
+  document.querySelectorAll('#rs-modal .rsp-fila').forEach(function(r){
+    if (r.getAttribute('data-id')) return;
+    if (r.querySelector('.rsp-cod').value || r.querySelector('.rsp-n').value || r.querySelector('.rsp-kg').value) pend++;
+  });
+  if (pend){
+    alert('Tienes ' + pend + ' fila(s) anotadas sin guardar en ' + RS_FAENA_SEL + '.\nAprieta "Guardar en el registro" antes de cambiar de faena.');
+    sel.value = RS_FAENA_SEL; return;
+  }
+  RS_FAENA_SEL = nf;
+  rsModalCerrar(); rsRender(); rsPlanilla();
+}
+function rsPlanillaFundoCambio(sel){
+  if (sel.value !== '__otro') return;
+  var t = window.prompt('Nombre del fundo o lugar de recogida:', '');
+  if (t && t.trim()){ var o = document.createElement('option'); o.text = t.trim(); o.selected = true; sel.add(o, sel.options.length - 1); }
+  else sel.value = '';
+}
 var RS = null, RS_TAB = 'faena', RS_FAENA_SEL = '';
 var RS_DIAS_FAENA = 30, RS_DIAS_BODEGA = 90, RS_KG_FAENA = 2000;
 
@@ -12934,7 +13050,7 @@ var RS_FR719_FONDO = 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAlgCWAAD/2wBDAAY
    Se guardan solo en este navegador (localStorage 'rs_firmas') y usarlos pide la clave de la App. */
 var RS_FIRMAS_KEY = 'rs_firmas';
 function rsFirmasReg(){ try { return JSON.parse(localStorage.getItem(RS_FIRMAS_KEY) || '{}'); } catch(e){ return {}; } }
-function rsFirmasGuardar(o){ try { localStorage.setItem(RS_FIRMAS_KEY, JSON.stringify(o)); } catch(e){ alert('No se pudo guardar la firma: ' + e.message); } }
+function rsFirmasGuardar(o){ try { localStorage.setItem(RS_FIRMAS_KEY, JSON.stringify(o)); return true; } catch(e){ alert('No se pudo guardar la firma (el navegador no tiene espacio): ' + e.message); return false; } }
 function rsFirmasConfig(){
   var F = rsFirmasReg(), per = (typeof rnListaCargos === 'function') ? rnListaCargos() : [];
   rsModal('<div style="font-weight:800;font-size:14px;margin-bottom:6px;">&#128395; Firmas y timbre registrados</div>' +
@@ -12942,24 +13058,99 @@ function rsFirmasConfig(){
     'Quedan solo en este navegador y para usarlas en un formulario se pide la clave de la App.</div>' +
     '<div class="rs-form"><div><label>Persona</label><input id="rsg-per" list="rs-pers3" value="Gustavo Reyes Salamanca"><datalist id="rs-pers3">' +
       per.map(function(p){ return '<option value="' + rsE(p) + '">'; }).join('') + '</datalist></div>' +
-    '<div><label>Imagen de la firma</label><input id="rsg-firma" type="file" accept="image/*"></div>' +
-    '<div><label>Imagen del timbre (opcional)</label><input id="rsg-timbre" type="file" accept="image/*"></div></div>' +
+    '<div><label>Imagen de la firma</label><input id="rsg-firma" type="file" accept="image/*,.docx">' +
+      '<button type="button" class="rs-btn" style="background:#0b2a6b;color:#fff;margin-top:4px;" onclick="rsFirmasDibujar()">&#9997; o firmar aquí en pantalla</button></div>' +
+    '<div><label>Imagen del timbre (opcional)</label><input id="rsg-timbre" type="file" accept="image/*,.docx"></div></div>' +
     '<div style="margin-top:8px;font-size:12px;">' + (Object.keys(F).length ? Object.keys(F).map(function(n){
       return '<div style="display:flex;align-items:center;gap:8px;border-top:1px solid #eee;padding:4px 0;"><b>' + rsE(n) + '</b>' +
-        (F[n].firma ? '<img src="' + F[n].firma + '" style="height:36px;">' : '') + (F[n].timbre ? '<img src="' + F[n].timbre + '" style="height:42px;">' : '') +
+        (F[n].firma ? '<img src="' + F[n].firma + '" style="height:36px;"><button class="rs-btn" style="background:#eef2f6;" title="Girar la firma" onclick="rsFirmasGirar(\'' + n.replace(/'/g, '') + '\',\'firma\')">&#8635; Girar</button>' : '') +
+        (F[n].timbre ? '<img src="' + F[n].timbre + '" style="height:42px;"><button class="rs-btn" style="background:#eef2f6;" title="Girar el timbre" onclick="rsFirmasGirar(\'' + n.replace(/'/g, '') + '\',\'timbre\')">&#8635; Girar</button>' : '') +
         '<button class="rs-btn" style="margin-left:auto;background:transparent;color:#999;" onclick="var F=rsFirmasReg();delete F[\'' + n.replace(/'/g, '') + '\'];rsFirmasGuardar(F);rsFirmasConfig();">&#128465;</button></div>'; }).join('')
       : '<span style="color:#888;">Todavía no hay firmas registradas.</span>') + '</div>' +
     '<div style="text-align:right;margin-top:10px;"><button class="rs-btn" style="background:#eee;" onclick="rsModalCerrar()">Cerrar</button>' +
     '<button class="rs-btn" style="background:#0b2a6b;color:#fff;" onclick="rsFirmasSubir()">Guardar</button></div>');
 }
-function rsLeerImg(inp, cb){ var f = inp.files && inp.files[0]; if (!f){ cb(null); return; }
-  var fr = new FileReader(); fr.onload = function(){ cb(fr.result); }; fr.readAsDataURL(f); }
+function rsLeerImg(inp, cb, giro){ var f = inp.files && inp.files[0]; if (!f){ cb(null); return; }
+  /* 09-10-2026: se achica a 600 x 260 px como maximo; una foto del celular (varios MB) no cabe en el navegador
+     y la firma no quedaba registrada. */
+  if (/\.docx$/i.test(f.name)){   // firma pegada en un Word: se saca la primera imagen que trae adentro (09-10-2026)
+    var fz = new FileReader();
+    fz.onload = function(){
+      try {
+        var z = XLSX.CFB.read(new Uint8Array(fz.result), {type: 'array'}), k = -1;
+        z.FullPaths.forEach(function(p, i){ if (k < 0 && /media\/[^\/]+\.(png|jpe?g|gif|bmp)$/i.test(p)) k = i; });
+        if (k < 0) throw new Error('sin imagen');
+        var ext = z.FullPaths[k].split('.').pop().toLowerCase();
+        var nf = new File([new Uint8Array(z.FileIndex[k].content)], 'firma.' + ext, {type: 'image/' + (ext === 'jpg' ? 'jpeg' : ext)});
+        // Word guarda la imagen como vino y la gira al mostrarla (rot en 1/60000 de grado): se aplica el mismo giro,
+        // redondeado a 90° (el timbre de Gustavo viene de lado con rot=274°)
+        var g = 0, ix = z.FullPaths.findIndex(function(p){ return /word\/document\.xml$/i.test(p); });
+        if (ix >= 0){ var xml = new TextDecoder().decode(new Uint8Array(z.FileIndex[ix].content)), m = xml.match(/<a:xfrm[^>]*\brot="(-?\d+)"/);
+          if (m) g = Math.round(((+m[1] / 60000) % 360) / 90) * 90 % 360; }
+        rsLeerImg({files: [nf]}, cb, g);
+      } catch(e){ alert('El Word "' + f.name + '" no trae una imagen adentro. Usa una foto JPG o PNG de la firma.'); cb(null); }
+    };
+    fz.readAsArrayBuffer(f); return;
+  }
+  var fr = new FileReader();
+  fr.onload = function(){
+    var im = new Image();
+    im.onload = function(){
+      cb(rsImgCanvas(im, giro || 0));
+    };
+    im.onerror = function(){ alert('No se pudo leer la imagen "' + f.name + '". Usa una foto JPG o PNG.'); cb(null); };
+    im.src = fr.result;
+  };
+  fr.readAsDataURL(f); }
+/* dibuja la imagen girada (0/90/180/270° a la derecha) y achicada a 600 x 260 px como maximo */
+function rsImgCanvas(im, giro){
+  var lado = giro === 90 || giro === 270, W = lado ? im.height : im.width, H = lado ? im.width : im.height;
+  var k = Math.min(1, 600 / W, 260 / H), c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(W * k)); c.height = Math.max(1, Math.round(H * k));
+  var x = c.getContext('2d'); x.translate(c.width / 2, c.height / 2); x.rotate(giro * Math.PI / 180);
+  var w = Math.round(im.width * k), h = Math.round(im.height * k); x.drawImage(im, -w / 2, -h / 2, w, h);
+  return c.toDataURL('image/png');
+}
+/* boton Girar de la lista de firmas registradas: gira 90° a la izquierda la imagen guardada */
+function rsFirmasGirar(per, campo){
+  var F = rsFirmasReg(); if (!F[per] || !F[per][campo]) return;
+  var im = new Image(); im.onload = function(){ F[per][campo] = rsImgCanvas(im, 270); if (rsFirmasGuardar(F)) rsFirmasConfig(); }; im.src = F[per][campo];
+}
+/* RUT de quien recibe (09-10-2026): se pide al firmar la recepcion y queda guardado junto a su firma registrada */
+function rsRutFmt(r){
+  r = String(r || '').replace(/[^0-9kK]/g, '').toUpperCase(); if (r.length < 2) return '';
+  var cu = r.slice(0, -1), dv = r.slice(-1); return cu.replace(/\B(?=(\d{3})+(?!\d))/g, '.') + '-' + dv;
+}
+function rsRutOk(r){
+  r = String(r || '').replace(/[^0-9kK]/g, '').toUpperCase(); if (r.length < 2) return false;
+  var cu = r.slice(0, -1), s = 0, m = 2;
+  for (var i = cu.length - 1; i >= 0; i--){ s += +cu[i] * m; m = m === 7 ? 2 : m + 1; }
+  var d = 11 - (s % 11); return (d === 11 ? '0' : d === 10 ? 'K' : String(d)) === r.slice(-1);
+}
+function rsRutDe(nombre, rut){ return rut || ((rsFirmasReg()[(nombre || '').trim()] || {}).rut) || ''; }
+function rsRutGuardar(nombre, rut){
+  nombre = (nombre || '').trim(); if (!nombre || !rut) return;
+  var F = rsFirmasReg(); F[nombre] = F[nombre] || {}; if (F[nombre].rut !== rut){ F[nombre].rut = rut; rsFirmasGuardar(F); }
+}
+function rsPedirRut(nombre){
+  var r = window.prompt('RUT de ' + (nombre || 'quien recibe') + ' (va junto a su nombre en el FR719):', '');
+  if (!r) return '';
+  if (!rsRutOk(r)){ alert('El RUT "' + r + '" no es válido (revisa el dígito verificador).'); return ''; }
+  r = rsRutFmt(r); rsRutGuardar(nombre, r); return r;
+}
 function rsFirmasSubir(){
   var per = (document.getElementById('rsg-per').value || '').trim(); if (!per){ alert('Falta el nombre de la persona.'); return; }
   rsLeerImg(document.getElementById('rsg-firma'), function(fi){ rsLeerImg(document.getElementById('rsg-timbre'), function(ti){
     if (!fi && !ti){ alert('Elige al menos una imagen.'); return; }
     var F = rsFirmasReg(); F[per] = F[per] || {}; if (fi) F[per].firma = fi; if (ti) F[per].timbre = ti;
-    rsFirmasGuardar(F); rsFirmasConfig(); }); });
+    if (rsFirmasGuardar(F)){ rsFirmasConfig(); alert('Firma de ' + per + ' registrada.'); } }); });
+}
+function rsFirmasDibujar(){
+  var per = (document.getElementById('rsg-per').value || '').trim(); if (!per){ alert('Falta el nombre de la persona.'); return; }
+  rsFirmaPad('Firma de ' + per + ' (queda registrada)', function(d){
+    var F = rsFirmasReg(); F[per] = F[per] || {}; F[per].firma = d;
+    if (rsFirmasGuardar(F)){ rsFirmasConfig(); alert('Firma de ' + per + ' registrada.'); }
+  });
 }
 /* usa la firma registrada de 'persona' en el campo de firma 'id' (pide la clave de la App) */
 function rsUsarFirmaReg(id, inputNombre){
@@ -13071,13 +13262,16 @@ function rsRender(){
 
 /* 1 · FAENA */
 function rsHtmlFaena(){
-  var f = RS_FAENA_SEL || RS_FAENAS[0]; RS_FAENA_SEL = f;
+  var lista = rsFaenasLista();
+  var f = (RS_FAENA_SEL && lista.indexOf(RS_FAENA_SEL) >= 0) ? RS_FAENA_SEL : lista[0]; RS_FAENA_SEL = f;
   var lote = rsLoteAbierto(f);
   var h = '<div class="rs-card"><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
-    '<b>Faena:</b><select id="rs-faena" onchange="RS_FAENA_SEL=this.value;rsRender();" style="padding:6px;border-radius:5px;">' +
-    RS_FAENAS.map(function(x){ return '<option' + (x === f ? ' selected' : '') + '>' + rsE(x) + '</option>'; }).join('') + '</select>' +
+    '<b>Empresa:</b><select id="rs-empresa" onchange="rsEmpresaCambio(this.value)" style="padding:6px;border-radius:5px;">' +
+    RS_EMPRESAS.map(function(x){ return '<option' + (x === RS_EMPRESA_SEL ? ' selected' : '') + '>' + rsE(x) + '</option>'; }).join('') + '</select>' +
     (lote ? '<span class="rs-chip" style="background:#fff3cd;color:#7a5a00;">' + lote.items.length + ' residuos en la bodega de la faena · lo más antiguo del ' + rsF(lote.fechaApertura) + ' · ' + rsDiasDesde(lote.fechaApertura) + ' días</span>'
-          : '<span class="rs-chip" style="background:#eef2f6;color:#555;">La bodega de la faena está vacía</span>') + '</div></div>';
+          : '<span class="rs-chip" style="background:#eef2f6;color:#555;">La bodega de la faena está vacía</span>') +
+    '<span style="margin-left:auto;display:flex;gap:8px;align-items:center;"><b>Faena:</b><select id="rs-faena" onchange="RS_FAENA_SEL=this.value;rsRender();" style="padding:6px;border-radius:5px;">' +
+    lista.map(function(x){ return '<option value="' + rsE(x) + '"' + (x === f ? ' selected' : '') + '>' + rsE(rsFaenaEtiqueta(x)) + '</option>'; }).join('') + '</select></span></div></div>';
   // formulario de ingreso
   h += '<div class="rs-card"><button class="rs-btn" onclick="rsPlanilla()" title="Abrir el formulario FR100958 de la faena para anotar varios residuos" ' +
       'style="background:#f4c542;color:#3b2c00;border:2px solid #c9a227;font-size:14px;padding:8px 14px;margin-bottom:8px;">&#128203; Registrar residuo en el lugar de recogida (FR100958) &#8594;</button>' +
@@ -13142,7 +13336,14 @@ function rsPlanilla(){
     '<div style="font-size:9px;text-align:right;">VERSION 5<br>16/09/2026</div></div>' +
     '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;font-size:12px;margin-bottom:6px;">' +
       '<span>Fecha del retiro: <input type="date" id="rsp-fret" value="' + rsHoy() + '" onchange="document.querySelectorAll(\'#rs-modal .rsp-ret\').forEach(rsPlanillaMarca)"> ' +
-      '<span style="color:#666;">(al marcar la casilla RETIRO se anota como fecha del egreso)</span></span><span><b>Faena:</b> ' + rsE(f) + '</span></div>' +
+      '<span style="color:#666;">(al marcar la casilla RETIRO se anota como fecha del egreso)</span></span>' +
+      '<span style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
+        '<span><b>Faena:</b> <select id="rsp-faena" onchange="rsPlanillaFaenaCambio()" style="padding:3px;border:1px solid #c9a227;background:#fffde8;">' +
+          (function(){ var L = rsFaenasLista(); return L.indexOf(f) < 0 ? L.concat([f]) : L; })().map(function(x){ return '<option value="' + rsE(x) + '"' + (x === f ? ' selected' : '') + '>' + rsE(x) + '</option>'; }).join('') + '</select></span>' +
+        '<span><b>Fundo:</b> <select id="rsp-fundo" onchange="rsPlanillaFundoCambio(this)" style="padding:3px;border:1px solid #c9a227;background:#fffde8;max-width:220px;">' +
+          rsOptsFundo(f, abierto ? abierto.fundo || '' : '') + '</select></span>' +
+        '<span><b>Área:</b> <select id="rsp-area" style="padding:3px;border:1px solid #c9a227;background:#fffde8;"><option value=""></option>' +
+          RS_AREAS.map(function(x){ return '<option' + (abierto && abierto.area === x ? ' selected' : '') + '>' + rsE(x) + '</option>'; }).join('') + '</select></span></span></div>' +
     '<div style="font-size:11px;color:#666;margin-bottom:4px;">Residuos que hoy están en la bodega de la faena (se pueden corregir directamente). Lo ya retirado está en &laquo;Lotes trasladados&raquo;.</div>' +
     '<div style="overflow-x:auto;"><table style="width:100%;min-width:900px;border-collapse:collapse;"><tr>' + th('', 'width:22px;') + th('NOMBRE DEL RESIDUO PELIGROSO') + th('SÓLIDO') + th('LÍQUIDO') +
       th('N°', 'width:55px;') + th('Kg | L', 'width:60px;') + th('FECHA DEL INGRESO', 'width:120px;') + th('FECHA DEL EGRESO', 'width:95px;') +
@@ -13181,11 +13382,22 @@ function rsPlanillaGuardar(retirar){
     }
   });
   if (malas){ alert(malas + ' fila(s) incompletas: cada residuo necesita nombre, N° y Kg|L.'); return; }
+  var nf = (document.getElementById('rsp-faena') || {}).value || f;
+  var fundo = (document.getElementById('rsp-fundo') || {}).value || '', area = (document.getElementById('rsp-area') || {}).value || '';
+  if (fundo === '__otro') fundo = '';
   var fret = (document.getElementById('rsp-fret') || {}).value || rsHoy();
   if (nuevos.length){
-    if (!lote){ lote = {id: 'L' + Date.now(), corr: null, faena: f, fechaApertura: nuevos[0].f, items: []}; RS.lotes.push(lote); }
+    if (!lote){ lote = rsLoteAbierto(nf) || {id: 'L' + Date.now(), corr: null, faena: nf, fechaApertura: nuevos[0].f, items: []}; if (RS.lotes.indexOf(lote) < 0) RS.lotes.push(lote); }
     nuevos.forEach(function(it){ lote.items.push(it); });
   }
+  // faena cambiada en la planilla: lo pendiente pasa a la faena elegida (09-10-2026)
+  if (lote && nf !== f){
+    var dest = rsLoteAbierto(nf);
+    if (dest && dest !== lote){ lote.items.forEach(function(it){ dest.items.push(it); }); RS.lotes = RS.lotes.filter(function(x){ return x !== lote; }); lote = dest; }
+    else lote.faena = nf;
+    RS_FAENA_SEL = nf; cambios++;
+  }
+  if (lote && ((lote.fundo || '') !== fundo || (lote.area || '') !== area)){ lote.fundo = fundo; lote.area = area; cambios++; }
   if (lote && lote.items.length) lote.fechaApertura = lote.items.reduce(function(m, it){ return (!m || it.f < m) ? it.f : m; }, '');
   if (nuevos.length || cambios) rsSave();
   if (retirar){
@@ -13243,67 +13455,136 @@ function rsQuitarOk(lid, iid){ var l = RS.lotes.find(function(x){ return x.id ==
   rsSave(); rsModalCerrar(); rsRender(); }
 
 /* traslado FR719 */
+/* Correlativo del FR719 por año (09-10-2026): cada año parte en 1. El siguiente es el mayor N° usado en los
+   traslados de ese año + 1; RS.corrAnio[año] guarda el ultimo N° usado fuera de la App (lo pide "Vaciar registro"). */
+function rsCorrSig(fecha){
+  var a = String(fecha || rsHoy()).substring(0, 4), m = (RS.corrAnio || {})[a] || 0;
+  RS.lotes.forEach(function(l){ if (l.traslado && l.corr && String(l.traslado.fecha || '').substring(0, 4) === a && l.corr > m) m = l.corr; });
+  return m + 1;
+}
+function rsTrasCorr(){   // al cambiar la fecha del traslado puede cambiar el año, y con el el N°
+  var n = rsCorrSig((document.getElementById('rst-fecha') || {}).value);
+  var a = document.getElementById('rst-corr'), b = document.getElementById('rst-corr2');
+  if (a) a.textContent = n; if (b) b.textContent = n;
+}
 function rsTrasladar(lid){
+  /* 09-10-2026 (Gustavo): el traslado se llena sobre la cara del FR719 (el formulario de traslado a la bodega
+     transitoria) y ahí mismo se pide la firma del jefe de faena. En "N° de unidades o recipientes" solo se
+     cambia el N° de tambores: el resto del texto es lo que realmente se retiró y queda fijo. */
   var l = RS.lotes.find(function(x){ return x.id === lid; });
-  var kg = l.items.reduce(function(s, it){ return s + (+it.kg || 0); }, 0), n = l.items.reduce(function(s, it){ return s + (+it.n || 0); }, 0);
+  var kg = l.items.reduce(function(s, it){ return s + (+it.kg || 0); }, 0);
   var per = (typeof rnListaCargos === 'function') ? rnListaCargos() : [];
-  var opt = function(id){ return '<input id="' + id + '" list="rs-pers">'; };
-  /* 02-10-2026 (Gustavo): no siempre se retira todo lo que hay en la bodega de la faena. Se marca con una
-     palomita lo que se va; el sistema suma lo marcado y con eso arma el FR719. Lo no marcado queda en la faena. */
+  var jefes = (typeof RN_CARGOS !== 'undefined' && RN_CARGOS['Jefes de faena']) || [];
   window.RS_SEL = {}; l.items.forEach(function(it){ if (!window.RS_PRESEL || window.RS_PRESEL[it.id]) RS_SEL[it.id] = 1; });
   var fechaPre = window.RS_PRE_FECHA || rsHoy(); window.RS_PRESEL = null; window.RS_PRE_FECHA = null;
-  var textoRec = function(t){
+  window.RS_TXT_RESTO = function(){
     var sel = l.items.filter(function(it){ return RS_SEL[it.id]; });
     var prods = rsResumen(sel).filter(function(x){ return RS_PROD[x.cod].u !== 'L' && x.cod != 9; }).map(function(x){ return RS_PROD[x.cod].n.toLowerCase(); });
-    return t + ' tambores de 200 L rellenos con ' + (prods.length ? prods.join(', ') : 'residuos'); };
-  rsModal('<div style="font-weight:800;font-size:14px;margin-bottom:8px;">&#128666; Retiro de la faena ' + rsE(l.faena) + ' → FR719 N° ' + (RS.corr + 1) + '</div>' +
-    '<div style="font-weight:700;font-size:12px;margin:4px 0;">1) Marca con &#10004; lo que se retira de la faena</div>' +
-    '<div style="max-height:200px;overflow:auto;border:1px solid #eee;border-radius:6px;padding:4px 6px;">' +
+    return ' tambores de 200 L rellenos con ' + (prods.length ? prods.join(', ') : 'residuos'); };
+  window.RS_TXT_REC = function(t){ return t + RS_TXT_RESTO(); };
+  var pel = l.items.some(function(it){ return rsEsPel(it.cod); });
+  var emp = rsEmpresaDe(l.faena);
+  // campos sobre el formulario (coordenadas en pt, las mismas del FR719 impreso)
+  var cs = 'position:absolute;box-sizing:border-box;background:rgba(255,248,190,.75);border:none;border-bottom:1px dashed #b38f00;' +
+           'font-family:\'Times New Roman\',serif;font-size:11pt;color:#0b2a6b;font-weight:700;padding:0 3px;height:16pt;';
+  var I = function(id, x, y, w, val, ext){ return '<input id="rst-' + id + '" ' + (ext || '') + ' value="' + rsE(val == null ? '' : val) + '" style="' + cs + 'left:' + x + 'pt;top:' + (y - 2) + 'pt;width:' + w + 'pt;">'; };
+  var caja = function(grupo, valor, x, y, on){ return '<div class="rst-x" data-g="' + grupo + '" data-v="' + valor + '" onclick="rsTrasMarca(this)" title="' + rsE(valor) + '" ' +
+    'style="position:absolute;left:' + (x - 4) + 'pt;top:' + (y - 2) + 'pt;width:20pt;height:14pt;cursor:pointer;text-align:center;font:700 12pt \'Times New Roman\';color:#0b2a6b;background:rgba(255,248,190,.6);">' + (on ? 'X' : '') + '</div>'; };
+  var tamb = function(id, y){ return '<div style="position:absolute;left:265pt;top:' + (y - 11) + 'pt;width:296pt;font-family:\'Times New Roman\',serif;font-size:9pt;line-height:1.15;color:#0b2a6b;font-weight:700;">' +
+    '<input id="rst-' + id + '" type="number" min="1" value="1" oninput="rsTrasTextos(this.id)" title="N° de tambores" ' +
+    'style="width:34pt;font:700 11pt \'Times New Roman\';color:#0b2a6b;background:#fff3a0;border:1.5px solid #b38f00;border-radius:3px;padding:0 2px;">' +
+    '<span class="rst-resto"></span></div>'; };
+  var form = '<div style="overflow:auto;border:1px solid #ccc;border-radius:6px;max-height:70vh;"><div id="rst-hoja" style="position:relative;width:612pt;height:600pt;' +
+      'background:url(' + RS_FR719_FONDO + ') 0 0/612pt 792pt no-repeat;">' +
+    '<div style="position:absolute;left:463pt;top:84pt;font:700 12pt \'Times New Roman\';color:#0b2a6b;" id="rst-corr">' + rsCorrSig(fechaPre) + '</div>' +
+    caja('ger', 'Producción Forestal', 193, 170, true) + caja('ger', 'Tecnología y Planificación', 193, 183) + caja('ger', 'Patrimonio y Protección', 193, 196) +
+    I('fecha', 355, 157, 120, fechaPre, 'type="date" onchange="rsTrasCorr()"') +
+    I('area', 355, 183, 205, l.area || '', 'list="rs-areas" placeholder="Área"') +
+    I('predio', 355, 209, 205, l.fundo || '', 'placeholder="Predio / lugar"') +
+    I('emp', 265, 236, 296, emp) +
+    tamb('tamb', 262) +
+    caja('tipo', 'Industrial No Peligroso', 207, 300, !pel) + caja('tipo', 'Industrial Peligroso', 361, 300, pel) +
+    tamb('tamb2', 328) +
+    I('dest', 265, 354, 296, RS.destinoDef) +
+    I('cond', 265, 380, 296, '', 'list="rs-pers" placeholder="Nombre del conductor"') +
+    I('kg', 265, 406, 70, Math.round(kg), 'type="number"') + '<div style="position:absolute;left:340pt;top:404pt;font:11pt \'Times New Roman\';color:#0b2a6b;">kilos</div>' +
+    I('val', 265, 445, 150, '', 'placeholder="sólo si corresponde"') +
+    I('guia', 265, 471, 150, '') +
+    // firma del jefe de faena (línea izquierda)
+    '<div id="rsfe-img" style="position:absolute;left:60pt;top:482pt;width:210pt;height:56pt;display:flex;align-items:flex-end;justify-content:center;"></div>' +
+    '<button type="button" id="rsfe-btn" class="rs-btn" onclick="rsTrasFirmar()" style="position:absolute;left:78pt;top:494pt;background:#0b2a6b;color:#fff;font-size:12px;' +
+      'animation:rsLatido 1.2s ease-in-out infinite;">&#9997; Firma del jefe de faena</button>' +
+    I('ent', 51, 540, 225, '', 'list="rs-jefes" placeholder="Jefe de faena que entrega *" style2') +
+    I('reci', 354, 540, 207, 'Gustavo Reyes Salamanca', 'list="rs-pers"') +
+    '</div></div>';
+  form = form.replace(/ style2"/g, '"');
+  rsModal('<style>@keyframes rsLatido{0%,100%{box-shadow:0 0 0 0 rgba(11,42,107,.55);}50%{box-shadow:0 0 0 7px rgba(11,42,107,0);}}</style>' +
+    '<div style="font-weight:800;font-size:14px;margin-bottom:8px;">&#128666; Traslado a la bodega transitoria · ' + rsE(l.faena) + ' → FR719 N° <span id="rst-corr2">' + rsCorrSig(fechaPre) + '</span></div>' +
+    '<details' + (Object.keys(RS_SEL).length === l.items.length ? '' : ' open') + ' style="margin-bottom:6px;"><summary style="font-weight:700;font-size:12px;cursor:pointer;">1) Lo que se retira de la faena (' +
+      '<span id="rst-cuenta">' + Object.keys(RS_SEL).length + '</span> de ' + l.items.length + ' marcados) · clic para ver o cambiar</summary>' +
+    '<div style="max-height:180px;overflow:auto;border:1px solid #eee;border-radius:6px;padding:4px 6px;margin-top:4px;">' +
     l.items.map(function(it){ var pp = RS_PROD[it.cod]; return '<label style="display:block;font-size:12px;padding:2px 0;"><input type="checkbox"' + (RS_SEL[it.id] ? ' checked' : '') + ' onchange="RS_SEL[\'' + it.id + '\']=this.checked?1:0;rsTrasResumen(\'' + lid + '\')"> ' +
       rsF(it.f) + ' · <b>' + rsE(pp.n) + '</b> · ' + rsN(it.n) + ' · ' + rsN(it.kg, 1) + ' ' + (pp.u === 'L' ? 'L' : 'kg') + (it.obs ? ' · ' + rsE(it.obs) : '') + '</label>'; }).join('') + '</div>' +
-    '<div style="font-weight:700;font-size:12px;margin:8px 0 4px;">2) Resumen de lo que se retira (va al FR719)</div><div id="rst-resumen">' +
-      rsResumenHtml(l.items.filter(function(it){ return RS_SEL[it.id]; })) + '</div>' +
-    '<div class="rs-form" style="margin:8px 0;"><div><label>N° de tambores de 200 L *</label><input id="rst-tamb" type="number" min="1" value="1" ' +
-      'oninput="var t=this.value||0;document.getElementById(\'rst-ret\').value=RS_TXT_REC(t);document.getElementById(\'rst-rec\').value=RS_TXT_REC(t);"></div></div>' +
+    '<div id="rst-resumen" style="margin-top:6px;"></div></details>' +
+    '<div style="font-weight:700;font-size:12px;margin:6px 0 4px;">2) Formulario de traslado FR719 · completa lo amarillo, pon el N° de tambores y pide la firma del jefe de faena</div>' +
     '<datalist id="rs-pers">' + per.map(function(p){ return '<option value="' + rsE(p) + '">'; }).join('') + '</datalist>' +
-    '<div class="rs-form">' +
-    '<div><label>Fecha (= fecha del egreso en la faena)</label><input id="rst-fecha" type="date" value="' + fechaPre + '"></div>' +
-    '<div><label>Gerencia</label><select id="rst-ger"><option>Producción Forestal</option><option>Tecnología y Planificación</option><option>Patrimonio y Protección</option></select></div>' +
-    '<div><label>Área</label><input id="rst-area" placeholder="ej. Mulchén"></div>' +
-    '<div><label>Predio / lugar</label><input id="rst-predio" placeholder="ej. Santa Cristina"></div>' +
-    '<div><label>Empresa de servicio</label><input id="rst-emp" value="Leonidas Poo Zenteno y Cía. Ltda."></div>' +
-    '<div><label>Tipo de residuos</label><select id="rst-tipo"><option' + (l.items.some(function(it){ return rsEsPel(it.cod); }) ? ' selected' : '') + '>Industrial Peligroso</option>' +
-      '<option' + (l.items.some(function(it){ return rsEsPel(it.cod); }) ? '' : ' selected') + '>Industrial No Peligroso</option></select></div>' +
-    '<div style="grid-column:1/-1;"><label>N° unidades o recipientes retirados</label><input id="rst-ret" value="' + rsE(textoRec(1)) + '"></div>' +
-    '<div style="grid-column:1/-1;"><label>N° unidades o recipientes recibidos</label><input id="rst-rec" value="' + rsE(textoRec(1)) + '"></div>' +
-    '<div><label>Destino autorizado</label><input id="rst-dest" value="' + rsE(RS.destinoDef) + '"></div>' +
-    '<div><label>Conductor</label><input id="rst-cond"></div>' +
-    '<div><label>Peso estimado (kg)</label><input id="rst-kg" type="number" value="' + Math.round(kg) + '"></div>' +
-    '<div><label>Valor pagado ($, si corresponde)</label><input id="rst-val"></div>' +
-    '<div><label>N° guía o boleta</label><input id="rst-guia"></div>' +
-    '<div><label>Entrega en faena (jefe de faena) *</label>' + opt('rst-ent') + '</div>' +
-    '<div><label>Recibirá en bodega</label><input id="rst-reci" list="rs-pers" value="Gustavo Reyes Salamanca"></div>' +
-    rsFirmaCampo('rsfe', 'Firma del jefe de faena (entrega)', 'rst-ent') + '</div>' +
-    '<div style="font-size:11px;color:#666;margin-top:6px;">Recuerda llevar la <b>Hoja de Datos de Seguridad</b> de cada residuo (se imprime junto al FR719).</div>' +
+    '<datalist id="rs-jefes">' + jefes.concat(per.filter(function(p){ return jefes.indexOf(p) < 0; })).map(function(p){ return '<option value="' + rsE(p) + '">'; }).join('') + '</datalist>' +
+    '<datalist id="rs-areas">' + RS_AREAS.map(function(x){ return '<option value="' + rsE(x) + '">'; }).join('') + '</datalist>' +
+    '<input type="hidden" id="rst-ger" value="Producción Forestal"><input type="hidden" id="rst-tipo" value="' + (pel ? 'Industrial Peligroso' : 'Industrial No Peligroso') + '">' +
+    '<input type="hidden" id="rst-ret"><input type="hidden" id="rst-rec">' + form +
+    '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px;font-size:11.5px;">' +
+      '<button type="button" class="rs-btn" style="background:#1a6b3a;color:#fff;" onclick="rsUsarFirmaReg(\'rsfe\',\'rst-ent\');rsTrasFirmaVista();">&#128395; Usar firma registrada del jefe</button>' +
+      '<label><input type="checkbox" id="rsfe-mano" onchange="rsTrasFirmaVista()"> se firma a mano en el formulario impreso</label>' +
+      '<span style="color:#666;">Recuerda llevar la <b>Hoja de Datos de Seguridad</b> de cada residuo (se imprime junto al FR719).</span></div>' +
     '<div style="text-align:right;margin-top:10px;"><button class="rs-btn" style="background:#eee;" onclick="rsModalCerrar()">Cancelar</button>' +
-    '<button class="rs-btn" style="background:#1a6b3a;color:#fff;" onclick="rsTrasladarOk(\'' + lid + '\')">Firmar y enviar a bodega</button></div>');
+    '<button class="rs-btn" style="background:#1a6b3a;color:#fff;padding:8px 16px;" onclick="rsTrasladarOk(\'' + lid + '\')">&#9997; Firmar y enviar a bodega</button></div>');
   window._firma_rsfe = null; window._timbre_rsfe = null;
-  setTimeout(function(){ try { rsTrasResumen(lid); } catch(e){} }, 0);
-  document.querySelector('#rs-modal>div').style.width = 'min(760px,96vw)';
-  window.RS_TXT_REC = textoRec;
+  document.querySelector('#rs-modal>div').style.width = 'min(880px,98vw)';
+  rsTrasResumen(lid);
+}
+function rsTrasMarca(el){
+  var g = el.getAttribute('data-g');
+  document.querySelectorAll('#rst-hoja .rst-x[data-g="' + g + '"]').forEach(function(x){ x.textContent = ''; });
+  el.textContent = 'X'; document.getElementById('rst-' + g).value = el.getAttribute('data-v');
+}
+function rsTrasTextos(origen){
+  var a = document.getElementById('rst-tamb'), b = document.getElementById('rst-tamb2');
+  if (origen === 'rst-tamb') b.value = a.value;            // lo recibido parte igual a lo retirado
+  document.querySelectorAll('#rst-hoja .rst-resto').forEach(function(sp){ sp.textContent = RS_TXT_RESTO(); });
+  document.getElementById('rst-ret').value = RS_TXT_REC(a.value || 0);
+  document.getElementById('rst-rec').value = RS_TXT_REC(b.value || 0);
+}
+function rsTrasFirmaVista(){
+  var hay = !!window._firma_rsfe, mano = (document.getElementById('rsfe-mano') || {}).checked;
+  var b = document.getElementById('rsfe-btn'); if (!b) return;
+  b.style.display = (hay || mano) ? 'none' : '';
+  if (hay){ var im = document.querySelector('#rsfe-img img'); if (im){ im.style.height = '52pt'; im.style.borderBottom = 'none'; }
+    document.querySelectorAll('#rsfe-img span').forEach(function(x){ x.remove(); });
+    document.getElementById('rsfe-img').onclick = rsTrasFirmar; document.getElementById('rsfe-img').title = 'Clic para firmar de nuevo'; }
+  if (mano && !hay) document.getElementById('rsfe-img').innerHTML = '<span style="font:italic 9pt Arial;color:#888;">se firma a mano</span>';
+  else if (!hay) document.getElementById('rsfe-img').innerHTML = '';
+}
+function rsTrasFirmar(cb){
+  var nom = (document.getElementById('rst-ent').value || '').trim();
+  if (!nom){ alert('Primero escribe el nombre del jefe de faena que entrega (bajo la línea de la firma).'); document.getElementById('rst-ent').focus(); return; }
+  rsFirmaPad('Firma de ' + nom + ' (jefe de faena, entrega)', function(d){
+    window._firma_rsfe = d; window._timbre_rsfe = null; document.getElementById('rsfe-mano').checked = false;
+    document.getElementById('rsfe-img').innerHTML = '<img src="' + d + '" style="height:52pt;max-width:200pt;">';
+    rsTrasFirmaVista(); if (typeof cb === 'function') cb();
+  });
 }
 function rsTrasResumen(lid){
   var l = RS.lotes.find(function(x){ return x.id === lid; }), sel = l.items.filter(function(it){ return RS_SEL[it.id]; });
   document.getElementById('rst-resumen').innerHTML = sel.length ? rsResumenHtml(sel) : '<div style="color:#c0392b;font-size:12px;">No hay nada marcado.</div>';
+  var c = document.getElementById('rst-cuenta'); if (c) c.textContent = sel.length;
   var kg = sel.reduce(function(s, it){ return s + (+it.kg || 0); }, 0); document.getElementById('rst-kg').value = Math.round(kg);
-  var t = document.getElementById('rst-tamb').value || 1;
-  document.getElementById('rst-ret').value = RS_TXT_REC(t); document.getElementById('rst-rec').value = RS_TXT_REC(t);
+  rsTrasTextos();
 }
 function rsTrasladarOk(lid){
   var v = function(k){ return (document.getElementById('rst-' + k).value || '').trim(); };
   if (!v('ent')){ alert('Falta el nombre del jefe de faena que entrega.'); return; }
   var manoE = document.getElementById('rsfe-mano').checked;
-  if (!window._firma_rsfe && !manoE){ alert('Falta la firma del jefe de faena: fírmalo en pantalla o marca que se firma a mano en el impreso.'); return; }
+  if (!window._firma_rsfe && !manoE){ rsTrasFirmar(function(){ rsTrasladarOk(lid); }); return; }
   var abierto = RS.lotes.find(function(x){ return x.id === lid; });
   var selItems = abierto.items.filter(function(it){ return RS_SEL[it.id]; });
   if (!selItems.length){ alert('Marca con la palomita al menos un residuo para retirar.'); return; }
@@ -13312,8 +13593,8 @@ function rsTrasladarOk(lid){
   var ultIng = selItems.reduce(function(m, it){ return (it.f || '') > m ? it.f : m; }, '');
   if (v('fecha') && ultIng && v('fecha') < ultIng){ alert('La fecha del traslado (' + rsF(v('fecha')) + ') es anterior al último residuo anotado en la faena (' + rsF(ultIng) + ').'); return; }
   // lo marcado pasa a un FR719 nuevo con su correlativo; lo no marcado sigue en la bodega de la faena
-  RS.corr++;
-  var l = {id: 'L' + Date.now(), corr: RS.corr, faena: abierto.faena, items: selItems,
+  var nCorr = rsCorrSig(v('fecha') || rsHoy());
+  var l = {id: 'L' + Date.now(), corr: nCorr, faena: abierto.faena, items: selItems,
            fechaApertura: selItems.reduce(function(m, it){ return (!m || it.f < m) ? it.f : m; }, '')};
   abierto.items = abierto.items.filter(function(it){ return !RS_SEL[it.id]; });
   if (abierto.items.length) abierto.fechaApertura = abierto.items.reduce(function(m, it){ return (!m || it.f < m) ? it.f : m; }, '');
@@ -13342,7 +13623,10 @@ function rsRecibir(lid){
     '<datalist id="rs-pers2">' + per.map(function(p){ return '<option value="' + rsE(p) + '">'; }).join('') + '</datalist>' +
     '<div class="rs-form" style="margin-top:8px;">' +
     '<div><label>Fecha de recepción</label><input id="rsv-fecha" type="date" value="' + rsHoy() + '"></div>' +
-    '<div><label>Recibe</label><input id="rsv-rec" list="rs-pers2" value="' + rsE(t.recibe || 'Gustavo Reyes Salamanca') + '"></div>' +
+    '<div><label>Recibe</label><input id="rsv-rec" list="rs-pers2" value="' + rsE(t.recibe || 'Gustavo Reyes Salamanca') + '" ' +
+      'onchange="var r=document.getElementById(\'rsv-rut\');if(!r.value)r.value=rsRutDe(this.value);"></div>' +
+    '<div><label>RUT de quien recibe *</label><input id="rsv-rut" placeholder="12.345.678-9" value="' + rsE(rsRutDe(t.recibe || 'Gustavo Reyes Salamanca')) + '" ' +
+      'onblur="if(rsRutOk(this.value))this.value=rsRutFmt(this.value);"></div>' +
     '<div style="grid-column:1/-1;"><label>N° unidades o recipientes recibidos</label><input id="rsv-txt" value="' + rsE(t.recibidos || '') + '"></div>' +
     '<div><label>Peso recibido (kg)</label><input id="rsv-kg" type="number" value="' + (t.kg || '') + '"></div>' +
     '<div style="display:flex;align-items:flex-end;"><label style="font-weight:400;font-size:12px;"><input type="checkbox" id="rsv-timbre" checked> lleva timbre de la empresa</label></div>' +
@@ -13358,7 +13642,9 @@ function rsRecibirOk(lid){
   var mano = document.getElementById('rsfr-mano').checked;
   if (!window._firma_rsfr && !mano){ alert('Falta tu firma de recepción (en pantalla o a mano en el impreso).'); return; }
   if (g('rsv-fecha') && g('rsv-fecha') < t.fecha){ alert('La recepción no puede ser anterior al envío (' + rsF(t.fecha) + ').'); return; }
-  t.recepcion = {fecha: g('rsv-fecha') || rsHoy(), recibe: g('rsv-rec'), firma: window._firma_rsfr || null, mano: mano,
+  if (!rsRutOk(g('rsv-rut'))){ alert('Falta tu RUT o no es válido (revisa el dígito verificador).'); document.getElementById('rsv-rut').focus(); return; }
+  var rutR = rsRutFmt(g('rsv-rut')); rsRutGuardar(g('rsv-rec'), rutR);
+  t.recepcion = {fecha: g('rsv-fecha') || rsHoy(), recibe: g('rsv-rec'), rut: rutR, firma: window._firma_rsfr || null, mano: mano,
                  timbre: document.getElementById('rsv-timbre').checked, timbreImg: window._timbre_rsfr || null};
   t.recibe = g('rsv-rec'); t.recibidos = g('rsv-txt') || t.recibidos; if (g('rsv-kg')) t.kg = parseFloat(g('rsv-kg')) || t.kg;
   t.estado = 'recibido';
@@ -13373,7 +13659,8 @@ function rsRecibirOk(lid){
 }
 /* Firmar un FR719 ya registrado que quedó sin firmas (02-10-2026): pasa con los traslados hechos antes de
    que existieran las firmas, o con los que se firmaron a mano y después se quieren firmar digital. */
-function rsFaltaFirma(l){ var t = l.traslado || {}; return !!t.fecha && (!t.firmaEnt || !(t.recepcion && t.recepcion.firma)); }
+function rsFaltaFirma(l){ var t = l.traslado || {}; if (t.historico) return false;   // cargados del Excel (firmados en papel)
+  return !!t.fecha && (!t.firmaEnt || !(t.recepcion && t.recepcion.firma)); }
 function rsFirmarDespues(lid){
   var l = RS.lotes.find(function(x){ return x.id === lid; }), t = l.traslado, rec = t.recepcion || {};
   var per = (typeof rnListaCargos === 'function') ? rnListaCargos() : [];
@@ -13383,6 +13670,7 @@ function rsFirmarDespues(lid){
       : '<div><label>Entrega (jefe de faena)</label><input id="rsx-ent" list="rs-pers4" value="' + rsE(t.entrega || '') + '"></div>' + rsFirmaCampo('rsxe', 'Firma de quien entrega', 'rsx-ent')) +
     (rec.firma ? '<div style="grid-column:1/-1;font-size:12px;">Recibe: <b>' + rsE(t.recibe) + '</b> <img src="' + rec.firma + '" style="height:34px;vertical-align:middle;"> (ya firmado)</div>'
       : '<div><label>Recibe</label><input id="rsx-rec" list="rs-pers4" value="' + rsE(t.recibe || 'Gustavo Reyes Salamanca') + '"></div>' +
+        '<div><label>RUT de quien recibe *</label><input id="rsx-rut" placeholder="12.345.678-9" value="' + rsE(rsRutDe(t.recibe || 'Gustavo Reyes Salamanca', rec.rut)) + '"></div>' +
         '<div><label>Fecha de recepción</label><input id="rsx-fecha" type="date" value="' + (rec.fecha || t.fecha || rsHoy()) + '"></div>' +
         '<div style="display:flex;align-items:flex-end;"><label style="font-weight:400;font-size:12px;"><input type="checkbox" id="rsx-timbre" checked> lleva timbre de la empresa</label></div>' +
         rsFirmaCampo('rsxr', 'Firma de quien recibe', 'rsx-rec')) + '</div>' +
@@ -13397,7 +13685,9 @@ function rsFirmarDespuesOk(lid){
   var g = function(id){ var e = document.getElementById(id); return e ? (e.value || '').trim() : ''; };
   if (!t.firmaEnt && window._firma_rsxe){ t.firmaEnt = window._firma_rsxe; t.timbreEnt = window._timbre_rsxe || null; if (g('rsx-ent')) t.entrega = g('rsx-ent'); t.firmaEntMano = false; algo = true; }
   if (!(t.recepcion && t.recepcion.firma) && window._firma_rsxr){
-    t.recepcion = {fecha: g('rsx-fecha') || t.fecha, recibe: g('rsx-rec'), firma: window._firma_rsxr, mano: false,
+    if (!rsRutOk(g('rsx-rut'))){ alert('Falta el RUT de quien recibe o no es válido.'); return; }
+    rsRutGuardar(g('rsx-rec'), rsRutFmt(g('rsx-rut')));
+    t.recepcion = {fecha: g('rsx-fecha') || t.fecha, recibe: g('rsx-rec'), rut: rsRutFmt(g('rsx-rut')), firma: window._firma_rsxr, mano: false,
                    timbre: !!(document.getElementById('rsx-timbre') || {}).checked, timbreImg: window._timbre_rsxr || null};
     t.recibe = g('rsx-rec') || t.recibe; t.estado = 'recibido'; algo = true;
   }
@@ -13432,7 +13722,7 @@ function rsTablaBase(F, conPel){
   return '<div style="overflow-x:auto;"><table class="rs-tb"><tr><th>Emp.</th><th>N° guía interna</th><th>Faena / EESS</th><th>Descripción</th><th>Sólido</th><th>Líquido</th><th>Semisólido</th><th>N°</th><th>Kg</th>' +
     (conPel ? RS_CARS.map(function(c){ return '<th>' + c + '</th>'; }).join('') : '') + '<th>Ingreso</th><th>Egreso</th><th>Días</th></tr>' +
     F.map(function(f){ var p = RS_PROD[f.cod], car = RS_CAR[f.cod] || '', d = rsDiasDesde(f.ingreso);
-      return '<tr' + (f.egreso ? ' style="color:#888;"' : '') + '><td>' + f.emp + '</td><td style="text-align:center;font-weight:700;">' + f.lote.corr + '</td><td>' + rsE(f.lote.faena) +
+      return '<tr' + (f.egreso ? ' style="color:#888;"' : '') + '><td>' + f.emp + '</td><td style="text-align:center;font-weight:700;"><a href="#" title="Ver el FR719 N° ' + f.lote.corr + '" style="color:#0b2a6b;" onclick="rsImprimir(\'' + f.lote.id + '\',\'fr719\');return false;">' + f.lote.corr + '</a></td><td>' + rsE(f.lote.faena) +
         '</td><td>' + rsE(p.n) + '</td>' + x(f.est === 'Sólido') + x(f.est === 'Líquido') + x(f.est === 'Semisólido') +
         '<td style="text-align:right;">' + rsN(f.n) + '</td><td style="text-align:right;">' + rsN(f.kg, 1) + '</td>' + (conPel ? RS_CARS.map(function(c){ return x(car === c); }).join('') : '') +
         '<td>' + rsF(f.ingreso) + '</td><td style="font-weight:700;color:#1f6feb;">' + (f.egreso ? rsF(f.egreso) + '<br><span style="font-size:9.5px;color:#888;font-weight:400;">' +
@@ -13584,6 +13874,8 @@ function rsImprimir(lid, tipo){
     h += '</table><p style="font-size:9.5px;"><b>Nota:</b> 1.- Archivar este registro por el periodo de un año en faena, el segundo año en oficina. 2.- El encargado del correcto llenado de este formulario es el Jefe de Faena o persona asignada. 3.- Supervisión CMPC y EESS Control serán los encargados del monitoreo de este formulario.</p>';
   } else {
     var t = l.traslado || {};
+    if (t.recepcion && t.recepcion.firma && !rsRutDe(t.recepcion.recibe || t.recibe, t.recepcion.rut)){
+      var r0 = rsPedirRut(t.recepcion.recibe || t.recibe); if (r0){ t.recepcion.rut = r0; rsSave(); } }
     var mk = function(x){ return x ? '[X]' : '[ &nbsp; ]'; };
     var copia = function(et){ return '<div style="text-align:center;font-weight:800;font-size:12px;border:2px solid #333;padding:2px;margin-bottom:6px;letter-spacing:2px;">' + et + '</div>'; };
     var resumen = '<h3 style="font-size:13px;">Resumen del lote N° ' + l.corr + ' · ' + rsE(l.faena) + ' (registro FR100958)</h3>' +
@@ -13596,8 +13888,12 @@ function rsImprimir(lid, tipo){
     // textos largos (ej. "2 tambores de 200 L rellenos con ..."): en dos líneas sobre la raya, como escrito a mano
     var largo = function(x, y, txt){ txt = String(txt || ''); if (txt.length <= 55) return V(x, y, rsE(txt), 'font-size:10.5pt;white-space:nowrap;');
       return V(x, y - 9, rsE(txt), 'width:295pt;font-size:' + (txt.length > 110 ? 7.5 : 8.8) + 'pt;line-height:1.08;'); };
-    var timbreHtml = rec.timbreImg ? '<img src="' + rec.timbreImg + '" style="height:44pt;transform:rotate(-5deg);opacity:.92;">'
-      : (rec.timbre ? '<span class="timbre">L. POO Z. Y CÍA. LTDA.<br>NACIMIENTO<br>RECIBIDO ' + rsF(rec.fecha) + '</span>' : '');
+    /* 09-10-2026 (Gustavo): el timbre es la imagen registrada de quien recibe (con el RUT, tal como es el timbre);
+       si no hay imagen, uno dibujado con el mismo texto. Va centrado sobre la linea de quien recibe. */
+    var timbreImg = rec.timbreImg || (rec.timbre ? (rsFirmasReg()[(rec.recibe || t.recibe || '').trim()] || {}).timbre : null);
+    var timbreHtml = timbreImg ? '<img src="' + timbreImg + '" style="max-height:40pt;max-width:88pt;transform:rotate(-4deg);opacity:.9;">'
+      : (rec.timbre ? '<span class="timbre" style="font-size:6.5pt;padding:6px 9px;">L. Poo Z. y Cía Ltda.<br>78.467.180 - 1<br>NACIMIENTO</span>' : '');
+    var rutRec = rsRutDe(rec.recibe || t.recibe, rec.rut);
     var fr719 = '<div class="hoja" style="position:relative;width:612pt;height:792pt;background:url(' + RS_FR719_FONDO + ') 0 0/612pt 792pt no-repeat;' +
         'font-family:\'Times New Roman\',serif;color:#0b2a6b;-webkit-print-color-adjust:exact;print-color-adjust:exact;">' +
       V(463, 84, String(l.corr), 'font-size:12pt;font-weight:700;') +
@@ -13618,13 +13914,17 @@ function rsImprimir(lid, tipo){
       V(265, 445, rsE(t.valor || ''), 'font-size:11pt;') +
       V(265, 471, rsE(t.guia || ''), 'font-size:11pt;') +
       // firma y nombre de quien entrega (sobre la línea izquierda, 51–276 pt, y≈551)
-      (t.firmaEnt ? '<img src="' + t.firmaEnt + '" style="position:absolute;left:120pt;top:484pt;height:54pt;max-width:150pt;">' : '') +
+      (t.firmaEnt ? '<div style="position:absolute;left:51pt;top:486pt;width:225pt;height:52pt;display:flex;align-items:flex-end;justify-content:center;">' +
+                    '<img src="' + t.firmaEnt + '" style="max-height:50pt;max-width:160pt;"></div>' : '') +
       (t.timbreEnt ? '<img src="' + t.timbreEnt + '" style="position:absolute;left:150pt;top:494pt;height:44pt;transform:rotate(-5deg);opacity:.92;">' : '') +
       V(51, 538, rsE(t.entrega || ''), 'width:225pt;text-align:center;font-size:10pt;') +
       // firma, timbre y nombre de quien recibe (línea derecha, 354–561 pt)
-      (rec.firma ? '<img src="' + rec.firma + '" style="position:absolute;left:372pt;top:484pt;height:54pt;max-width:150pt;">' : '') +
-      (timbreHtml ? '<div style="position:absolute;left:432pt;top:490pt;">' + timbreHtml + '</div>' : '') +
-      V(354, 538, rsE(t.recibe || ''), 'width:207pt;text-align:center;font-size:10pt;') +
+      // firma de quien recibe centrada en la parte izquierda de la linea; el timbre va a la derecha sin taparla
+      (rec.firma ? '<div style="position:absolute;left:354pt;top:486pt;width:' + (timbreHtml ? 124 : 207) + 'pt;height:52pt;display:flex;align-items:flex-end;justify-content:center;">' +
+                   '<img src="' + rec.firma + '" style="max-height:50pt;max-width:118pt;"></div>' : '') +
+      (timbreHtml ? '<div style="position:absolute;left:' + (rec.firma ? 476 : 354) + 'pt;top:492pt;width:' + (rec.firma ? 88 : 207) + 'pt;text-align:center;">' + timbreHtml + '</div>' : '') +
+      V(354, 538, rsE(t.recibe || '') + (rutRec ? ' &middot; RUT ' + rsE(rutRec) : ''), 'width:207pt;text-align:center;white-space:nowrap;font-size:' +
+        (rutRec ? Math.min(10, 207 / (((t.recibe || '') + ' · RUT ' + rutRec).length * 0.5)) : 10) + 'pt;') +
       (t.firmaEnt || rec.firma ? V(51, 690, 'Firmado electrónicamente' + (t.firmaEnt ? ' · entrega ' + rsF(t.fecha) : '') + (rec.firma ? ' · recepción ' + rsF(rec.fecha) : ''), 'font-size:7.5pt;color:#555;') : '') +
       '</div>';
     var etq = function(t){ return '<div style="position:absolute;left:20pt;top:12pt;font:700 8pt Arial;letter-spacing:1px;color:#444;">' + t + '</div>'; };
@@ -13648,8 +13948,28 @@ function rsRespaldo(){ var b = new Blob([JSON.stringify(RS, null, 1)], {type: 'a
   var a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'Respaldo_Residuos_' + rsHoy() + '.json'; a.click(); }
 function rsRestaurar(inp){ var f = inp.files && inp.files[0]; if (!f) return; var fr = new FileReader();
   fr.onload = function(){ try { var d = JSON.parse(fr.result); if (!d || !Array.isArray(d.lotes)) throw new Error('no es un respaldo de Residuos');
+      rsLoad(); if (RS.lotes.length && !window.confirm('Se va a REEMPLAZAR lo que hay ahora en Residuos (' + RS.lotes.length + ' lotes) por el archivo (' + d.lotes.length + ' lotes, ' + (d.retiros || []).length + ' retiros). ¿Continuar?')) return;
       RS = d; rsSave(); rsRender(); alert('Respaldo cargado: ' + d.lotes.length + ' lotes.'); } catch(e){ alert('No se pudo restaurar: ' + e.message); } };
   fr.readAsText(f); }
+/* 09-10-2026 (Gustavo): los residuos cargados eran de prueba. Borra TODO el registro de residuos de este navegador
+   (lotes, FR719, retiros SIDREP), con confirmacion y clave, y descarga antes un respaldo. Las firmas registradas
+   ('rs_firmas') no se tocan. Pregunta con que correlativo parte el proximo FR719. */
+function rsVaciar(){
+  rsLoad();
+  var n = RS.lotes.reduce(function(a, l){ return a + l.items.length; }, 0);
+  if (!window.confirm('Se van a BORRAR todos los residuos registrados en este navegador:\n\n' + RS.lotes.length + ' lotes - ' + n + ' residuos - ' +
+                      (RS.retiros || []).length + ' retiros SIDREP.\n\nAntes se descarga un respaldo. ¿Continuar?')) return;
+  var c = window.prompt('Clave de la App para borrar el registro:');
+  if (c !== POLI_CLAVE){ alert('Clave incorrecta. No se borró nada.'); return; }
+  var corr = window.prompt('¿Cuál fue el último N° de FR719 usado de verdad este año ' + rsHoy().substring(0, 4) + '? (el próximo será ese + 1; cada año parte en 1)', '0');
+  if (corr === null) return;
+  corr = parseInt(corr, 10); if (isNaN(corr) || corr < 0) corr = 0;
+  rsRespaldo();
+  var ca = {}; ca[rsHoy().substring(0, 4)] = corr;
+  RS = {corr: 0, corrAnio: ca, lotes: [], retiros: [], destinoDef: RS.destinoDef || 'Bodega transitoria Leonidas Poo Z. (Nacimiento)'};
+  rsSave(); RS_FAENA_SEL = ''; rsRender();
+  alert('Registro de residuos vaciado. El próximo FR719 será el N° ' + (corr + 1) + '.\nSe descargó un respaldo por si lo necesitas.');
+}
 document.addEventListener('click', function(e){ if (e.target && e.target.id === 'rs-modal') rsModalCerrar(); });
 
 /* ═══ BEST Diario Tradicional (29-09-2026) ═══
@@ -15300,6 +15620,7 @@ function guardarEnCache(filename, aniosTxt, minMes, maxMes) {
       st.put({id: 'bhtdias', data: BHT_DIAS});
       st.put({id: 'fmndias', data: FMN_DIAS});
       st.put({id: 'prodfm', data: PROD_FAENA_MES});
+      st.put({id: 'bodega', data: BODEGA});
       st.put({id: 'meta', data: {
         filename: filename, savedAt: new Date().toISOString(),
         anios: aniosTxt, minMes: minMes, maxMes: maxMes, nReg: RAW.length
@@ -15381,7 +15702,7 @@ function restaurarDesdeCache() {
       var tx  = db.transaction(OEE_STORE, 'readonly');
       var st  = tx.objectStore(OEE_STORE);
       var raw = null, bd = null, meta = null, faja = null, ofrod = null, prodrod = null, ofsnap = null, ihrs = null, grafx = null, diesel = null, causashp = null, dieseldet = null, oper = null, vmamix = null, bhtdias = null, vmadia = null, vmarod = null, prodfm = null, fmndias = null;
-      var pending = 22;
+      var pending = 23;
       function check() {
         pending--;
         if (pending > 0) return;
@@ -15414,6 +15735,7 @@ function restaurarDesdeCache() {
       st.get('bhtdias').onsuccess = function(e){ bhtdias = e.target.result ? e.target.result.data : null; check(); };
       st.get('fmndias').onsuccess = function(e){ fmndias = e.target.result ? e.target.result.data : null; check(); };
       st.get('prodfm').onsuccess  = function(e){ prodfm  = e.target.result ? e.target.result.data : null; check(); };
+      st.get('bodega').onsuccess  = function(e){ BODEGA = (e.target.result ? e.target.result.data : null) || null; check(); };
       tx.onerror = function(){ applyFilters(); };
     } catch(e) {
       console.warn('Error restaurando cache:', e.message);
@@ -17244,6 +17566,566 @@ function fundoProdRender(F){
        td(fmt(o.tot), 'color:#1f6fd1;') + td('') + td(fmt(nDias)) + td(fmt(nDias ? o.tot / nDias : 0)) +
        td(Object.keys(rodT).length) + td('100%') + '</tr></tbody></table>';
   body.innerHTML = h;
+}
+
+/* ============================================================
+   BODEGA OPERATIVA (08-10-2026, pedido de Gustavo)
+   Boton cafe junto a "Produccion por Fundo". Replica la hoja "Bodega Operativa" del Excel
+   Control_Bodega_POO: por fundo (cancha) producido, despachado por destino, stock de la
+   bodega POO y el analisis de cada inventario de Mininco.
+   Fuentes (hojas del Best 2025):
+     produc             -> producido por cancha y dia (cartolas)
+     BodegaGuias        -> guias de despacho (las escribe el bot, modo 'bodega')
+     BodegaInventarios  -> inventarios de Mininco; la columna G 'Hora cierre (anotar)' es manual
+   Reglas (acordadas con Gustavo 07/08-10-2026):
+     - Saldo segun papeles = producido (cartolas ANTES del dia del inventario)
+                            - guias POO hasta la HORA del inventario (vacia = todo el dia).
+     - El stock POO se rebaja solo con guias de bodega POO.
+     - En el inventario de CIERRE lo inventariado pasa a bodega FORMIN y la diferencia es el
+       faltante: el stock POO queda en 0. Las guias POO posteriores se muestran aparte.
+     - Diferencia = inventariado - saldo segun papeles (verde/flecha arriba a favor, rojo/abajo en contra).
+   Datos en el cache: clave 'bodega' (guardarEnCache / restaurarDesdeCache).
+   ============================================================ */
+var BOD_SEL = {faena: '', fundo: '', prod: '(Todos)', bod: '(Todos)', vista: 'main'};
+
+function _bodSerial(s){                 // 'YYYY-MM-DD' -> serial de Excel (dias)
+  var p = String(s).split('-');
+  return (Date.UTC(+p[0], +p[1] - 1, +p[2]) - Date.UTC(1899, 11, 30)) / 864e5;
+}
+function _bodStr(serial){               // serial de Excel -> 'YYYY-MM-DD'
+  var d = new Date(Date.UTC(1899, 11, 30) + Math.floor(serial + 1e-9) * 864e5);
+  return d.toISOString().substring(0, 10);
+}
+function _bodSerialFecha(d){            // Date de SheetJS (cellDates:true arma la fecha en hora LOCAL) -> serial de Excel
+  return (Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(), d.getHours(), d.getMinutes()) - Date.UTC(1899, 11, 30)) / 864e5;
+}
+function _bodCelSerial(v){              // celda de fecha/hora (Date, numero o texto) -> serial de Excel
+  if (v instanceof Date) return _bodSerialFecha(v);
+  if (typeof v === 'number') return v;
+  return _bodTxtSerial(v);
+}
+function _bodTxtSerial(t){               // 'dd-mm-yyyy[ hh:mm]' o 'yyyy-mm-dd[ hh:mm]' (texto de la celda) -> serial
+  t = String(t || '').trim(); var m, y, mo, d, hh = 0, mi = 0;
+  if ((m = t.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})(?:\s+(\d{1,2}):(\d{2}))?/))){ d = +m[1]; mo = +m[2]; y = +m[3]; hh = +(m[4] || 0); mi = +(m[5] || 0); }
+  else if ((m = t.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2}))?/))){ y = +m[1]; mo = +m[2]; d = +m[3]; hh = +(m[4] || 0); mi = +(m[5] || 0); }
+  else return null;
+  return (Date.UTC(y, mo - 1, d, hh, mi) - Date.UTC(1899, 11, 30)) / 864e5;
+}
+function _bodHoraTxt(t){                 // 'hh:mm' -> fraccion de dia
+  var m = String(t || '').trim().match(/^(\d{1,2}):(\d{2})/); return m ? (+m[1] * 60 + +m[2]) / 1440 : null;
+}
+function _bodNumTxt(t){ t = String(t || '').trim(); if (t.indexOf(',') >= 0 && t.indexOf('.') < 0) t = t.replace(',', '.'); return _bodNum(t.replace(/[^0-9.\-]/g, '')); }
+function _bodFechaXL(v){                // celda de fecha (serial, Date o texto) -> 'YYYY-MM-DD'
+  if (typeof v === 'number' && v > 20000) return _bodStr(v);
+  if (v instanceof Date) return _bodStr(_bodSerialFecha(v));
+  var t = String(v || '').trim(), m;
+  if ((m = t.match(/^(\d{4})-(\d{2})-(\d{2})/))) return m[1] + '-' + m[2] + '-' + m[3];
+  if ((m = t.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{4})/))) return m[3] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[1]).slice(-2);
+  return '';
+}
+function _bodNum(v){ var n = parseFloat(v); return isNaN(n) ? 0 : n; }
+
+function bodLeerDelLibro(wb, rowsPR){
+  var wsG = wb.Sheets['BodegaGuias'], wsI = wb.Sheets['BodegaInventarios'];
+  if (!wsG || !wsI){ BODEGA = null; console.log('[BODEGA] el Best no trae BodegaGuias/BodegaInventarios (corre el bot en modo bodega)'); return; }
+  var B = {prod: {}, prodP: {}, prodA: {}, nom: {}, faena: {}, guias: [], inv: [], leido: new Date().toISOString()};
+  // produccion por cancha y dia, desde produc (col4 fecha, col10 cancha "NOMBRE (cod)", col18 vol, col27 faena)
+  (rowsPR || []).forEach(function(r, i){
+    if (!i || !r || !r[4]) return;
+    var vol = parseFloat(r[18]) || 0; if (vol <= 0) return;
+    var can = String(r[10] || '').replace(/ /g, ' ').trim();
+    var m = can.match(/\((\d+)\)\s*$/); if (!m) return;
+    var cod = +m[1], f = _bodFechaXL(r[4]); if (!f || f.length < 8) return;
+    (B.prod[cod] || (B.prod[cod] = {}))[f] = (B.prod[cod][f] || 0) + vol;
+    // separacion de la cartola: col16 Volumen Pulpable M3, col17 Vol.Aserrable
+    (B.prodP[cod] || (B.prodP[cod] = {}))[f] = (B.prodP[cod][f] || 0) + (parseFloat(r[16]) || 0);
+    (B.prodA[cod] || (B.prodA[cod] = {}))[f] = (B.prodA[cod][f] || 0) + (parseFloat(r[17]) || 0);
+    if (!B.nom[cod]) B.nom[cod] = can.replace(/\s*\(\d+\)\s*$/, '').trim();
+    var fa = String(r[27] || '').trim(); if (/^Mec/i.test(fa)) B.faena[cod] = fa;
+  });
+  // guias: CodCancha, Cancha, Guia, FechaHora, Fecha, Producto, Destino, Contratista, Bodega, m3, Estado
+  // El bot escribe las fechas como numero de serie (sin zona horaria); SheetJS las entrega como Date local.
+  XLSX.utils.sheet_to_json(wsG, {header:1, defval:'', raw:true}).forEach(function(r, i){
+    if (!i || !r || !r[0]) return;
+    var ts = _bodCelSerial(r[3]); if (ts === null || ts === '') ts = _bodCelSerial(r[4]); if (ts === null || ts === '' || isNaN(ts)) return;
+    var cod = +r[0];
+    if (!B.nom[cod] && r[1]) B.nom[cod] = String(r[1]).trim();
+    B.guias.push([cod, ts, _bodNum(r[9]), String(r[6] || '').trim(), String(r[5] || '').trim(),
+                  /^POO$/i.test(String(r[8]).trim()) ? 1 : 0]);
+  });
+  // inventarios: CodCancha, Cancha, Fecha, Tipo, Contratista, m3, Hora cierre (anotar)
+  XLSX.utils.sheet_to_json(wsI, {header:1, defval:'', raw:true}).forEach(function(r, i){
+    if (!i || !r || !r[0]) return;
+    var fs = _bodCelSerial(r[2]); if (fs === null || fs === '' || isNaN(fs)) return;
+    var hv = r[6] === '' ? null : _bodCelSerial(r[6]);
+    if (typeof r[6] === 'string' && r[6]) hv = _bodHoraTxt(r[6]);
+    var cod = +r[0];
+    if (!B.nom[cod] && r[1]) B.nom[cod] = String(r[1]).trim();
+    B.inv.push([cod, _bodStr(fs), String(r[3]).trim(), String(r[4]).trim(), _bodNum(r[5]),
+                (hv === null || isNaN(hv)) ? null : (((hv % 1) + 1) % 1)]);
+  });
+  BODEGA = B;
+  console.log('[BODEGA] ' + B.guias.length + ' guias, ' + B.inv.length + ' filas de inventario, ' +
+              Object.keys(B.prod).length + ' canchas con produccion');
+}
+
+/* ---------- datos de un fundo ---------- */
+function bodFundo(cod){
+  var B = BODEGA; cod = +cod;
+  var prod = B.prod[cod] || {};
+  var guias = B.guias.filter(function(g){ return g[0] === cod; });
+  var invPOO = {}, invOtros = {};
+  B.inv.forEach(function(x){
+    if (x[0] !== cod) return;
+    var k = x[1] + '|' + x[2];
+    if (/POO/i.test(x[3])){
+      var o = invPOO[k] || (invPOO[k] = {fecha: x[1], tipo: x[2], m3: 0, hora: null});
+      o.m3 += x[4]; if (x[5] !== null && x[5] !== undefined && x[5] > 0) o.hora = x[5];
+    } else if (x[4] > 0){
+      (invOtros[k] || (invOtros[k] = [])).push(x[3] + ': ' + x[4].toLocaleString('es-CL', {maximumFractionDigits:1}));
+    }
+  });
+  var invs = Object.keys(invPOO).map(function(k){ invPOO[k].otros = (invOtros[k] || []).join('; '); return invPOO[k]; })
+                .sort(function(a, b){ return a.fecha.localeCompare(b.fecha); });
+  var cierre = null;
+  invs.forEach(function(i){ if (i.tipo === 'Cierre' && (!cierre || i.fecha > cierre.fecha)) cierre = i; });
+  if (cierre){
+    cierre.serial = _bodSerial(cierre.fecha);
+    cierre.lim = cierre.serial + (cierre.hora > 0 ? cierre.hora : 1 - 1/1440);
+  }
+  return {cod: cod, nom: B.nom[cod] || String(cod), prod: prod, guias: guias, invs: invs, cierre: cierre,
+          prodP: B.prodP ? (B.prodP[cod] || {}) : null, prodA: B.prodA ? (B.prodA[cod] || {}) : null};
+}
+
+function bodProdHasta(F, serialExcl, desdeSerial){   // cartolas con fecha < serialExcl (y >= desde)
+  var t = 0;
+  Object.keys(F.prod).forEach(function(f){
+    var s = _bodSerial(f);
+    if (s < serialExcl && (desdeSerial === undefined || s >= desdeSerial)) t += F.prod[f];
+  });
+  return t;
+}
+function bodGuiasPOO(F, hasta, despuesDe){           // guias POO con ts <= hasta (y > despuesDe)
+  var t = 0;
+  F.guias.forEach(function(g){
+    if (g[5] === 1 && g[1] <= hasta && (despuesDe === undefined || g[1] > despuesDe)) t += g[2];
+  });
+  return t;
+}
+
+/* Analisis de cada inventario POO del fundo (mismo calculo que la hoja Resultado inventarios) */
+function bodAnalisisInventarios(F){
+  var c = F.cierre;
+  return F.invs.map(function(i){
+    var x = _bodSerial(i.fecha), lim = x + (i.hora > 0 ? i.hora : 1 - 1/1440);
+    var post = !!(c && x > c.serial);
+    var pr = post ? bodProdHasta(F, x, c.serial) : bodProdHasta(F, x);
+    var de = post ? bodGuiasPOO(F, lim, c.lim) : bodGuiasPOO(F, lim);
+    var sal = pr - de, dif = i.m3 - sal;
+    return {fecha: i.fecha, tipo: i.tipo, hora: i.hora, prod: pr, desp: de, saldo: sal, inv: i.m3, dif: dif,
+            // % sobre saldo solo si el saldo es positivo: con saldo negativo el signo se da vuelta y no significa nada
+            pSal: sal > 0.5 ? dif / sal : null, pProd: pr > 0.5 ? dif / pr : null, post: post, otros: i.otros,
+            lectura: (sal < -0.5 ? 'Saldo según papeles negativo: se despachó más de lo producido. Puede ser que faltó calibrar madera o que el despacho se realizó con un factor mayor. ' : '') +
+                     (i.tipo === 'Cierre' ? 'Cierre: lo inventariado pasa a bodega FORMIN'
+                   : (post ? 'Control después del cierre: POO ya sin stock' : 'Control: no mueve el stock'))};
+  });
+}
+
+/* ---------- formato ---------- */
+var _bodN = function(n, d){ d = (d === undefined ? 2 : d);
+  return Number(n || 0).toLocaleString('es-CL', {minimumFractionDigits:d, maximumFractionDigits:d}); };
+var _bodV = function(n){ return Math.abs(n || 0) < 0.005 ? '-' : _bodN(n); };
+var _bodNW = 'text-align:left;white-space:nowrap;';
+function _bodDif(n, pct){
+  if (n === null || n === undefined || n === '') return '<td></td>';
+  var v = pct ? n * 100 : n;
+  if (Math.abs(v) < 0.05) return '<td style="text-align:right;padding:4px 7px;">-</td>';
+  var fav = v > 0;
+  return '<td style="text-align:right;padding:4px 7px;white-space:nowrap;font-weight:800;background:' + (fav ? '#c6efce' : '#ffc7ce') +
+         ';color:' + (fav ? '#006100' : '#9c0006') + ';">' + (fav ? '▲ ' : '▼ ') + _bodN(v, pct ? 1 : 2) + (pct ? ' %' : '') + '</td>';
+}
+function _bodFecha(s){ return s ? s.substring(8, 10) + '-' + s.substring(5, 7) + '-' + s.substring(0, 4) : ''; }
+function _bodHora(h){
+  if (!(h > 0)) return 'todo el día';
+  var m = Math.round(h * 1440); return String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0');
+}
+var BOD_MES = ['ene','feb','mar','abr','may','jun','jul','ago','sept','oct','nov','dic'];
+function _bodMes(ym){ return BOD_MES[+ym.substring(5, 7) - 1] + '-' + ym.substring(0, 4); }
+
+/* ---------- ventana ---------- */
+/* Norma (Gustavo 09-10-2026): 3 meses despues del inventario de CIERRE de POO las guias del fundo se borran
+   (el bot las saca de BodegaGuias). Sin sus guias el stock saldria mal, asi que el fundo sale de todas las vistas.
+   Si POO volvio a producir o despachar en esa cancha despues de ese plazo, el fundo sigue. */
+var BOD_MESES_RETENCION = 3;
+function bodArchivados(){
+  var B = BODEGA, cierre = {}, out = {};
+  B.inv.forEach(function(x){ if (x[2] === 'Cierre' && /POO/i.test(x[3]) && (!cierre[x[0]] || x[1] > cierre[x[0]])) cierre[x[0]] = x[1]; });
+  var hoy = new Date().toISOString().substring(0, 10);
+  Object.keys(cierre).forEach(function(c){
+    var p = cierre[c].split('-'), lim = new Date(Date.UTC(+p[0], +p[1] - 1 + BOD_MESES_RETENCION, +p[2])).toISOString().substring(0, 10);
+    if (lim > hoy) return;
+    var activo = Object.keys(B.prod[c] || {}).some(function(f){ return f > lim; }) ||
+                 B.guias.some(function(g){ return g[0] === +c && g[5] === 1 && _bodStr(g[1]) > lim; });
+    if (!activo) out[c] = cierre[c];
+  });
+  return out;
+}
+
+function bodListaFundos(){
+  var B = BODEGA, act = {};
+  Object.keys(B.prod).forEach(function(c){ Object.keys(B.prod[c]).forEach(function(f){ if (!act[c] || f > act[c]) act[c] = f; }); });
+  B.guias.forEach(function(g){ if (g[5] === 1){ var f = _bodStr(g[1]); if (!act[g[0]] || f > act[g[0]]) act[g[0]] = f; } });
+  // fundos con guias POO o con produccion desde que hay guias cargadas (Rupanco no tiene ninguna guia POO)
+  var ini = Infinity; B.guias.forEach(function(g){ if (g[1] < ini) ini = g[1]; });
+  var iniStr = ini === Infinity ? '' : _bodStr(ini);
+  var arch = bodArchivados();
+  // solo canchas con cartolas POO: las que solo tienen guias a nombre de POO no son nuestras (error de Mininco)
+  return Object.keys(act).filter(function(c){ return act[c] >= iniStr && !arch[c] && B.prod[c] && Object.keys(B.prod[c]).length; })
+    .sort(function(a, b){ return act[b].localeCompare(act[a]); })
+    .map(function(c){ return {cod: +c, nom: (B.nom[c] || c) + ' (' + c + ')', fin: act[c], faena: B.faena[c] || ''}; });
+}
+
+function bodAbrir(){
+  var old = document.getElementById('bod-modal'); if (old) old.remove();
+  var bg = document.createElement('div');
+  bg.id = 'bod-modal'; bg.className = 'pd-modal-bg';
+  bg.onclick = function(e){ if (e.target === bg) bg.remove(); };
+  var cerrar = '<button class="pd-modal-close" onclick="document.getElementById(\'bod-modal\').remove()">✕ Cerrar</button>';
+  if (!BODEGA || !BODEGA.guias || !BODEGA.guias.length){
+    bg.innerHTML = '<div class="pd-modal-box"><div class="pd-modal-hdr"><div class="pd-modal-title" style="color:#8a5a14;">📦 Bodega Operativa</div>' + cerrar + '</div>' +
+      '<div style="padding:14px;background:#fff8e1;border-left:3px solid #e67e22;font-size:12px;line-height:1.6;">No hay datos de bodega cargados. ' +
+      'El Best tiene que traer las hojas <b>BodegaGuias</b> y <b>BodegaInventarios</b> (las escribe el bot de Mininco, modo <b>bodega</b>, ' +
+      'que corre todos los días dentro de la tarea de las 08:00). Después aprieta <b>"Cargar Excel"</b>.</div></div>';
+    document.body.appendChild(bg); return;
+  }
+  var listaTodos = bodListaFundos();
+  // faena primero: el selector de fundos muestra solo los de la faena elegida (09-10-2026)
+  var faenas = {}; listaTodos.forEach(function(f){ if (f.faena) faenas[f.faena] = 1; });
+  var listaFaenas = Object.keys(faenas).sort(function(a, b){ return a.localeCompare(b, 'es', {numeric:true}); });
+  if (!BOD_SEL.faena) BOD_SEL.faena = (listaTodos.length && listaTodos[0].faena) ? listaTodos[0].faena : '(Todas)';
+  var lista = listaTodos.filter(function(f){ return BOD_SEL.faena === '(Todas)' || f.faena === BOD_SEL.faena; });
+  if (!lista.length){ BOD_SEL.faena = '(Todas)'; lista = listaTodos; }
+  if (!BOD_SEL.fundo || !lista.some(function(f){ return f.cod === +BOD_SEL.fundo; })) BOD_SEL.fundo = lista.length ? lista[0].cod : '';
+  var prods = {}; BODEGA.guias.forEach(function(g){ if (g[4]) prods[g[4]] = 1; });
+  var sel = function(id, opts, val, onch){
+    return '<select id="' + id + '" onchange="' + onch + '" style="border:2px solid #8a5a14;border-radius:6px;padding:4px 8px;font-size:12px;font-weight:700;color:#5a3a0a;background:#fff8ec;">' +
+      opts.map(function(o){ return '<option value="' + String(o[0]).replace(/"/g, '&quot;') + '"' + (String(o[0]) === String(val) ? ' selected' : '') + '>' + o[1] + '</option>'; }).join('') + '</select>';
+  };
+  var vistas = [['main','📦 Bodega Operativa'],['inv','📋 Inventarios (todos los fundos)'],['kardex','🔎 Análisis fundo con diferencia'],
+                ['prodmes','🌲 Producción mensual'],['despmes','🚛 Despacho mensual'],['pvd','⚖️ Prod vs Despacho']];
+  bg.innerHTML = '<div class="pd-modal-box" style="max-width:1250px;width:96vw;max-height:92vh;overflow:auto;">' +
+    '<div class="pd-modal-hdr"><div class="pd-modal-title" style="color:#8a5a14;">📦 Bodega Operativa — producido, despachado y stock por fundo</div>' + cerrar + '</div>' +
+    '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">' +
+    vistas.map(function(v){ return '<button id="bod-tab-' + v[0] + '" onclick="BOD_SEL.vista=\'' + v[0] + '\';bodRender()" style="border:1px solid #8a5a14;border-radius:6px;padding:5px 11px;font-size:11.5px;font-weight:700;cursor:pointer;">' + v[1] + '</button>'; }).join('') +
+    '</div>' +
+    '<div id="bod-filtros" style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:8px;font-size:11px;font-weight:700;color:#5a3a0a;">' +
+    '<span>Faena: ' + sel('bod-faena', [['(Todas)','(Todas)']].concat(listaFaenas.map(function(fa){ return [fa, fa]; })), BOD_SEL.faena,
+      'BOD_SEL.faena=this.value;BOD_SEL.fundo=\'\';bodAbrir()') + '</span>' +
+    '<span>Fundo: ' + sel('bod-fundo', lista.map(function(f){ return [f.cod, f.nom + (BOD_SEL.faena === '(Todas)' && f.faena ? ' · ' + f.faena : '')]; }), BOD_SEL.fundo, 'BOD_SEL.fundo=this.value;bodRender()') + '</span>' +
+    '<span>Producto: ' + sel('bod-prod', [['(Todos)','(Todos)']].concat(Object.keys(prods).sort().map(function(p){ return [p, p]; })), BOD_SEL.prod, 'BOD_SEL.prod=this.value;bodRender()') + '</span>' +
+    '<span>Bodega: ' + sel('bod-bod', [['(Todos)','(Todos)'],['POO','POO'],['FORMIN','FORMIN (ex bodega POO)']], BOD_SEL.bod, 'BOD_SEL.bod=this.value;bodRender()') + '</span>' +
+    '</div>' +
+    '<div style="font-size:10.5px;color:#7a5a2a;font-style:italic;margin-bottom:8px;line-height:1.5;">SALDO SEGÚN PAPELES = producido (cartolas) − despachado (guías). ' +
+    'INVENTARIADO EN TERRENO = lo que Mininco mide físicamente en la cancha. DIFERENCIA = inventariado − saldo según papeles ' +
+    '(<span style="color:#006100;font-weight:700;">▲ a favor</span> · <span style="color:#9c0006;font-weight:700;">▼ falta madera</span>).</div>' +
+    '<div id="bod-body"></div>' +
+    '<div style="font-size:9.5px;color:#999;margin-top:8px;line-height:1.5;">Fuentes del Best: <b>produc</b> (cartolas), <b>BodegaGuias</b> y <b>BodegaInventarios</b> ' +
+    '(las actualiza el bot de Mininco). La hora de cierre de cada inventario se anota a mano en la columna G de <b>BodegaInventarios</b>; ' +
+    'vacía = se cuentan todas las guías del día del inventario. Norma: 3 meses después del inventario de cierre, las guías del fundo se borran y el fundo deja de aparecer acá.</div></div>';
+  document.body.appendChild(bg);
+  bodRender();
+}
+
+function bodRender(){
+  var body = document.getElementById('bod-body'); if (!body) return;
+  ['main','inv','kardex','prodmes','despmes','pvd'].forEach(function(v){
+    var b = document.getElementById('bod-tab-' + v);
+    if (b){ b.style.background = (BOD_SEL.vista === v ? '#8a5a14' : '#fff8ec'); b.style.color = (BOD_SEL.vista === v ? '#fff' : '#5a3a0a'); }
+  });
+  var sf = document.getElementById('bod-fundo'); if (sf && String(sf.value) !== String(BOD_SEL.fundo)) sf.value = BOD_SEL.fundo;
+  var fl = document.getElementById('bod-filtros');
+  if (fl) fl.style.display = (BOD_SEL.vista === 'main' || BOD_SEL.vista === 'kardex') ? 'flex' : 'none';
+  try {
+    if (BOD_SEL.vista === 'main') body.innerHTML = bodVistaMain();
+    else if (BOD_SEL.vista === 'inv') body.innerHTML = bodVistaInventarios();
+    else if (BOD_SEL.vista === 'kardex') body.innerHTML = bodVistaKardex();
+    else body.innerHTML = bodVistaMensual(BOD_SEL.vista);
+  } catch (e){
+    body.innerHTML = '<div style="color:#c0392b;font-size:12px;">Error armando la vista: ' + e.message + '</div>';
+    console.error(e);
+  }
+}
+
+/* estilos de tabla */
+var _bodTh = function(t, al){ return '<th style="background:#1f4e78;color:#fff;padding:5px 7px;font-size:10.5px;text-align:' + (al || 'right') + ';white-space:nowrap;">' + t + '</th>'; };
+var _bodTd = function(v, st){ return '<td style="padding:4px 7px;font-size:11px;text-align:right;border-bottom:1px solid #eee;' +
+  (/text-align:left/.test(st || '') ? '' : 'white-space:nowrap;') + (st || '') + '">' + v + '</td>'; };
+var _bodTabla = '<table style="border-collapse:collapse;width:100%;margin-bottom:6px;">';
+
+/* ---------- vista principal ---------- */
+function bodVistaMain(){
+  var F = bodFundo(BOD_SEL.fundo);
+  var todos = BOD_SEL.prod === '(Todos)';
+  var selG = F.guias.filter(function(g){
+    if (!todos && g[4] !== BOD_SEL.prod) return false;
+    if (BOD_SEL.bod === 'POO' && g[5] !== 1) return false;
+    if (BOD_SEL.bod === 'FORMIN' && g[5] === 1) return false;
+    return true;
+  });
+  var c = F.cierre, kc = c ? c.fecha.substring(0, 7) : '';
+  var meses = {};
+  selG.forEach(function(g){ meses[_bodStr(g[1]).substring(0, 7)] = 1; });
+  if (todos){ Object.keys(F.prod).forEach(function(f){ meses[f.substring(0, 7)] = 1; }); if (kc) meses[kc] = 1; }
+  var ks = Object.keys(meses).sort();
+  if (!ks.length) return '<div style="padding:12px;color:#888;">Sin datos para este fundo con los filtros elegidos.</div>';
+  var dest = {}, tp = {}, tpc = {}, prod = {};
+  ks.forEach(function(m){ tp[m] = 0; tpc[m] = 0; prod[m] = 0; });
+  selG.forEach(function(g){ var m = _bodStr(g[1]).substring(0, 7); var d = g[3] || '(sin destino)';
+    (dest[d] || (dest[d] = {}))[m] = (dest[d][m] || 0) + g[2]; });
+  F.guias.forEach(function(g){ if (g[5] !== 1) return; var m = _bodStr(g[1]).substring(0, 7); if (tp[m] === undefined) return;
+    tp[m] += g[2]; if (!c || g[1] <= c.lim) tpc[m] += g[2]; });
+  Object.keys(F.prod).forEach(function(f){ var m = f.substring(0, 7); if (prod[m] !== undefined) prod[m] += F.prod[f]; });
+  var sum = function(o){ return ks.reduce(function(a, m){ return a + (o[m] || 0); }, 0); };
+  var h = _bodTabla + '<tr>' + _bodTh('Concepto', 'left') + ks.map(function(m){ return _bodTh(_bodMes(m)); }).join('') + _bodTh('Total') + '</tr>';
+  var fila = function(lbl, o, st, tot){
+    return '<tr>' + _bodTd(lbl, 'text-align:left;' + (st || '')) + ks.map(function(m){ return _bodTd(_bodV(o[m]), st); }).join('') +
+           _bodTd(_bodV(tot === undefined ? sum(o) : tot), 'font-weight:800;' + (st || '')) + '</tr>';
+  };
+  var sec = function(lbl){ return '<tr><td colspan="' + (ks.length + 2) + '" style="background:#ddebf7;font-weight:800;font-style:italic;padding:4px 7px;font-size:11px;">' + lbl + '</td></tr>'; };
+  if (todos) h += fila('PRODUCIDO (cartolas)', prod, 'background:#e2efda;font-weight:800;');
+  h += sec('DESPACHADO por destino');
+  var td = {}; ks.forEach(function(m){ td[m] = 0; });
+  Object.keys(dest).sort().forEach(function(d){ ks.forEach(function(m){ td[m] += dest[d][m] || 0; }); h += fila('&nbsp;&nbsp;' + d, dest[d]); });
+  var ultM = ks[ks.length - 1], ultTs = null;
+  selG.forEach(function(g){ if (_bodStr(g[1]).substring(0, 7) === ultM && (ultTs === null || g[1] > ultTs)) ultTs = g[1]; });
+  h += fila('Total despachado', td, 'font-weight:800;border-top:1px solid #333;');
+  if (ultTs !== null){
+    var um = Math.round((ultTs % 1) * 1440);
+    var ultTxt = _bodFecha(_bodStr(ultTs)) + ' ' + String(Math.floor(um / 60)).padStart(2, '0') + ':' + String(um % 60).padStart(2, '0');
+    h += '<tr>' + _bodTd('&nbsp;&nbsp;Último despacho del mes (fecha y hora de la guía)', 'text-align:left;font-style:italic;color:#1f4e78;') +
+         ks.map(function(m){ return _bodTd(m === ultM ? ultTxt : '', 'font-style:italic;font-weight:700;color:#1f4e78;'); }).join('') + _bodTd('') + '</tr>';
+  }
+  if (todos){
+    var invMes = {}; F.invs.forEach(function(i){ var m = i.fecha.substring(0, 7); (invMes[m] || (invMes[m] = [])).push(i.fecha.substring(8, 10) + '-' + i.fecha.substring(5, 7) + ' ' + i.tipo.toLowerCase()); });
+    var bc = c ? bodProdHasta(F, c.serial) - bodGuiasPOO(F, c.lim) : 0;
+    var tra = {}, fal = {}, stk = {}, base = 0;
+    ks.forEach(function(m){
+      base += prod[m] - tpc[m];
+      tra[m] = (m === kc) ? c.m3 : 0;
+      fal[m] = (m === kc) ? c.m3 - bc : 0;
+      stk[m] = (c && m >= kc) ? base - bc : base;
+    });
+    var stkFin = stk[ks[ks.length - 1]];
+    h += sec('BODEGA POO');
+    h += '<tr>' + _bodTd('&nbsp;&nbsp;Inventarios del mes (fecha y tipo)', 'text-align:left;font-style:italic;color:#9a3412;') +
+         ks.map(function(m){ return _bodTd((invMes[m] || []).join(' · '), 'font-style:italic;color:#9a3412;text-align:left;'); }).join('') + _bodTd('') + '</tr>';
+    h += fila('&nbsp;&nbsp;+ Producido', prod);
+    h += fila('&nbsp;&nbsp;− Despachado con guías POO (hasta la hora del cierre)', tpc);
+    h += fila('&nbsp;&nbsp;− Traspasado a FORMIN (inventario de cierre)', tra);
+    h += '<tr>' + _bodTd('&nbsp;&nbsp;Diferencia de cierre (faltante)', 'text-align:left;') + ks.map(function(m){ return fal[m] ? _bodDif(fal[m]) : _bodTd('-'); }).join('') +
+         (c ? _bodDif(sum(fal)) : _bodTd('-')) + '</tr>';
+    var btnCg = ' <button onclick="BOD_SEL.cargas=!BOD_SEL.cargas;bodRender()" title="Separar el stock en cargas pulpables y aserrables (pino 28 m3, eucalipto 27 m3 por camion)" ' +
+      'style="margin-left:8px;border:1px solid #1a6b3a;background:' + (BOD_SEL.cargas ? '#1a6b3a;color:#fff' : '#fff;color:#1a6b3a') +
+      ';border-radius:5px;padding:1px 8px;font-size:10.5px;font-weight:700;cursor:pointer;">🚛 Cargas</button>';
+    h += fila('Stock POO' + btnCg, stk, 'background:#e2efda;font-weight:800;border-top:1px solid #333;border-bottom:3px double #333;', stkFin);
+    var cuad = sum(prod) - sum(tpc) - sum(tra) + sum(fal) - stkFin;
+    h += '<tr>' + _bodTd('Cuadratura (debe ser 0)', 'text-align:left;font-style:italic;color:#666;') + ks.map(function(){ return _bodTd(''); }).join('') +
+         _bodTd(Math.abs(cuad) < 0.01 ? '0,00 ✓' : _bodN(cuad) + ' ⚠', 'font-style:italic;color:' + (Math.abs(cuad) < 0.01 ? '#1a6b3a' : '#c0392b') + ';') + '</tr>';
+    var tpd = {}; ks.forEach(function(m){ tpd[m] = tp[m] - tpc[m]; });
+    h += fila('Guías POO después del cierre (informativo, no rebajan stock POO)', tpd, 'font-style:italic;color:#666;');
+  }
+  h += '</table>';
+  if (todos && BOD_SEL.cargas) h += bodTablaCargas(F, stkFin);
+  if (todos) h += bodTablaInventarios(F, false);
+  else h += '<div style="font-size:10.5px;color:#888;">Con un producto elegido solo se ven los despachos: las cartolas no traen producto.</div>';
+  return h;
+}
+
+/* m3 que lleva un camion, por faena (estandar de traslado, Gustavo 09-10-2026):
+   pino (Mec 3) 28 m3; eucalipto (Mec 4 y Mec 5) 27 m3. Faena desconocida: 27. */
+var BOD_M3_CARGA_FAENA = {'Mec 3': 28, 'Mec 4': 27, 'Mec 5': 27};
+function bodM3Carga(F){ var fa = (BODEGA && BODEGA.faena && BODEGA.faena[F.cod]) || ''; return BOD_M3_CARGA_FAENA[fa] || 27; }
+function _bodTipoProd(p){                 // producto de la guia -> 'P' pulpable / 'A' aserrable (RP.. pulpable; RA.., RD.. aserrable)
+  var s = String(p || '').toUpperCase().replace(/[^A-Z]/g, '');
+  return (s.indexOf('RA') === 0 || s.indexOf('RD') === 0) ? 'A' : 'P';   // R COMB / RC (combustible) van con pulpable
+}
+/* Stock POO separado en pulpable y aserrable (cartolas: Volumen Pulpable / Vol. Aserrable) y en cargas de 26 m3 */
+function bodTablaCargas(F, stkFin){
+  var M3C = bodM3Carga(F), faC = (BODEGA.faena && BODEGA.faena[F.cod]) || '';
+  var tit = '<div style="background:#e2efda;font-weight:800;padding:5px 8px;font-size:11.5px;margin-top:6px;">🚛 STOCK POO EN CARGAS (' + M3C + ' m³ por camión' +
+            (faC ? ' · ' + faC + (faC === 'Mec 3' ? ' pino' : ' eucalipto') : '') + ')</div>';
+  if (!F.prodP || !F.prodA) return tit + '<div style="padding:8px;font-size:11px;color:#9a3412;">Para separar pulpable y aserrable vuelve a apretar <b>"Cargar Excel"</b> (los datos guardados son anteriores a este cambio).</div>';
+  var c = F.cierre, P = 0, A = 0, gP = 0, gA = 0;
+  var desde = c ? c.fecha : '';
+  Object.keys(F.prodP).forEach(function(f){ if (!desde || f >= desde) P += F.prodP[f]; });
+  Object.keys(F.prodA).forEach(function(f){ if (!desde || f >= desde) A += F.prodA[f]; });
+  if (!c) F.guias.forEach(function(g){ if (g[5] !== 1) return; if (_bodTipoProd(g[4]) === 'A') gA += g[2]; else gP += g[2]; });
+  var sP = P - gP, sA = A - gA;
+  var fila = function(lbl, prod, desp, st, color){
+    var cg = st / M3C;
+    return '<tr>' + _bodTd(lbl, 'text-align:left;font-weight:700;color:' + color + ';') + _bodTd(_bodN(prod)) + _bodTd(_bodN(desp)) +
+           _bodTd(_bodN(st), 'font-weight:800;') + _bodTd(_bodN(cg, 1), 'font-weight:800;font-size:13px;color:' + color + ';') +
+           _bodTd(cg >= 1 ? Math.floor(cg) + ' camiones completos' : (cg > 0 ? 'menos de 1 camión' : '-'), 'text-align:left;color:#555;') + '</tr>';
+  };
+  var h = tit + _bodTabla + '<tr>' + _bodTh('Tipo', 'left') + _bodTh(c ? 'Producido desde el cierre' : 'Producido (cartolas)') +
+          _bodTh(c ? 'Despachado (no rebaja tras el cierre)' : 'Despachado con guías POO') + _bodTh('Stock m³') + _bodTh('Cargas') + _bodTh('', 'left') + '</tr>' +
+          fila('Pulpable', P, gP, sP, '#1a6b3a') + fila('Aserrable', A, gA, sA, '#8a5a14');
+  var tot = sP + sA, cgT = tot / M3C;
+  h += '<tr style="background:#ddebf7;font-weight:800;">' + _bodTd('TOTAL', 'text-align:left;') + _bodTd(_bodN(P + A)) + _bodTd(_bodN(gP + gA)) +
+       _bodTd(_bodN(tot)) + _bodTd(_bodN(cgT, 1), 'font-size:13px;') + _bodTd(cgT >= 1 ? Math.floor(cgT) + ' camiones completos' : '', 'text-align:left;') + '</tr></table>';
+  var notas = [];
+  if (Math.abs(tot - stkFin) > 0.5) notas.push('La suma pulpable + aserrable (' + _bodN(tot) + ') no calza con el Stock POO (' + _bodN(stkFin) + '): revisar cartolas sin separación.');
+  if (sP < -0.5 || sA < -0.5) notas.push('Un tipo queda negativo: se despachó más de lo que la cartola declaró de ese tipo (madera declarada como un producto y despachada como otro).');
+  if (c) notas.push('El fundo ya tuvo inventario de cierre (' + _bodFecha(c.fecha) + '): el stock POO es solo lo producido después.');
+  return h + '<div style="font-size:10px;color:#666;line-height:1.5;">Separación según la cartola (Volumen Pulpable / Vol. Aserrable). En las guías, RP… = pulpable y RA…/RD… = aserrable; ' +
+         'R COMB y RC (combustible) se cuentan como pulpable. Cargas = stock ÷ ' + M3C + ' m³ (pino Mec 3: 28 m³; eucalipto Mec 4 y Mec 5: 27 m³).' + (notas.length ? '<br><b style="color:#9a3412;">' + notas.join('<br>') + '</b>' : '') + '</div>';
+}
+
+function bodTablaInventarios(F, conFundo){
+  var A = bodAnalisisInventarios(F);
+  var h = '<div style="background:#ddebf7;font-weight:800;font-style:italic;padding:5px 8px;font-size:11.5px;margin-top:12px;">INVENTARIOS DE MININCO (contratista POO)</div>';
+  if (!A.length) return h + '<div style="padding:8px;color:#888;font-size:11px;">No hay inventarios de Mininco para este fundo en el período cargado.</div>';
+  h += _bodTabla + '<tr>' + _bodTh('Fecha inventario', 'left') + _bodTh('Tipo', 'left') + _bodTh('Hora cierre', 'left') + _bodTh('Producido hasta el inventario') +
+       _bodTh('Despachado POO hasta la hora') + _bodTh('Saldo según papeles') + _bodTh('Inventariado en terreno') + _bodTh('Diferencia') +
+       _bodTh('% sobre saldo') + _bodTh('% sobre producido') + _bodTh('Lectura', 'left') + _bodTh('Otros contratistas ese día', 'left') + '</tr>';
+  A.forEach(function(a){
+    var cie = a.tipo === 'Cierre';
+    h += '<tr style="' + (cie ? 'background:#fff8e1;' : '') + '">' + _bodTd(_bodFecha(a.fecha), _bodNW) + _bodTd(a.tipo, _bodNW + (cie ? 'font-weight:800;' : '')) +
+         _bodTd(_bodHora(a.hora), _bodNW) + _bodTd(_bodN(a.prod)) + _bodTd(_bodN(a.desp)) + _bodTd(_bodN(a.saldo)) + _bodTd(_bodN(a.inv)) +
+         _bodDif(a.dif) + _bodDif(a.pSal, true) + _bodDif(a.pProd, true) + _bodTd(a.lectura, 'text-align:left;font-weight:700;min-width:200px;') +
+         _bodTd(a.otros || '', 'text-align:left;font-size:10px;color:#666;min-width:180px;') + '</tr>';
+  });
+  return h + '</table>';
+}
+
+/* ---------- todos los inventarios ---------- */
+function bodVistaInventarios(){
+  var B = BODEGA, cods = {};
+  var arch = bodArchivados();
+  B.inv.forEach(function(x){ if (/POO/i.test(x[3]) && !arch[x[0]]) cods[x[0]] = 1; });
+  // inicio de los datos: primer mes con guias POO; un fundo que ya producia ahi tiene historia incompleta
+  var ini = Infinity; B.guias.forEach(function(g){ if (g[1] < ini) ini = g[1]; });
+  var iniMes = _bodStr(ini).substring(0, 7);
+  var h = _bodTabla + '<tr>' + _bodTh('Fundo', 'left') + _bodTh('Fecha', 'left') + _bodTh('Tipo', 'left') + _bodTh('Hora', 'left') + _bodTh('Producido hasta') +
+          _bodTh('Despachado POO hasta la hora') + _bodTh('Saldo según papeles') + _bodTh('Inventariado') + _bodTh('Diferencia') + _bodTh('% saldo') +
+          _bodTh('% producido') + _bodTh('Lectura', 'left') + '</tr>';
+  var filas = [];
+  Object.keys(cods).forEach(function(cod){
+    var F = bodFundo(cod);
+    var prim = Object.keys(F.prod).sort()[0] || '';
+    var incompleto = prim && prim.substring(0, 7) <= iniMes && prim.substring(8, 10) <= '07';
+    bodAnalisisInventarios(F).forEach(function(a){ filas.push({F: F, a: a, inc: incompleto, prim: prim}); });
+  });
+  filas.sort(function(x, y){ return y.a.fecha.localeCompare(x.a.fecha) || x.F.nom.localeCompare(y.F.nom); });
+  filas.forEach(function(r){
+    var a = r.a, gris = r.inc ? 'color:#999;font-style:italic;' : '';
+    h += '<tr style="' + (a.tipo === 'Cierre' && !r.inc ? 'background:#fff8e1;' : '') + '">' +
+         _bodTd('<a href="#" style="white-space:nowrap;" onclick="BOD_SEL.fundo=' + r.F.cod + ';BOD_SEL.faena=\'' + (BODEGA.faena[r.F.cod] || '(Todas)') + '\';BOD_SEL.vista=\'main\';bodAbrir();return false;">' + r.F.nom + ' (' + r.F.cod + ')</a>', 'text-align:left;') +
+         _bodTd(_bodFecha(a.fecha), _bodNW + gris) + _bodTd(a.tipo, _bodNW + gris) + _bodTd(_bodHora(a.hora), _bodNW + gris) +
+         _bodTd(_bodN(a.prod), gris) + _bodTd(_bodN(a.desp), gris) + _bodTd(_bodN(a.saldo), gris) + _bodTd(_bodN(a.inv), gris) +
+         (r.inc ? _bodTd(_bodN(a.dif), gris) + _bodTd('', gris) + _bodTd('', gris) +
+                  _bodTd('OJO historial incompleto: produce desde ' + _bodFecha(r.prim) + ', no usar este saldo', 'text-align:left;' + gris)
+                : _bodDif(a.dif) + _bodDif(a.pSal, true) + _bodDif(a.pProd, true) + _bodTd(a.lectura, 'text-align:left;font-weight:700;min-width:200px;')) + '</tr>';
+  });
+  return '<div style="font-size:11px;color:#555;margin-bottom:6px;">Todos los inventarios de Mininco con contratista POO, del más reciente al más antiguo. ' +
+         'Clic en el fundo para abrir su Bodega Operativa.</div>' + h + '</table>';
+}
+
+/* ---------- kardex diario del fundo (analisis fundo con diferencia) ---------- */
+function bodVistaKardex(){
+  var F = bodFundo(BOD_SEL.fundo), c = F.cierre;
+  var dias = {};
+  var dia = function(f){ return dias[f] || (dias[f] = {cart:0, poo:0, n:0, otros:0, inv:null}); };
+  Object.keys(F.prod).forEach(function(f){ dia(f).cart += F.prod[f]; });
+  F.guias.forEach(function(g){ var d = dia(_bodStr(g[1])); if (g[5] === 1){ d.poo += g[2]; d.n++; } else d.otros += g[2]; });
+  F.invs.forEach(function(i){ dia(i.fecha).inv = i; });
+  var fechas = Object.keys(dias).sort();
+  var h = _bodTabla + '<tr>' + _bodTh('Fecha', 'left') + _bodTh('Cartolas') + _bodTh('Guías POO') + _bodTh('N° guías') + _bodTh('Guías FORMIN (info)') +
+          _bodTh('Saldo según papeles POO (fin del día)') + _bodTh('Inventariado') + _bodTh('Tipo', 'left') + _bodTh('Diferencia') + _bodTh('Traspasado a FORMIN') + _bodTh('Nota', 'left') + '</tr>';
+  var saldo = 0, tot = {cart:0, poo:0, n:0, otros:0, tra:0};
+  fechas.forEach(function(f){
+    var d = dias[f], post = !!(c && f > c.fecha), dif = null, tra = null, nota = '';
+    if (d.inv){
+      if (post){ dif = d.inv.m3 - saldo; nota = 'Control después del cierre: POO ya sin stock'; }
+      else dif = d.inv.m3 - (saldo - d.poo);
+      if (d.inv.tipo === 'Cierre'){ tra = d.inv.m3; saldo = d.cart; nota = 'CIERRE: lo inventariado pasa a bodega FORMIN y POO queda en 0'; }
+      else saldo = post ? saldo + d.cart : saldo + d.cart - d.poo;
+    } else saldo = post ? saldo + d.cart : saldo + d.cart - d.poo;
+    if (post && d.poo > 0) nota = (nota ? nota + '. ' : '') + 'Guías POO después del cierre: no rebajan el stock POO';
+    tot.cart += d.cart; tot.poo += d.poo; tot.n += d.n; tot.otros += d.otros; tot.tra += tra || 0;
+    h += '<tr style="' + (d.inv ? 'background:#fff2cc;' : '') + '">' + _bodTd(_bodFecha(f), _bodNW) + _bodTd(_bodV(d.cart)) + _bodTd(_bodV(d.poo)) +
+         _bodTd(d.n || '') + _bodTd(_bodV(d.otros)) + _bodTd(_bodN(saldo), 'font-weight:700;') + _bodTd(d.inv ? _bodN(d.inv.m3) : '') +
+         _bodTd(d.inv ? d.inv.tipo : '', 'text-align:left;') + (dif !== null ? _bodDif(dif) : _bodTd('')) + _bodTd(tra !== null ? _bodN(tra) : '') +
+         _bodTd(nota, 'text-align:left;font-size:10px;color:#555;') + '</tr>';
+  });
+  h += '<tr style="background:#ddebf7;font-weight:800;">' + _bodTd('Totales', 'text-align:left;') + _bodTd(_bodN(tot.cart)) + _bodTd(_bodN(tot.poo)) +
+       _bodTd(tot.n) + _bodTd(_bodN(tot.otros)) + _bodTd(_bodN(saldo)) + _bodTd('') + _bodTd('') + _bodTd('') + _bodTd(_bodN(tot.tra)) + _bodTd('') + '</tr></table>';
+  return '<div style="font-size:11px;color:#555;margin-bottom:6px;line-height:1.5;"><b>' + F.nom + ' (' + F.cod + ')</b> día a día, solo bodega POO. ' +
+         'Amarillo = día de inventario. El kárdex no distingue horas: en el día del inventario cuenta todas las guías del día (para cortar por hora usa la vista Bodega Operativa).</div>' +
+         h + bodTablaInventarios(F, false);
+}
+
+/* ---------- vistas mensuales (todos los fundos) ---------- */
+/* Guias a nombre de POO en canchas donde POO no tiene cartolas: no son de POO (error de Mininco, Gustavo 09-10-2026).
+   No entran a la bodega; se listan para poder reclamarlas. */
+function bodAvisoSinCartolas(cods){
+  if (!cods || !cods.length) return '';
+  var B = BODEGA, filas = [];
+  B.guias.forEach(function(g){ if (g[5] === 1 && cods.indexOf(String(g[0])) >= 0) filas.push(g); });
+  if (!filas.length) return '';
+  filas.sort(function(a, b){ return a[1] - b[1]; });
+  var tot = filas.reduce(function(a, g){ return a + g[2]; }, 0);
+  var h = '<div style="margin-top:12px;background:#fff4e5;border-left:5px solid #e8590c;padding:8px 11px;font-size:11px;color:#7a3b00;line-height:1.5;">' +
+          '<b>⚠ Guías a nombre de POO en canchas sin cartolas de POO (' + filas.length + ' guías, ' + _bodN(tot) + ' m³)</b>: no son nuestras ' +
+          '(probable error de Mininco). No se cuentan en la bodega; quedan acá para reclamarlas.</div>' +
+          _bodTabla + '<tr>' + _bodTh('Cancha', 'left') + _bodTh('Fecha y hora', 'left') + _bodTh('Producto', 'left') + _bodTh('Destino', 'left') + _bodTh('m³') + '</tr>';
+  filas.forEach(function(g){
+    var m = Math.round((g[1] % 1) * 1440);
+    h += '<tr>' + _bodTd((B.nom[g[0]] || g[0]) + ' (' + g[0] + ')', _bodNW) +
+         _bodTd(_bodFecha(_bodStr(g[1])) + ' ' + String(Math.floor(m / 60)).padStart(2, '0') + ':' + String(m % 60).padStart(2, '0'), _bodNW) +
+         _bodTd(g[4], _bodNW) + _bodTd(g[3], _bodNW) + _bodTd(_bodN(g[2])) + '</tr>';
+  });
+  return h + '</table>';
+}
+
+function bodVistaMensual(tipo){
+  var B = BODEGA, P = {}, D = {}, meses = {}, cods = {};
+  B.guias.forEach(function(g){ if (g[5] !== 1) return; var m = _bodStr(g[1]).substring(0, 7);
+    (D[g[0]] || (D[g[0]] = {}))[m] = (D[g[0]][m] || 0) + g[2]; meses[m] = 1; cods[g[0]] = 1; });
+  var ini = Object.keys(meses).sort()[0];
+  Object.keys(B.prod).forEach(function(c){ Object.keys(B.prod[c]).forEach(function(f){ var m = f.substring(0, 7); if (m < ini) return;
+    (P[c] || (P[c] = {}))[m] = (P[c][m] || 0) + B.prod[c][f]; meses[m] = 1; cods[c] = 1; }); });
+  var ks = Object.keys(meses).sort();
+  var arch = bodArchivados();
+  var sinCart = Object.keys(cods).filter(function(c){ return !arch[c] && !(B.prod[c] && Object.keys(B.prod[c]).length); });
+  var lista = Object.keys(cods).filter(function(c){ return !arch[c] && sinCart.indexOf(c) < 0; })
+    .sort(function(a, b){ return (B.faena[a] || 'z').localeCompare(B.faena[b] || 'z') || (B.nom[a] || '').localeCompare(B.nom[b] || ''); });
+  var nomF = function(c){ return (B.nom[c] || c) + ' (' + c + ')'; };
+  var h = _bodTabla, tot = {};
+  if (tipo === 'pvd'){
+    h += '<tr>' + _bodTh('Faena', 'left') + _bodTh('Fundo', 'left') + _bodTh('Producido') + _bodTh('Despachado POO') + _bodTh('Producido − Despachado') + '</tr>';
+    var tp = 0, td = 0;
+    lista.forEach(function(c){
+      var p = ks.reduce(function(a, m){ return a + ((P[c] || {})[m] || 0); }, 0), d = ks.reduce(function(a, m){ return a + ((D[c] || {})[m] || 0); }, 0);
+      if (!p && !d) return; tp += p; td += d;
+      h += '<tr>' + _bodTd(B.faena[c] || '', 'text-align:left;') + _bodTd(nomF(c), 'text-align:left;') + _bodTd(_bodV(p)) + _bodTd(_bodV(d)) + _bodTd(_bodN(p - d), 'font-weight:700;') + '</tr>';
+    });
+    h += '<tr style="background:#ddebf7;font-weight:800;">' + _bodTd('TOTAL', 'text-align:left;') + _bodTd('') + _bodTd(_bodN(tp)) + _bodTd(_bodN(td)) + _bodTd(_bodN(tp - td)) + '</tr></table>';
+    return '<div style="font-size:11px;color:#555;margin-bottom:6px;">Desde ' + _bodMes(ini) + '. Producido − Despachado es lo que debería quedar en cancha sin contar inventarios ni traspasos a FORMIN; ' +
+           'el stock real de cada fundo está en la vista Bodega Operativa.</div>' + h;
+  }
+  var M = (tipo === 'prodmes') ? P : D;
+  h += '<tr>' + _bodTh('Faena', 'left') + _bodTh('Fundo', 'left') + ks.map(function(m){ return _bodTh(_bodMes(m)); }).join('') + _bodTh('Total') + '</tr>';
+  lista.forEach(function(c){
+    var o = M[c] || {}, t = ks.reduce(function(a, m){ return a + (o[m] || 0); }, 0); if (!t) return;
+    h += '<tr>' + _bodTd(B.faena[c] || '', 'text-align:left;') + _bodTd(nomF(c), 'text-align:left;') +
+         ks.map(function(m){ tot[m] = (tot[m] || 0) + (o[m] || 0); return _bodTd(_bodV(o[m])); }).join('') + _bodTd(_bodN(t), 'font-weight:800;') + '</tr>';
+  });
+  h += '<tr style="background:#ddebf7;font-weight:800;">' + _bodTd('TOTAL POO', 'text-align:left;') + _bodTd('') +
+       ks.map(function(m){ return _bodTd(_bodN(tot[m] || 0)); }).join('') + _bodTd(_bodN(ks.reduce(function(a, m){ return a + (tot[m] || 0); }, 0))) + '</tr></table>';
+  return '<div style="font-size:11px;color:#555;margin-bottom:6px;">' + (tipo === 'prodmes' ? 'm³ de cartolas (hoja produc) por fundo y mes.' :
+         'm³ despachados con guías a nombre de POO por fundo y mes.') + ' Desde ' + _bodMes(ini) + '.</div>' + h +
+         (tipo === 'despmes' ? bodAvisoSinCartolas(sinCart) : '');
 }
 
 function buildProdDiaria() {
@@ -20475,6 +21357,8 @@ function gestExportar(){
         if(ds.prod_faena_mes&&Object.keys(ds.prod_faena_mes).length){ try{ PROD_FAENA_MES=ds.prod_faena_mes; }catch(e){} }
         // Dataset v8f: hoja "Base datos Procesador Mecaniz" (ranking de operadores MEDIDO, botón "Fuente: solo BaseHorasTrab")
         if(ds.fmn_dias&&ds.fmn_dias.length){ try{ FMN_DIAS=(typeof sinFaenasFuera==='function')?sinFaenasFuera(ds.fmn_dias):ds.fmn_dias; }catch(e){} }
+        // Dataset build 09-10-2026: Bodega Operativa (hojas BodegaGuias/BodegaInventarios del Best). Se lee al abrir el modal (bodAbrir), no hay que repintar.
+        if(ds.bodega&&ds.bodega.guias){ try{ BODEGA=ds.bodega; }catch(e){} }
         // Datasets v8c "brechas" (horas perdidas unificadas BaseHorasPerdUnif + detenciones WhatsApp)
         if(ds.hperd_unif&&Object.keys(ds.hperd_unif).length){ try{ HPERD_UNIF=ds.hperd_unif; }catch(e){} }
         if(ds.wa_det&&ds.wa_det.length){ try{ WA_DET=ds.wa_det; }catch(e){} }
