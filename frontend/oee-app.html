@@ -22596,6 +22596,102 @@ function gestExportar(){
       nota(ta,'Escuchando… habla ahora. Toca Detener para terminar.',false);
     };
   })();
+  // ── Modo celular (contrato ERP, 2026-10-20) ── el OEE dentro del ERP se ve en el teléfono: columnas apiladas, tablas con
+  // desplazamiento propio, un selector de sección en vez de la fila de pestañas y filtros táctiles. No toca el fuente del
+  // OEE: es CSS inyectado bajo html.oee-movil + un poco de DOM, así que viaja solo en los próximos portes. Se activa solo
+  // cuando el ancho es ≤ 768px; el botón flotante lo fuerza (localStorage oee_movil = '1' siempre, '0' nunca, vacío = auto).
+  (function(){
+    var CSS=[
+      'html.oee-movil,html.oee-movil body{overflow-x:hidden;max-width:100vw}',
+      'html.oee-movil body{padding:0;font-size:13px;background:#e8e8e8}',
+      'html.oee-movil .dash{max-width:100%;border-radius:0}',
+      'html.oee-movil .topbar{padding:8px 10px;border-radius:0;gap:8px}',
+      'html.oee-movil .topbar h1{font-size:13px;line-height:1.2}',
+      'html.oee-movil .topbar span{display:none}',
+      'html.oee-movil .topbar img{max-height:26px;width:auto}',
+      'html.oee-movil .body{padding:6px;border-radius:0}',
+      'html.oee-movil .filters{flex-direction:column;align-items:stretch;gap:8px;padding:10px}',
+      'html.oee-movil .filters .fg{width:100%}',
+      'html.oee-movil .fg select{min-width:0;width:100%;font-size:15px;min-height:42px}',
+      'html.oee-movil .filters .divider{display:none}',
+      'html.oee-movil .btn-apply,html.oee-movil .btn-excel{width:100%;min-height:44px;justify-content:center;font-size:14px;align-self:stretch}',
+      'html.oee-movil .filters>button{margin-left:0 !important;width:100%;align-self:stretch !important;min-height:44px}',
+      'html.oee-movil .filter-info,html.oee-movil .excel-status,html.oee-movil #last-update-info{align-self:flex-start;white-space:normal;padding:4px 8px}',
+      'html.oee-movil .nav-tabs{display:none}',
+      '#oee-movil-sec{display:none}',
+      'html.oee-movil #oee-movil-sec{display:block;width:100%;min-height:44px;font-size:15px;font-weight:700;color:#fff;background:#1a6b3a;border:1px solid #0d3d20;border-radius:6px;padding:6px 10px;margin:4px 0 10px;position:sticky;top:0;z-index:50}',
+      '#oee-movil-btn{position:fixed;right:10px;bottom:12px;z-index:9000;background:#fff;color:#1a6b3a;border:2px solid #1a6b3a;border-radius:20px;padding:8px 14px;font-size:12px;font-weight:700;box-shadow:0 2px 8px rgba(0,0,0,.25);cursor:pointer}',
+      'html.oee-movil .oee-mscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%;margin-bottom:8px}',
+      'html.oee-movil .oee-mscroll>table{width:auto;min-width:100%}',
+      'html.oee-movil table{font-size:11px}',
+      'html.oee-movil th,html.oee-movil td{padding:5px 6px;white-space:nowrap}',
+      'html.oee-movil [style*="grid-template-columns"],html.oee-movil [class*="grid"]{grid-template-columns:1fr !important}',
+      'html.oee-movil .sc-grid,html.oee-movil .dash-metrics-row,html.oee-movil .bd-kpis,html.oee-movil .pd-kpi-grid,html.oee-movil .rn-cards,html.oee-movil #panel-rnov .rn-cards,html.oee-movil .maq4-grid,html.oee-movil .rs-kpis{grid-template-columns:1fr 1fr !important}',
+      'html.oee-movil .bd-gauge-grid{grid-template-columns:36px repeat(7,1fr) !important}',
+      'html.oee-movil .bd-tob-row{grid-template-columns:28px 1fr 36px !important}',
+      'html.oee-movil [style*="display:flex"],html.oee-movil [style*="display: flex"]{flex-wrap:wrap !important}',
+      'html.oee-movil .gauges-row,html.oee-movil .legend-row,html.oee-movil .kpi-row,html.oee-movil .dash-header{flex-wrap:wrap}',
+      'html.oee-movil .card{max-width:100%;overflow-x:auto}',
+      'html.oee-movil .ch,html.oee-movil canvas,html.oee-movil img{max-width:100% !important}',
+      'html.oee-movil .sc-val{font-size:20px}',
+      'html.oee-movil .pd-modal-box{width:96vw;max-width:96vw;padding:12px;max-height:88vh;overflow:auto}',
+      'html.oee-movil [style*="min-width"]{min-width:0 !important}',
+      'html.oee-movil [style*="width:1"][style*="px"]:not(canvas):not(img){max-width:100%}'
+    ].join('\n');
+    var SEL_ID='oee-movil-sec', BTN_ID='oee-movil-btn', ST_ID='oee-movil-css', timer=null;
+    function pref(){ try{ return localStorage.getItem('oee_movil')||''; }catch(e){ return ''; } }
+    function activo(){ return document.documentElement.classList.contains('oee-movil'); }
+    // innerWidth miente cuando el contenido desborda (reporta el ancho del contenido): se usa el viewport real
+    function ancho(){ try{ if(window.matchMedia&&matchMedia('(max-width:768px)').matches) return 768; }catch(e){} return Math.min(window.innerWidth||1e9,document.documentElement.clientWidth||1e9); }
+    function quiere(){ var p=pref(); if(p==='1') return true; if(p==='0') return false; return ancho()<=768; }
+    function css(){ if(document.getElementById(ST_ID)) return; var s=document.createElement('style'); s.id=ST_ID; s.textContent=CSS; document.head.appendChild(s); }
+    // Cada tabla va dentro de un contenedor con scroll horizontal propio: la página no se ensancha y la tabla se lee deslizando
+    function envolverTablas(){
+      if(!activo()) return;
+      var ts=document.querySelectorAll('table');
+      for(var i=0;i<ts.length;i++){
+        var t=ts[i]; if(t.closest('.oee-mscroll')) continue;
+        var p=t.parentNode; if(!p||p===document.body) continue;
+        try{ var ov=getComputedStyle(p).overflowX; if(ov==='auto'||ov==='scroll') continue; }catch(e){}
+        var w=document.createElement('div'); w.className='oee-mscroll'; p.insertBefore(w,t); w.appendChild(t);
+      }
+    }
+    // La fila de pestañas no cabe en el teléfono: un selector con las mismas secciones (hace clic en la pestaña real)
+    function selector(){
+      var tabs=document.querySelector('.nav-tabs'); if(!tabs) return;
+      var sel=document.getElementById(SEL_ID);
+      if(!sel){
+        sel=document.createElement('select'); sel.id=SEL_ID; sel.title='Sección del informe';
+        sel.onchange=function(){ var b=tabs.querySelectorAll('.nav-tab')[parseInt(sel.value)]; if(b) b.click(); try{ window.scrollTo(0,0); }catch(e){} };
+        tabs.parentNode.insertBefore(sel,tabs);
+      }
+      var bs=tabs.querySelectorAll('.nav-tab');
+      if(sel.options.length!==bs.length){ sel.innerHTML=''; for(var i=0;i<bs.length;i++){ var o=document.createElement('option'); o.value=i; o.textContent='Sección: '+bs[i].textContent.replace(/\s+/g,' ').trim(); sel.appendChild(o); } }
+      for(var j=0;j<bs.length;j++) if(bs[j].classList.contains('active')) sel.value=j;
+    }
+    function boton(){
+      var b=document.getElementById(BTN_ID);
+      if(!b){ b=document.createElement('button'); b.id=BTN_ID; b.type='button'; b.title='Cambiar entre la vista para celular y la vista completa';
+        b.onclick=function(){ try{ localStorage.setItem('oee_movil',activo()?'0':'1'); }catch(e){} aplicar(); }; document.body.appendChild(b); }
+      var on=activo(); b.textContent=on?'🖥 Vista completa':'📱 Vista celular';
+      b.style.display=(on||ancho()<=900)?'':'none';
+    }
+    function aplicar(){
+      css();
+      var on=quiere(); document.documentElement.classList.toggle('oee-movil',on);
+      if(on){ selector(); envolverTablas(); }
+      boton();
+      setTimeout(postH,350);
+    }
+    // showPanel cambia de sección: sincronizar el selector y envolver las tablas del panel recién pintado
+    var sp=window.showPanel;
+    if(typeof sp==='function'){ window.showPanel=function(){ var r=sp.apply(this,arguments); if(activo()){ selector(); setTimeout(envolverTablas,150); setTimeout(envolverTablas,700); } return r; }; }
+    try{ new MutationObserver(function(){ if(!activo()) return; clearTimeout(timer); timer=setTimeout(envolverTablas,250); }).observe(document.body,{childList:true,subtree:true}); }catch(e){}
+    var rt=null; window.addEventListener('resize',function(){ clearTimeout(rt); rt=setTimeout(aplicar,200); });
+    // El ERP puede forzarlo: postMessage({__oeeMovil:true|false|'auto'})
+    window.addEventListener('message',function(ev){ var d=ev.data||{}; if(d.__oeeMovil!==undefined){ try{ localStorage.setItem('oee_movil',d.__oeeMovil==='auto'?'':(d.__oeeMovil?'1':'0')); }catch(e){} aplicar(); } });
+    if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',aplicar); else aplicar();
+  })();
 })();
 </script>
 </body>
