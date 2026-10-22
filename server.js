@@ -886,6 +886,12 @@ async function autoSetup() {
   )`);
   // Campo provisorio en movimientos
   await q(`ALTER TABLE comb_movimientos ADD COLUMN IF NOT EXISTS es_provisorio BOOLEAN DEFAULT false`);
+  // ── Impuesto específico MEPCO (2026-10-22): tabla semanal del SII, UTM mensual y clase del equipo para el F29 ──
+  await q(`CREATE TABLE IF NOT EXISTS comb_mepco (vigencia DATE PRIMARY KEY, diesel_base NUMERIC(10,4) NOT NULL, diesel_var NUMERIC(10,4) NOT NULL, g93_base NUMERIC(10,4) NOT NULL, g93_var NUMERIC(10,4) NOT NULL, g97_base NUMERIC(10,4) NOT NULL, g97_var NUMERIC(10,4) NOT NULL, fuente VARCHAR(200), creado_en TIMESTAMP DEFAULT NOW())`);
+  await q(`CREATE TABLE IF NOT EXISTS comb_utm (mes CHAR(7) PRIMARY KEY, valor NUMERIC(12,2) NOT NULL, fuente VARCHAR(60), creado_en TIMESTAMP DEFAULT NOW())`);
+  try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS iec_carretera BOOLEAN');}catch(e){}
+  // Clase inicial por el tipo/nombre del equipo (editable después en el informe): transita por carretera → el impuesto NO se recupera
+  try{await q(`UPDATE equipos SET iec_carretera=((COALESCE(tipo,'')||' '||COALESCE(nombre,'')) ~* '(camioneta|cami[oó]n|furg[oó]n|cama baja|remolque|bus|jeep|cmta)') WHERE iec_carretera IS NULL`);}catch(e){}
   await q(`ALTER TABLE comb_movimientos ADD COLUMN IF NOT EXISTS cierre_id INT REFERENCES comb_cierres(cierre_id)`);
   // Seed tipos de combustible
   for(const t of ['Diesel','Gasolina 93','Gasolina 95','Gasolina 97']){
@@ -929,6 +935,13 @@ async function autoSetup() {
     "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS recibido_en TIMESTAMP",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS linea_num INT",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS exenta BOOLEAN DEFAULT false",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS imp_esp_fijo NUMERIC(14,2) DEFAULT 0",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS imp_esp_variable NUMERIC(14,2) DEFAULT 0",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS mepco_vigencia DATE",
+    "ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS mepco_utm NUMERIC(12,2)",
+    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS comb_tipo_id INT",
+    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS iec_fijo_lt NUMERIC(12,4)",
+    "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS iec_var_lt NUMERIC(12,4)",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS descripcion TEXT",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS subcategoria_id INT",
     "ALTER TABLE ordenes_compra_detalle ADD COLUMN IF NOT EXISTS faena_id INT",
@@ -2833,11 +2846,12 @@ ocR.post('/', auth, requireOC('crear'), async(req,res)=>{
     const netoExento=lineas.filter(l=>l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
     const neto=Math.round(netoAfecto+netoExento);
     const iva=Math.round(netoAfecto*0.19);
-    const imp=Math.round(parseFloat(impuesto_adicional)||0);
+    const imp=ocImpEsp(req.body);
     const total=neto+iva+imp;
     const ocR2=await client.query('INSERT INTO ordenes_compra(numero_oc,empresa_id,proveedor_id,fecha_emision,solicitante,retira,condicion_id,impuesto_adicional,neto,iva,total,observaciones,usuario,es_activo_fijo,af_vida_util_meses,af_valor_residual,af_descripcion,es_diferido,dif_desde,dif_hasta,dif_descripcion) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING oc_id',[numero_oc,empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,req.user.email,es_activo_fijo||false,es_activo_fijo?(parseInt(af_vida_util_meses)||60):null,es_activo_fijo?(parseFloat(af_valor_residual)||0):null,es_activo_fijo?(af_descripcion||null):null,_dif.es,_dif.desde,_dif.hasta,_dif.desc]);
     const ocId=ocR2.rows[0].oc_id;
     for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[ocId,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
+    await ocGuardarIec(client,ocId,req.body,lineas);
     await auditOC(client,ocId,'CREATE',null,req);
     await client.query('COMMIT');
     res.status(201).json({ok:true,oc_id:ocId,numero_oc});
@@ -2856,7 +2870,7 @@ ocR.put('/:id', auth, requireOC('editar'), async(req,res)=>{
     const _dif=difParse(req.body);
     const netoAfecto=lineas.filter(l=>!l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
     const netoExento=lineas.filter(l=>l.exenta).reduce((s,l)=>s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0),0);
-    const neto=Math.round(netoAfecto+netoExento);const iva=Math.round(netoAfecto*0.19);const imp=Math.round(parseFloat(impuesto_adicional)||0);const total=neto+iva+imp;
+    const neto=Math.round(netoAfecto+netoExento);const iva=Math.round(netoAfecto*0.19);const imp=ocImpEsp(req.body);const total=neto+iva+imp;
     // Normalizar campos DTE: si vienen vacíos, guardar NULL para no contaminar
     const _tipoDoc = tipo_doc_id || null;
     const _numDoc = (numero_documento && String(numero_documento).trim()) ? String(numero_documento).trim() : null;
@@ -2865,6 +2879,7 @@ ocR.put('/:id', auth, requireOC('editar'), async(req,res)=>{
     await client.query('UPDATE ordenes_compra SET modificado_por=$1 WHERE oc_id=$2',[req.user.email,req.params.id]);
     await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
     for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[req.params.id,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
+    await ocGuardarIec(client,req.params.id,req.body,lineas);
     // Si se asignó un DTE manualmente y existe en dte_recibidos del mismo proveedor → vincular automáticamente en dte_oc
     if(_numDoc && _tipoDoc && proveedor_id){
       try{
@@ -3770,6 +3785,127 @@ app.get('/api/ping', async(req,res)=>{try{await pool.query('SELECT 1');res.json(
 // ════════════════════════════════════════════════════
 
 // Tipos de combustible
+// ═══ IMPUESTO ESPECÍFICO A LOS COMBUSTIBLES (Ley 18.502) + MEPCO (Ley 20.765) — 2026-10-22 ═══
+// Fuente semanal: https://www.sii.cl/valores_y_fechas/mepco/mepcoAAAA.htm (componente base y variable en UTM/m³; cambia los jueves).
+// $/L = (base + variable) × UTM del mes / 1000. Gasolina 95 = mezcla 93/97: variable = promedio ponderado (Ley 20.765 art. 3 N° 8), base 6.
+// Diésel en maquinaria (no transita por carretera): el impuesto va al F29 (crédito si es positivo, pago si es negativo) → el litro
+// entra al estanque AL NETO. Diésel en vehículos de carretera y gasolinas: el impuesto es costo. La proporción se calcula a fin de mes
+// con los litros distribuidos (informe /api/comb/iec-mensual).
+function combNumCL(x){ return parseFloat(String(x).replace(/\./g,'').replace(',','.')); }
+function combMepcoParsear(html){
+  const t=html.replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/gi,'').replace(/<[^>]+>/g,'\n').replace(/&nbsp;/g,' ').replace(/&oacute;/g,'ó').replace(/&aacute;/g,'á').replace(/&eacute;/g,'é');
+  const tok=t.split('\n').map(x=>x.trim()).filter(Boolean);
+  const NOM=[['Gasolina Automotriz 93','g93'],['Gasolina Automotriz 97','g97'],['Petróleo Diesel','diesel'],['Petroleo Diesel','diesel']];
+  const esNum=x=>/^-?\d+,\d+$/.test(x);
+  const out=[]; let i=0;
+  while(i<tok.length){
+    const m=tok[i].match(/^Vigencia desde:\s*\S+\s+(\d{2})-(\d{2})-(\d{4})/);
+    if(!m){i++;continue;}
+    const rec={vigencia:m[3]+'-'+m[2]+'-'+m[1]}; let j=i+1;
+    while(j<tok.length&&!/^Vigencia desde/.test(tok[j])&&j<i+90){
+      for(const [k,v] of NOM){ if(tok[j].indexOf(k)!==0)continue;
+        const nums=[]; let q2=j+1; while(q2<tok.length&&nums.length<3&&q2<j+8){ if(esNum(tok[q2]))nums.push(combNumCL(tok[q2])); q2++; }
+        // La página a veces corre una celda y deja un número ANTES del nombre: se prueba reubicarlo
+        if(nums.length===2){ const antes=[tok[j-1],tok[j-2]].filter(x=>x&&esNum(x)).map(combNumCL); for(const a of antes){ const cand=[[nums[0],a,nums[1]],[a,nums[0],nums[1]]]; const ok=cand.find(c=>Math.abs(c[0]+c[1]-c[2])<0.0005); if(ok){nums.length=0;nums.push(...ok);break;} } }
+        if(nums.length===3&&Math.abs(nums[0]+nums[1]-nums[2])<0.0005)rec[v]={base:nums[0],variable:nums[1],resultante:nums[2]};
+      }
+      j++;
+    }
+    out.push(rec); i=j;
+  }
+  return out.filter(r=>r.diesel&&r.g93&&r.g97).sort((a,b)=>a.vigencia<b.vigencia?-1:1);
+}
+async function combMepcoActualizar(anio){
+  anio=anio||new Date().getFullYear();
+  const url='https://www.sii.cl/valores_y_fechas/mepco/mepco'+anio+'.htm';
+  const r=await fetch(url,{headers:{'User-Agent':'Mozilla/5.0 (ERP Empresas Poo)'},signal:AbortSignal.timeout(20000)}); if(!r.ok) throw new Error('SII respondió '+r.status);
+  const semanas=combMepcoParsear(await r.text()); let n=0;
+  for(const x of semanas){ await pool.query(`INSERT INTO comb_mepco(vigencia,diesel_base,diesel_var,g93_base,g93_var,g97_base,g97_var,fuente) VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+    ON CONFLICT(vigencia) DO UPDATE SET diesel_base=EXCLUDED.diesel_base,diesel_var=EXCLUDED.diesel_var,g93_base=EXCLUDED.g93_base,g93_var=EXCLUDED.g93_var,g97_base=EXCLUDED.g97_base,g97_var=EXCLUDED.g97_var,fuente=EXCLUDED.fuente`,
+    [x.vigencia,x.diesel.base,x.diesel.variable,x.g93.base,x.g93.variable,x.g97.base,x.g97.variable,url]); n++; }
+  return {semanas:n,ultima:semanas.length?semanas[semanas.length-1].vigencia:null,url};
+}
+const COMB_UTM_CACHE={};
+async function combUtmMes(mes){ // 'AAAA-MM' → valor UTM (mindicador.cl, con respaldo en comb_utm)
+  if(COMB_UTM_CACHE[mes])return COMB_UTM_CACHE[mes];
+  const db=await pool.query('SELECT valor FROM comb_utm WHERE mes=$1',[mes]);
+  if(db.rows.length){COMB_UTM_CACHE[mes]=parseFloat(db.rows[0].valor);return COMB_UTM_CACHE[mes];}
+  try{ const r=await fetch('https://mindicador.cl/api/utm/'+mes.slice(0,4),{signal:AbortSignal.timeout(8000)}); const d=await r.json();
+    for(const x of (d.serie||[])){ const mm=String(x.fecha).slice(0,7); await pool.query('INSERT INTO comb_utm(mes,valor,fuente) VALUES($1,$2,$3) ON CONFLICT(mes) DO UPDATE SET valor=EXCLUDED.valor',[mm,x.valor,'mindicador.cl']); COMB_UTM_CACHE[mm]=parseFloat(x.valor); }
+  }catch(e){}
+  if(COMB_UTM_CACHE[mes])return COMB_UTM_CACHE[mes];
+  const ult=await pool.query('SELECT valor FROM comb_utm WHERE mes<=$1 ORDER BY mes DESC LIMIT 1',[mes]);
+  if(ult.rows.length)return parseFloat(ult.rows[0].valor);
+  // Último recurso si mindicador no responde y la tabla está vacía: valores oficiales SII 2026 (actualizar si cambia el año)
+  const FB={'2026-01':69751,'2026-02':69611,'2026-03':69889,'2026-04':69889,'2026-05':70588,'2026-06':71506,'2026-07':71649,'2026-08':71649,'2026-09':71721,'2026-10':72151,'2026-11':72440};
+  const k=Object.keys(FB).filter(x=>x<=mes).sort().pop(); return k?FB[k]:0;
+}
+function combTasasDe(row,p93){ p93=isNaN(p93)?50:Math.max(0,Math.min(100,p93)); const n=k=>parseFloat(row[k]);
+  return {diesel:{nombre:'Petróleo diésel',base:n('diesel_base'),variable:n('diesel_var')},g93:{nombre:'Gasolina 93',base:n('g93_base'),variable:n('g93_var')},
+    g95:{nombre:'Gasolina 95',base:6,variable:+(((n('g93_var')*p93)+(n('g97_var')*(100-p93)))/100).toFixed(4),mezcla:p93+'% 93 + '+(100-p93)+'% 97'},g97:{nombre:'Gasolina 97',base:n('g97_base'),variable:n('g97_var')}}; }
+function combClaveTipo(nombre){ const u=String(nombre||'').toUpperCase(); if(u.indexOf('97')>=0)return 'g97'; if(u.indexOf('95')>=0)return 'g95'; if(u.indexOf('93')>=0)return 'g93'; if(u.indexOf('DIESEL')>=0||u.indexOf('DIÉSEL')>=0||u.indexOf('PETR')>=0)return 'diesel'; if(u.indexOf('GASOLINA')>=0||u.indexOf('BENCINA')>=0)return 'g93'; return null; }
+app.get('/api/comb/mepco', auth, async(req,res)=>{
+  try{
+    const fecha=/^\d{4}-\d{2}-\d{2}$/.test(String(req.query.fecha||''))?req.query.fecha:new Date().toISOString().slice(0,10);
+    const buscar=()=>pool.query('SELECT * FROM comb_mepco WHERE vigencia<=$1 ORDER BY vigencia DESC LIMIT 1',[fecha]);
+    let r=await buscar();
+    if(!r.rows.length){ try{await combMepcoActualizar(parseInt(fecha.slice(0,4)));}catch(e){} r=await buscar(); }
+    if(!r.rows.length)return res.status(404).json({error:'No hay tabla MEPCO cargada para esa fecha. Use "Actualizar desde el SII".'});
+    const row=r.rows[0]; const utm=await combUtmMes(fecha.slice(0,7));
+    const tasas=combTasasDe(row,parseFloat(req.query.p93));
+    Object.keys(tasas).forEach(k=>{const t=tasas[k];t.resultante=+(t.base+t.variable).toFixed(4);t.fijo_lt=+(t.base*utm/1000).toFixed(4);t.variable_lt=+(t.variable*utm/1000).toFixed(4);t.total_lt=+((t.base+t.variable)*utm/1000).toFixed(4);});
+    const ult=await pool.query('SELECT vigencia,diesel_base,diesel_var,g93_base,g93_var,g97_base,g97_var FROM comb_mepco ORDER BY vigencia DESC LIMIT 12');
+    const ultima=ult.rows.length?calIso(ult.rows[0].vigencia):null;
+    res.json({fecha,vigencia:calIso(row.vigencia),utm,utm_mes:fecha.slice(0,7),tasas,ultima_semana_cargada:ultima,
+      desactualizada:!ultima||(new Date(fecha)-new Date(ultima))>8*86400000,
+      semanas:ult.rows.map(x=>({vigencia:calIso(x.vigencia),diesel:[+x.diesel_base,+x.diesel_var],g93:[+x.g93_base,+x.g93_var],g97:[+x.g97_base,+x.g97_var]}))});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/comb/mepco/actualizar', auth, requireModulo('combustibles'), async(req,res)=>{
+  try{ const anio=parseInt(req.body&&req.body.anio)||new Date().getFullYear(); COMB_UTM_CACHE[String(anio)]=undefined; res.json(await combMepcoActualizar(anio)); }
+  catch(e){res.status(500).json({error:'No se pudo leer la página del SII: '+e.message});}
+});
+// Cron: el SII publica cada jueves; cada 6 h se revisa si falta la semana vigente (COMB_SIN_CRON=1 lo desactiva)
+if(!process.env.COMB_SIN_CRON){ const combMepcoTick=async()=>{ try{ const r=await pool.query('SELECT MAX(vigencia) AS v FROM comb_mepco'); const v=r.rows[0].v?calIso(r.rows[0].v):null; if(!v||(Date.now()-new Date(v+'T12:00:00Z'))>7.5*86400000) await combMepcoActualizar(); }catch(e){console.error('[MEPCO]',e.message);} }; setTimeout(combMepcoTick,45*1000); setInterval(combMepcoTick,6*3600*1000); }
+// Clase del equipo para el F29 (transita por carretera → no recupera el impuesto)
+app.patch('/api/comb/iec/equipo/:id', auth, requireModulo('combustibles'), async(req,res)=>{
+  try{ await pool.query('UPDATE equipos SET iec_carretera=$1 WHERE equipo_id=$2',[!!(req.body&&req.body.carretera),req.params.id]); res.json({ok:true}); }catch(e){res.status(500).json({error:e.message});}
+});
+// Informe mensual: impuesto específico del diésel comprado (solo OC CERRADAS con documento) vs. litros consumidos por maquinaria / vehículos de carretera
+app.get('/api/comb/iec-mensual', auth, requireModulo('combustibles'), async(req,res)=>{
+  try{
+    const anio=parseInt(req.query.anio)||new Date().getFullYear(), mes=parseInt(req.query.mes)||(new Date().getMonth()+1);
+    const d1=anio+'-'+String(mes).padStart(2,'0')+'-01', d2=calArmar(anio,mes,31);
+    const emp=parseInt(req.query.empresa_id)||null; const v=emp?[d1,d2,emp]:[d1,d2];
+    const esDiesel="(d.comb_tipo_id IN (SELECT tipo_id FROM comb_tipos WHERE UPPER(nombre) LIKE '%DIESEL%' OR UPPER(nombre) LIKE '%PETR%') OR (d.comb_tipo_id IS NULL AND (UPPER(COALESCE(d.descripcion,'')) LIKE '%DIESEL%' OR UPPER(COALESCE(d.descripcion,'')) LIKE '%PETR%')))";
+    const compras=await pool.query(`SELECT oc.oc_id,oc.numero_oc,COALESCE(oc.fecha_documento,oc.fecha_emision) AS fecha,oc.numero_documento,pr.nombre AS proveedor,oc.mepco_vigencia,oc.mepco_utm,oc.estado,
+        SUM(d.cantidad) AS litros,SUM(d.cantidad*d.precio_unitario) AS neto,SUM(d.cantidad*COALESCE(d.iec_fijo_lt,0)) AS iec_fijo,SUM(d.cantidad*COALESCE(d.iec_var_lt,0)) AS iec_var,
+        BOOL_OR(d.iec_fijo_lt IS NULL AND d.iec_var_lt IS NULL) AS sin_tasa,
+        BOOL_OR(EXISTS(SELECT 1 FROM comb_movimientos m WHERE m.oc_referencia=oc.numero_oc AND m.tipo_mov='INGRESO_STOCK' AND m.estado='ACTIVO')) AS a_estanque
+      FROM ordenes_compra oc JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id LEFT JOIN proveedores pr ON pr.proveedor_id=oc.proveedor_id
+      WHERE oc.estado='CERRADA' AND COALESCE(oc.fecha_documento,oc.fecha_emision) BETWEEN $1 AND $2 AND ${esDiesel} ${emp?'AND oc.empresa_id=$3':''}
+      GROUP BY oc.oc_id,pr.nombre ORDER BY 3,oc.numero_oc`,v);
+    const dist=await pool.query(`SELECT e.equipo_id,e.codigo,e.nombre,e.tipo,COALESCE(e.iec_carretera,false) AS carretera,SUM(m.litros) AS litros,COUNT(*) AS cargas
+      FROM comb_movimientos m JOIN comb_tipos ct ON ct.tipo_id=m.tipo_id JOIN equipos e ON e.equipo_id=m.equipo_id
+      WHERE m.tipo_mov='DISTRIBUCION' AND m.estado='ACTIVO' AND m.fecha BETWEEN $1 AND $2 AND (UPPER(ct.nombre) LIKE '%DIESEL%' OR UPPER(ct.nombre) LIKE '%PETR%') ${emp?'AND m.empresa_id=$3':''}
+      GROUP BY e.equipo_id`,v);
+    // Cargas directas en estación de servicio: líneas de OC con equipo que no entraron a un estanque
+    const directo=await pool.query(`SELECT e.equipo_id,e.codigo,e.nombre,e.tipo,COALESCE(e.iec_carretera,false) AS carretera,SUM(d.cantidad) AS litros,COUNT(*) AS cargas
+      FROM ordenes_compra oc JOIN ordenes_compra_detalle d ON d.oc_id=oc.oc_id JOIN equipos e ON e.equipo_id=d.equipo_id
+      WHERE oc.estado='CERRADA' AND COALESCE(oc.fecha_documento,oc.fecha_emision) BETWEEN $1 AND $2 AND ${esDiesel} AND COALESCE(d.ingresa_bodega,false)=false
+        AND NOT EXISTS(SELECT 1 FROM comb_movimientos m WHERE m.oc_referencia=oc.numero_oc AND m.tipo_mov='INGRESO_STOCK' AND m.estado='ACTIVO') ${emp?'AND oc.empresa_id=$3':''}
+      GROUP BY e.equipo_id`,v);
+    const eq={}; const add=(r,origen)=>{ const k=r.equipo_id; const x=eq[k]=eq[k]||{equipo_id:k,codigo:r.codigo,nombre:r.nombre,tipo:r.tipo,carretera:!!r.carretera,litros:0,cargas:0,estanque:0,estacion:0}; const l=parseFloat(r.litros)||0; x.litros+=l; x.cargas+=parseInt(r.cargas)||0; x[origen]+=l; };
+    dist.rows.forEach(r=>add(r,'estanque')); directo.rows.forEach(r=>add(r,'estacion'));
+    const equipos=Object.values(eq).sort((a,b)=>(b.carretera-a.carretera)||(b.litros-a.litros));
+    const litMaq=equipos.filter(x=>!x.carretera).reduce((s,x)=>s+x.litros,0), litCar=equipos.filter(x=>x.carretera).reduce((s,x)=>s+x.litros,0);
+    const prop=(litMaq+litCar)>0?litMaq/(litMaq+litCar):null;
+    const T=compras.rows.reduce((t,r)=>{t.litros+=parseFloat(r.litros)||0;t.neto+=parseFloat(r.neto)||0;t.iec_fijo+=parseFloat(r.iec_fijo)||0;t.iec_var+=parseFloat(r.iec_var)||0;if(r.sin_tasa)t.sin_tasa++;return t;},{litros:0,neto:0,iec_fijo:0,iec_var:0,sin_tasa:0});
+    T.iec_total=T.iec_fijo+T.iec_var; T.litros_maquinaria=litMaq; T.litros_carretera=litCar; T.proporcion=prop;
+    T.recuperable=prop===null?null:Math.round(T.iec_total*prop); T.costo_carretera=prop===null?null:Math.round(T.iec_total*(1-prop));
+    res.json({periodo:{anio,mes,desde:d1,hasta:d2},totales:T,compras:compras.rows.map(r=>Object.assign({},r,{fecha:calIso(r.fecha),mepco_vigencia:r.mepco_vigencia?calIso(r.mepco_vigencia):null,litros:+r.litros,neto:+r.neto,iec_fijo:+r.iec_fijo,iec_var:+r.iec_var})),equipos});
+  }catch(e){res.status(500).json({error:e.message});}
+});
 app.get('/api/comb/tipos', auth, async(req,res)=>{
   try{res.json((await pool.query('SELECT * FROM comb_tipos ORDER BY nombre')).rows);}
   catch(e){res.status(500).json({error:e.message});}
@@ -8231,6 +8367,18 @@ function difMesesSlices(desde,hasta){ // corta [desde,hasta] en tramos por mes c
     m++; if(m>12){m=1;y++;}
   }
   return out;
+}
+// ── Impuesto específico (2026-10-22): la OC de combustible trae el impuesto separado en fijo (componente base) y variable (MEPCO).
+// El campo legacy impuesto_adicional pasa a ser la suma de ambos para que totales, impresión y cruce DTE sigan funcionando.
+function ocImpEsp(b){ const f=parseFloat(b.imp_esp_fijo)||0,v=parseFloat(b.imp_esp_variable)||0; if(f!==0||v!==0) return Math.round(f+v); return Math.round(parseFloat(b.impuesto_adicional)||0); }
+async function ocGuardarIec(client,ocId,b,lineas){
+  const f0=parseFloat(b.imp_esp_fijo)||0,v=parseFloat(b.imp_esp_variable)||0;
+  const f=(f0!==0||v!==0)?f0:(parseFloat(b.impuesto_adicional)||0); // OC sin desglose: todo queda como fijo
+  const vig=/^\d{4}-\d{2}-\d{2}$/.test(String(b.mepco_vigencia||''))?b.mepco_vigencia:null; const utm=parseFloat(b.mepco_utm)||null;
+  await client.query('UPDATE ordenes_compra SET imp_esp_fijo=$1,imp_esp_variable=$2,mepco_vigencia=$3,mepco_utm=$4 WHERE oc_id=$5',[Math.round(f),Math.round(v),vig,utm,ocId]);
+  const num=x=>(x===undefined||x===null||x===''||isNaN(parseFloat(x)))?null:parseFloat(x);
+  for(let i=0;i<(lineas||[]).length;i++){ const l=lineas[i]; if(l.comb_tipo_id||num(l.iec_fijo_lt)!==null||num(l.iec_var_lt)!==null){
+    await client.query('UPDATE ordenes_compra_detalle SET comb_tipo_id=$1,iec_fijo_lt=$2,iec_var_lt=$3 WHERE oc_id=$4 AND linea_num=$5',[parseInt(l.comb_tipo_id)||null,num(l.iec_fijo_lt),num(l.iec_var_lt),ocId,i+1]); } }
 }
 function difParse(b){ // valida y normaliza los campos de gasto diferido del body de una OC
   b=b||{}; var es=!!b.es_diferido;
