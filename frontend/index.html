@@ -9624,7 +9624,7 @@ function OCDocView(p){
     '<table class="totals">'+
     '<tr><td>Neto:</td><td>'+CLP2(oc.neto)+'</td></tr>'+
     '<tr><td>IVA 19%:</td><td>'+CLP2(oc.iva)+'</td></tr>'+
-    (parseFloat(oc.impuesto_adicional||0)>0?'<tr><td>Imp. adicional:</td><td>'+CLP2(oc.impuesto_adicional)+'</td></tr>':'')+
+    ((parseFloat(oc.imp_esp_fijo||0)||parseFloat(oc.imp_esp_variable||0))?('<tr><td>Imp. específico fijo:</td><td>'+CLP2(oc.imp_esp_fijo||0)+'</td></tr><tr><td>Imp. específico variable (MEPCO'+(oc.mepco_vigencia?' semana '+String(oc.mepco_vigencia).slice(8,10)+'-'+String(oc.mepco_vigencia).slice(5,7)+'-'+String(oc.mepco_vigencia).slice(0,4):'')+'):</td><td>'+CLP2(oc.imp_esp_variable||0)+'</td></tr>'):(parseFloat(oc.impuesto_adicional||0)>0?'<tr><td>Imp. adicional:</td><td>'+CLP2(oc.impuesto_adicional)+'</td></tr>':''))+
     '<tr class="total-final"><td>TOTAL:</td><td>'+CLP2(oc.total)+'</td></tr>'+
     '</table>'+
     (oc.estado==='CERRADA'?'<div class="trib"><strong>Documento tributario:</strong> '+(oc.tipo_doc_nombre||'—')+' N° '+(oc.numero_documento||'—')+' — Fecha: '+(oc.fecha_documento||'—')+'</div>':'')+
@@ -10237,6 +10237,74 @@ function ImportarDesdeFacto(p){
   );
 }
 
+// ── Calculadora de combustible con impuesto específico MEPCO (2026-10-22) ──
+// Tasa semanal del SII por la fecha del documento (o de emisión si no hay) + UTM del mes (GET /api/comb/mepco). Deja en la línea el tipo y la tasa por litro
+// (iec_fijo_lt / iec_var_lt); el encabezado suma fijo y variable por litros. El litro al estanque sigue entrando al NETO.
+function CalcCombustibleMepco(props){
+  var tipos=props.combTipos||[];
+  const[mep,setMep]=useState(null);const[mepErr,setMepErr]=useState('');const[cargando,setCargando]=useState(false);
+  const[tipoId,setTipoId]=useState('');const[litros,setLitros]=useState('');const[modo,setModo]=useState('total'); // por defecto se ingresa el total del documento (pedido de Andrés, 2026-10-22)
+  const[precio,setPrecio]=useState('');const[totalDoc,setTotalDoc]=useState('');const[incluyeIVA,setIncluyeIVA]=useState(true);const[p93,setP93]=useState('50');
+  function clave(nombre){var u=String(nombre||'').toUpperCase();if(u.indexOf('97')>=0)return 'g97';if(u.indexOf('95')>=0)return 'g95';if(u.indexOf('93')>=0)return 'g93';if(u.indexOf('DIESEL')>=0||u.indexOf('DIÉSEL')>=0||u.indexOf('PETR')>=0)return 'diesel';if(u.indexOf('GASOLINA')>=0||u.indexOf('BENCINA')>=0)return 'g93';return null;}
+  function cargar(){
+    if(!props.fecha)return;setCargando(true);setMepErr('');
+    api('/comb/mepco?fecha='+props.fecha+'&p93='+(parseFloat(p93)||50),'GET',null,props.tok).then(function(r){setMep(r);}).catch(function(e){setMep(null);setMepErr(e.message);}).finally(function(){setCargando(false);});
+  }
+  useEffect(cargar,[props.fecha,p93]);
+  useEffect(function(){if(!tipoId&&tipos.length){var d=tipos.find(function(t){return clave(t.nombre)==='diesel';})||tipos[0];setTipoId(String(d.tipo_id));}},[tipos]);
+  function actualizarSII(){setCargando(true);api('/comb/mepco/actualizar','POST',{anio:parseInt((props.fecha||'').slice(0,4))||new Date().getFullYear()},props.tok).then(function(){cargar();}).catch(function(e){setMepErr(e.message);setCargando(false);});}
+  var tipo=tipos.find(function(t){return String(t.tipo_id)===String(tipoId);});
+  var k=tipo?clave(tipo.nombre):null; var t=mep&&k&&mep.tasas[k];
+  var L=parseFloat(litros)||0; var fijoLt=t?t.fijo_lt:0,varLt=t?t.variable_lt:0,iecLt=fijoLt+varLt;
+  var netoLt=0;
+  if(modo==='precio'){netoLt=parseFloat(precio)||0;}
+  else{var tot=parseFloat(totalDoc)||0;var base=tot-iecLt*L;netoLt=L>0?((incluyeIVA?base/1.19:base)/L):0;}
+  var neto=netoLt*L,iecF=fijoLt*L,iecV=varLt*L,iva=neto*0.19,total=neto+iva+iecF+iecV;
+  var ok=!!t&&L>0&&netoLt>0;
+  var inpS={width:'100%',padding:'6px 8px',border:'1px solid #FDE68A',borderRadius:4,fontSize:12,boxSizing:'border-box',background:'#FFFDE7'};
+  var lab=function(txt){return h('label',{style:{fontSize:10,fontWeight:600,display:'block',marginBottom:2,color:'#92400E'}},txt);};
+  var tabBtn=function(active){return {padding:'5px 10px',borderRadius:4,border:'1px solid '+(active?'#F59E0B':'#FDE68A'),background:active?'#FEF3C7':'transparent',fontWeight:active?700:400,fontSize:11,cursor:'pointer',color:active?'#92400E':'#78350F'};};
+  var fmt2=function(n){return (n<0?'-':'')+Math.abs(n).toLocaleString('es-CL',{minimumFractionDigits:2,maximumFractionDigits:2});};
+  var fd=function(iso){return iso?iso.slice(8,10)+'-'+iso.slice(5,7)+'-'+iso.slice(0,4):'';};
+  var modoBtns=h('div',{style:{display:'flex',gap:4}},h('button',{onClick:function(){setModo('total');},style:tabBtn(modo==='total')},'Total doc.'),h('button',{onClick:function(){setModo('precio');},style:tabBtn(modo==='precio')},'Precio/L'));
+  return h('div',null,
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:8}},
+      h('div',{style:{fontSize:12,fontWeight:700,color:'#92400E'}},'⛽ Combustible con impuesto específico (MEPCO)'),
+      h('div',{style:{display:'flex',gap:6,alignItems:'center'}},
+        mep&&h('span',{style:{fontSize:11,color:'#78350F'}},'Semana SII desde '+fd(mep.vigencia)+' · UTM '+Math.round(mep.utm).toLocaleString('es-CL')),
+        h('button',{onClick:actualizarSII,disabled:cargando,style:tabBtn(false),title:'Leer la tabla de la semana desde sii.cl'},cargando?'...':'↻ Actualizar SII'))),
+    mepErr&&h('div',{style:{fontSize:11,color:'#B91C1C',marginBottom:6}},mepErr),
+    mep&&mep.desactualizada&&h('div',{style:{fontSize:11,color:'#B91C1C',marginBottom:6}},'⚠ La última semana cargada es del '+fd(mep.ultima_semana_cargada)+'. Actualice desde el SII antes de usar la tasa.'),
+    mep&&h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse',marginBottom:8}},
+      h('thead',null,h('tr',null,['Combustible','Base','Variable','Resultante UTM/m³','$/L'].map(function(c,i){return h('th',{key:c,style:{textAlign:i?'right':'left',padding:'3px 4px',borderBottom:'1px solid #FDE68A',color:'#92400E'}},c);}))),
+      h('tbody',null,['diesel','g93','g95','g97'].map(function(kk){var x=mep.tasas[kk];var sel=kk===k;return h('tr',{key:kk,style:{background:sel?'#FEF3C7':'transparent',fontWeight:sel?700:400}},
+        h('td',{style:{padding:'3px 4px'}},x.nombre+(x.mezcla?' ('+x.mezcla+')':'')),
+        h('td',{style:{padding:'3px 4px',textAlign:'right'}},x.base.toFixed(4)),
+        h('td',{style:{padding:'3px 4px',textAlign:'right',color:x.variable<0?'#B91C1C':'#1E293B'}},x.variable.toFixed(4)),
+        h('td',{style:{padding:'3px 4px',textAlign:'right',color:x.resultante<0?'#B91C1C':'#1E293B'}},x.resultante.toFixed(4)),
+        h('td',{style:{padding:'3px 4px',textAlign:'right',color:x.total_lt<0?'#B91C1C':'#1E293B'}},fmt2(x.total_lt)));}))),
+    h('div',{style:{display:'grid',gridTemplateColumns:'1.2fr 1fr 1fr 1fr',gap:6,marginBottom:6}},
+      h('div',null,lab('Combustible'),h('select',{value:tipoId,onChange:function(e){setTipoId(e.target.value);},style:inpS},tipos.map(function(x){return h('option',{key:x.tipo_id,value:x.tipo_id},x.nombre);}))),
+      h('div',null,lab('Litros (DTE)'),h('input',{type:'number',step:'0.01',value:litros,onChange:function(e){setLitros(e.target.value);},style:inpS,placeholder:'Ej: 2899'})),
+      modo==='precio'?h('div',null,lab('Precio neto $/L'),h('input',{type:'number',step:'0.01',value:precio,onChange:function(e){setPrecio(e.target.value);},style:inpS,placeholder:'Sin IVA ni impuesto'})):
+        h('div',null,lab('Total DTE $'),h('input',{type:'number',value:totalDoc,onChange:function(e){setTotalDoc(e.target.value);},style:inpS,placeholder:'Total del DTE (guía o factura)'})),
+      k==='g95'?h('div',null,lab('Mezcla: % de 93'),h('input',{type:'number',min:0,max:100,value:p93,onChange:function(e){setP93(e.target.value);},style:inpS})):h('div',null,lab('Modo'),modoBtns)),
+    k==='g95'&&h('div',{style:{marginBottom:6}},modoBtns),
+    modo==='total'&&h('label',{style:{fontSize:11,color:'#78350F',display:'flex',gap:4,alignItems:'center',marginBottom:6}},h('input',{type:'checkbox',checked:incluyeIVA,onChange:function(e){setIncluyeIVA(e.target.checked);},style:{width:'auto',margin:0}}),'El total del DTE incluye IVA e impuesto específico (guía o factura de la distribuidora)'),
+    t&&h('div',{style:{background:'#fff',border:'1px solid #FDE68A',borderRadius:6,padding:'8px 10px',fontSize:12,marginBottom:8}},
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:6}},
+        h('div',null,h('div',{style:{fontSize:10,color:'#92400E'}},'Neto por litro'),h('div',{className:'mono',style:{fontWeight:700}},'$ '+fmt2(netoLt))),
+        h('div',null,h('div',{style:{fontSize:10,color:'#92400E'}},'Imp. esp. fijo / variable $/L'),h('div',{className:'mono'},fmt2(fijoLt)+' / ',h('span',{style:{color:varLt<0?'#B91C1C':'#1E293B'}},fmt2(varLt)))),
+        h('div',null,h('div',{style:{fontSize:10,color:'#92400E'}},'Neto línea'),h('div',{className:'mono'},CLP(Math.round(neto)))),
+        h('div',null,h('div',{style:{fontSize:10,color:'#92400E'}},'IVA 19%'),h('div',{className:'mono'},CLP(Math.round(iva)))),
+        h('div',null,h('div',{style:{fontSize:10,color:'#92400E'}},'Imp. específico fijo'),h('div',{className:'mono'},CLP(Math.round(iecF)))),
+        h('div',null,h('div',{style:{fontSize:10,color:'#92400E'}},'Imp. específico variable'),h('div',{className:'mono',style:{color:iecV<0?'#B91C1C':'#1E293B'}},CLP(Math.round(iecV)))),
+        h('div',null,h('div',{style:{fontSize:10,color:'#92400E'}},'Total DTE'),h('div',{className:'mono',style:{fontWeight:700}},CLP(Math.round(total))))),
+      iecF+iecV<0&&h('div',{style:{fontSize:11,color:'#B91C1C',marginTop:6}},'Impuesto específico negativo: el documento trae un crédito que rebaja el total. Si es diésel para maquinaria, ese monto se paga en el F29 y el litro entra al estanque al neto.')),
+    h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6}},
+      h('button',{disabled:!ok,onClick:function(){props.onUsar({tipo_id:tipo.tipo_id,nombre:tipo.nombre,litros:L,netoPorLitro:Math.round(netoLt*100)/100,fijo_lt:fijoLt,variable_lt:varLt,vigencia:mep.vigencia,utm:mep.utm});},
+        style:{padding:'7px 14px',background:ok?'#D97706':'#E5E7EB',color:ok?'#fff':'#9CA3AF',border:'none',borderRadius:5,fontWeight:700,fontSize:12,cursor:ok?'pointer':'not-allowed'}},'⬇ Agregar a la OC')));
+}
 function CalcCombustibleInline(props){
   var onUsar=props.onUsar;
   var TASAS={diesel:1.5,gasolina:6.0};
@@ -10420,9 +10488,9 @@ function OCFormModal(p){
   // Helper para normalizar fechas que vienen del backend (timestamp ISO o YYYY-MM-DD)
   // al formato YYYY-MM-DD que entiende <input type="date">
   function dateToInput(d){if(!d)return '';var s=String(d);return s.length>=10?s.slice(0,10):s;}
-  const blank={empresa_id:'',proveedor_id:'',fecha_emision:TODAY,solicitante:'',retira:'',condicion_id:'',impuesto_adicional:'0',observaciones:'',tipo_doc_id:'',numero_documento:'',fecha_documento:'',es_activo_fijo:false,af_vida_util_meses:'60',af_valor_residual:'0',af_descripcion:'',es_diferido:false,dif_desde:'',dif_hasta:'',dif_descripcion:'',lineas:[{descripcion:'',prod_id:'',subcat_id:'',faena_id:'',eq_id:'',cantidad:'1',precio_unitario:'0',ingresa_bodega:false,bodega_destino_id:'',exenta:false}]};
-  const[form,setForm]=useState(isNew?blank:{empresa_id:str(p.oc.empresa_id||''),proveedor_id:str(p.oc.proveedor_id||''),fecha_emision:dateToInput(p.oc.fecha_emision)||TODAY,solicitante:p.oc.solicitante||'',retira:p.oc.retira||'',condicion_id:str(p.oc.condicion_id||''),impuesto_adicional:str(p.oc.impuesto_adicional||0),observaciones:p.oc.observaciones||'',tipo_doc_id:str(p.oc.tipo_doc_id||''),numero_documento:str(p.oc.numero_documento||''),fecha_documento:dateToInput(p.oc.fecha_documento),es_activo_fijo:!!p.oc.es_activo_fijo,af_vida_util_meses:str(p.oc.af_vida_util_meses||60),af_valor_residual:str(p.oc.af_valor_residual||0),af_descripcion:p.oc.af_descripcion||'',es_diferido:!!p.oc.es_diferido,dif_desde:dateToInput(p.oc.dif_desde)||'',dif_hasta:dateToInput(p.oc.dif_hasta)||'',dif_descripcion:p.oc.dif_descripcion||'',lineas:(p.oc.lineas||[]).map(l=>({descripcion:l.descripcion||'',prod_id:str(l.producto_id||''),subcat_id:str(l.subcategoria_id||''),faena_id:str(l.faena_id||''),eq_id:str(l.equipo_id||''),cantidad:str(l.cantidad||1),precio_unitario:str(l.precio_unitario||0),ingresa_bodega:!!l.ingresa_bodega,bodega_destino_id:str(l.bodega_destino_id||''),exenta:!!l.exenta}))});
-  const[err,setErr]=useState('');const[saving,setSaving]=useState(false);const[showCalcOC,setShowCalcOC]=useState(false);const[showOCR,setShowOCR]=useState(false);const[ocrLoading,setOcrLoading]=useState(false);const[ocrMsg,setOcrMsg]=useState('');
+  const blank={empresa_id:'',proveedor_id:'',fecha_emision:TODAY,solicitante:'',retira:'',condicion_id:'',impuesto_adicional:'0',imp_esp_fijo:'0',imp_esp_variable:'0',mepco_vigencia:'',mepco_utm:'',observaciones:'',tipo_doc_id:'',numero_documento:'',fecha_documento:'',es_activo_fijo:false,af_vida_util_meses:'60',af_valor_residual:'0',af_descripcion:'',es_diferido:false,dif_desde:'',dif_hasta:'',dif_descripcion:'',lineas:[{descripcion:'',prod_id:'',subcat_id:'',faena_id:'',eq_id:'',cantidad:'1',precio_unitario:'0',ingresa_bodega:false,bodega_destino_id:'',exenta:false}]};
+  const[form,setForm]=useState(isNew?blank:{empresa_id:str(p.oc.empresa_id||''),proveedor_id:str(p.oc.proveedor_id||''),fecha_emision:dateToInput(p.oc.fecha_emision)||TODAY,solicitante:p.oc.solicitante||'',retira:p.oc.retira||'',condicion_id:str(p.oc.condicion_id||''),impuesto_adicional:str(p.oc.impuesto_adicional||0),imp_esp_fijo:str(p.oc.imp_esp_fijo||0),imp_esp_variable:str(p.oc.imp_esp_variable||0),mepco_vigencia:p.oc.mepco_vigencia?String(p.oc.mepco_vigencia).slice(0,10):'',mepco_utm:str(p.oc.mepco_utm||''),observaciones:p.oc.observaciones||'',tipo_doc_id:str(p.oc.tipo_doc_id||''),numero_documento:str(p.oc.numero_documento||''),fecha_documento:dateToInput(p.oc.fecha_documento),es_activo_fijo:!!p.oc.es_activo_fijo,af_vida_util_meses:str(p.oc.af_vida_util_meses||60),af_valor_residual:str(p.oc.af_valor_residual||0),af_descripcion:p.oc.af_descripcion||'',es_diferido:!!p.oc.es_diferido,dif_desde:dateToInput(p.oc.dif_desde)||'',dif_hasta:dateToInput(p.oc.dif_hasta)||'',dif_descripcion:p.oc.dif_descripcion||'',lineas:(p.oc.lineas||[]).map(l=>({descripcion:l.descripcion||'',prod_id:str(l.producto_id||''),subcat_id:str(l.subcategoria_id||''),faena_id:str(l.faena_id||''),eq_id:str(l.equipo_id||''),cantidad:str(l.cantidad||1),precio_unitario:str(l.precio_unitario||0),ingresa_bodega:!!l.ingresa_bodega,bodega_destino_id:str(l.bodega_destino_id||''),exenta:!!l.exenta,comb_tipo_id:str(l.comb_tipo_id||''),iec_fijo_lt:l.iec_fijo_lt==null?'':String(l.iec_fijo_lt),iec_var_lt:l.iec_var_lt==null?'':String(l.iec_var_lt)}))});
+  const[err,setErr]=useState('');const[saving,setSaving]=useState(false);const[showCalcOC,setShowCalcOC]=useState(false);const[combTiposOC,setCombTiposOC]=useState([]);useEffect(function(){api('/comb/tipos','GET',null,p.tok).then(function(r){setCombTiposOC(Array.isArray(r)?r:[]);}).catch(function(){});},[]);const[showOCR,setShowOCR]=useState(false);const[ocrLoading,setOcrLoading]=useState(false);const[ocrMsg,setOcrMsg]=useState('');
   const[preciosIVA,setPreciosIVA]=useState(false);
   const[importProvData,setImportProvData]=useState(null);
   const[extraProvs,setExtraProvs]=useState([]);
@@ -10441,7 +10509,7 @@ function OCFormModal(p){
   // Safety: if form.lineas is empty but p.oc has lineas, reload them
   useEffect(function(){
     if(!isNew && p.oc.lineas && p.oc.lineas.length > 0 && form.lineas.length === 0){
-      setForm(function(f){return Object.assign({},f,{lineas:p.oc.lineas.map(function(l){return{descripcion:l.descripcion||'',prod_id:str(l.producto_id||''),subcat_id:str(l.subcategoria_id||''),faena_id:str(l.faena_id||''),eq_id:str(l.equipo_id||''),cantidad:str(l.cantidad||1),precio_unitario:str(l.precio_unitario||0),ingresa_bodega:!!l.ingresa_bodega,bodega_destino_id:str(l.bodega_destino_id||''),exenta:!!l.exenta};})});});
+      setForm(function(f){return Object.assign({},f,{lineas:p.oc.lineas.map(function(l){return{descripcion:l.descripcion||'',prod_id:str(l.producto_id||''),subcat_id:str(l.subcategoria_id||''),faena_id:str(l.faena_id||''),eq_id:str(l.equipo_id||''),cantidad:str(l.cantidad||1),precio_unitario:str(l.precio_unitario||0),ingresa_bodega:!!l.ingresa_bodega,bodega_destino_id:str(l.bodega_destino_id||''),exenta:!!l.exenta,comb_tipo_id:str(l.comb_tipo_id||''),iec_fijo_lt:l.iec_fijo_lt==null?'':String(l.iec_fijo_lt),iec_var_lt:l.iec_var_lt==null?'':String(l.iec_var_lt)};})});});
     }
   },[p.oc]);
   function sf(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
@@ -10453,14 +10521,18 @@ function OCFormModal(p){
   const netoExento=form.lineas.filter(function(l){return !!l.exenta;}).reduce(function(s,l){return s+(parseFloat(l.cantidad)||0)*(parseFloat(l.precio_unitario)||0);},0);
   const neto=netoAfecto+netoExento;
   const iva=Math.round(netoAfecto*0.19);
-  const imp=parseFloat(form.impuesto_adicional)||0;
+  // Impuesto específico (2026-10-22): si alguna línea trae tasa MEPCO, fijo y variable se calculan por litros; si no, se usan los campos del encabezado
+  const lineasConTasa=form.lineas.some(function(l){return l.iec_fijo_lt!==''&&l.iec_fijo_lt!=null&&l.iec_fijo_lt!==undefined;});
+  const impFijo=lineasConTasa?Math.round(form.lineas.reduce(function(s,l){return s+(parseFloat(l.cantidad)||0)*(parseFloat(l.iec_fijo_lt)||0);},0)):(parseFloat(form.imp_esp_fijo)||0);
+  const impVar=lineasConTasa?Math.round(form.lineas.reduce(function(s,l){return s+(parseFloat(l.cantidad)||0)*(parseFloat(l.iec_var_lt)||0);},0)):(parseFloat(form.imp_esp_variable)||0);
+  const imp=(impFijo||impVar)?impFijo+impVar:(parseFloat(form.impuesto_adicional)||0);
   const total=neto+iva+imp;
   function save(){
     setErr('');
     if(!form.proveedor_id||!form.fecha_emision){setErr('Proveedor y fecha son obligatorios');return;}
     if(!form.lineas.length){setErr('Debe ingresar al menos una linea');return;}
     setSaving(true);
-    const body={empresa_id:form.empresa_id||null,proveedor_id:parseInt(form.proveedor_id),fecha_emision:form.fecha_emision,solicitante:form.solicitante||null,retira:form.retira||null,condicion_id:form.condicion_id||null,impuesto_adicional:imp,observaciones:form.observaciones||null,tipo_doc_id:form.tipo_doc_id||null,numero_documento:form.numero_documento||null,fecha_documento:form.fecha_documento||null,es_activo_fijo:!!form.es_activo_fijo,af_vida_util_meses:form.af_vida_util_meses||60,af_valor_residual:form.af_valor_residual||0,af_descripcion:form.af_descripcion||null,es_diferido:!!form.es_diferido,dif_desde:form.es_diferido?(form.dif_desde||null):null,dif_hasta:form.es_diferido?(form.dif_hasta||null):null,dif_descripcion:form.es_diferido?(form.dif_descripcion||null):null,lineas:form.lineas.map(function(l){var pu=parseFloat(l.precio_unitario)||0;if(preciosIVA&&!l.exenta)pu=pu/1.19;return{descripcion:l.descripcion||null,producto_id:l.prod_id||null,subcategoria_id:l.subcat_id||null,faena_id:l.faena_id||null,equipo_id:l.eq_id||null,cantidad:parseFloat(l.cantidad)||0,precio_unitario:pu,ingresa_bodega:l.ingresa_bodega||false,bodega_destino_id:l.bodega_destino_id||null,exenta:!!l.exenta};})};
+    const body={empresa_id:form.empresa_id||null,proveedor_id:parseInt(form.proveedor_id),fecha_emision:form.fecha_emision,solicitante:form.solicitante||null,retira:form.retira||null,condicion_id:form.condicion_id||null,impuesto_adicional:imp,imp_esp_fijo:impFijo,imp_esp_variable:impVar,mepco_vigencia:form.mepco_vigencia||null,mepco_utm:form.mepco_utm||null,observaciones:form.observaciones||null,tipo_doc_id:form.tipo_doc_id||null,numero_documento:form.numero_documento||null,fecha_documento:form.fecha_documento||null,es_activo_fijo:!!form.es_activo_fijo,af_vida_util_meses:form.af_vida_util_meses||60,af_valor_residual:form.af_valor_residual||0,af_descripcion:form.af_descripcion||null,es_diferido:!!form.es_diferido,dif_desde:form.es_diferido?(form.dif_desde||null):null,dif_hasta:form.es_diferido?(form.dif_hasta||null):null,dif_descripcion:form.es_diferido?(form.dif_descripcion||null):null,lineas:form.lineas.map(function(l){var pu=parseFloat(l.precio_unitario)||0;if(preciosIVA&&!l.exenta)pu=pu/1.19;return{descripcion:l.descripcion||null,producto_id:l.prod_id||null,subcategoria_id:l.subcat_id||null,faena_id:l.faena_id||null,equipo_id:l.eq_id||null,cantidad:parseFloat(l.cantidad)||0,precio_unitario:pu,ingresa_bodega:l.ingresa_bodega||false,bodega_destino_id:l.bodega_destino_id||null,exenta:!!l.exenta,comb_tipo_id:l.comb_tipo_id||null,iec_fijo_lt:(l.iec_fijo_lt===''||l.iec_fijo_lt==null)?null:parseFloat(l.iec_fijo_lt),iec_var_lt:(l.iec_var_lt===''||l.iec_var_lt==null)?null:parseFloat(l.iec_var_lt)};})};
     const method=isNew?'POST':'PUT';
     const path=isNew?'/ordenes-compra':'/ordenes-compra/'+p.oc.oc_id;
     api(path,method,body,p.tok).then(function(){p.onSave();}).catch(function(ex){setErr(ex.message);}).finally(function(){setSaving(false);});
@@ -10505,7 +10577,7 @@ function OCFormModal(p){
           h(FR,{label:'Solicitante'},h(Inp,{value:form.solicitante,onChange:v=>sf('solicitante',v),ph:'Quien solicita'})),
           h(FR,{label:'Quien retira'},h(Inp,{value:form.retira,onChange:v=>sf('retira',v),ph:'Quien retira el pedido'})),
           h(FR,{label:'Condicion de pago'},h(Sel,{value:form.condicion_id,onChange:v=>sf('condicion_id',v)},h('option',{value:''},'Sin especificar'),conds.filter(c=>c.activo).map(c=>h('option',{key:c.condicion_id,value:c.condicion_id},c.nombre)))),
-          h(FR,{label:'Impuesto adicional $'},h(Inp,{value:form.impuesto_adicional,onChange:v=>sf('impuesto_adicional',v),type:'number',min:0})),
+          h(FR,{label:'Imp. específico fijo $'+(lineasConTasa?' (por litros)':'')},h(Inp,{value:lineasConTasa?String(impFijo):form.imp_esp_fijo,onChange:v=>{if(!lineasConTasa)sf('imp_esp_fijo',v);},type:'number'})),h(FR,{label:'Imp. específico variable $ (MEPCO)'+(form.mepco_vigencia?' · semana '+form.mepco_vigencia.slice(8,10)+'-'+form.mepco_vigencia.slice(5,7):'')},h(Inp,{value:lineasConTasa?String(impVar):form.imp_esp_variable,onChange:v=>{if(!lineasConTasa)sf('imp_esp_variable',v);},type:'number'})),(parseFloat(form.impuesto_adicional)>0&&!impFijo&&!impVar)?h(FR,{label:'Impuesto adicional (OC antigua) $'},h(Inp,{value:form.impuesto_adicional,onChange:v=>sf('impuesto_adicional',v),type:'number',min:0})):null,
           h(FR,{label:'Observaciones',style:{gridColumn:'span 2'}},h(Inp,{value:form.observaciones,onChange:v=>sf('observaciones',v),ph:'Notas internas...'}))
         ),
         // ── Sección: Activo Fijo (capitalización + depreciación) ──
@@ -10637,7 +10709,7 @@ function OCFormModal(p){
           netoExento>0&&h('div',{className:'total-row'},h('span',{style:{color:'#06B6D4'}},h('em',null,'Neto exento:')),h('span',{className:'mono',style:{color:'#06B6D4'}},CLP(netoExento))),
           h('div',{className:'total-row'},h('span',null,'Neto:'),h('span',{className:'mono'},CLP(neto))),
           h('div',{className:'total-row'},h('span',null,'IVA 19%'+(netoExento>0?' (sobre afecto):':':')),h('span',{className:'mono'},CLP(iva))),
-          h('div',{className:'total-row'},h('span',null,'Impuesto adicional:'),h('span',{className:'mono'},CLP(imp))),
+          (impFijo||impVar)?h('div',{className:'total-row'},h('span',null,'Imp. específico fijo:'),h('span',{className:'mono'},CLP(impFijo))):null,(impFijo||impVar)?h('div',{className:'total-row'},h('span',null,'Imp. específico variable (MEPCO):'),h('span',{className:'mono',style:impVar<0?{color:'#DC2626'}:null},CLP(impVar))):h('div',{className:'total-row'},h('span',null,'Impuesto adicional:'),h('span',{className:'mono'},CLP(imp))),
           h('div',{className:'total-row total-final'},h('span',null,'TOTAL:'),h('span',{className:'mono'},CLP(total)))
         )
       ),
@@ -10669,13 +10741,13 @@ function OCFormModal(p){
           setShowOCR(false);
         },onMsg:function(m){setOcrMsg(m);}}),
       showCalcOC&&h('div',{style:{background:'#FFFBEB',border:'2px solid #FDE68A',borderRadius:8,padding:'16px',marginBottom:12}},
-        h(CalcCombustibleInline,{onUsar:function(data){
-          sf('impuesto_adicional',String(data.ie));
+        h(CalcCombustibleMepco,{tok:p.tok,fecha:form.fecha_documento||form.fecha_emision,combTipos:combTiposOC,onUsar:function(data){
           setForm(function(f){
             var lineas=f.lineas.slice();
-            if(lineas.length===0)lineas=[{descripcion:'',prod_id:'',subcat_id:'',faena_id:'',eq_id:'',cantidad:'1',precio_unitario:'0',ingresa_bodega:false,bodega_destino_id:'',exenta:false}];
-            lineas[0]=Object.assign({},lineas[0],{descripcion:lineas[0].descripcion||data.tipoComb,cantidad:String(data.litros),precio_unitario:String(data.netoPorLitro)});
-            return Object.assign({},f,{lineas:lineas});
+            var nueva={descripcion:data.nombre,prod_id:'',subcat_id:'',faena_id:'',eq_id:'',cantidad:String(data.litros),precio_unitario:String(preciosIVA?Math.round(data.netoPorLitro*1.19*100)/100:data.netoPorLitro),ingresa_bodega:false,bodega_destino_id:'',exenta:false,comb_tipo_id:String(data.tipo_id),iec_fijo_lt:String(data.fijo_lt),iec_var_lt:String(data.variable_lt)};
+            var vacia=lineas.findIndex(function(l){return !(parseFloat(l.precio_unitario)>0)&&!(l.descripcion||'').trim();});
+            if(vacia>=0)lineas[vacia]=Object.assign({},lineas[vacia],nueva);else lineas.push(nueva);
+            return Object.assign({},f,{lineas:lineas,mepco_vigencia:data.vigencia,mepco_utm:String(data.utm)});
           });
         }})
       ),
@@ -11729,6 +11801,45 @@ function DonutChart(p){
   );
 }
 
+// ── Impuesto específico del diésel: informe mensual para el F29 (2026-10-22) ──
+// Ley 18.502 art. 7: proporción de litros maquinaria / vehículos de carretera sobre el impuesto de las compras del mes.
+function CombIecView(p){
+  var hoy=new Date();
+  const[anio,setAnio]=useState(hoy.getFullYear());const[mes,setMes]=useState(hoy.getMonth()+1);const[emp,setEmp]=useState('');
+  const[data,setData]=useState(null);const[err,setErr]=useState('');const[cargando,setCargando]=useState(false);
+  function cargar(){setCargando(true);setErr('');api('/comb/iec-mensual?anio='+anio+'&mes='+mes+(emp?'&empresa_id='+emp:''),'GET',null,p.tok).then(setData).catch(function(e){setErr(e.message);}).finally(function(){setCargando(false);});}
+  useEffect(cargar,[anio,mes,emp]);
+  function toggle(e){api('/comb/iec/equipo/'+e.equipo_id,'PATCH',{carretera:!e.carretera},p.tok).then(cargar).catch(function(x){setErr(x.message);});}
+  var T=data&&data.totales; var fmtL=function(n){return (n||0).toLocaleString('es-CL',{maximumFractionDigits:0});};
+  var pct=function(x){return x===null||x===undefined?'—':(x*100).toFixed(1).replace('.',',')+' %';};
+  var card=function(l,v,c){return h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:8,padding:'10px 12px'}},h('div',{style:{fontSize:11,color:'#64748B'}},l),h('div',{className:'mono',style:{fontSize:18,fontWeight:700,color:c||'#1E293B'}},v));};
+  var thS={textAlign:'left',padding:'5px 6px',background:'#F1F5F9',fontSize:11,color:'#475569'};var thR=Object.assign({},thS,{textAlign:'right'});var tdS={padding:'5px 6px',borderBottom:'1px solid #F1F5F9',fontSize:12};var tdR=Object.assign({},tdS,{textAlign:'right'});
+  var MESES=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  var empresas=(p.m&&p.m.empresas||[]).filter(function(e){return e.activo;});
+  return h('div',null,
+    h('div',{className:'al al-i',style:{marginBottom:12,fontSize:12}},'Ley 18.502, art. 7: el impuesto específico del diésel usado en maquinaria (no transita por carretera) se recupera en el F29; si la tasa es negativa, se paga. Lo consumido por camionetas, camiones y furgones no se recupera y queda como costo. La proporción sale de los litros distribuidos en el mes; las cargas directas en estación (OC con equipo, sin estanque) también cuentan.'),
+    h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end',marginBottom:12}},
+      h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block'}},'Mes'),h('select',{value:mes,onChange:function(e){setMes(parseInt(e.target.value));},style:CM_INP},MESES.map(function(m,i){return h('option',{key:i,value:i+1},m);}))),
+      h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block'}},'Año'),h('input',{type:'number',value:anio,onChange:function(e){setAnio(parseInt(e.target.value)||anio);},style:Object.assign({},CM_INP,{width:90})})),
+      h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block'}},'Empresa'),h('select',{value:emp,onChange:function(e){setEmp(e.target.value);},style:CM_INP},h('option',{value:''},'Todas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
+      h(Btn,{sm:true,onClick:cargar,disabled:cargando},cargando?'Cargando...':'↻ Actualizar')),
+    err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+    T&&h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(170px,1fr))',gap:8,marginBottom:14}},
+      card('Diésel comprado (L)',fmtL(T.litros)),card('Imp. específico fijo',CLP(Math.round(T.iec_fijo))),card('Imp. específico variable',CLP(Math.round(T.iec_var)),T.iec_var<0?'#B91C1C':null),card('Impuesto total del mes',CLP(Math.round(T.iec_total)),T.iec_total<0?'#B91C1C':null),
+      card('Litros a maquinaria',fmtL(T.litros_maquinaria)),card('Litros a vehículos de carretera',fmtL(T.litros_carretera)),card('Proporción maquinaria',pct(T.proporcion)),
+      card(T.iec_total<0?'A pagar en el F29':'Crédito en el F29',T.recuperable===null?'—':CLP(Math.abs(T.recuperable)),T.iec_total<0?'#B91C1C':'#166534'),card('Costo vehículos de carretera',T.costo_carretera===null?'—':CLP(T.costo_carretera))),
+    T&&T.proporcion===null&&h('div',{className:'al al-w',style:{marginBottom:10}},'No hay distribuciones ni cargas de diésel registradas en el mes: la proporción no se puede calcular.'),
+    T&&T.sin_tasa>0&&h('div',{className:'al al-w',style:{marginBottom:10}},T.sin_tasa+' OC del mes no traen la tasa MEPCO por línea (se crearon antes de este cambio o sin la calculadora): su impuesto no está en el total.'),
+    data&&h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12}},
+      h('div',{className:'card',style:{padding:0,overflow:'auto'}},h('div',{style:{padding:'8px 10px',fontWeight:700,fontSize:12,borderBottom:'1px solid #E2E8F0'}},'Compras de diésel del mes ('+data.compras.length+')'),
+        h('table',{style:{width:'100%',borderCollapse:'collapse'}},h('thead',null,h('tr',null,h('th',{style:thS},'Fecha'),h('th',{style:thS},'OC / Doc.'),h('th',{style:thS},'Proveedor'),h('th',{style:thR},'Litros'),h('th',{style:thR},'Imp. fijo'),h('th',{style:thR},'Imp. variable'),h('th',{style:thS},'Destino'))),
+          h('tbody',null,data.compras.map(function(r){return h('tr',{key:r.oc_id},h('td',{style:tdS},fmtD(r.fecha)),h('td',{style:tdS},r.numero_oc+(r.numero_documento?' · '+r.numero_documento:'')),h('td',{style:tdS},r.proveedor||'—'),h('td',{style:tdR,className:'mono'},fmtL(r.litros)),h('td',{style:tdR,className:'mono'},r.sin_tasa?'sin tasa':CLP(Math.round(r.iec_fijo))),h('td',{style:Object.assign({},tdR,{color:r.iec_var<0?'#B91C1C':'#1E293B'}),className:'mono'},r.sin_tasa?'—':CLP(Math.round(r.iec_var))),h('td',{style:tdS},r.a_estanque?'Estanque':'Directo'));}),
+            !data.compras.length&&h('tr',null,h('td',{colSpan:7,style:Object.assign({},tdS,{color:'#94A3B8',textAlign:'center'})},'Sin compras de diésel en el mes'))))),
+      h('div',{className:'card',style:{padding:0,overflow:'auto'}},h('div',{style:{padding:'8px 10px',fontWeight:700,fontSize:12,borderBottom:'1px solid #E2E8F0'}},'Consumo por equipo ('+data.equipos.length+') — marque los que transitan por carretera'),
+        h('table',{style:{width:'100%',borderCollapse:'collapse'}},h('thead',null,h('tr',null,h('th',{style:thS},'Carretera'),h('th',{style:thS},'Equipo'),h('th',{style:thS},'Tipo'),h('th',{style:thR},'Litros'),h('th',{style:thR},'Estanque'),h('th',{style:thR},'Estación'))),
+          h('tbody',null,data.equipos.map(function(e){return h('tr',{key:e.equipo_id,style:{background:e.carretera?'#FFF7ED':'transparent'}},h('td',{style:tdS},h('input',{type:'checkbox',checked:!!e.carretera,onChange:function(){toggle(e);},title:'Transita por carretera: no recupera el impuesto'})),h('td',{style:tdS},e.codigo+' · '+e.nombre),h('td',{style:tdS},e.tipo||'—'),h('td',{style:tdR,className:'mono'},fmtL(e.litros)),h('td',{style:tdR,className:'mono'},fmtL(e.estanque)),h('td',{style:tdR,className:'mono'},fmtL(e.estacion)));}),
+            !data.equipos.length&&h('tr',null,h('td',{colSpan:6,style:Object.assign({},tdS,{color:'#94A3B8',textAlign:'center'})},'Sin consumo de diésel en el mes')))))));
+}
 function CombPanel(p){
   var TODAY=new Date().toISOString().split('T')[0];
   var LAST30=new Date(Date.now()-30*86400000).toISOString().split('T')[0];
@@ -27450,7 +27561,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={inicio:'Inicio — Avisos y pendientes',dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','calendario':'Calendario — Tareas y recordatorios','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','oc-repuestos':'Duración de Repuestos — vida útil y garantía contra el uso real','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={inicio:'Inicio — Avisos y pendientes',dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','calendario':'Calendario — Tareas y recordatorios','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','comb-iec':'Combustibles — Impuesto específico del diésel (F29)','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','oc-repuestos':'Duración de Repuestos — vida útil y garantía contra el uso real','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -28101,7 +28212,7 @@ function App(){
   // Mapa view → módulo requerido. Si la view no está aquí, no requiere módulo.
   var VIEW_MOD={
     'ordenes':'ordenes','oc-guias':'ordenes','oc-repuestos':'ordenes','dte-recibidos':'ordenes','bandeja-dte-oc':'ordenes','compra-auditoria':'ordenes','oc-libro-productos':'ordenes',
-    'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-auditoria':'combustibles','comb-rendimientos':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
+    'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-auditoria':'combustibles','comb-rendimientos':'combustibles','comb-iec':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
     'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-auditoria':'inventario','inv-reportes':'inventario',
     'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion','mant-planes':'mantencion','mant-vencimientos':'mantencion','mant-docs':'mantencion','mant-programacion':'mantencion','mant-avisos':'mantencion',
     'rendiciones':'rendiciones',
@@ -28270,6 +28381,7 @@ function App(){
           navI('comb-distribuciones','↑','Distribuciones',true),
           navI('comb-auditoria','🔍','Auditoría vs Terreno',true),
           navI('comb-rendimientos','📊','Rendimientos',true),
+          navI('comb-iec','⚖','Imp. específico diésel',true),
           navI('comb-reportes','◈','Reportes',true),
           navI('comb-kardex','≡','Kardex Estanque',true)
         ),
@@ -28396,6 +28508,7 @@ function App(){
           view==='comb-distribuciones'&&h(CombDistribuciones,{tok,m}),
           view==='comb-auditoria'&&h(CombAuditoriaView,{tok,m,user}),
           view==='comb-rendimientos'&&h(CombRendimientosView,{tok,m}),
+          view==='comb-iec'&&h(CombIecView,{tok,m}),
           view==='comb-reportes'&&h(CombReportes,{tok,m}),
           view==='comb-estanques'&&h(CombEstanques,{tok,m}),
           view==='mant-panel'&&h(MantPanel,{tok,m,onNav:setView}),
