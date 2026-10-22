@@ -628,7 +628,7 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
         <div class="sc"><div class="sc-label">M&sup3; Producido</div><div class="sc-val" id="kpi-cumpl-m3">&#8212;</div><div class="sc-sub">real per&iacute;odo</div></div>
         <div class="sc"><div class="sc-label">M&sup3; Contratado</div><div class="sc-val" id="kpi-cumpl-prog">&#8212;</div><div class="sc-sub">seg. VMA Tabla Velocidad</div></div>
         <div class="sc"><div class="sc-label">Diferencia</div><div class="sc-val" id="kpi-cumpl-dif">&#8212;</div><div class="sc-sub">m&sup3; brecha</div></div>
-        <div class="sc"><div class="sc-label">P&eacute;rdida Valorizada</div><div class="sc-val red" id="kpi-cumpl-val">&#8212;</div><div class="sc-sub">$ seg. tarifa VMA</div></div>
+        <div class="sc"><div class="sc-label">Brecha Valorizada</div><div class="sc-val red" id="kpi-cumpl-val">&#8212;</div><div class="sc-sub">brecha m&sup3; &times; tarifa VMA de cada faena</div></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 240px;gap:10px;margin-bottom:10px;">
         <div class="card">
@@ -657,7 +657,7 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
             <span>&#128274;</span> Ver tarifa $/m³
           </button>
         </div>
-        <table><thead><tr><th>Mes</th><th>M&sup3; Real</th><th>M&sup3; Contratado</th><th>Brecha m&sup3;</th><th class="col-tarifa" style="display:none;">Tarifa $/m&sup3;</th><th>P&eacute;rdida Valorizada $</th><th>% Cumpl.</th><th>Meta</th><th>Estado</th></tr></thead>
+        <table><thead><tr><th>Mes</th><th>M&sup3; Real</th><th>M&sup3; Contratado</th><th>Brecha m&sup3;</th><th class="col-tarifa" style="display:none;">Tarifa $/m&sup3;</th><th title="Brecha m&sup3; de cada faena × su tarifa VMA. Rojo = pérdida, verde = sobre el contrato">Brecha Valorizada $</th><th>% Cumpl.</th><th>Meta</th><th>Estado</th></tr></thead>
         <tbody id="cumpl-tbody"></tbody></table>
       </div>
     </div>
@@ -6516,30 +6516,39 @@ function applyFilters() {
     return ref > 0 ? +((m3c(m)/ref)*100).toFixed(1) : 0; 
   });
 
-  // Calcular pérdida valorizada total del período
-  var totalValorizado = 0;
-  months.forEach(function(m) {
-    var difMes = m3c(m) - getRef(faenaVal, m.anio, m.mes);
-    if (difMes < 0) {
-      if (faenaVal === 'all') {
-        ['Mec 2','Mec 3','Mec 4','Mec 5'].forEach(function(f) {
-          var fm = RAW.filter(function(r){ return r.ANIO===m.anio && r.MES===m.mes && r.FAENA===f; });
-          if (!fm.length) return;
-          var vma = fm.reduce(function(a,r){return a+(r.VMA||0);},0)/fm.length;
-          var esp = especieCosechada(f, m.anio, m.mes) || FAENA_ESPECIE_DEFAULT[f] || 'Pino';
-          var refF = getVolContratado(f, vma, esp) * factorInicioFaena(f, m.anio, m.mes);
-          var m3F = fm.reduce(function(a,r){return a+(r.M3||0);},0); m3F += invF(f, m.anio, m.mes, m3F);
-          var difF = m3F - refF;
-          if (difF < 0) totalValorizado += difF * getTarifa(f, vma, esp, m.anio, m.mes);
-        });
-      } else {
-        var match = RAW.filter(function(r){ return r.ANIO===m.anio && r.MES===m.mes && r.FAENA===faenaVal; });
-        var vma = match.length > 0 ? match.reduce(function(a,r){return a+(r.VMA||0);},0)/match.length : 0;
-        var esp = getEspecieSeleccionada(faenaVal, m.anio, m.mes);
-        totalValorizado += difMes * getTarifa(faenaVal, vma, esp, m.anio, m.mes);
-      }
-    }
-  });
+  /* Valorización del mes (22-10-2026, Gustavo: "si cumple igual tiene déficit" y "valores demasiado grandes").
+     Antes, con todas las faenas: (1) solo sumaba las faenas con brecha negativa, sin descontar las que se
+     pasaron, y (2) en el mes en curso usaba el contratado del mes COMPLETO (sin el prorrateo al día de ayer
+     que sí usa la columna M³ Contratado) -> octubre daba ~45.000 $/m³. Ahora cada faena vale
+     (su m³ - su contratado prorrateado) × su tarifa, con signo: negativo = pérdida, positivo = ganancia.
+     Así el valor del mes es la brecha de la tabla por la tarifa, y si la brecha es positiva no hay pérdida. */
+  var valorizaMes = function(m){
+    var fac = getProrrateoFactor(m.anio, m.mes);
+    var lista = faenaVal === 'all' ? ['Mec 2','Mec 3','Mec 4','Mec 5'] : [faenaVal];
+    var val = 0, difT = 0, det = [], filas = [];
+    lista.forEach(function(f){
+      var fm = RAW.filter(function(r){ return r.ANIO===m.anio && r.MES===m.mes && r.FAENA===f; });
+      if (!fm.length) return;
+      var vma = fm.reduce(function(a,r){return a+(r.VMA||0);},0)/fm.length;
+      var esp = faenaVal === 'all' ? (especieCosechada(f, m.anio, m.mes) || FAENA_ESPECIE_DEFAULT[f] || 'Pino') : getEspecieSeleccionada(f, m.anio, m.mes);
+      var refF = getVolContratado(f, vma, esp) * fac * factorInicioFaena(f, m.anio, m.mes);
+      var m3F = fm.reduce(function(a,r){return a+(r.M3||0);},0); m3F += invF(f, m.anio, m.mes, m3F);
+      var tf = getTarifa(f, vma, esp, m.anio, m.mes), vf = (m3F - refF) * tf;
+      var m3Base = fm.reduce(function(a,r){return a+(r.M3||0);},0);
+      filas.push({f: f, esp: esp, vma: vma, m3: m3Base, inv: m3F - m3Base, volMes: getVolContratado(f, vma, esp), fac: fac,
+                  fi: factorInicioFaena(f, m.anio, m.mes), ref: refF, dif: m3F - refF, tarifa: tf, val: vf});
+      val += vf; difT += m3F - refF;
+      det.push(f + ': ' + (m3F >= refF ? '+' : '') + fmt(m3F - refF) + ' m³ × $' + fmt(tf) + ' = ' + (vf < 0 ? '-$' : '+$') + fmt(Math.abs(vf)));
+    });
+    /* con varias faenas la "tarifa" del mes no es una sola (Mec 4 ~30.000 $/m³, Mec 3 ~6.600): no se muestra
+       un promedio engañoso; el detalle por faena va en el globo del valor */
+    var r = {val: val, tarifa: lista.length === 1 && difT ? Math.abs(val / difT) : 0, det: det};
+    (window.CUMPL_VAL = window.CUMPL_VAL || {})[m.anio * 100 + m.mes] = {anio: m.anio, mes: m.mes, filas: filas, val: val, dif: difT};
+    return r;
+  };
+  var fmtVal = function(v){ return v < 0 ? '$ -' + fmt(Math.abs(v)) : v > 0 ? '+$ ' + fmt(v) : '$ 0'; };
+  window.CUMPL_VAL = {};
+  var totalValorizado = months.reduce(function(s, m){ return s + valorizaMes(m).val; }, 0);
 
   var cpColor = cumplPct >= 0.95 ? '#27ae60' : '#c0392b';
   document.getElementById('kpi-cumpl-pct').textContent = pct(cumplPct);
@@ -6552,7 +6561,7 @@ function applyFilters() {
   document.getElementById('kpi-cumpl-dif').style.color = dif >= 0 ? '#27ae60' : '#c0392b';
   var valEl = document.getElementById('kpi-cumpl-val');
   if (valEl) {
-    valEl.textContent = totalValorizado < 0 ? '$ -' + fmt(Math.abs(totalValorizado)) : '$ 0';
+    valEl.textContent = fmtVal(totalValorizado);
     valEl.style.color = totalValorizado < 0 ? '#c0392b' : '#27ae60';
     valEl.style.fontSize = '14px';
   }
@@ -6587,29 +6596,9 @@ function applyFilters() {
     var ok = cp >= 0.95;
     var difMes = m3c(m) - ref;
 
-    // Calcular tarifa y pérdida valorizada del mes
-    var tarifa = 0;
-    var valMes = 0;
-    if (faenaVal === 'all') {
-      ['Mec 2','Mec 3','Mec 4','Mec 5'].forEach(function(f) {
-        var fm = RAW.filter(function(r){ return r.ANIO===m.anio && r.MES===m.mes && r.FAENA===f; });
-        if (!fm.length) return;
-        var vmaF = fm.reduce(function(a,r){return a+(r.VMA||0);},0)/fm.length;
-        var espF = especieCosechada(f, m.anio, m.mes) || FAENA_ESPECIE_DEFAULT[f] || 'Pino';
-        var refF = getVolContratado(f, vmaF, espF) * factorInicioFaena(f, m.anio, m.mes);
-        var m3F = fm.reduce(function(a,r){return a+(r.M3||0);},0); m3F += invF(f, m.anio, m.mes, m3F);
-        var difF = m3F - refF;
-        if (difF < 0) valMes += difF * getTarifa(f, vmaF, espF, m.anio, m.mes);
-      });
-      tarifa = valMes !== 0 && difMes < 0 ? Math.abs(valMes / difMes) : 0;
-    } else {
-      var match2 = RAW.filter(function(r){ return r.ANIO===m.anio && r.MES===m.mes && r.FAENA===faenaVal; });
-      var vmaM = match2.length > 0 ? match2.reduce(function(a,r){return a+(r.VMA||0);},0)/match2.length : 0;
-      var espM = getEspecieSeleccionada(faenaVal, m.anio, m.mes);
-      tarifa = getTarifa(faenaVal, vmaM, espM, m.anio, m.mes);
-      valMes = difMes < 0 ? difMes * tarifa : 0;
-    }
-    if (valMes < 0) totalValFilas += valMes;
+    // Valorización del mes: la misma de arriba (valorizaMes), con signo
+    var vm = valorizaMes(m), tarifa = vm.tarifa, valMes = vm.val, valDet = vm.det.join('\n');
+    totalValFilas += valMes;
 
     var factor = getProrrateoFactor(m.anio, m.mes);
     var esMesActual = factor < 1;
@@ -6620,7 +6609,9 @@ function applyFilters() {
       ? fmt(ref) + ' <span style="font-size:8px;color:#e67e22;font-weight:600">(al día '+diaAyer+'/'+diasMes+')</span>'
       : fmt(ref);
 
-    var valStr = valMes < 0 ? '<span class="red">$ -' + fmt(Math.abs(valMes)) + '</span>' : '<span style="color:#27ae60">$ 0</span>';
+    var valStr = '<span style="color:' + (valMes < 0 ? '#c0392b' : '#27ae60') + ';cursor:pointer;border-bottom:1px dotted #999;" title="Clic: de dónde sale este valor\n' + valDet + '" ' +
+      'onclick="cumplValAbrir(' + (m.anio * 100 + m.mes) + ')">' + fmtVal(valMes) + '</span>' +
+      (vm.det.length > 1 && (valMes < 0) !== (difMes < 0) && difMes !== 0 ? '<div style="font-size:8px;color:#888;">ver detalle por faena</div>' : '');
     var tarifaStr = tarifa > 0 ? '$' + fmt(tarifa) : '—';
     var tarifaDisplay = tarifaVisible ? '' : 'display:none;';
 
@@ -6637,7 +6628,7 @@ function applyFilters() {
   }).join('') + '<tr class="tr"><td>TOTAL</td><td>'+fmt(totM3c)+(totInv > 0 ? '<div style="font-size:8.5px;color:#1a6b3a;">incl. +'+fmt(totInv)+' inv.</div>' : '')+'</td><td>'+fmt(refTotal)+'</td>'
     +'<td>'+(dif>=0?'+':'')+fmt(dif)+'</td>'
     +'<td class="col-tarifa" style="'+(tarifaVisible?'':'display:none;')+'">&mdash;</td>'
-    +'<td>$ -'+fmt(Math.abs(totalValFilas))+'</td>'
+    +'<td><span style="cursor:pointer;border-bottom:1px dotted #fff;" title="Clic: detalle del total por mes y faena" onclick="cumplValAbrir(\'tot\')">'+fmtVal(totalValFilas)+'</span></td>'
     +'<td>'+pct(cumplPct)+'</td><td>95%</td>'
     +'<td>'+(cumplPct>=0.95?'<span class="badge-g">&#10003;</span>':'<span class="badge-r">&#10007;</span>')+'</td></tr>';
 
@@ -11523,7 +11514,7 @@ function estRender(){
   } catch(eC){ console.warn('[ESTD] grafico:', eC.message); }
 }
 
-var APP_BUILD = '17-10-2026 Produc. Diaria: titulo Faena Faja';
+var APP_BUILD = '22-10-2026 Gestión: fuga de ritmo sin columna $';
 console.log('%c[APP] build ' + APP_BUILD, 'background:#1a6b3a;color:#fff;padding:2px 6px;');
 try { var _sello = function(){ var e = document.getElementById('app-build-sello'); if (e) e.innerHTML = '&#128278; Versión: <b>' + APP_BUILD + '</b>'; };
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _sello); else _sello(); } catch(e) {}
@@ -13124,13 +13115,32 @@ function rsResumen(items){
   items.forEach(function(it){ var k = rsCodG(it.cod); r[k] = r[k] || {cod: k, n: 0, kg: 0}; r[k].n += +it.n || 0; r[k].kg += +it.kg || 0; });
   return Object.keys(r).map(function(k){ return r[k]; });
 }
+/* 21-10-2026 (Gustavo: "los kilos no cuadran"): el peso del FR719 iba sumando los litros de aceite como kilos
+   (15 kg + 50 L = 65) sin decirlo. Regla de Gustavo: todo en kg, 1 litro de aceite = 1 kg, y se muestra el detalle. */
+var RS_KG_POR_L = 1;
+function rsPeso(items){
+  var tk = 0, tl = 0;
+  rsResumen(items).forEach(function(x){ if (RS_PROD[x.cod].u === 'L') tl += x.kg; else tk += x.kg; });
+  return {kg: tk, l: tl, total: Math.round(tk + tl * RS_KG_POR_L)};
+}
+function rsPesoTxt(items){
+  var w = rsPeso(items);
+  return w.l ? rsN(w.kg, 1) + ' kg sólidos + ' + rsN(w.l, 1) + ' L aceite (1 L = 1 kg) = ' + rsN(w.total) + ' kg' : rsN(w.total) + ' kg';
+}
+/* glosa "N tambores de 200 L rellenos con ..." con TODO lo que se retira, aceite incluido (21-10-2026);
+   los tambores vacíos (cod 9) no, porque son los mismos tambores */
+function rsGlosaResto(items){
+  var prods = rsResumen(items).filter(function(x){ return x.cod != 9; }).map(function(x){ return RS_PROD[x.cod].n.toLowerCase(); });
+  return ' tambores de 200 L rellenos con ' + (prods.length ? prods.join(', ') : 'residuos');
+}
+function rsGlosaAuto(txt){ return /^\s*\d+ tambores de 200 L rellenos con /.test(txt || ''); }
 function rsResumenHtml(items){
-  var r = rsResumen(items), tk = 0, tl = 0;
-  r.forEach(function(x){ if (RS_PROD[x.cod].u === 'L') tl += x.kg; else tk += x.kg; });
+  var r = rsResumen(items), w = rsPeso(items);
   return '<table class="rs-tb"><tr><th>Producto</th><th>Cant.</th><th>Kg | L</th></tr>' +
     r.map(function(x){ var p = RS_PROD[x.cod]; return '<tr><td>' + rsE(p.n) + '</td><td style="text-align:right;">' + rsN(x.n) +
       '</td><td style="text-align:right;">' + rsN(x.kg, 1) + ' ' + (p.u === 'L' ? 'L' : 'kg') + '</td></tr>'; }).join('') +
-    '<tr><td><b>Total</b></td><td></td><td style="text-align:right;font-weight:800;">' + rsN(tk, 1) + ' kg' + (tl ? ' + ' + rsN(tl, 1) + ' L' : '') + '</td></tr></table>';
+    '<tr><td><b>Total</b></td><td></td><td style="text-align:right;font-weight:800;">' + rsN(w.kg, 1) + ' kg' + (w.l ? ' + ' + rsN(w.l, 1) + ' L' : '') + '</td></tr>' +
+    (w.l ? '<tr><td colspan="2" style="color:#555;">Peso total en kg (1 L = 1 kg)</td><td style="text-align:right;font-weight:800;">' + rsN(w.total) + ' kg</td></tr>' : '') + '</table>';
 }
 /* los productos que se suman en otro (grupo) heredan sus códigos y peligrosidad */
 setTimeout(function(){ Object.keys(RS_PROD).forEach(function(k){ var p = RS_PROD[k]; if (!p.grupo) return; var g = RS_PROD[p.grupo];
@@ -13215,6 +13225,16 @@ function rsLoad(){
   return RS;
 }
 function rsSave(){ try { localStorage.setItem(RS_KEY, JSON.stringify(RS)); } catch(e){ alert('No se pudo guardar: ' + e.message); } }
+/* 21-10-2026: con la App abierta en DOS pestañas, la pestaña vieja guardaba su copia en memoria y borraba lo hecho en
+   la otra (así se perdió el FR719 N° 2). Si otra pestaña guarda Residuos, esta vuelve a leerlo antes de seguir. */
+window.addEventListener('storage', function(e){
+  if (e.key !== RS_KEY) return;
+  RS = null; rsLoad();
+  var m = document.getElementById('rs-modal');
+  if (m && m.style.display === 'flex'){ rsModalCerrar();
+    alert('Residuos se modificó en otra pestaña de la App. Se recargaron los datos: vuelve a abrir lo que estabas haciendo.'); }
+  try { if (typeof rsRender === 'function') rsRender(); } catch(x){}
+});
 function rsE(t){ return (typeof rnEsc === 'function') ? rnEsc(t) : String(t == null ? '' : t); }
 function rsHoy(){ return (typeof rnHoy === 'function') ? rnHoy() : new Date().toISOString().substring(0,10); }
 function rsF(f){ return f ? f.substring(8,10) + '-' + f.substring(5,7) + '-' + f.substring(0,4) : ''; }
@@ -13350,6 +13370,22 @@ function rsUsarFirmaReg(id, inputNombre){
    la faena queda disponible al tiro, sin imprimir. Solo lo RECIBIDO entra al stock de la bodega. */
 function rsRecibido(l){ return !!(l && l.traslado && (l.traslado.recepcion || !l.traslado.estado)); }   // sin estado = registro antiguo
 function rsFIngreso(l){ return (l.traslado.recepcion && l.traslado.recepcion.fecha) || l.traslado.fecha; }
+/* 21-10-2026 (Gustavo): corregir la fecha de INGRESO a la bodega (= fecha de recepción del FR719). Los FR719
+   recibidos antes de este día partían con la fecha de hoy y no con la de salida de terreno. */
+function rsCambiarIngreso(lid){
+  var l = RS.lotes.find(function(x){ return x.id === lid; }); if (!l || !l.traslado) return;
+  var t = l.traslado, act = rsFIngreso(l);
+  var r = window.prompt('FR719 N° ' + l.corr + ' · ' + l.faena + '\nSalió de terreno el ' + rsF(t.fecha) + '.\n\nFecha de ingreso a la bodega (dd-mm-aaaa):', rsF(t.fecha || act));
+  if (r == null) return;
+  var m = String(r).trim().match(/^(\d{1,2})[-\/.](\d{1,2})[-\/.](\d{4})$/);
+  if (!m){ alert('Escribe la fecha como dd-mm-aaaa, por ejemplo 09-01-2026.'); return; }
+  var f = m[3] + '-' + ('0' + m[2]).slice(-2) + '-' + ('0' + m[1]).slice(-2);
+  if (isNaN(new Date(f + 'T12:00:00'))){ alert('Esa fecha no existe.'); return; }
+  if (t.fecha && f < t.fecha){ alert('El ingreso no puede ser anterior a la salida de terreno (' + rsF(t.fecha) + ').'); return; }
+  if (f > rsHoy()){ alert('El ingreso no puede ser una fecha futura.'); return; }
+  if (!t.recepcion) t.recepcion = {};
+  t.recepcion.fecha = f; rsSave(); rsRender();
+}
 function rsFirmaPad(titulo, cb){
   var o = document.getElementById('rs-firma'); if (o) o.remove();
   o = document.createElement('div'); o.id = 'rs-firma';
@@ -13475,6 +13511,7 @@ function rsHtmlFaena(){
   if (hist.length) h += '<div class="rs-card"><h3>Lotes trasladados de ' + rsE(f) + '</h3><div style="overflow-x:auto;"><table class="rs-tb"><tr><th>N°</th><th>Desde</th><th>Traslado</th><th>Ítems</th><th>Kg</th><th>Recibió</th><th></th></tr>' +
     hist.map(function(l){ return '<tr><td style="text-align:center;font-weight:700;">' + l.corr + '</td><td>' + rsF(l.fechaApertura) + '</td><td>' + rsF(l.traslado.fecha) + '</td><td style="text-align:center;">' + l.items.length +
       '</td><td style="text-align:right;">' + rsN(l.traslado.kg || l.items.reduce(function(s, it){ return s + (+it.kg || 0); }, 0), 1) + '</td><td>' + rsE(l.traslado.recibe || '') + '</td><td style="white-space:nowrap;">' +
+      '<button class="rs-btn" style="background:#7a5a00;color:#fff;" title="FR100958 y FR719 juntos, para el archivador" onclick="rsImprimir(\'' + l.id + '\',\'ambos\')">&#128424; Ambos</button>' +
       '<button class="rs-btn" style="background:#eef2f6;" onclick="rsImprimir(\'' + l.id + '\',\'fr100958\')">FR100958</button><button class="rs-btn" style="background:#eef2f6;" onclick="rsImprimir(\'' + l.id + '\',\'fr719\')">FR719</button>' +
       (rsRecibido(l) && rsFaltaFirma(l) ? '<button class="rs-btn" style="background:#0b2a6b;color:#fff;" onclick="rsFirmarDespues(\'' + l.id + '\')">&#9997; Firmar</button>' : '') +
       (!rsRecibido(l) ? '<span class="rs-chip" style="background:#dbeafe;color:#1e40af;">enviado, por recibir</span>' :
@@ -13517,7 +13554,7 @@ function rsPlanilla(){
     '<div style="font-size:9px;text-align:right;">VERSION 5<br>16/09/2026</div></div>' +
     '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;font-size:12px;margin-bottom:6px;">' +
       '<span>Fecha del retiro: <input type="date" id="rsp-fret" value="' + rsHoy() + '" onchange="document.querySelectorAll(\'#rs-modal .rsp-ret\').forEach(rsPlanillaMarca)"> ' +
-      '<span style="color:#666;">(al marcar la casilla RETIRO se anota como fecha del egreso)</span></span>' +
+      '<span style="color:#666;">(al marcar la casilla RETIRO se anota como fecha del egreso; también se cambia clicando la fecha del egreso)</span></span>' +
       '<span style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
         '<span><b>Faena:</b> <select id="rsp-faena" onchange="rsPlanillaFaenaCambio()" style="padding:3px;border:1px solid #c9a227;background:#fffde8;">' +
           (function(){ var L = rsFaenasLista(); return L.indexOf(f) < 0 ? L.concat([f]) : L; })().map(function(x){ return '<option value="' + rsE(x) + '"' + (x === f ? ' selected' : '') + '>' + rsE(x) + '</option>'; }).join('') + '</select></span>' +
@@ -13539,10 +13576,19 @@ function rsPlanilla(){
   rsModal(h);
   var m = document.querySelector('#rs-modal>div'); m.style.width = 'min(1100px,98vw)'; m.style.maxHeight = '94vh';
 }
-/* palomita de RETIRO: muestra la fecha del retiro en la columna de egreso (02-10-2026, pedido de Gustavo) */
+/* palomita de RETIRO: muestra la fecha del retiro en la columna de egreso (02-10-2026, pedido de Gustavo).
+   21-10-2026 (Gustavo, para ponerse al día con el año atrasado): la fecha del egreso se cambia ahí mismo; es una
+   sola por retiro (un FR719), así que al cambiarla en una fila cambia "Fecha del retiro" y todas las marcadas. */
 function rsPlanillaMarca(cb){
-  var td = cb.closest('tr').querySelector('.rsp-eg'), f = (document.getElementById('rsp-fret') || {}).value || rsHoy();
-  if (td) td.innerHTML = cb.checked ? '<span style="color:#1a6b3a;font-weight:700;">' + rsF(f) + '</span> <span style="font-size:9.5px;color:#666;">(a retirar)</span>' : '';
+  var tr = cb.closest('tr'), td = tr.querySelector('.rsp-eg'), f = (document.getElementById('rsp-fret') || {}).value || rsHoy();
+  var ing = (tr.querySelector('.rsp-f') || {}).value || '', mal = ing && f < ing;
+  if (td) td.innerHTML = cb.checked ? '<input type="date" class="rsp-egf" value="' + f + '" onchange="rsPlanillaFret(this.value)" title="Cambiar la fecha del retiro' +
+    (mal ? ': es anterior a la fecha del ingreso' : '') + '" style="width:100%;box-sizing:border-box;border:1px solid ' + (mal ? '#c0392b' : '#1a6b3a') + ';border-radius:3px;' +
+    'background:' + (mal ? '#fdecea' : '#eaf6ee') + ';color:' + (mal ? '#c0392b' : '#1a6b3a') + ';font-weight:700;font-size:12px;padding:2px;">' : '';
+}
+function rsPlanillaFret(v){
+  var e = document.getElementById('rsp-fret'); if (!e || !v) return;
+  e.value = v; document.querySelectorAll('#rs-modal .rsp-ret').forEach(function(cb){ if (cb.checked) rsPlanillaMarca(cb); });
 }
 function rsPlanillaGuardar(retirar){
   var f = RS_FAENA_SEL, lote = rsLoteAbierto(f), nuevos = [], cambios = 0, malas = 0, marcados = {};
@@ -13677,10 +13723,7 @@ function rsTrasladar(lid){
   var jefes = (typeof RN_CARGOS !== 'undefined' && RN_CARGOS['Jefes de faena']) || [];
   window.RS_SEL = {}; l.items.forEach(function(it){ if (!window.RS_PRESEL || window.RS_PRESEL[it.id]) RS_SEL[it.id] = 1; });
   var fechaPre = window.RS_PRE_FECHA || rsHoy(); window.RS_PRESEL = null; window.RS_PRE_FECHA = null;
-  window.RS_TXT_RESTO = function(){
-    var sel = l.items.filter(function(it){ return RS_SEL[it.id]; });
-    var prods = rsResumen(sel).filter(function(x){ return RS_PROD[x.cod].u !== 'L' && x.cod != 9; }).map(function(x){ return RS_PROD[x.cod].n.toLowerCase(); });
-    return ' tambores de 200 L rellenos con ' + (prods.length ? prods.join(', ') : 'residuos'); };
+  window.RS_TXT_RESTO = function(){ return rsGlosaResto(l.items.filter(function(it){ return RS_SEL[it.id]; })); };
   window.RS_TXT_REC = function(t){ return t + RS_TXT_RESTO(); };
   var pel = l.items.some(function(it){ return rsEsPel(it.cod); });
   var emp = rsEmpresaDe(l.faena);
@@ -13777,7 +13820,7 @@ function rsTrasResumen(lid){
   var l = RS.lotes.find(function(x){ return x.id === lid; }), sel = l.items.filter(function(it){ return RS_SEL[it.id]; });
   document.getElementById('rst-resumen').innerHTML = sel.length ? rsResumenHtml(sel) : '<div style="color:#c0392b;font-size:12px;">No hay nada marcado.</div>';
   var c = document.getElementById('rst-cuenta'); if (c) c.textContent = sel.length;
-  var kg = sel.reduce(function(s, it){ return s + (+it.kg || 0); }, 0); document.getElementById('rst-kg').value = Math.round(kg);
+  document.getElementById('rst-kg').value = rsPeso(sel).total;
   rsTrasTextos();
 }
 function rsTrasladarOk(lid){
@@ -13810,25 +13853,34 @@ function rsTrasladarOk(lid){
     (manoE ? 'Imprímelo en <b>duplicado</b>, fírmalo y mándalo con el traslado.' : 'Va firmado digitalmente; si quieres, imprímelo para que acompañe al traslado junto a las hojas de seguridad.') +
     ' Queda <b>pendiente de recepción</b> en la pestaña Bodega.</div>' +
     '<div style="text-align:right;margin-top:10px;">' +
-    '<button class="rs-btn" style="background:#eee;" onclick="rsModalCerrar()">Cerrar</button><button class="rs-btn" style="background:#7a5a00;color:#fff;" onclick="rsModalCerrar();rsImprimir(\'' + lid + '\',\'fr719\')">&#128424; Imprimir FR719 + HDS</button></div>');
+    '<button class="rs-btn" style="background:#eee;" onclick="rsModalCerrar()">Cerrar</button><button class="rs-btn" style="background:#7a5a00;color:#fff;" onclick="rsModalCerrar();rsImprimir(\'' + lid + '\',\'fr719\')">&#128424; Imprimir FR719 + HDS</button>' +
+    '<button class="rs-btn" style="background:#1a6b3a;color:#fff;" onclick="rsModalCerrar();rsImprimir(\'' + lid + '\',\'ambos\')">&#128424; FR100958 + FR719 (archivador)</button></div>');
 }
 
 function rsRecibir(lid){
   var l = RS.lotes.find(function(x){ return x.id === lid; }), t = l.traslado;
   var per = (typeof rnListaCargos === 'function') ? rnListaCargos() : [];
+  /* 21-10-2026 (Gustavo): la recepción parte con la MISMA fecha del envío desde terreno; la glosa lleva todos los
+     productos (aceite incluido) y el peso va en kg con el aceite convertido. Los FR719 enviados antes de este
+     cambio traen la glosa y el peso antiguos: si son los automáticos, se rehacen con el mismo N° de tambores. */
+  var nTamb = parseInt(t.recibidos || t.retirados) || t.tambores || 1;
+  var glosa = rsGlosaAuto(t.recibidos) || !t.recibidos ? nTamb + rsGlosaResto(l.items) : t.recibidos;
+  var kgViejo = Math.round(l.items.reduce(function(s, it){ return s + (+it.kg || 0); }, 0));
+  var kgIni = (!t.kg || t.kg === kgViejo) ? rsPeso(l.items).total : t.kg;
   rsModal('<div style="font-weight:800;font-size:14px;margin-bottom:6px;">&#128229; Recibir FR719 N° ' + l.corr + ' · ' + rsE(l.faena) + '</div>' +
     '<div style="font-size:12px;margin-bottom:6px;">Enviado el ' + rsF(t.fecha) + ' por <b>' + rsE(t.entrega) + '</b> ' +
       (t.firmaEnt ? '<img src="' + t.firmaEnt + '" style="height:34px;vertical-align:middle;">' : (t.firmaEntMano ? '(firma a mano en el impreso)' : '')) + '</div>' +
     rsResumenHtml(l.items) +
     '<datalist id="rs-pers2">' + per.map(function(p){ return '<option value="' + rsE(p) + '">'; }).join('') + '</datalist>' +
     '<div class="rs-form" style="margin-top:8px;">' +
-    '<div><label>Fecha de recepción</label><input id="rsv-fecha" type="date" value="' + rsHoy() + '"></div>' +
+    '<div><label>Fecha de recepción</label><input id="rsv-fecha" type="date" value="' + (t.fecha || rsHoy()) + '"></div>' +
     '<div><label>Recibe</label><input id="rsv-rec" list="rs-pers2" value="' + rsE(t.recibe || 'Gustavo Reyes Salamanca') + '" ' +
       'onchange="var r=document.getElementById(\'rsv-rut\');if(!r.value)r.value=rsRutDe(this.value);"></div>' +
     '<div><label>RUT de quien recibe *</label><input id="rsv-rut" placeholder="12.345.678-9" value="' + rsE(rsRutDe(t.recibe || 'Gustavo Reyes Salamanca')) + '" ' +
       'onblur="if(rsRutOk(this.value))this.value=rsRutFmt(this.value);"></div>' +
-    '<div style="grid-column:1/-1;"><label>N° unidades o recipientes recibidos</label><input id="rsv-txt" value="' + rsE(t.recibidos || '') + '"></div>' +
-    '<div><label>Peso recibido (kg)</label><input id="rsv-kg" type="number" value="' + (t.kg || '') + '"></div>' +
+    '<div style="grid-column:1/-1;"><label>N° unidades o recipientes recibidos</label><input id="rsv-txt" value="' + rsE(glosa) + '"></div>' +
+    '<div><label>Peso recibido (kg)</label><input id="rsv-kg" type="number" value="' + kgIni + '">' +
+      '<div style="font-size:10.5px;color:#666;margin-top:2px;">' + rsPesoTxt(l.items) + '</div></div>' +
     '<div style="display:flex;align-items:flex-end;"><label style="font-weight:400;font-size:12px;"><input type="checkbox" id="rsv-timbre" checked> lleva timbre de la empresa</label></div>' +
     rsFirmaCampo('rsfr', 'Firma de quien recibe', 'rsv-rec') + '</div>' +
     '<div style="text-align:right;margin-top:10px;"><button class="rs-btn" style="background:#eee;" onclick="rsModalCerrar()">Cancelar</button>' +
@@ -13847,6 +13899,7 @@ function rsRecibirOk(lid){
   t.recepcion = {fecha: g('rsv-fecha') || rsHoy(), recibe: g('rsv-rec'), rut: rutR, firma: window._firma_rsfr || null, mano: mano,
                  timbre: document.getElementById('rsv-timbre').checked, timbreImg: window._timbre_rsfr || null};
   t.recibe = g('rsv-rec'); t.recibidos = g('rsv-txt') || t.recibidos; if (g('rsv-kg')) t.kg = parseFloat(g('rsv-kg')) || t.kg;
+  if (rsGlosaAuto(t.retirados)) t.retirados = (parseInt(t.retirados) || t.tambores || 1) + rsGlosaResto(l.items);   // FR719 antiguo: glosa con el aceite
   t.estado = 'recibido';
   // con las dos firmas digitales, el duplicado firmado para la faena queda disponible al tiro
   if (t.firmaEnt && t.recepcion.firma){ t.duplicado = t.recepcion.fecha; t.duplicadoDigital = true; }
@@ -13920,12 +13973,13 @@ function rsTablaBase(F, conPel){
   if (!F.length) return '<div style="color:#888;">Sin registros. Cada FR719 recibido agrega aquí una fila por producto.</div>';
   var x = function(c){ return '<td style="text-align:center;">' + (c ? 'x' : '') + '</td>'; };
   return '<div style="overflow-x:auto;"><table class="rs-tb"><tr><th>Emp.</th><th>N° guía interna</th><th>Faena / EESS</th><th>Descripción</th><th>Sólido</th><th>Líquido</th><th>Semisólido</th><th>N°</th><th>Kg</th>' +
-    (conPel ? RS_CARS.map(function(c){ return '<th>' + c + '</th>'; }).join('') : '') + '<th>Ingreso</th><th>Egreso</th><th>Días</th></tr>' +
+    (conPel ? RS_CARS.map(function(c){ return '<th>' + c + '</th>'; }).join('') : '') + '<th title="Fecha de recepción en la bodega (clic para corregir)">Ingreso</th><th title="Salida final de la bodega con folio SIDREP">Egreso</th><th>Días</th></tr>' +
     F.map(function(f){ var p = RS_PROD[f.cod], car = RS_CAR[f.cod] || '', d = rsDiasDesde(f.ingreso);
       return '<tr' + (f.egreso ? ' style="color:#888;"' : '') + '><td>' + f.emp + '</td><td style="text-align:center;font-weight:700;"><a href="#" title="Ver el FR719 N° ' + f.lote.corr + '" style="color:#0b2a6b;" onclick="rsImprimir(\'' + f.lote.id + '\',\'fr719\');return false;">' + f.lote.corr + '</a></td><td>' + rsE(f.lote.faena) +
         '</td><td>' + rsE(p.n) + '</td>' + x(f.est === 'Sólido') + x(f.est === 'Líquido') + x(f.est === 'Semisólido') +
         '<td style="text-align:right;">' + rsN(f.n) + '</td><td style="text-align:right;">' + rsN(f.kg, 1) + '</td>' + (conPel ? RS_CARS.map(function(c){ return x(car === c); }).join('') : '') +
-        '<td>' + rsF(f.ingreso) + '</td><td style="font-weight:700;color:#1f6feb;">' + (f.egreso ? rsF(f.egreso) + '<br><span style="font-size:9.5px;color:#888;font-weight:400;">' +
+        '<td>' + (f.egreso ? rsF(f.ingreso) : '<a href="#" title="Cambiar la fecha de ingreso a la bodega" style="color:inherit;text-decoration:underline dotted;" onclick="rsCambiarIngreso(\'' + f.lote.id + '\');return false;">' + rsF(f.ingreso) + '</a>') +
+        '</td><td style="font-weight:700;color:#1f6feb;">' + (f.egreso ? rsF(f.egreso) + '<br><span style="font-size:9.5px;color:#888;font-weight:400;">' +
           (f.folio && f.folio !== '—' ? 'folio ' + rsE(f.folio) : 'salida sin SIDREP') + '</span>' : '') + '</td>' +
         '<td style="text-align:center;font-weight:700;color:' + (f.egreso ? '#888' : !conPel ? '#555' : d >= RS_DIAS_BODEGA ? '#c0392b' : d >= 75 ? '#b7791f' : '#1a6b3a') + ';">' + (f.egreso || !conPel ? '—' : d) + '</td></tr>'; }).join('') + '</table></div>';
 }
@@ -14114,7 +14168,8 @@ function rsHtmlForms(){
         '</td><td>' + rsE(l.faena) + '</td><td>' + rsE(t.predio || l.fundo || '') + '</td><td style="font-size:10.5px;">' + rsE(prods) + '</td><td style="text-align:right;">' + rsN(kg, 1) +
         '</td><td><span class="rs-chip" style="background:' + e[1] + ';color:' + e[2] + ';">' + e[0] + '</span></td><td style="font-size:10.5px;">' + Object.keys(folios).join('<br>') +
         '</td><td style="white-space:nowrap;"><button class="rs-btn" style="background:#7a5a00;color:#fff;" onclick="rsImprimir(\'' + l.id + '\',\'fr719\')">&#128424; FR719</button>' +
-        '<button class="rs-btn" style="background:#eef2f6;" onclick="rsImprimir(\'' + l.id + '\',\'fr100958\')">FR100958</button></td></tr>'; }).join('') + '</table></div></div>';
+        '<button class="rs-btn" style="background:#7a5a00;color:#fff;" title="FR100958 y FR719 juntos, para el archivador" onclick="rsImprimir(\'' + l.id + '\',\'ambos\')">&#128424; Ambos</button>' +
+      '<button class="rs-btn" style="background:#eef2f6;" onclick="rsImprimir(\'' + l.id + '\',\'fr100958\')">FR100958</button></td></tr>'; }).join('') + '</table></div></div>';
   return h;
 }
 
@@ -14321,17 +14376,23 @@ function rsImprimir(lid, tipo){
   var css = '<style>body{font-family:Arial,sans-serif;font-size:11px;margin:18px;}table.f{width:100%;border-collapse:collapse;}table.f th{background:#f4c542;border:1px solid #333;padding:4px;font-size:10px;}' +
     'table.f td{border:1px solid #333;padding:4px;height:18px;}.l{border-bottom:1px solid #333;display:inline-block;min-width:260px;padding:0 4px;}p{margin:7px 0;}@media print{button{display:none;}}' +
     '@page{size:letter;margin:0;} body{max-width:612pt;margin:0 auto;} .hoja{page-break-inside:avoid;}.timbre{display:inline-block;border:3px double #1f3a93;color:#1f3a93;border-radius:50%;padding:10px 16px;font-size:9px;font-weight:800;text-align:center;transform:rotate(-8deg);line-height:1.3;}</style>';
-  var h = '';
-  if (tipo === 'fr100958'){
+  /* 21-10-2026 (Gustavo): el FR100958 queda asociado al N° del FR719 y se imprimen juntos ('ambos') para el archivador */
+  var h = '', h100 = '';
+  if (tipo === 'fr100958' || tipo === 'ambos'){
+    var tr0 = l.traslado || {};
     h = cab('REGISTRO DE RESIDUOS INDUSTRIALES PELIGROSOS EN LUGAR DE RECOGIDA', 'VERSION 5<br>16/09/2026') +
-      '<div style="text-align:right;margin-bottom:6px;"><b>Correlativo</b> <span class="l" style="min-width:120px;">N° ' + l.corr + '</span> &nbsp; Faena: <b>' + rsE(l.faena) + '</b></div>' +
+      '<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:6px;"><span>Faena: <b>' + rsE(l.faena) + '</b>' +
+        (tr0.predio ? ' &nbsp; Fundo: <b>' + rsE(tr0.predio) + '</b>' : '') + (tr0.area ? ' &nbsp; Área: <b>' + rsE(tr0.area) + '</b>' : '') + '</span>' +
+        '<span><b>Asociado al FR719</b> <span class="l" style="min-width:90px;">N° ' + l.corr + '</span>' + (tr0.fecha ? ' &nbsp; retiro del <b>' + rsF(tr0.fecha) + '</b>' : '') + '</span></div>' +
       '<table class="f"><tr><th rowspan="2"></th><th rowspan="2">NOMBRE DEL RESIDUO PELIGROSO</th><th colspan="2">ESTADO</th><th colspan="2">CANTIDAD</th><th rowspan="2">FECHA DEL INGRESO</th><th rowspan="2">FECHA DEL EGRESO</th><th rowspan="2">OBSERVACIÓN</th></tr>' +
       '<tr><th>SÓLIDO</th><th>LÍQUIDO</th><th>N°</th><th>Kg | L</th></tr>';
     for (var i = 0; i < Math.max(26, l.items.length); i++){ var it = l.items[i];
       h += '<tr><td>' + (i + 1) + '</td>' + (it ? '<td>' + rsE(RS_PROD[it.cod].n) + '</td><td style="text-align:center;">' + (it.est !== 'Líquido' ? '&#10003;' : '') + '</td><td style="text-align:center;">' + (it.est === 'Líquido' ? '&#10003;' : '') +
         '</td><td>' + rsN(it.n) + '</td><td>' + rsN(it.kg, 1) + '</td><td>' + rsF(it.f) + '</td><td>' + rsF(l.traslado ? l.traslado.fecha : '') + '</td><td>' + rsE(it.obs || '') + '</td>' : '<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>') + '</tr>'; }
     h += '</table><p style="font-size:9.5px;"><b>Nota:</b> 1.- Archivar este registro por el periodo de un año en faena, el segundo año en oficina. 2.- El encargado del correcto llenado de este formulario es el Jefe de Faena o persona asignada. 3.- Supervisión CMPC y EESS Control serán los encargados del monitoreo de este formulario.</p>';
-  } else {
+    h100 = h;
+  }
+  if (tipo !== 'fr100958'){
     var t = l.traslado || {};
     if (t.recepcion && t.recepcion.firma && !rsRutDe(t.recepcion.recibe || t.recibe, t.recepcion.rut)){
       var r0 = rsPedirRut(t.recepcion.recibe || t.recibe); if (r0){ t.recepcion.rut = r0; rsSave(); } }
@@ -14394,10 +14455,11 @@ function rsImprimir(lid, tipo){
       '<h3 style="font-size:13px;">Hojas de Datos de Seguridad que deben acompañar este traslado</h3><ul>' +
       Object.keys(l.items.reduce(function(o, it){ o[RS_PROD[it.cod].hds] = 1; return o; }, {})).map(function(x){ return '<li>' + rsE(x) + '</li>'; }).join('') + '</ul>' +
       '<p style="font-size:10px;">Imprimir cada HDS desde el formulario CMPC FR100960 (Biblioteca SIGECE).</p>';
+    if (tipo === 'ambos') h = '<div class="hoja" style="padding:24pt 22pt;box-sizing:border-box;">' + h100 + '</div><div style="page-break-before:always;"></div>' + h;
   }
   var w = window.open('', '_blank');
   if (!w){ alert('El navegador bloqueó la ventana de impresión. Permite ventanas emergentes para esta página.'); return; }
-  w.document.write('<html><head><meta charset="utf-8"><title>' + (tipo === 'fr100958' ? 'FR100958' : 'FR719') + ' N° ' + l.corr + '</title>' + css + '</head><body' + (tipo === 'fr719' ? ' style="margin:0 auto;"' : '') + '>' +
+  w.document.write('<html><head><meta charset="utf-8"><title>' + (tipo === 'fr100958' ? 'FR100958' : tipo === 'ambos' ? 'FR100958 + FR719' : 'FR719') + ' N° ' + l.corr + '</title>' + css + '</head><body' + (tipo !== 'fr100958' ? ' style="margin:0 auto;"' : '') + '>' +
     '<button onclick="window.print()" style="position:fixed;right:10px;top:10px;padding:6px 14px;z-index:9;">&#128424; Imprimir</button>' + h + '</body></html>');
   w.document.close();
 }
@@ -14406,7 +14468,18 @@ function rsImprimir(lid, tipo){
 function rsRespaldo(){ var b = new Blob([JSON.stringify(RS, null, 1)], {type: 'application/json'});
   var a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'Respaldo_Residuos_' + rsHoy() + '.json'; a.click(); }
 function rsRestaurar(inp){ var f = inp.files && inp.files[0]; if (!f) return; var fr = new FileReader();
-  fr.onload = function(){ try { var d = JSON.parse(fr.result); if (!d || !Array.isArray(d.lotes)) throw new Error('no es un respaldo de Residuos');
+  fr.onload = function(){ try { var d = JSON.parse(fr.result);
+      /* 21-10-2026: archivo de RECUPERACION {agregarLotes:[...]}: suma solo esos FR719, sin reemplazar nada */
+      if (d && Array.isArray(d.agregarLotes)){
+        RS = null; rsLoad();
+        var ya = {}; RS.lotes.forEach(function(l){ ya[l.id] = 1; });
+        var nuevos = d.agregarLotes.filter(function(l){ return l && l.id && !ya[l.id]; });
+        if (!nuevos.length){ alert('Esos formularios ya están en Residuos: no hay nada que recuperar.'); return; }
+        if (!window.confirm('Se van a AGREGAR ' + nuevos.length + ' formulario(s): ' + nuevos.map(function(l){ return 'FR719 N° ' + l.corr + ' · ' + l.faena; }).join(', ') +
+                            '.\nLo que ya está en Residuos no se toca. ¿Continuar?')) return;
+        nuevos.forEach(function(l){ RS.lotes.push(l); }); rsSave(); rsRender(); alert('Recuperado: ' + nuevos.map(function(l){ return 'FR719 N° ' + l.corr; }).join(', ')); return;
+      }
+      if (!d || !Array.isArray(d.lotes)) throw new Error('no es un respaldo de Residuos');
       rsLoad(); if (RS.lotes.length && !window.confirm('Se va a REEMPLAZAR lo que hay ahora en Residuos (' + RS.lotes.length + ' lotes) por el archivo (' + d.lotes.length + ' lotes, ' + (d.retiros || []).length + ' retiros). ¿Continuar?')) return;
       RS = d; rsSave(); rsRender(); alert('Respaldo cargado: ' + d.lotes.length + ' lotes.'); } catch(e){ alert('No se pudo restaurar: ' + e.message); } };
   fr.readAsText(f); }
@@ -19093,6 +19166,63 @@ function ofHistorialAbrir(){
 }
 
 
+/* 22-10-2026 (Gustavo): clic en la Brecha Valorizada de Cumplimiento Contrato -> de dónde sale el valor.
+   Usa window.CUMPL_VAL, que arma valorizaMes() al pintar la tabla (por mes: una fila por faena). */
+function cumplValAbrir(k){
+  var C = window.CUMPL_VAL || {}; if (!Object.keys(C).length) return;
+  var old = document.getElementById('cv-modal'); if (old) old.remove();
+  var MES = ['','Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+  var f0 = function(v, d){ return (v || 0).toLocaleString('es-CL', {minimumFractionDigits: d || 0, maximumFractionDigits: d || 0}); };
+  var fv = function(v){ return '<b style="color:' + (v < 0 ? '#c0392b' : '#1a7f37') + ';">' + (v < 0 ? '$ -' : '+$ ') + f0(Math.abs(v)) + '</b>'; };
+  var fd = function(v){ return '<span style="color:' + (v < 0 ? '#c0392b' : '#1a7f37') + ';font-weight:700;">' + (v >= 0 ? '+' : '') + f0(v) + '</span>'; };
+  var th = function(t){ return '<th style="background:#1a5c2a;color:#fff;padding:6px 8px;font-size:11px;text-align:right;white-space:nowrap;">' + t + '</th>'; };
+  var td = 'padding:5px 8px;border-bottom:1px solid #eee;font-size:12px;text-align:right;white-space:nowrap;';
+  var h = '';
+  if (k === 'tot'){
+    var faenas = {}, meses = Object.keys(C).sort();
+    meses.forEach(function(mk){ C[mk].filas.forEach(function(x){ faenas[x.f] = 1; }); });
+    var L = Object.keys(faenas).sort(), totF = {}, totD = {};
+    h = '<div style="font-size:12px;color:#555;margin-bottom:8px;">Cada celda es la brecha m³ de la faena × su tarifa VMA de ese mes. Clic en un mes para ver su cálculo completo.</div>' +
+      '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;"><tr><th style="background:#1a5c2a;color:#fff;padding:6px 8px;font-size:11px;text-align:left;">Mes</th>' +
+      L.map(function(f){ return th(f); }).join('') + th('Total mes') + '</tr>' +
+      meses.map(function(mk){ var c = C[mk];
+        return '<tr style="cursor:pointer;" onclick="cumplValAbrir(' + mk + ')" onmouseover="this.style.background=\'#f3f8f4\'" onmouseout="this.style.background=\'\'"><td style="' + td + 'text-align:left;">' + MES[c.mes] + ' ' + c.anio + '</td>' +
+          L.map(function(f){ var x = c.filas.find(function(y){ return y.f === f; }); if (!x) return '<td style="' + td + 'color:#bbb;">—</td>';
+            totF[f] = (totF[f] || 0) + x.val; totD[f] = (totD[f] || 0) + x.dif;
+            return '<td style="' + td + '">' + fv(x.val) + '<div style="font-size:9.5px;color:#888;">' + (x.dif >= 0 ? '+' : '') + f0(x.dif) + ' m³</div></td>'; }).join('') +
+          '<td style="' + td + 'background:#f7f7f7;">' + fv(c.val) + '</td></tr>'; }).join('') +
+      '<tr style="background:#eef5ef;"><td style="' + td + 'text-align:left;font-weight:800;">TOTAL</td>' +
+      L.map(function(f){ return '<td style="' + td + '">' + fv(totF[f] || 0) + '<div style="font-size:9.5px;color:#888;">' + (totD[f] >= 0 ? '+' : '') + f0(totD[f] || 0) + ' m³</div></td>'; }).join('') +
+      '<td style="' + td + 'background:#e3efe5;">' + fv(meses.reduce(function(a, mk){ return a + C[mk].val; }, 0)) + '</td></tr></table></div>';
+    var tit = 'Brecha valorizada · total del período por faena';
+  } else {
+    var c = C[k]; if (!c) return;
+    var parcial = c.filas.some(function(x){ return x.fac < 1; });
+    h = '<div style="font-size:12px;color:#555;margin-bottom:8px;">Por faena: <b>brecha m³ = m³ real (+ ajuste de inventario) − m³ contratado</b>. ' +
+      'El contratado sale de la tabla VMA de Mininco según el VMA del mes' + (parcial ? ', prorrateado a los días transcurridos (mes en curso)' : '') +
+      '. Brecha × tarifa VMA del mes = valor. Rojo = faltó, verde = sobre el contrato.</div>' +
+      '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;"><tr><th style="background:#1a5c2a;color:#fff;padding:6px 8px;font-size:11px;text-align:left;">Faena</th>' +
+      th('VMA') + th('m³ real') + th('Ajuste inv.') + th('Contrato mes') + (parcial ? th('Prorrateo') : '') + th('m³ contratado') + th('Brecha m³') + th('Tarifa $/m³') + th('Valor') + '</tr>' +
+      c.filas.map(function(x){
+        return '<tr><td style="' + td + 'text-align:left;"><b>' + x.f + '</b> <span style="color:#888;font-size:10.5px;">' + (x.esp || '') + '</span>' +
+          (x.fi < 1 ? '<div style="font-size:9.5px;color:#b7791f;">inicio de faena: ' + f0(x.fi * 100) + '% del mes</div>' : '') + '</td>' +
+          '<td style="' + td + '">' + f0(x.vma, 3) + '</td><td style="' + td + '">' + f0(x.m3) + '</td><td style="' + td + 'color:#1a6b3a;">' + (x.inv ? '+' + f0(x.inv) : '—') + '</td>' +
+          '<td style="' + td + '">' + f0(x.volMes) + '</td>' + (parcial ? '<td style="' + td + '">' + f0(x.fac * 100, 1) + '%</td>' : '') +
+          '<td style="' + td + '">' + f0(x.ref) + '</td><td style="' + td + '">' + fd(x.dif) + '</td><td style="' + td + '">$ ' + f0(x.tarifa) + '</td><td style="' + td + '">' + fv(x.val) + '</td></tr>'; }).join('') +
+      '<tr style="background:#eef5ef;"><td style="' + td + 'text-align:left;font-weight:800;" colspan="' + (parcial ? 7 : 6) + '">Total ' + MES[c.mes] + ' ' + c.anio + '</td>' +
+      '<td style="' + td + '">' + fd(c.dif) + '</td><td style="' + td + '"></td><td style="' + td + '">' + fv(c.val) + '</td></tr></table></div>' +
+      (c.filas.length > 1 && (c.val < 0) !== (c.dif < 0) && c.dif ? '<div style="margin-top:8px;font-size:12px;background:#fff8e1;border-left:4px solid #e6a700;padding:6px 10px;">' +
+        'La brecha total en m³ es ' + (c.dif >= 0 ? 'positiva' : 'negativa') + ' pero en pesos da ' + (c.val < 0 ? 'pérdida' : 'ganancia') +
+        ': los m³ de cada faena no valen lo mismo (la tarifa depende del contrato y del VMA).</div>' : '') +
+      '<div style="margin-top:8px;text-align:right;"><a href="#" onclick="cumplValAbrir(\'tot\');return false;" style="font-size:12px;">← Ver todo el período</a></div>';
+    var tit = 'Brecha valorizada · ' + MES[c.mes] + ' ' + c.anio;
+  }
+  var bg = document.createElement('div'); bg.id = 'cv-modal'; bg.className = 'pd-modal-bg';
+  bg.onclick = function(e){ if (e.target === bg) bg.remove(); };
+  bg.innerHTML = '<div class="pd-modal-box" style="max-width:980px;"><div class="pd-modal-hdr"><div class="pd-modal-title" style="color:#1a5c2a;">&#128176; ' + tit + '</div>' +
+    '<button class="pd-modal-close" onclick="document.getElementById(\'cv-modal\').remove()">✕ Cerrar</button></div>' + h + '</div>';
+  document.body.appendChild(bg);
+}
 function pdMultasAbrir(){
   var old = document.getElementById('pdm-modal'); if (old) old.remove();
   var P = window.PD_MULTAS;
@@ -21332,7 +21462,7 @@ function gestPintaFuga(D){
     '<div class="table-wrap"><table><thead><tr><th>Equipo</th><th>Proceso</th>' +
     '<th style="text-align:right;">Hrs</th><th style="text-align:right;">Real</th>' +
     '<th style="text-align:right;">Estándar</th><th style="text-align:right;">% Std</th>' +
-    '<th style="text-align:right;">Fuga m³</th><th style="text-align:right;">$</th></tr></thead><tbody>' +
+    '<th style="text-align:right;">Fuga m³</th></tr></thead><tbody>' +
     conStd.map(function(e){
       var col = e.pctStd >= 1 ? '#27ae60' : (e.pctStd >= 0.85 ? '#e67e22' : '#c0392b');
       return '<tr><td style="font-weight:600;">'+e.equipo+'</td><td>'+e.proceso+'</td>' +
@@ -21340,12 +21470,12 @@ function gestPintaFuga(D){
              '<td style="text-align:right;">'+gN(e.real,1)+'</td>' +
              '<td style="text-align:right;color:#888;">'+gN(e.std,1)+'</td>' +
              '<td style="text-align:right;color:'+col+';font-weight:700;">'+gN(e.pctStd*100,0)+'%</td>' +
-             '<td style="text-align:right;">'+(e.fugaM3>0?gN(e.fugaM3):'—')+'</td>' +
-             '<td style="text-align:right;font-weight:600;">'+(e.fugaM3>0?gPlata(e.fugaM3*D.tarifa):'—')+'</td></tr>';
+             '<td style="text-align:right;">'+(e.fugaM3>0?gN(e.fugaM3):'—')+'</td></tr>';
     }).join('') +
+    /* Sin columna $: cada proceso es un eslabón de la cadena y su fuga no se
+       factura por separado; el único $ válido es el del Procesado (arriba). */
     '<tr class="gr"><td colspan="6">Suma de las brechas por proceso (no acumulable)</td>' +
-    '<td style="text-align:right;">'+gN(D.fugaTotM3)+'</td>' +
-    '<td style="text-align:right;">'+gPlata(D.fugaTotM3*D.tarifa)+'</td></tr></tbody></table></div>';
+    '<td style="text-align:right;">'+gN(D.fugaTotM3)+'</td></tr></tbody></table></div>';
 }
 
 /* --- BLOQUE 3c: ranking de operadores --- */
