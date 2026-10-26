@@ -3859,6 +3859,9 @@ app.get('/api/telemetria/resumen', auth, requireModulo('productividad'), async(r
         (SELECT COUNT(*) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.fecha BETWEEN $1 AND $2 AND d.horas_motor>0) AS dias_con_horas,
         (SELECT COALESCE(SUM(d.horas_motor),0) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.fecha BETWEEN $1 AND $2) AS horas,
         (SELECT COALESCE(SUM(d.combustible_l),0) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.fecha BETWEEN $1 AND $2) AS combustible_l,
+        (SELECT COALESCE(SUM(d.horas_inactivo),0) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.fecha BETWEEN $1 AND $2) AS horas_inactivo,
+        (SELECT COALESCE(SUM(d.horas_produccion),0) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.fecha BETWEEN $1 AND $2) AS horas_produccion,
+        (SELECT COUNT(*) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.fecha BETWEEN $1 AND $2 AND d.horas_inactivo IS NOT NULL) AS dias_con_ralenti,
         (SELECT MAX(d.fecha) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.horas_motor>0) AS ultimo_dia_con_horas,
         (SELECT COALESCE(SUM(r.horometro_final-r.horometro_inicial),0) FROM terreno_registros r WHERE r.equipo_id=t.equipo_id AND r.fecha BETWEEN $1 AND $2) AS horas_terreno,
         (SELECT COUNT(*) FROM terreno_registros r WHERE r.equipo_id=t.equipo_id AND r.fecha BETWEEN $1 AND $2) AS dias_terreno,
@@ -3867,10 +3870,11 @@ app.get('/api/telemetria/resumen', auth, requireModulo('productividad'), async(r
       ${marca?'WHERE t.marca=$3':''} ORDER BY t.marca,COALESCE(e.codigo,t.nombre_cliente,t.serie)`,marca?[d1,d2,marca]:[d1,d2]);
     const n=v=>v==null?null:+v;
     const rows=m.rows.map(r=>{ const uc=r.ultima_comunicacion?new Date(r.ultima_comunicacion):null; const diasSin=uc?Math.max(0,Math.floor((Date.now()-uc.getTime())/86400000)):null; // las horas de los portales vienen sin zona: nunca negativo
-      return Object.assign({},r,{smr:n(r.smr),lat:n(r.lat),lon:n(r.lon),nivel_pct:n(r.nivel_pct),tasa_lh:n(r.tasa_lh),dias_con_horas:+r.dias_con_horas,horas:+r.horas,combustible_l:+r.combustible_l,
+      return Object.assign({},r,{smr:n(r.smr),lat:n(r.lat),lon:n(r.lon),nivel_pct:n(r.nivel_pct),tasa_lh:n(r.tasa_lh),dias_con_horas:+r.dias_con_horas,horas:+r.horas,combustible_l:+r.combustible_l,horas_inactivo:+r.dias_con_ralenti>0?+r.horas_inactivo:null,horas_produccion:+r.dias_con_ralenti>0?+r.horas_produccion:null,
         horas_terreno:+r.horas_terreno,dias_terreno:+r.dias_terreno,litros_distribuidos:+r.litros_distribuidos,dias_sin_comunicar:diasSin,ultimo_dia_con_horas:r.ultimo_dia_con_horas?calIso(r.ultimo_dia_con_horas):null}); });
     const T={maquinas:rows.length,reportando:rows.filter(r=>r.dias_sin_comunicar!==null&&r.dias_sin_comunicar<=3).length,sin_reportar:rows.filter(r=>r.dias_sin_comunicar===null||r.dias_sin_comunicar>3).length,
-      sin_equipo:rows.filter(r=>!r.equipo_id).length,horas:rows.reduce((s,r)=>s+r.horas,0),horas_terreno:rows.reduce((s,r)=>s+(r.equipo_id?r.horas_terreno:0),0),litros_distribuidos:rows.reduce((s,r)=>s+(r.equipo_id?r.litros_distribuidos:0),0)};
+      sin_equipo:rows.filter(r=>!r.equipo_id).length,horas:rows.reduce((s,r)=>s+r.horas,0),horas_terreno:rows.reduce((s,r)=>s+(r.equipo_id?r.horas_terreno:0),0),litros_distribuidos:rows.reduce((s,r)=>s+(r.equipo_id?r.litros_distribuidos:0),0),
+      horas_inactivo:rows.reduce((s,r)=>s+(r.horas_inactivo||0),0),horas_con_ralenti:rows.reduce((s,r)=>s+(r.horas_inactivo!=null?r.horas:0),0)};
     const ult=await pool.query('SELECT marca,MAX(actualizado_en) AS ultima_carga FROM telemetria_maquinas GROUP BY marca');
     res.json({desde:d1,hasta:d2,totales:T,maquinas:rows,cargas:ult.rows});
   }catch(e){res.status(500).json({error:e.message});}
