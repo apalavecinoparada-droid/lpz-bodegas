@@ -11803,6 +11803,80 @@ function DonutChart(p){
 
 // ── Impuesto específico del diésel: informe mensual para el F29 (2026-10-22) ──
 // Ley 18.502 art. 7: proporción de litros maquinaria / vehículos de carretera sobre el impuesto de las compras del mes.
+// ── Telemetría de máquinas (2026-10-26): Komtrax / Tigercat / JDLink leídos por el bot → /api/telemetria ──
+function TelemetriaView(p){
+  var hoy=cmHoy();
+  const[desde,setDesde]=useState(calAdd(hoy,-29));const[hasta,setHasta]=useState(hoy);const[marca,setMarca]=useState('');
+  const[data,setData]=useState(null);const[err,setErr]=useState('');const[cargando,setCargando]=useState(false);
+  const[sel,setSel]=useState(null);const[det,setDet]=useState(null);const[msg,setMsg]=useState('');const[soloProblemas,setSoloProblemas]=useState(false);
+  var equipos=(p.m&&p.m.equipos||[]).filter(function(e){return e.activo;});
+  function cargar(){setCargando(true);setErr('');api('/telemetria/resumen?desde='+desde+'&hasta='+hasta+(marca?'&marca='+marca:''),'GET',null,p.tok).then(function(r){setData(r);}).catch(function(e){setErr(e.message);}).finally(function(){setCargando(false);});}
+  useEffect(cargar,[desde,hasta,marca]);
+  function abrir(r){setSel(r);setDet(null);api('/telemetria/diario?marca='+r.marca+'&serie='+encodeURIComponent(r.serie)+'&desde='+desde+'&hasta='+hasta,'GET',null,p.tok).then(setDet).catch(function(e){setErr(e.message);});}
+  function mapear(r,eid){api('/telemetria/maquina','PATCH',{marca:r.marca,serie:r.serie,equipo_id:eid||null},p.tok).then(function(){setMsg('✓ Equipo asignado');setTimeout(function(){setMsg('');},1500);cargar();}).catch(function(e){setErr(e.message);});}
+  var f1=function(n){return n==null?'—':Number(n).toLocaleString('es-CL',{minimumFractionDigits:1,maximumFractionDigits:1});};
+  var f0=function(n){return n==null?'—':Number(n).toLocaleString('es-CL',{maximumFractionDigits:0});};
+  var fdt=function(v){if(!v)return '—';var d=new Date(v);if(isNaN(d))return String(v).slice(0,16);return d.toLocaleDateString('es-CL')+' '+d.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});};
+  var MARCA={KOMATSU:{l:'Komatsu',c:'#1D4ED8'},TIGERCAT:{l:'Tigercat',c:'#EA580C'},DEERE:{l:'John Deere',c:'#15803D'}};
+  var estadoCom=function(r){if(r.dias_sin_comunicar===null||r.dias_sin_comunicar===undefined)return {t:'Sin dato',bg:'#E2E8F0',c:'#475569'};if(r.dias_sin_comunicar<=1)return {t:'Hoy',bg:'#DCFCE7',c:'#166534'};if(r.dias_sin_comunicar<=3)return {t:r.dias_sin_comunicar+' días',bg:'#FEF9C3',c:'#854D0E'};return {t:r.dias_sin_comunicar+' días sin reportar',bg:'#FEE2E2',c:'#991B1B'};};
+  var card=function(l,v,c){return h('div',{style:{background:'#fff',border:'1px solid #E2E8F0',borderRadius:8,padding:'10px 12px'}},h('div',{style:{fontSize:11,color:'#64748B'}},l),h('div',{className:'mono',style:{fontSize:18,fontWeight:700,color:c||'#1E293B'}},v));};
+  var thS={textAlign:'left',padding:'5px 6px',background:'#F1F5F9',fontSize:11,color:'#475569',whiteSpace:'nowrap'};var thR=Object.assign({},thS,{textAlign:'right'});
+  var tdS={padding:'5px 6px',borderBottom:'1px solid #F1F5F9',fontSize:12,verticalAlign:'middle'};var tdR=Object.assign({},tdS,{textAlign:'right'});
+  var T=data&&data.totales; var filas=(data&&data.maquinas||[]).filter(function(r){return !soloProblemas||!r.equipo_id||r.dias_sin_comunicar===null||r.dias_sin_comunicar>3;});
+  var difH=function(r){return r.equipo_id?r.horas-r.horas_terreno:null;};
+  var lh=function(r){return r.horas>0&&r.combustible_l>0?r.combustible_l/r.horas:(r.tasa_lh||null);};
+  return h('div',null,
+    h('div',{className:'al al-i',style:{marginBottom:12,fontSize:12}},'Datos leídos de los portales de cada marca por el bot de telemetría (horas de motor por día, horómetro, posición, combustible). El cruce con Terreno usa los horómetros del parte diario y las distribuciones de combustible del equipo asignado.'),
+    h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end',marginBottom:12}},
+      h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block'}},'Desde'),h('input',{type:'date',value:desde,onChange:function(e){setDesde(e.target.value);},style:CM_INP})),
+      h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block'}},'Hasta'),h('input',{type:'date',value:hasta,onChange:function(e){setHasta(e.target.value);},style:CM_INP})),
+      h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block'}},'Marca'),h('select',{value:marca,onChange:function(e){setMarca(e.target.value);},style:CM_INP},h('option',{value:''},'Todas'),Object.keys(MARCA).map(function(k){return h('option',{key:k,value:k},MARCA[k].l);}))),
+      h('label',{style:{display:'flex',alignItems:'center',gap:5,fontSize:12,cursor:'pointer',paddingBottom:6}},h('input',{type:'checkbox',checked:soloProblemas,onChange:function(e){setSoloProblemas(e.target.checked);}}),'Solo con problemas'),
+      h(Btn,{sm:true,onClick:cargar,disabled:cargando},cargando?'Cargando...':'↻ Actualizar'),
+      msg&&h('span',{style:{fontSize:12,color:'#166534',fontWeight:600}},msg),
+      data&&data.cargas&&data.cargas.length>0&&h('span',{style:{fontSize:11,color:'#64748B',marginLeft:'auto'}},'Última carga: '+data.cargas.map(function(c){return (MARCA[c.marca]||{l:c.marca}).l+' '+fdt(c.ultima_carga);}).join(' · '))),
+    err&&h('div',{className:'al al-e',style:{marginBottom:10}},err),
+    T&&h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:8,marginBottom:14}},
+      card('Máquinas con telemetría',T.maquinas),card('Reportando (≤3 días)',T.reportando,'#166534'),card('Sin reportar',T.sin_reportar,T.sin_reportar?'#B91C1C':null),card('Sin equipo asignado',T.sin_equipo,T.sin_equipo?'#B45309':null),
+      card('Horas motor (telemetría)',f0(T.horas)),card('Horas terreno (partes)',f0(T.horas_terreno)),card('Litros distribuidos',f0(T.litros_distribuidos))),
+    data&&!data.maquinas.length&&h('div',{className:'al al-w'},'Todavía no hay máquinas cargadas. Ejecuta el bot de telemetría (Skills\\bot-telemetria) con la sesión del portal abierta.'),
+    data&&data.maquinas.length>0&&h('div',{className:'card',style:{padding:0,overflow:'auto',marginBottom:12}},
+      h('table',{style:{width:'100%',borderCollapse:'collapse'}},
+        h('thead',null,h('tr',null,h('th',{style:thS},'Marca'),h('th',{style:thS},'Máquina'),h('th',{style:thS},'Equipo en el ERP'),h('th',{style:thS},'Última comunicación'),h('th',{style:thR},'Horómetro'),h('th',{style:thR},'Horas motor'),h('th',{style:thR},'Días'),h('th',{style:thR},'Horas terreno'),h('th',{style:thR},'Dif.'),h('th',{style:thR},'Litros distrib.'),h('th',{style:thR},'L/h'),h('th',{style:thR},'Nivel'),h('th',{style:thS},'Posición'))),
+        h('tbody',null,filas.map(function(r){var ec=estadoCom(r);var d=difH(r);var mk=MARCA[r.marca]||{l:r.marca,c:'#475569'};var esSel=sel&&sel.marca===r.marca&&sel.serie===r.serie;
+          return h('tr',{key:r.marca+'|'+r.serie,onClick:function(){abrir(r);},style:{cursor:'pointer',background:esSel?'#EFF6FF':(r.equipo_id?'transparent':'#FFFBEB')}},
+            h('td',{style:tdS},h('span',{style:{fontSize:10,fontWeight:700,color:'#fff',background:mk.c,borderRadius:8,padding:'1px 7px'}},mk.l)),
+            h('td',{style:tdS},h('div',{style:{fontWeight:600}},r.nombre_cliente||r.serie),h('div',{style:{fontSize:10,color:'#64748B'}},(r.modelo||'')+' · '+r.serie)),
+            h('td',{style:tdS,onClick:function(e){e.stopPropagation();}},h('select',{value:r.equipo_id||'',onChange:function(e){mapear(r,e.target.value);},style:Object.assign({},CM_INP,{fontSize:11,padding:'3px 4px',maxWidth:190,borderColor:r.equipo_id?'#CBD5E1':'#F59E0B'})},h('option',{value:''},'— asignar —'),equipos.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' · '+e.nombre);}))),
+            h('td',{style:tdS},h('span',{style:{fontSize:10,fontWeight:700,background:ec.bg,color:ec.c,borderRadius:8,padding:'1px 7px',whiteSpace:'nowrap'}},ec.t),h('div',{style:{fontSize:10,color:'#64748B'}},fdt(r.ultima_comunicacion))),
+            h('td',{style:tdR,className:'mono'},f1(r.smr)),
+            h('td',{style:tdR,className:'mono'},f1(r.horas)),
+            h('td',{style:tdR,className:'mono'},r.dias_con_horas||0),
+            h('td',{style:tdR,className:'mono'},r.equipo_id?f1(r.horas_terreno):'—'),
+            h('td',{style:Object.assign({},tdR,{color:d===null?'#94A3B8':Math.abs(d)>(r.horas*0.1+2)?'#B91C1C':'#166534',fontWeight:600}),className:'mono',title:'Horas de telemetría menos horas del parte de terreno'},d===null?'—':(d>0?'+':'')+f1(d)),
+            h('td',{style:tdR,className:'mono'},r.equipo_id?f0(r.litros_distribuidos):'—'),
+            h('td',{style:tdR,className:'mono'},lh(r)?f1(lh(r)):'—'),
+            h('td',{style:tdR,className:'mono'},r.nivel_pct!=null?f0(r.nivel_pct)+'%':'—'),
+            h('td',{style:tdS,onClick:function(e){e.stopPropagation();}},r.lat!=null&&r.lon!=null?h('a',{href:'https://www.google.com/maps?q='+r.lat+','+r.lon,target:'_blank',rel:'noopener',style:{fontSize:11,color:'#1D4ED8'},title:(r.ubicacion||'')+(r.fecha_posicion?' · '+fdt(r.fecha_posicion):'')},'📍 '+(r.ubicacion?String(r.ubicacion).split(',')[0].slice(0,22):'Mapa')):h('span',{style:{color:'#94A3B8'}},'—')));})))),
+    sel&&h('div',{className:'card',style:{padding:12}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:8}},
+        h('div',{style:{fontWeight:700,fontSize:13}},'Día a día · '+(sel.nombre_cliente||sel.serie)+' ('+(sel.modelo||'')+' · '+sel.serie+')'+(sel.equipo_codigo?' → '+sel.equipo_codigo:' · sin equipo asignado: no hay cruce con terreno')),
+        h(Btn,{sm:true,v:'g',onClick:function(){setSel(null);setDet(null);}},'✕ Cerrar')),
+      !det&&h('div',{style:{fontSize:12,color:'#64748B'}},'Cargando...'),
+      det&&h('div',{style:{overflow:'auto'}},h('table',{style:{width:'100%',borderCollapse:'collapse'}},
+        h('thead',null,h('tr',null,h('th',{style:thS},'Fecha'),h('th',{style:thS},'Horas motor (telemetría)'),h('th',{style:thR},'Horas'),h('th',{style:thR},'Horas terreno'),h('th',{style:thR},'Dif.'),h('th',{style:thR},'Horóm. final parte'),h('th',{style:thR},'Hrs perdidas'),h('th',{style:thR},'Litros distrib.'),h('th',{style:thR},'Comb. telemetría'))),
+        h('tbody',null,det.dias.map(function(x){var hm=x.horas_motor;var ht=x.horas_terreno;var d=(hm!=null&&ht!=null)?hm-ht:null;var w=hm!=null?Math.min(100,hm/14*100):0;
+          return h('tr',{key:x.fecha,style:{background:hm==null&&ht==null?'#FAFAFA':'transparent'}},
+            h('td',{style:tdS},fmtD(x.fecha)),
+            h('td',{style:Object.assign({},tdS,{minWidth:160})},h('div',{style:{height:10,background:'#E2E8F0',borderRadius:5,overflow:'hidden'}},h('div',{style:{width:w+'%',height:'100%',background:hm>0?'#1D4ED8':'transparent'}}))),
+            h('td',{style:tdR,className:'mono'},hm==null?'—':f1(hm)),
+            h('td',{style:tdR,className:'mono'},ht==null?'—':f1(ht)),
+            h('td',{style:Object.assign({},tdR,{color:d===null?'#94A3B8':Math.abs(d)>1?'#B91C1C':'#166534',fontWeight:600}),className:'mono'},d===null?'—':(d>0?'+':'')+f1(d)),
+            h('td',{style:tdR,className:'mono'},x.horometro_final==null?'—':f1(x.horometro_final)),
+            h('td',{style:tdR,className:'mono'},x.horas_perdidas==null?'—':f1(x.horas_perdidas)),
+            h('td',{style:tdR,className:'mono'},x.litros_distribuidos==null?'—':f0(x.litros_distribuidos)),
+            h('td',{style:tdR,className:'mono'},x.combustible_l==null?'—':f0(x.combustible_l)));}))))));
+}
 function CombIecView(p){
   var hoy=new Date();
   const[anio,setAnio]=useState(hoy.getFullYear());const[mes,setMes]=useState(hoy.getMonth()+1);const[emp,setEmp]=useState('');
@@ -27561,7 +27635,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={inicio:'Inicio — Avisos y pendientes',dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','calendario':'Calendario — Tareas y recordatorios','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','comb-iec':'Combustibles — Impuesto específico del diésel (F29)','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','oc-repuestos':'Duración de Repuestos — vida útil y garantía contra el uso real','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={inicio:'Inicio — Avisos y pendientes',dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','calendario':'Calendario — Tareas y recordatorios','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','telemetria':'Productividad — Telemetría de máquinas','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','comb-iec':'Combustibles — Impuesto específico del diésel (F29)','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','oc-repuestos':'Duración de Repuestos — vida útil y garantía contra el uso real','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -28217,7 +28291,7 @@ function App(){
     'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion','mant-planes':'mantencion','mant-vencimientos':'mantencion','mant-docs':'mantencion','mant-programacion':'mantencion','mant-avisos':'mantencion',
     'rendiciones':'rendiciones',
     'terreno':'terreno','terreno-tiempos':'terreno','terreno-equipos':'terreno','terreno-faena':'terreno','terreno-reportes':'terreno',
-    'prod-oee':'productividad',
+    'prod-oee':'productividad','telemetria':'productividad',
     'ia-chat':'ia',
     'solicitudes':'solicitudes',
     'comite':'comite','calendario':'calendario',
@@ -28415,7 +28489,7 @@ function App(){
         canSee('terreno')&&grp.terr&&h('div',null,navI('terreno','🌲','Registros Diarios',true),navI('terreno-tiempos','⏱','Tiempos por Proceso',true)),
         canSee('terreno')&&h('div',{className:'sb-sep'}),
         canSee('productividad')&&grpHdr('prod','PRODUCTIVIDAD'),
-        canSee('productividad')&&grp.prod&&h('div',null,navI('prod-oee','📈','OEE Cosecha',true)),
+        canSee('productividad')&&grp.prod&&h('div',null,navI('prod-oee','📈','OEE Cosecha',true),navI('telemetria','📡','Telemetría máquinas',true)),
         canSee('productividad')&&h('div',{className:'sb-sep'}),
         canSee('transporte')&&grpHdr('trans','TRANSPORTE'),
         canSee('transporte')&&grp.trans&&h('div',null,
@@ -28549,6 +28623,7 @@ function App(){
           view==='terreno'&&h(TerrenoView,{tok,m,user}),
           view==='terreno-tiempos'&&h(TerrenoTiemposView,{tok,m,user}),
           view==='prod-oee'&&h(OEEView,{tok,m,user}),
+          view==='telemetria'&&h(TelemetriaView,{tok,m,user}),
           view==='ia-chat'&&h(IAChatView,{tok,m,user}),
           view==='fin-cheques'&&h(FinChequesView,{tok,m}),
           view==='fin-liquidaciones'&&h(FinLiquidacionesView,{tok,m,user}),
