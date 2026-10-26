@@ -893,6 +893,7 @@ async function autoSetup() {
   await q(`CREATE TABLE IF NOT EXISTS telemetria_maquinas (marca VARCHAR(20) NOT NULL, serie VARCHAR(40) NOT NULL, modelo VARCHAR(60), nombre_cliente VARCHAR(80), equipo_id INT REFERENCES equipos(equipo_id), smr NUMERIC(12,1), ultima_comunicacion TIMESTAMP, lat NUMERIC(10,6), lon NUMERIC(10,6), ubicacion VARCHAR(200), fecha_posicion TIMESTAMP, nivel_pct NUMERIC(5,1), tasa_lh NUMERIC(8,2), estado VARCHAR(30), actualizado_en TIMESTAMP DEFAULT NOW(), PRIMARY KEY(marca,serie))`);
   await q(`CREATE TABLE IF NOT EXISTS telemetria_diaria (id SERIAL PRIMARY KEY, marca VARCHAR(20) NOT NULL, serie VARCHAR(40) NOT NULL, fecha DATE NOT NULL, horas_motor NUMERIC(8,2), combustible_l NUMERIC(10,2), nivel_pct NUMERIC(5,1), fuente VARCHAR(30), actualizado_en TIMESTAMP DEFAULT NOW(), UNIQUE(marca,serie,fecha))`);
   await q('CREATE INDEX IF NOT EXISTS idx_telemetria_diaria_fecha ON telemetria_diaria(fecha)');
+  for(const c of ['horas_produccion NUMERIC(8,2)','horas_inactivo NUMERIC(8,2)','tasa_lh NUMERIC(8,2)']){ try{await q('ALTER TABLE telemetria_diaria ADD COLUMN IF NOT EXISTS '+c);}catch(e){} } // Tigercat: producción/inactivo y L/h del día
   try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS iec_carretera BOOLEAN');}catch(e){}
   // Clase inicial por el tipo/nombre del equipo (editable después en el informe): transita por carretera → el impuesto NO se recupera
   try{await q(`UPDATE equipos SET iec_carretera=((COALESCE(tipo,'')||' '||COALESCE(nombre,'')) ~* '(camioneta|cami[oó]n|furg[oó]n|cama baja|remolque|bus|jeep|cmta)') WHERE iec_carretera IS NULL`);}catch(e){}
@@ -3795,6 +3796,10 @@ app.get('/api/ping', async(req,res)=>{try{await pool.query('SELECT 1');res.json(
 // tablas y el panel no cambia. Amarre máquina→equipo: por serie (telemetria_maquinas.equipo_id, editable en el panel) o, la primera
 // vez, por el "N° de máquina cliente" normalizado contra equipos.codigo/nombre (EG-5 ≈ EG-05, Proc 11 ≈ PROC-11).
 function telNorm(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'').replace(/^([A-Z]+)0+(\d)/,'$1$2'); }
+// Serie del fabricante anotada en el equipo (num_chasis / chasis / patente_serie): Tigercat y Deere no traen 'N° de máquina cliente'
+async function telEquipoPorSerie(serie){ const n=telNorm(serie); if(!n||n.length<5)return null;
+  const r=await pool.query("SELECT equipo_id,num_chasis,chasis,patente_serie FROM equipos WHERE activo=true AND (COALESCE(num_chasis,'')<>'' OR COALESCE(chasis,'')<>'' OR COALESCE(patente_serie,'')<>'')");
+  const hit=r.rows.find(e=>[e.num_chasis,e.chasis,e.patente_serie].some(v=>v&&(telNorm(v)===n||telNorm(v).endsWith(n)))); return hit?hit.equipo_id:null; }
 async function telEquipoPorNombre(nombre){
   const n=telNorm(nombre); if(!n||n.length<2)return null;
   const r=await pool.query('SELECT equipo_id,codigo,nombre FROM equipos WHERE activo=true');
@@ -3814,6 +3819,7 @@ app.post('/api/telemetria/import', auth, requireModulo('productividad'), async(r
       const serie=String(m.serie||'').trim().slice(0,40); if(!serie)continue;
       const ex=await client.query('SELECT equipo_id FROM telemetria_maquinas WHERE marca=$1 AND serie=$2',[marca,serie]);
       let eq=ex.rows.length?ex.rows[0].equipo_id:null;
+      if(!eq){ eq=await telEquipoPorSerie(serie); }
       if(!eq){ eq=await telEquipoPorNombre(m.nombre_cliente); }
       if(!eq) sinEquipo.push(serie+(m.nombre_cliente?' ('+m.nombre_cliente+')':''));
       await client.query(`INSERT INTO telemetria_maquinas(marca,serie,modelo,nombre_cliente,equipo_id,smr,ultima_comunicacion,lat,lon,ubicacion,fecha_posicion,nivel_pct,tasa_lh,estado,actualizado_en)
@@ -3829,10 +3835,11 @@ app.post('/api/telemetria/import', auth, requireModulo('productividad'), async(r
     for(const d of dias){
       const serie=String(d.serie||'').trim().slice(0,40); const f=String(d.fecha||'').slice(0,10);
       if(!serie||!/^\d{4}-\d{2}-\d{2}$/.test(f))continue;
-      await client.query(`INSERT INTO telemetria_diaria(marca,serie,fecha,horas_motor,combustible_l,nivel_pct,fuente,actualizado_en) VALUES($1,$2,$3,$4,$5,$6,$7,NOW())
+      await client.query(`INSERT INTO telemetria_diaria(marca,serie,fecha,horas_motor,combustible_l,nivel_pct,fuente,actualizado_en,horas_produccion,horas_inactivo,tasa_lh) VALUES($1,$2,$3,$4,$5,$6,$7,NOW(),$8,$9,$10)
         ON CONFLICT(marca,serie,fecha) DO UPDATE SET horas_motor=COALESCE(EXCLUDED.horas_motor,telemetria_diaria.horas_motor),combustible_l=COALESCE(EXCLUDED.combustible_l,telemetria_diaria.combustible_l),
-          nivel_pct=COALESCE(EXCLUDED.nivel_pct,telemetria_diaria.nivel_pct),fuente=EXCLUDED.fuente,actualizado_en=NOW()`,
-        [marca,serie,f,num(d.horas_motor),num(d.combustible_l),num(d.nivel_pct),fuente]);
+          nivel_pct=COALESCE(EXCLUDED.nivel_pct,telemetria_diaria.nivel_pct),fuente=EXCLUDED.fuente,actualizado_en=NOW(),
+          horas_produccion=COALESCE(EXCLUDED.horas_produccion,telemetria_diaria.horas_produccion),horas_inactivo=COALESCE(EXCLUDED.horas_inactivo,telemetria_diaria.horas_inactivo),tasa_lh=COALESCE(EXCLUDED.tasa_lh,telemetria_diaria.tasa_lh)`,
+        [marca,serie,f,num(d.horas_motor),num(d.combustible_l),num(d.nivel_pct),fuente,num(d.horas_produccion),num(d.horas_inactivo),num(d.tasa_lh)]);
       nD++;
     }
     await client.query('COMMIT'); res.json({ok:true,maquinas:nM,dias:nD,sin_equipo:sinEquipo});
@@ -3859,7 +3866,7 @@ app.get('/api/telemetria/resumen', auth, requireModulo('productividad'), async(r
       FROM telemetria_maquinas t LEFT JOIN equipos e ON e.equipo_id=t.equipo_id LEFT JOIN empresas emp ON emp.empresa_id=e.empresa_id
       ${marca?'WHERE t.marca=$3':''} ORDER BY t.marca,COALESCE(e.codigo,t.nombre_cliente,t.serie)`,marca?[d1,d2,marca]:[d1,d2]);
     const n=v=>v==null?null:+v;
-    const rows=m.rows.map(r=>{ const uc=r.ultima_comunicacion?new Date(r.ultima_comunicacion):null; const diasSin=uc?Math.floor((Date.now()-uc.getTime())/86400000):null;
+    const rows=m.rows.map(r=>{ const uc=r.ultima_comunicacion?new Date(r.ultima_comunicacion):null; const diasSin=uc?Math.max(0,Math.floor((Date.now()-uc.getTime())/86400000)):null; // las horas de los portales vienen sin zona: nunca negativo
       return Object.assign({},r,{smr:n(r.smr),lat:n(r.lat),lon:n(r.lon),nivel_pct:n(r.nivel_pct),tasa_lh:n(r.tasa_lh),dias_con_horas:+r.dias_con_horas,horas:+r.horas,combustible_l:+r.combustible_l,
         horas_terreno:+r.horas_terreno,dias_terreno:+r.dias_terreno,litros_distribuidos:+r.litros_distribuidos,dias_sin_comunicar:diasSin,ultimo_dia_con_horas:r.ultimo_dia_con_horas?calIso(r.ultimo_dia_con_horas):null}); });
     const T={maquinas:rows.length,reportando:rows.filter(r=>r.dias_sin_comunicar!==null&&r.dias_sin_comunicar<=3).length,sin_reportar:rows.filter(r=>r.dias_sin_comunicar===null||r.dias_sin_comunicar>3).length,
@@ -3872,12 +3879,12 @@ app.get('/api/telemetria/diario', auth, requireModulo('productividad'), async(re
   try{
     const [d1,d2]=telRango(req.query); const marca=String(req.query.marca||'').toUpperCase(), serie=String(req.query.serie||'');
     const mq=await pool.query('SELECT equipo_id FROM telemetria_maquinas WHERE marca=$1 AND serie=$2',[marca,serie]); const eq=mq.rows.length?mq.rows[0].equipo_id:null;
-    const d=await pool.query('SELECT fecha,horas_motor,combustible_l,nivel_pct FROM telemetria_diaria WHERE marca=$1 AND serie=$2 AND fecha BETWEEN $3 AND $4 ORDER BY fecha',[marca,serie,d1,d2]);
+    const d=await pool.query('SELECT fecha,horas_motor,combustible_l,nivel_pct,horas_produccion,horas_inactivo,tasa_lh FROM telemetria_diaria WHERE marca=$1 AND serie=$2 AND fecha BETWEEN $3 AND $4 ORDER BY fecha',[marca,serie,d1,d2]);
     const terr=eq?await pool.query('SELECT fecha,horometro_inicial,horometro_final,(horometro_final-horometro_inicial) AS horas,horas_perdidas,litros_combustible FROM terreno_registros WHERE equipo_id=$1 AND fecha BETWEEN $2 AND $3',[eq,d1,d2]):{rows:[]};
     const dist=eq?await pool.query("SELECT fecha,SUM(litros) AS litros FROM comb_movimientos WHERE equipo_id=$1 AND tipo_mov='DISTRIBUCION' AND estado='ACTIVO' AND fecha BETWEEN $2 AND $3 GROUP BY fecha",[eq,d1,d2]):{rows:[]};
     const T={},L={}; terr.rows.forEach(r=>{T[calIso(r.fecha)]=r;}); dist.rows.forEach(r=>{L[calIso(r.fecha)]=+r.litros;});
     const dias=[]; for(let f=d1;f<=d2;f=calAddDias(f,1)){ const x=d.rows.find(r=>calIso(r.fecha)===f); const t=T[f];
-      dias.push({fecha:f,horas_motor:x&&x.horas_motor!=null?+x.horas_motor:null,combustible_l:x&&x.combustible_l!=null?+x.combustible_l:null,nivel_pct:x&&x.nivel_pct!=null?+x.nivel_pct:null,
+      dias.push({fecha:f,horas_motor:x&&x.horas_motor!=null?+x.horas_motor:null,combustible_l:x&&x.combustible_l!=null?+x.combustible_l:null,nivel_pct:x&&x.nivel_pct!=null?+x.nivel_pct:null,horas_produccion:x&&x.horas_produccion!=null?+x.horas_produccion:null,horas_inactivo:x&&x.horas_inactivo!=null?+x.horas_inactivo:null,tasa_lh:x&&x.tasa_lh!=null?+x.tasa_lh:null,
         horas_terreno:t?+t.horas:null,horometro_final:t?+t.horometro_final:null,horas_perdidas:t?+t.horas_perdidas:null,litros_distribuidos:L[f]!==undefined?L[f]:null}); }
     res.json({marca,serie,equipo_id:eq,desde:d1,hasta:d2,dias});
   }catch(e){res.status(500).json({error:e.message});}
