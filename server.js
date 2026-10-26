@@ -889,6 +889,10 @@ async function autoSetup() {
   // ── Impuesto específico MEPCO (2026-10-22): tabla semanal del SII, UTM mensual y clase del equipo para el F29 ──
   await q(`CREATE TABLE IF NOT EXISTS comb_mepco (vigencia DATE PRIMARY KEY, diesel_base NUMERIC(10,4) NOT NULL, diesel_var NUMERIC(10,4) NOT NULL, g93_base NUMERIC(10,4) NOT NULL, g93_var NUMERIC(10,4) NOT NULL, g97_base NUMERIC(10,4) NOT NULL, g97_var NUMERIC(10,4) NOT NULL, fuente VARCHAR(200), creado_en TIMESTAMP DEFAULT NOW())`);
   await q(`CREATE TABLE IF NOT EXISTS comb_utm (mes CHAR(7) PRIMARY KEY, valor NUMERIC(12,2) NOT NULL, fuente VARCHAR(60), creado_en TIMESTAMP DEFAULT NOW())`);
+  // ── Telemetría de máquinas (2026-10-26): una tabla común para Komtrax / Tigercat RemoteLog / JDLink, cargada por el bot (Skills/bot-telemetria) ──
+  await q(`CREATE TABLE IF NOT EXISTS telemetria_maquinas (marca VARCHAR(20) NOT NULL, serie VARCHAR(40) NOT NULL, modelo VARCHAR(60), nombre_cliente VARCHAR(80), equipo_id INT REFERENCES equipos(equipo_id), smr NUMERIC(12,1), ultima_comunicacion TIMESTAMP, lat NUMERIC(10,6), lon NUMERIC(10,6), ubicacion VARCHAR(200), fecha_posicion TIMESTAMP, nivel_pct NUMERIC(5,1), tasa_lh NUMERIC(8,2), estado VARCHAR(30), actualizado_en TIMESTAMP DEFAULT NOW(), PRIMARY KEY(marca,serie))`);
+  await q(`CREATE TABLE IF NOT EXISTS telemetria_diaria (id SERIAL PRIMARY KEY, marca VARCHAR(20) NOT NULL, serie VARCHAR(40) NOT NULL, fecha DATE NOT NULL, horas_motor NUMERIC(8,2), combustible_l NUMERIC(10,2), nivel_pct NUMERIC(5,1), fuente VARCHAR(30), actualizado_en TIMESTAMP DEFAULT NOW(), UNIQUE(marca,serie,fecha))`);
+  await q('CREATE INDEX IF NOT EXISTS idx_telemetria_diaria_fecha ON telemetria_diaria(fecha)');
   try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS iec_carretera BOOLEAN');}catch(e){}
   // Clase inicial por el tipo/nombre del equipo (editable después en el informe): transita por carretera → el impuesto NO se recupera
   try{await q(`UPDATE equipos SET iec_carretera=((COALESCE(tipo,'')||' '||COALESCE(nombre,'')) ~* '(camioneta|cami[oó]n|furg[oó]n|cama baja|remolque|bus|jeep|cmta)') WHERE iec_carretera IS NULL`);}catch(e){}
@@ -3785,6 +3789,99 @@ app.get('/api/ping', async(req,res)=>{try{await pool.query('SELECT 1');res.json(
 // ════════════════════════════════════════════════════
 
 // Tipos de combustible
+// ═══ TELEMETRÍA DE MÁQUINAS (2026-10-26) ═══
+// Komtrax (Komatsu), Tigercat RemoteLog y JDLink no dan API sin pedirla al distribuidor; el bot Skills/bot-telemetria lee los portales
+// con la sesión del usuario y manda aquí lo leído. Si algún día llegan credenciales ISO 15143-3, el conector escribe en las mismas
+// tablas y el panel no cambia. Amarre máquina→equipo: por serie (telemetria_maquinas.equipo_id, editable en el panel) o, la primera
+// vez, por el "N° de máquina cliente" normalizado contra equipos.codigo/nombre (EG-5 ≈ EG-05, Proc 11 ≈ PROC-11).
+function telNorm(s){ return String(s||'').toUpperCase().replace(/[^A-Z0-9]/g,'').replace(/^([A-Z]+)0+(\d)/,'$1$2'); }
+async function telEquipoPorNombre(nombre){
+  const n=telNorm(nombre); if(!n||n.length<2)return null;
+  const r=await pool.query('SELECT equipo_id,codigo,nombre FROM equipos WHERE activo=true');
+  const hit=r.rows.find(e=>telNorm(e.codigo)===n)||r.rows.find(e=>telNorm(e.nombre)===n)||r.rows.find(e=>n.length>=4&&telNorm(e.nombre).indexOf(n)===0);
+  return hit?hit.equipo_id:null;
+}
+app.post('/api/telemetria/import', auth, requireModulo('productividad'), async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const marca=String(req.body.marca||'').toUpperCase().slice(0,20); if(!marca) throw new Error('Falta la marca (KOMATSU / TIGERCAT / DEERE)');
+    const maqs=Array.isArray(req.body.maquinas)?req.body.maquinas:[]; const dias=Array.isArray(req.body.diario)?req.body.diario:[];
+    const fuente=String(req.body.fuente||'bot').slice(0,30);
+    const num=v=>(v===''||v===null||v===undefined||isNaN(parseFloat(v)))?null:parseFloat(v);
+    const ts=v=>{ if(!v)return null; const d=new Date(v); return isNaN(d)?null:d; };
+    await client.query('BEGIN'); let nM=0,nD=0; const sinEquipo=[];
+    for(const m of maqs){
+      const serie=String(m.serie||'').trim().slice(0,40); if(!serie)continue;
+      const ex=await client.query('SELECT equipo_id FROM telemetria_maquinas WHERE marca=$1 AND serie=$2',[marca,serie]);
+      let eq=ex.rows.length?ex.rows[0].equipo_id:null;
+      if(!eq){ eq=await telEquipoPorNombre(m.nombre_cliente); }
+      if(!eq) sinEquipo.push(serie+(m.nombre_cliente?' ('+m.nombre_cliente+')':''));
+      await client.query(`INSERT INTO telemetria_maquinas(marca,serie,modelo,nombre_cliente,equipo_id,smr,ultima_comunicacion,lat,lon,ubicacion,fecha_posicion,nivel_pct,tasa_lh,estado,actualizado_en)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,NOW())
+        ON CONFLICT(marca,serie) DO UPDATE SET modelo=COALESCE(EXCLUDED.modelo,telemetria_maquinas.modelo),nombre_cliente=COALESCE(EXCLUDED.nombre_cliente,telemetria_maquinas.nombre_cliente),
+          equipo_id=COALESCE(telemetria_maquinas.equipo_id,EXCLUDED.equipo_id),smr=COALESCE(EXCLUDED.smr,telemetria_maquinas.smr),
+          ultima_comunicacion=COALESCE(EXCLUDED.ultima_comunicacion,telemetria_maquinas.ultima_comunicacion),lat=COALESCE(EXCLUDED.lat,telemetria_maquinas.lat),lon=COALESCE(EXCLUDED.lon,telemetria_maquinas.lon),
+          ubicacion=COALESCE(EXCLUDED.ubicacion,telemetria_maquinas.ubicacion),fecha_posicion=COALESCE(EXCLUDED.fecha_posicion,telemetria_maquinas.fecha_posicion),
+          nivel_pct=COALESCE(EXCLUDED.nivel_pct,telemetria_maquinas.nivel_pct),tasa_lh=COALESCE(EXCLUDED.tasa_lh,telemetria_maquinas.tasa_lh),estado=COALESCE(EXCLUDED.estado,telemetria_maquinas.estado),actualizado_en=NOW()`,
+        [marca,serie,m.modelo?String(m.modelo).slice(0,60):null,m.nombre_cliente?String(m.nombre_cliente).slice(0,80):null,eq,num(m.smr),ts(m.ultima_comunicacion),num(m.lat),num(m.lon),m.ubicacion?String(m.ubicacion).slice(0,200):null,ts(m.fecha_posicion),num(m.nivel_pct),num(m.tasa_lh),m.estado?String(m.estado).slice(0,30):null]);
+      nM++;
+    }
+    for(const d of dias){
+      const serie=String(d.serie||'').trim().slice(0,40); const f=String(d.fecha||'').slice(0,10);
+      if(!serie||!/^\d{4}-\d{2}-\d{2}$/.test(f))continue;
+      await client.query(`INSERT INTO telemetria_diaria(marca,serie,fecha,horas_motor,combustible_l,nivel_pct,fuente,actualizado_en) VALUES($1,$2,$3,$4,$5,$6,$7,NOW())
+        ON CONFLICT(marca,serie,fecha) DO UPDATE SET horas_motor=COALESCE(EXCLUDED.horas_motor,telemetria_diaria.horas_motor),combustible_l=COALESCE(EXCLUDED.combustible_l,telemetria_diaria.combustible_l),
+          nivel_pct=COALESCE(EXCLUDED.nivel_pct,telemetria_diaria.nivel_pct),fuente=EXCLUDED.fuente,actualizado_en=NOW()`,
+        [marca,serie,f,num(d.horas_motor),num(d.combustible_l),num(d.nivel_pct),fuente]);
+      nD++;
+    }
+    await client.query('COMMIT'); res.json({ok:true,maquinas:nM,dias:nD,sin_equipo:sinEquipo});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+app.patch('/api/telemetria/maquina', auth, requireModulo('productividad'), async(req,res)=>{
+  try{ const{marca,serie,equipo_id}=req.body||{}; if(!marca||!serie)return res.status(400).json({error:'Faltan marca y serie'});
+    await pool.query('UPDATE telemetria_maquinas SET equipo_id=$1,actualizado_en=NOW() WHERE marca=$2 AND serie=$3',[parseInt(equipo_id)||null,String(marca).toUpperCase(),serie]); res.json({ok:true}); }
+  catch(e){res.status(500).json({error:e.message});}
+});
+function telRango(q){ const hoy=new Date().toISOString().slice(0,10); const ok=v=>/^\d{4}-\d{2}-\d{2}$/.test(String(v||'')); const d2=ok(q.hasta)?q.hasta:hoy; const d1=ok(q.desde)?q.desde:calAddDias(d2,-29); return [d1,d2]; }
+app.get('/api/telemetria/resumen', auth, requireModulo('productividad'), async(req,res)=>{
+  try{
+    const [d1,d2]=telRango(req.query); const marca=req.query.marca?String(req.query.marca).toUpperCase():null;
+    const m=await pool.query(`SELECT t.*,e.codigo AS equipo_codigo,e.nombre AS equipo_nombre,e.empresa_id,emp.razon_social AS empresa_nombre,
+        (SELECT COUNT(*) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.fecha BETWEEN $1 AND $2 AND d.horas_motor>0) AS dias_con_horas,
+        (SELECT COALESCE(SUM(d.horas_motor),0) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.fecha BETWEEN $1 AND $2) AS horas,
+        (SELECT COALESCE(SUM(d.combustible_l),0) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.fecha BETWEEN $1 AND $2) AS combustible_l,
+        (SELECT MAX(d.fecha) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.horas_motor>0) AS ultimo_dia_con_horas,
+        (SELECT COALESCE(SUM(r.horometro_final-r.horometro_inicial),0) FROM terreno_registros r WHERE r.equipo_id=t.equipo_id AND r.fecha BETWEEN $1 AND $2) AS horas_terreno,
+        (SELECT COUNT(*) FROM terreno_registros r WHERE r.equipo_id=t.equipo_id AND r.fecha BETWEEN $1 AND $2) AS dias_terreno,
+        (SELECT COALESCE(SUM(c.litros),0) FROM comb_movimientos c WHERE c.equipo_id=t.equipo_id AND c.tipo_mov='DISTRIBUCION' AND c.estado='ACTIVO' AND c.fecha BETWEEN $1 AND $2) AS litros_distribuidos
+      FROM telemetria_maquinas t LEFT JOIN equipos e ON e.equipo_id=t.equipo_id LEFT JOIN empresas emp ON emp.empresa_id=e.empresa_id
+      ${marca?'WHERE t.marca=$3':''} ORDER BY t.marca,COALESCE(e.codigo,t.nombre_cliente,t.serie)`,marca?[d1,d2,marca]:[d1,d2]);
+    const n=v=>v==null?null:+v;
+    const rows=m.rows.map(r=>{ const uc=r.ultima_comunicacion?new Date(r.ultima_comunicacion):null; const diasSin=uc?Math.floor((Date.now()-uc.getTime())/86400000):null;
+      return Object.assign({},r,{smr:n(r.smr),lat:n(r.lat),lon:n(r.lon),nivel_pct:n(r.nivel_pct),tasa_lh:n(r.tasa_lh),dias_con_horas:+r.dias_con_horas,horas:+r.horas,combustible_l:+r.combustible_l,
+        horas_terreno:+r.horas_terreno,dias_terreno:+r.dias_terreno,litros_distribuidos:+r.litros_distribuidos,dias_sin_comunicar:diasSin,ultimo_dia_con_horas:r.ultimo_dia_con_horas?calIso(r.ultimo_dia_con_horas):null}); });
+    const T={maquinas:rows.length,reportando:rows.filter(r=>r.dias_sin_comunicar!==null&&r.dias_sin_comunicar<=3).length,sin_reportar:rows.filter(r=>r.dias_sin_comunicar===null||r.dias_sin_comunicar>3).length,
+      sin_equipo:rows.filter(r=>!r.equipo_id).length,horas:rows.reduce((s,r)=>s+r.horas,0),horas_terreno:rows.reduce((s,r)=>s+(r.equipo_id?r.horas_terreno:0),0),litros_distribuidos:rows.reduce((s,r)=>s+(r.equipo_id?r.litros_distribuidos:0),0)};
+    const ult=await pool.query('SELECT marca,MAX(actualizado_en) AS ultima_carga FROM telemetria_maquinas GROUP BY marca');
+    res.json({desde:d1,hasta:d2,totales:T,maquinas:rows,cargas:ult.rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/telemetria/diario', auth, requireModulo('productividad'), async(req,res)=>{
+  try{
+    const [d1,d2]=telRango(req.query); const marca=String(req.query.marca||'').toUpperCase(), serie=String(req.query.serie||'');
+    const mq=await pool.query('SELECT equipo_id FROM telemetria_maquinas WHERE marca=$1 AND serie=$2',[marca,serie]); const eq=mq.rows.length?mq.rows[0].equipo_id:null;
+    const d=await pool.query('SELECT fecha,horas_motor,combustible_l,nivel_pct FROM telemetria_diaria WHERE marca=$1 AND serie=$2 AND fecha BETWEEN $3 AND $4 ORDER BY fecha',[marca,serie,d1,d2]);
+    const terr=eq?await pool.query('SELECT fecha,horometro_inicial,horometro_final,(horometro_final-horometro_inicial) AS horas,horas_perdidas,litros_combustible FROM terreno_registros WHERE equipo_id=$1 AND fecha BETWEEN $2 AND $3',[eq,d1,d2]):{rows:[]};
+    const dist=eq?await pool.query("SELECT fecha,SUM(litros) AS litros FROM comb_movimientos WHERE equipo_id=$1 AND tipo_mov='DISTRIBUCION' AND estado='ACTIVO' AND fecha BETWEEN $2 AND $3 GROUP BY fecha",[eq,d1,d2]):{rows:[]};
+    const T={},L={}; terr.rows.forEach(r=>{T[calIso(r.fecha)]=r;}); dist.rows.forEach(r=>{L[calIso(r.fecha)]=+r.litros;});
+    const dias=[]; for(let f=d1;f<=d2;f=calAddDias(f,1)){ const x=d.rows.find(r=>calIso(r.fecha)===f); const t=T[f];
+      dias.push({fecha:f,horas_motor:x&&x.horas_motor!=null?+x.horas_motor:null,combustible_l:x&&x.combustible_l!=null?+x.combustible_l:null,nivel_pct:x&&x.nivel_pct!=null?+x.nivel_pct:null,
+        horas_terreno:t?+t.horas:null,horometro_final:t?+t.horometro_final:null,horas_perdidas:t?+t.horas_perdidas:null,litros_distribuidos:L[f]!==undefined?L[f]:null}); }
+    res.json({marca,serie,equipo_id:eq,desde:d1,hasta:d2,dias});
+  }catch(e){res.status(500).json({error:e.message});}
+});
 // ═══ IMPUESTO ESPECÍFICO A LOS COMBUSTIBLES (Ley 18.502) + MEPCO (Ley 20.765) — 2026-10-22 ═══
 // Fuente semanal: https://www.sii.cl/valores_y_fechas/mepco/mepcoAAAA.htm (componente base y variable en UTM/m³; cambia los jueves).
 // $/L = (base + variable) × UTM del mes / 1000. Gasolina 95 = mezcla 93/97: variable = promedio ponderado (Ley 20.765 art. 3 N° 8), base 6.
