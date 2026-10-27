@@ -6405,6 +6405,10 @@ function applyFilters() {
     b.e26 += r.E26CAMBIO_DE_CADENA_O_ESPADA||0;
     b.e27 += r.E27MEDICI_N_DE_LARGO_DE_TROZOS||0;
     b.e99 += r.E99OTROS||0;
+    // Texto de Formin para los Otros (ej. "SIN BOSQUE"), sumado por mes
+    if (!b.obs) b.obs = {F:{}, E:{}};
+    var ob = r.OBS_OTROS || {};
+    ['F','E'].forEach(function(s){ Object.keys(ob[s]||{}).forEach(function(t){ b.obs[s][t] = (b.obs[s][t]||0) + ob[s][t]; }); });
   });
 
   var months = Object.keys(byMonth).sort().map(function(k){ return byMonth[k]; });
@@ -6703,9 +6707,18 @@ function applyFilters() {
   document.getElementById('tob-tbody').innerHTML = top12.map(function(c, idx) {
     var v4 = show4.map(function(m){ return c.porMes[months.indexOf(m)] || 0; });
     var rowStyle = idx % 2 === 0 ? '' : ' style="background:#fafafa"';
+    // Otros: lo que Formin anotó en la observación, con sus horas del período
+    var obsLbl = '';
+    if (c.key === 'fOt' || c.key === 'e99') {
+      var lado = c.key === 'fOt' ? 'F' : 'E', oT = {};
+      months.forEach(function(m){ var o = (m.obs && m.obs[lado]) || {}; Object.keys(o).forEach(function(t){ oT[t] = (oT[t]||0) + o[t]; }); });
+      var oK = Object.keys(oT).sort(function(a,b){ return oT[b]-oT[a]; });
+      if (oK.length) obsLbl = '<div style="font-size:9px;color:#b9770e;font-weight:600;margin-left:12px;">' +
+        oK.map(function(t){ return t + ' ' + fmt(oT[t],1) + ' h'; }).join(' · ') + '</div>';
+    }
     return '<tr'+rowStyle+'>'
       +'<td style="color:#888;font-size:9px;text-align:center;">'+(idx+1)+'</td>'
-      +'<td><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+c.color+';margin-right:4px;vertical-align:middle;"></span>'+c.lbl+'</td>'
+      +'<td><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+c.color+';margin-right:4px;vertical-align:middle;"></span>'+c.lbl+obsLbl+'</td>'
       + v4.map(function(v){ return '<td style="color:'+(v>0?'#c0392b':'#aaa')+'">'+fmt(v,1)+'</td>'; }).join('')
       + '<td>&mdash;</td>'.repeat(4-v4.length)
       +'<td style="font-weight:700;color:#c0392b;">'+fmt(c.tot,1)+'</td></tr>';
@@ -8241,6 +8254,10 @@ function loadExcel(input) {
       var COL_ARBAF  = C(['NUMERO_ARBOLES'], 31);
       // Especie (P.Radiata / E.Nitens / E.Globulus), para la tabla "Control Formin"
       var COL_ESPN   = C(['ESPECIE_NOMBRE'], 3);
+      /* 22-10-2026: Formin anota en texto qué fue el "Otros" (ej. Mec 5 13-10: E99 = 11 h,
+         "SIN BOSQUE"). La 1ª observación va con las causas F y la 2ª con las E. */
+      var COL_OBSF   = C(['OBSERVACION_TIEMPOS_PERDIDOS'], 61);
+      var COL_OBSE   = C(['OBSERVACION_TIEMPOS_PERDIDOS2'], 84);
       // Causas F y E: buscar por prefijo en encabezados
       var COL_F = {}, COL_E = {};
       if (hdrs) {
@@ -8252,6 +8269,16 @@ function loadExcel(input) {
       }
       function cF(n,fb){ return COL_F[n]!==undefined?COL_F[n]:fb; }
       function cE(n,fb){ return COL_E[n]!==undefined?COL_E[n]:fb; }
+      // Suma las horas de Otros bajo el texto de su observación: {F:{}, E:{'SIN BOSQUE': 19}}
+      function obsOtrosAdd(dst, row){
+        [['F', cF(99,60), COL_OBSF], ['E', cE(99,83), COL_OBSE]].forEach(function(p){
+          var h = parseFloat(row[p[1]])||0;
+          var t = String(row[p[2]]||'').trim().toUpperCase();
+          if (h <= 0 || !t || t === '0') return;
+          if (!dst[p[0]]) dst[p[0]] = {};
+          dst[p[0]][t] = (dst[p[0]][t]||0) + h;
+        });
+      }
 
       console.log('Columnas detectadas — FAENA:'+COL_FAENA+' ANOMES:'+COL_ANOMES+' HRS:'+COL_HRS+' TOB:'+COL_TOB+' TOC:'+COL_TOC+' VMA:'+COL_VMA+' NARB:'+COL_NARB+' M3BD:'+COL_M3BD+' dataStart:'+dataStart);
       console.log('>>> HORAS TRABAJADAS: se usa la columna índice '+COL_HRS+' (AC=28) con encabezado: "'+(hdrs?hdrs[COL_HRS]:'?')+'"');
@@ -8312,6 +8339,8 @@ function loadExcel(input) {
         g.E24 += parseFloat(row[cE(24,79)])||0; g.E25 += parseFloat(row[cE(25,80)])||0;
         g.E26 += parseFloat(row[cE(26,81)])||0; g.E27 += parseFloat(row[cE(27,82)])||0;
         g.E99 += parseFloat(row[cE(99,83)])||0;
+        if (!g.OBS) g.OBS = {};
+        obsOtrosAdd(g.OBS, row);
       }
       Object.keys(grouped).forEach(function(k) {
         var g = grouped[k];
@@ -8348,7 +8377,8 @@ function loadExcel(input) {
           E25DETENIDO_POR_FALTA_DE_MADEREO:g.E25,
           E26CAMBIO_DE_CADENA_O_ESPADA:g.E26,
           E27MEDICI_N_DE_LARGO_DE_TROZOS:g.E27,
-          E99OTROS:g.E99
+          E99OTROS:g.E99,
+          OBS_OTROS:g.OBS||{}
         });
       });
 
@@ -8433,6 +8463,8 @@ function loadExcel(input) {
         bd.E24+=parseFloat(row[cE(24,79)])||0; bd.E25+=parseFloat(row[cE(25,80)])||0;
         bd.E26+=parseFloat(row[cE(26,81)])||0; bd.E27+=parseFloat(row[cE(27,82)])||0;
         bd.E99+=parseFloat(row[cE(99,83)])||0;
+        if (!bd.obs99) bd.obs99 = {};
+        obsOtrosAdd(bd.obs99, row);
       }
       /* === Nombres de operador que Formin deja en blanco ===
          "Base datos Procesador Mecaniz" trae 134 filas (24%) con el operador en "—",
@@ -11514,7 +11546,7 @@ function estRender(){
   } catch(eC){ console.warn('[ESTD] grafico:', eC.message); }
 }
 
-var APP_BUILD = '22-10-2026 Gestión: fuga de ritmo sin columna $';
+var APP_BUILD = '26-10-2026 Residuos: FR719 mixto marcado con *';
 console.log('%c[APP] build ' + APP_BUILD, 'background:#1a6b3a;color:#fff;padding:2px 6px;');
 try { var _sello = function(){ var e = document.getElementById('app-build-sello'); if (e) e.innerHTML = '&#128278; Versión: <b>' + APP_BUILD + '</b>'; };
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _sello); else _sello(); } catch(e) {}
@@ -13969,19 +14001,31 @@ function rsTablaStock(cods){
         '<td style="text-align:right;">' + rsN(x.ingN) + ' / ' + rsN(x.ingKg, 1) + '</td><td style="text-align:right;">' + rsN(x.retN) + ' / ' + rsN(x.retKg, 1) + '</td>' +
         '<td style="text-align:right;font-weight:800;">' + rsN(x.ingN - x.retN) + '</td><td style="text-align:right;font-weight:800;">' + rsN(x.ingKg - x.retKg, 1) + '</td></tr>'; }).join('') + '</table></div>';
 }
+/* FR719 MIXTO (26-10-2026, Gustavo): el mismo formulario trae residuos peligrosos y chatarra (cadenas, espadas,
+   cables). Su N° de guía va con * y en morado en las dos tablas, para saber que tiene filas en la otra. */
+var RS_MIXTO_COLOR = '#8e44ad';
+function rsEsMixto(l){
+  var p = false, n = false;
+  (l.items || []).forEach(function(it){ if (rsEsPel(it.cod)) p = true; else n = true; });
+  return p && n;
+}
 function rsTablaBase(F, conPel){
   if (!F.length) return '<div style="color:#888;">Sin registros. Cada FR719 recibido agrega aquí una fila por producto.</div>';
   var x = function(c){ return '<td style="text-align:center;">' + (c ? 'x' : '') + '</td>'; };
+  var hayMixto = F.some(function(f){ return rsEsMixto(f.lote); });
   return '<div style="overflow-x:auto;"><table class="rs-tb"><tr><th>Emp.</th><th>N° guía interna</th><th>Faena / EESS</th><th>Descripción</th><th>Sólido</th><th>Líquido</th><th>Semisólido</th><th>N°</th><th>Kg</th>' +
     (conPel ? RS_CARS.map(function(c){ return '<th>' + c + '</th>'; }).join('') : '') + '<th title="Fecha de recepción en la bodega (clic para corregir)">Ingreso</th><th title="Salida final de la bodega con folio SIDREP">Egreso</th><th>Días</th></tr>' +
-    F.map(function(f){ var p = RS_PROD[f.cod], car = RS_CAR[f.cod] || '', d = rsDiasDesde(f.ingreso);
-      return '<tr' + (f.egreso ? ' style="color:#888;"' : '') + '><td>' + f.emp + '</td><td style="text-align:center;font-weight:700;"><a href="#" title="Ver el FR719 N° ' + f.lote.corr + '" style="color:#0b2a6b;" onclick="rsImprimir(\'' + f.lote.id + '\',\'fr719\');return false;">' + f.lote.corr + '</a></td><td>' + rsE(f.lote.faena) +
+    F.map(function(f){ var p = RS_PROD[f.cod], car = RS_CAR[f.cod] || '', d = rsDiasDesde(f.ingreso), mx = rsEsMixto(f.lote);
+      return '<tr' + (f.egreso ? ' style="color:#888;"' : '') + '><td>' + f.emp + '</td><td style="text-align:center;font-weight:700;"><a href="#" title="Ver el FR719 N° ' + f.lote.corr +
+        (mx ? ' (mixto: trae residuos peligrosos y chatarra)' : '') + '" style="color:' + (mx ? RS_MIXTO_COLOR : '#0b2a6b') + ';" onclick="rsImprimir(\'' + f.lote.id + '\',\'fr719\');return false;">' + f.lote.corr + (mx ? '*' : '') + '</a></td><td>' + rsE(f.lote.faena) +
         '</td><td>' + rsE(p.n) + '</td>' + x(f.est === 'Sólido') + x(f.est === 'Líquido') + x(f.est === 'Semisólido') +
         '<td style="text-align:right;">' + rsN(f.n) + '</td><td style="text-align:right;">' + rsN(f.kg, 1) + '</td>' + (conPel ? RS_CARS.map(function(c){ return x(car === c); }).join('') : '') +
         '<td>' + (f.egreso ? rsF(f.ingreso) : '<a href="#" title="Cambiar la fecha de ingreso a la bodega" style="color:inherit;text-decoration:underline dotted;" onclick="rsCambiarIngreso(\'' + f.lote.id + '\');return false;">' + rsF(f.ingreso) + '</a>') +
         '</td><td style="font-weight:700;color:#1f6feb;">' + (f.egreso ? rsF(f.egreso) + '<br><span style="font-size:9.5px;color:#888;font-weight:400;">' +
           (f.folio && f.folio !== '—' ? 'folio ' + rsE(f.folio) : 'salida sin SIDREP') + '</span>' : '') + '</td>' +
-        '<td style="text-align:center;font-weight:700;color:' + (f.egreso ? '#888' : !conPel ? '#555' : d >= RS_DIAS_BODEGA ? '#c0392b' : d >= 75 ? '#b7791f' : '#1a6b3a') + ';">' + (f.egreso || !conPel ? '—' : d) + '</td></tr>'; }).join('') + '</table></div>';
+        '<td style="text-align:center;font-weight:700;color:' + (f.egreso ? '#888' : !conPel ? '#555' : d >= RS_DIAS_BODEGA ? '#c0392b' : d >= 75 ? '#b7791f' : '#1a6b3a') + ';">' + (f.egreso || !conPel ? '—' : d) + '</td></tr>'; }).join('') + '</table></div>' +
+    (hayMixto ? '<div style="font-size:10.5px;color:' + RS_MIXTO_COLOR + ';margin-top:3px;"><b>N°*</b> FR719 mixto: el mismo formulario trae residuos peligrosos y chatarra (' +
+      (conPel ? 'sus cadenas, espadas o cables están en la pila de chatarra, más abajo' : 'sus residuos peligrosos están en la bodega transitoria, más arriba') + ').</div>' : '');
 }
 function rsHtmlBodega(){
   var b = rsItemsBodega().filter(function(x){ return rsEsPel(x.it.cod); });
@@ -14164,7 +14208,8 @@ function rsHtmlForms(){
       var folios = {}; l.items.forEach(function(it){ var r = it.retiro && retF[it.retiro]; if (r && !r.noPel) folios[rsF(r.fecha) + (r.folio ? ' · ' + r.folio : '')] = 1; });
       var kg = l.items.reduce(function(a, it){ return a + (+it.kg || 0); }, 0);
       var prods = rsResumen(l.items).map(function(x){ return RS_PROD[x.cod].n; }).join(', ');
-      return '<tr><td style="text-align:center;font-weight:800;">' + l.corr + '</td><td>' + rsF(t.fecha) + '</td><td>' + rsEmpCorta(t.empresa || rsEmpresaDe(l.faena)) +
+      var mx = rsEsMixto(l);
+      return '<tr><td style="text-align:center;font-weight:800;' + (mx ? 'color:' + RS_MIXTO_COLOR + ';" title="FR719 mixto: trae residuos peligrosos y chatarra' : '') + '">' + l.corr + (mx ? '*' : '') + '</td><td>' + rsF(t.fecha) + '</td><td>' + rsEmpCorta(t.empresa || rsEmpresaDe(l.faena)) +
         '</td><td>' + rsE(l.faena) + '</td><td>' + rsE(t.predio || l.fundo || '') + '</td><td style="font-size:10.5px;">' + rsE(prods) + '</td><td style="text-align:right;">' + rsN(kg, 1) +
         '</td><td><span class="rs-chip" style="background:' + e[1] + ';color:' + e[2] + ';">' + e[0] + '</span></td><td style="font-size:10.5px;">' + Object.keys(folios).join('<br>') +
         '</td><td style="white-space:nowrap;"><button class="rs-btn" style="background:#7a5a00;color:#fff;" onclick="rsImprimir(\'' + l.id + '\',\'fr719\')">&#128424; FR719</button>' +
@@ -14875,14 +14920,24 @@ function bestUpdate() {
                    'E14','E12','E13','E25','E26','E27','E15','E9','E10','E11','E24','E99','E1','E4','E5','E6'];
     var ch='';
     causaKeys.forEach(function(k){
-      var vals=dias.map(function(d){return d&&d.hrs>0?(d[k]||0):null;});
+      // un día sin horas igual muestra su causa (ej. Mec 5 13-10: 0 h trabajadas, 38 h "SIN BOSQUE")
+      var vals=dias.map(function(d){return d&&(d.hrs>0||(d[k]||0)>0)?(d[k]||0):null;});
       var tot=vals.reduce(function(a,v){return a+(v||0);},0);
       if(tot===0) return;
-      ch+='<tr><td class="kpi-col" style="font-size:10px;">'+(CAUSA_LABELS[k]||k)+'</td>';
-      vals.forEach(function(v){
+      // Otros: Formin anota qué fue (ej. "SIN BOSQUE"); va bajo el nombre y en el globo de cada día
+      var esOtros=(k==='F99'||k==='E99');
+      var lado=k.charAt(0);
+      var obsDe=function(d){ return (esOtros&&d&&d.obs99&&d.obs99[lado])||{}; };
+      var obsDia=function(d){ var o=obsDe(d); return Object.keys(o).map(function(t){return t+' ('+o[t].toFixed(1)+' h)';}).join(' · '); };
+      var obsSem={};
+      if(esOtros) dias.forEach(function(d){ Object.keys(obsDe(d)).forEach(function(t){obsSem[t]=1;}); });
+      var obsLbl=Object.keys(obsSem).length?'<div style="font-size:9px;color:#b9770e;font-weight:600;">'+Object.keys(obsSem).join(' · ')+'</div>':'';
+      ch+='<tr><td class="kpi-col" style="font-size:10px;">'+(CAUSA_LABELS[k]||k)+obsLbl+'</td>';
+      vals.forEach(function(v,i){
         if(v===null){ch+='<td><span style="color:#ccc;">—</span></td>';return;}
         var bc=v>0?(v>1?'day-bad':'day-warn'):'';
-        ch+='<td>'+(v>0?'<span class="day-cell '+bc+'">'+v.toFixed(1)+'</span>':'<span style="color:#ddd;">0</span>')+'</td>';
+        var od=v>0?obsDia(dias[i]):'';
+        ch+='<td'+(od?' title="'+od+'"':'')+'>'+(v>0?'<span class="day-cell '+bc+'">'+v.toFixed(1)+'</span>':'<span style="color:#ddd;">0</span>')+'</td>';
       });
       ch+='<td><span style="font-weight:700;color:#c0392b;">'+tot.toFixed(1)+'</span></td></tr>';
     });
@@ -22605,6 +22660,51 @@ function gestExportar(){
       }catch(e){ console.warn('OEE datasets apply error',e); }
     }
   });
+  // ── Residuos en el servidor (contrato ERP, 2026-10-27, receta de Gustavo etapa 1) ──
+  // La App guarda Residuos en localStorage ('resid_v1') con rsLoad()/rsSave(). Dentro del ERP, además: el ERP manda el
+  // registro de la base al cargar ({__oeeResiduos:{datos,version}}), y cada rsSave() se lo devuelve ({__oeeResiduosSave})
+  // para que lo guarde con PUT /api/prod/residuos. Si otro usuario guardó antes llega {__oeeResiduosConflict} con lo de
+  // la base: se aplica, se avisa y se repinta (igual que el listener 'storage' entre pestañas). Base vacía → se sube lo
+  // local una vez (migración). Firmas registradas (rs_firmas) y documentos (IndexedDB rs_docs) siguen solo en el navegador.
+  (function(){
+    if(typeof rsSave!=='function'||typeof rsLoad!=='function') return;
+    var RS_KEY_SRV='resid_v1', verSrv=null, listo=false, guardando=false, orig=rsSave;
+    function aplicar(datos, version, aviso){
+      verSrv=version;
+      if(datos&&typeof datos==='object'){
+        try{ localStorage.setItem(RS_KEY_SRV, JSON.stringify(datos)); }catch(e){}
+        try{ RS=datos; }catch(e){}
+      }
+      var m=document.getElementById('rs-modal');
+      if(aviso){ try{ if(m&&m.style.display==='flex'&&typeof rsModalCerrar==='function') rsModalCerrar(); }catch(e){} alert(aviso); }
+      var p=document.getElementById('panel-resid');
+      try{ if(p&&p.style.display!=='none'&&typeof rsRender==='function') rsRender(); }catch(e){}
+    }
+    window.rsSave=function(){
+      var r=orig.apply(this,arguments);
+      if(listo&&!guardando){ try{ parent.postMessage({__oeeResiduosSave:{datos:RS,version:verSrv}},'*'); }catch(e){} }
+      return r;
+    };
+    window.addEventListener('message',function(ev){
+      var d=ev.data||{};
+      if(d.__oeeResiduos){
+        var r=d.__oeeResiduos;
+        if(r.datos&&r.datos.lotes){ aplicar(r.datos, r.version||0); }
+        else{
+          verSrv=r.version||0;
+          var loc=null; try{ loc=JSON.parse(localStorage.getItem(RS_KEY_SRV)||'null'); }catch(e){}
+          if(loc&&loc.lotes&&loc.lotes.length){ try{ parent.postMessage({__oeeResiduosSave:{datos:loc,version:verSrv}},'*'); }catch(e){} }
+        }
+        listo=true;
+      }
+      if(d.__oeeResiduosSaved){ verSrv=d.__oeeResiduosSaved.version; }
+      if(d.__oeeResiduosConflict){
+        var c=d.__oeeResiduosConflict;
+        aplicar(c.datos, c.version, 'Otro usuario modificó Residuos'+(c.quien?' ('+c.quien+')':'')+'; se recargaron los datos de la base.\nRevisa y vuelve a ingresar lo que no haya quedado.');
+      }
+      if(d.__oeeResiduosError){ alert('No se pudo guardar Residuos en la base: '+(d.__oeeResiduosError.error||'')+'\nQuedó guardado solo en este navegador. Reintenta más tarde.'); }
+    });
+  })();
   window.addEventListener('load',function(){ postH(); parent.postMessage({__oeeReady:true},'*'); });
   setInterval(postH,1000);
   // Modales position:fixed (Reporte de Novedades #rn-modal, Residuos #rs-modal): dentro del ERP el iframe es tan alto como su

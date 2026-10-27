@@ -3684,6 +3684,7 @@ function OEEView(p){
   const iframeRef=React.useRef(null);
   const dataRef=React.useRef([]);
   const dsRef=React.useRef(null);
+  const rsRef=React.useRef({datos:null,version:0}); // Residuos (App OEE): registro compartido en la base
   const fileRef=React.useRef(null);
 
   function postRAW(){
@@ -3701,12 +3702,31 @@ function OEEView(p){
   function cargarDatasets(){
     api('/prod/oee/datasets','GET',null,p.tok).then(function(d){ dsRef.current=d||{}; setTimeout(postDatasets,250); }).catch(function(){});
   }
+  function postResiduos(){
+    try{
+      var fr=iframeRef.current;
+      if(fr&&fr.contentWindow&&rsRef.current) fr.contentWindow.postMessage({__oeeResiduos:rsRef.current},'*');
+    }catch(e){}
+  }
+  function cargarResiduos(){
+    api('/prod/residuos','GET',null,p.tok).then(function(d){ rsRef.current={datos:(d&&d.datos)||null,version:(d&&d.version)||0}; setTimeout(postResiduos,300); }).catch(function(){});
+  }
+  // Guardar Residuos: PUT con la versión leída; 409 = otro usuario guardó antes → se le devuelve al OEE lo que hay en la base
+  function guardarResiduos(sv){
+    var opts={method:'PUT',headers:{'Content-Type':'application/json','Authorization':'Bearer '+p.tok},body:JSON.stringify({datos:sv.datos,version:sv.version})};
+    fetch('/api/prod/residuos',opts).then(function(r){ return r.text().then(function(t){ var d={}; try{d=JSON.parse(t);}catch(_){ } return {st:r.status,d:d}; }); }).then(function(x){
+      var fr=iframeRef.current, w=fr&&fr.contentWindow;
+      if(x.st===200&&x.d.version){ rsRef.current={datos:sv.datos,version:x.d.version}; if(w) w.postMessage({__oeeResiduosSaved:{version:x.d.version}},'*'); setMsg('✓ Residuos guardados en la base (versión '+x.d.version+') — visibles para todos los usuarios'); }
+      else if(x.st===409){ rsRef.current={datos:x.d.datos||null,version:x.d.version||0}; if(w) w.postMessage({__oeeResiduosConflict:{datos:x.d.datos,version:x.d.version,quien:x.d.actualizado_por,cuando:x.d.actualizado_en}},'*'); setMsg('Residuos: otro usuario guardó antes ('+(x.d.actualizado_por||'')+'); se recargaron los datos de la base'); }
+      else { if(w) w.postMessage({__oeeResiduosError:{error:x.d.error||('HTTP '+x.st)}},'*'); setMsg('Error guardando Residuos en la base: '+(x.d.error||('HTTP '+x.st))+'. Quedó solo en este navegador.'); }
+    }).catch(function(ex){ try{ iframeRef.current.contentWindow.postMessage({__oeeResiduosError:{error:ex.message}},'*'); }catch(_){ } setMsg('Error guardando Residuos en la base: '+ex.message+'. Quedó solo en este navegador.'); });
+  }
   function cargar(){
     setLoading(true);setErr('');
     api('/prod/oee','GET',null,p.tok).then(function(r){
       var rows=(r&&r.rows)||[];dataRef.current=rows;setData(rows);setLoading(false);
       setTimeout(postRAW,200);
-      cargarDatasets();
+      cargarDatasets();cargarResiduos();
     }).catch(function(e){setErr(e.message);setLoading(false);});
   }
   useEffect(function(){
@@ -3714,7 +3734,8 @@ function OEEView(p){
     function onMsg(ev){
       var d=ev.data||{};
       if(d.__oeeHeight){ var hh=Math.max(parseInt(d.__oeeHeight)||0,800); setAlto(hh+30); }
-      if(d.__oeeReady){ postRAW(); postDatasets(); }
+      if(d.__oeeReady){ postRAW(); postDatasets(); postResiduos(); }
+      if(d.__oeeResiduosSave&&d.__oeeResiduosSave.datos){ guardarResiduos(d.__oeeResiduosSave); }
       if(d.__oeeExcelRAW&&Array.isArray(d.__oeeExcelRAW)&&d.__oeeExcelRAW.length){
         setMsg('Guardando en la base los datos del Excel ('+d.__oeeExcelRAW.length+' registros)...');
         api('/prod/oee/import','POST',{rows:d.__oeeExcelRAW,modo:'upsert'},p.tok).then(function(r){
@@ -10240,6 +10261,18 @@ function ImportarDesdeFacto(p){
 // ── Calculadora de combustible con impuesto específico MEPCO (2026-10-22) ──
 // Tasa semanal del SII por la fecha del documento (o de emisión si no hay) + UTM del mes (GET /api/comb/mepco). Deja en la línea el tipo y la tasa por litro
 // (iec_fijo_lt / iec_var_lt); el encabezado suma fijo y variable por litros. El litro al estanque sigue entrando al NETO.
+// Línea de la OC que debe rellenar la calculadora de combustible: sin precio y, en este orden, la del mismo tipo de
+// combustible, la que nombra ese combustible (diesel/petróleo, gasolina), la única línea de la OC, o una en blanco.
+function ocLineaParaCalc(lineas,data){
+  var sinPrecio=function(l){return !(parseFloat(l.precio_unitario)>0);};
+  var n=String(data.nombre||'').toLowerCase();
+  var fam=/gasolina|bencina/.test(n)?/gasolina|bencina/:/diesel|di[eé]sel|petr/.test(n)?/diesel|di[eé]sel|petr/:null;
+  var i=lineas.findIndex(function(l){return sinPrecio(l)&&String(l.comb_tipo_id||'')===String(data.tipo_id);});
+  if(i<0&&fam)i=lineas.findIndex(function(l){return sinPrecio(l)&&fam.test(String(l.descripcion||'').toLowerCase());});
+  if(i<0&&lineas.length===1&&sinPrecio(lineas[0]))i=0;
+  if(i<0)i=lineas.findIndex(function(l){return sinPrecio(l)&&!(l.descripcion||'').trim();});
+  return i;
+}
 function CalcCombustibleMepco(props){
   var tipos=props.combTipos||[];
   const[mep,setMep]=useState(null);const[mepErr,setMepErr]=useState('');const[cargando,setCargando]=useState(false);
@@ -10744,9 +10777,13 @@ function OCFormModal(p){
         h(CalcCombustibleMepco,{tok:p.tok,fecha:form.fecha_documento||form.fecha_emision,combTipos:combTiposOC,onUsar:function(data){
           setForm(function(f){
             var lineas=f.lineas.slice();
-            var nueva={descripcion:data.nombre,prod_id:'',subcat_id:'',faena_id:'',eq_id:'',cantidad:String(data.litros),precio_unitario:String(preciosIVA?Math.round(data.netoPorLitro*1.19*100)/100:data.netoPorLitro),ingresa_bodega:false,bodega_destino_id:'',exenta:false,comb_tipo_id:String(data.tipo_id),iec_fijo_lt:String(data.fijo_lt),iec_var_lt:String(data.variable_lt)};
-            var vacia=lineas.findIndex(function(l){return !(parseFloat(l.precio_unitario)>0)&&!(l.descripcion||'').trim();});
-            if(vacia>=0)lineas[vacia]=Object.assign({},lineas[vacia],nueva);else lineas.push(nueva);
+            // 2026-10-27: la OC de combustible se crea con su línea (faena, centro de costo, producto) y SIN valores, y se cierra
+            // cuando llega el DTE. La calculadora rellena ESA línea (cantidad, precio, tipo e IEC) y conserva lo ya ingresado;
+            // solo agrega una línea nueva si ninguna sin valor sirve.
+            var valores={cantidad:String(data.litros),precio_unitario:String(preciosIVA?Math.round(data.netoPorLitro*1.19*100)/100:data.netoPorLitro),comb_tipo_id:String(data.tipo_id),iec_fijo_lt:String(data.fijo_lt),iec_var_lt:String(data.variable_lt)};
+            var idx=ocLineaParaCalc(lineas,data);
+            if(idx>=0){var l0=lineas[idx];lineas[idx]=Object.assign({},l0,valores,{descripcion:(l0.descripcion||'').trim()||data.nombre});}
+            else lineas.push(Object.assign({descripcion:data.nombre,prod_id:'',subcat_id:'',faena_id:'',eq_id:'',ingresa_bodega:false,bodega_destino_id:'',exenta:false},valores));
             return Object.assign({},f,{lineas:lineas,mepco_vigencia:data.vigencia,mepco_utm:String(data.utm)});
           });
         }})
@@ -11808,11 +11845,11 @@ function TelemetriaView(p){
   var hoy=cmHoy();
   const[desde,setDesde]=useState(calAdd(hoy,-29));const[hasta,setHasta]=useState(hoy);const[marca,setMarca]=useState('');
   const[data,setData]=useState(null);const[err,setErr]=useState('');const[cargando,setCargando]=useState(false);
-  const[sel,setSel]=useState(null);const[det,setDet]=useState(null);const[msg,setMsg]=useState('');const[soloProblemas,setSoloProblemas]=useState(false);
+  const[sel,setSel]=useState(null);const[det,setDet]=useState(null);const[msg,setMsg]=useState('');const[soloProblemas,setSoloProblemas]=useState(false);const[alertas,setAlertas]=useState(null);
   var equipos=(p.m&&p.m.equipos||[]).filter(function(e){return e.activo;});
   function cargar(){setCargando(true);setErr('');api('/telemetria/resumen?desde='+desde+'&hasta='+hasta+(marca?'&marca='+marca:''),'GET',null,p.tok).then(function(r){setData(r);}).catch(function(e){setErr(e.message);}).finally(function(){setCargando(false);});}
   useEffect(cargar,[desde,hasta,marca]);
-  function abrir(r){setSel(r);setDet(null);api('/telemetria/diario?marca='+r.marca+'&serie='+encodeURIComponent(r.serie)+'&desde='+desde+'&hasta='+hasta,'GET',null,p.tok).then(setDet).catch(function(e){setErr(e.message);});}
+  function abrir(r){setSel(r);setDet(null);setAlertas(null);api('/telemetria/diario?marca='+r.marca+'&serie='+encodeURIComponent(r.serie)+'&desde='+desde+'&hasta='+hasta,'GET',null,p.tok).then(setDet).catch(function(e){setErr(e.message);});api('/telemetria/alertas?marca='+r.marca+'&serie='+encodeURIComponent(r.serie)+'&desde='+desde+'&hasta='+hasta,'GET',null,p.tok).then(setAlertas).catch(function(){});}
   function mapear(r,eid){api('/telemetria/maquina','PATCH',{marca:r.marca,serie:r.serie,equipo_id:eid||null},p.tok).then(function(){setMsg('✓ Equipo asignado');setTimeout(function(){setMsg('');},1500);cargar();}).catch(function(e){setErr(e.message);});}
   var f1=function(n){return n==null?'—':Number(n).toLocaleString('es-CL',{minimumFractionDigits:1,maximumFractionDigits:1});};
   var f0=function(n){return n==null?'—':Number(n).toLocaleString('es-CL',{maximumFractionDigits:0});};
@@ -11843,20 +11880,25 @@ function TelemetriaView(p){
     data&&!data.maquinas.length&&h('div',{className:'al al-w'},'Todavía no hay máquinas cargadas. Ejecuta el bot de telemetría (Skills\\bot-telemetria) con la sesión del portal abierta.'),
     data&&data.maquinas.length>0&&h('div',{className:'card',style:{padding:0,overflow:'auto',marginBottom:12}},
       h('table',{style:{width:'100%',borderCollapse:'collapse'}},
-        h('thead',null,h('tr',null,h('th',{style:thS},'Marca'),h('th',{style:thS},'Máquina'),h('th',{style:thS},'Equipo en el ERP'),h('th',{style:thS},'Última comunicación'),h('th',{style:thR},'Horómetro'),h('th',{style:thR},'Horas motor'),h('th',{style:thR},'Días'),h('th',{style:thR,title:'Horas con motor encendido sin trabajar (Tigercat: tiempo inactivo; Komatsu: motor menos trabajo real)'},'Ralentí'),h('th',{style:thR},'Horas terreno'),h('th',{style:thR},'Dif.'),h('th',{style:thR},'Litros distrib.'),h('th',{style:thR},'L/h'),h('th',{style:thR},'Nivel'),h('th',{style:thS},'Posición'))),
+        h('thead',null,h('tr',null,h('th',{style:thS},'Marca'),h('th',{style:thS},'Máquina'),h('th',{style:thS},'Equipo en el ERP'),h('th',{style:thS},'Última comunicación'),h('th',{style:thR,title:'Alertas y códigos de falla informados por la máquina en los últimos 7 días (rojo: alguna crítica)'},'Alertas 7d'),h('th',{style:thR},'Horómetro'),h('th',{style:thR,title:'Último horómetro final anotado en el parte de terreno'},'Horóm. parte'),h('th',{style:thR,title:'Horómetro de la máquina menos el del parte'},'Dif.'),h('th',{style:thR},'Horas motor'),h('th',{style:thR},'Días'),h('th',{style:thR,title:'Horas con motor encendido sin trabajar (Tigercat: tiempo inactivo; Komatsu: motor menos trabajo real)'},'Ralentí'),h('th',{style:thR},'Horas terreno'),h('th',{style:thR},'Dif.'),h('th',{style:thR},'Litros distrib.'),h('th',{style:thR,title:'Combustible consumido según la máquina (Tigercat diario; Komatsu estimado con la tasa mensual)'},'Comb. medido'),h('th',{style:thR,title:'Consumo medido menos litros distribuidos'},'Dif. L'),h('th',{style:thR},'L/h'),h('th',{style:thR},'Nivel'),h('th',{style:thS},'Posición'))),
         h('tbody',null,filas.map(function(r){var ec=estadoCom(r);var d=difH(r);var mk=MARCA[r.marca]||{l:r.marca,c:'#475569'};var esSel=sel&&sel.marca===r.marca&&sel.serie===r.serie;
           return h('tr',{key:r.marca+'|'+r.serie,onClick:function(){abrir(r);},style:{cursor:'pointer',background:esSel?'#EFF6FF':(r.equipo_id?'transparent':'#FFFBEB')}},
             h('td',{style:tdS},h('span',{style:{fontSize:10,fontWeight:700,color:'#fff',background:mk.c,borderRadius:8,padding:'1px 7px'}},mk.l)),
             h('td',{style:tdS},h('div',{style:{fontWeight:600}},r.nombre_cliente||r.serie),h('div',{style:{fontSize:10,color:'#64748B'}},(r.modelo||'')+' · '+r.serie)),
             h('td',{style:tdS,onClick:function(e){e.stopPropagation();}},h('select',{value:r.equipo_id||'',onChange:function(e){mapear(r,e.target.value);},style:Object.assign({},CM_INP,{fontSize:11,padding:'3px 4px',maxWidth:190,borderColor:r.equipo_id?'#CBD5E1':'#F59E0B'})},h('option',{value:''},'— asignar —'),equipos.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' · '+e.nombre);}))),
             h('td',{style:tdS},h('span',{style:{fontSize:10,fontWeight:700,background:ec.bg,color:ec.c,borderRadius:8,padding:'1px 7px',whiteSpace:'nowrap'}},ec.t),h('div',{style:{fontSize:10,color:'#64748B'}},fdt(r.ultima_comunicacion))),
+            h('td',{style:tdR,title:r.ultima_alerta?'Última: '+String(r.ultima_alerta).slice(0,120):''},r.alertas_7d>0?h('span',{style:{fontSize:11,fontWeight:700,background:r.criticas_7d>0?'#FEE2E2':'#FEF9C3',color:r.criticas_7d>0?'#991B1B':'#854D0E',borderRadius:8,padding:'1px 7px'}},(r.criticas_7d>0?'⛔ ':'⚠ ')+r.alertas_7d):h('span',{style:{color:'#94A3B8'}},'—')),
             h('td',{style:tdR,className:'mono'},f1(r.smr)),
+            h('td',{style:tdR,className:'mono',title:r.fecha_horometro_terreno?'Parte del '+fmtD(r.fecha_horometro_terreno):''},r.horometro_terreno==null?'—':f1(r.horometro_terreno)),
+            h('td',{style:Object.assign({},tdR,{fontWeight:600,color:(r.smr==null||r.horometro_terreno==null)?'#94A3B8':Math.abs(r.smr-r.horometro_terreno)>10?'#B91C1C':'#166534'}),className:'mono'},(r.smr==null||r.horometro_terreno==null)?'—':((r.smr-r.horometro_terreno)>0?'+':'')+f1(r.smr-r.horometro_terreno)),
             h('td',{style:tdR,className:'mono'},f1(r.horas)),
             h('td',{style:tdR,className:'mono'},r.dias_con_horas||0),
             h('td',{style:Object.assign({},tdR,{color:r.horas_inactivo!=null&&r.horas>0&&r.horas_inactivo/r.horas>0.25?'#B91C1C':'#1E293B'}),className:'mono',title:r.horas_inactivo!=null?'Producción '+f1(r.horas_produccion)+' h':''},r.horas_inactivo==null?'—':f1(r.horas_inactivo)+(r.horas>0?' ('+(r.horas_inactivo/r.horas*100).toFixed(0)+'%)':'')),
             h('td',{style:tdR,className:'mono'},r.equipo_id?f1(r.horas_terreno):'—'),
             h('td',{style:Object.assign({},tdR,{color:d===null?'#94A3B8':Math.abs(d)>(r.horas*0.1+2)?'#B91C1C':'#166534',fontWeight:600}),className:'mono',title:'Horas de telemetría menos horas del parte de terreno'},d===null?'—':(d>0?'+':'')+f1(d)),
             h('td',{style:tdR,className:'mono'},r.equipo_id?f0(r.litros_distribuidos):'—'),
+            h('td',{style:tdR,className:'mono'},r.combustible_l>0?f0(r.combustible_l):'—'),
+            h('td',{style:Object.assign({},tdR,{fontWeight:600,color:(!r.equipo_id||!(r.combustible_l>0)||!(r.litros_distribuidos>0))?'#94A3B8':Math.abs(r.combustible_l-r.litros_distribuidos)>r.litros_distribuidos*0.15?'#B91C1C':'#166534'}),className:'mono',title:'Positivo: la máquina consumió más de lo distribuido; negativo: se distribuyó más de lo que consumió'},(!r.equipo_id||!(r.combustible_l>0)||!(r.litros_distribuidos>0))?'—':((r.combustible_l-r.litros_distribuidos)>0?'+':'')+f0(r.combustible_l-r.litros_distribuidos)),
             h('td',{style:tdR,className:'mono'},lh(r)?f1(lh(r)):'—'),
             h('td',{style:tdR,className:'mono'},r.nivel_pct!=null?f0(r.nivel_pct)+'%':'—'),
             h('td',{style:tdS,onClick:function(e){e.stopPropagation();}},r.lat!=null&&r.lon!=null?h('a',{href:'https://www.google.com/maps?q='+r.lat+','+r.lon,target:'_blank',rel:'noopener',style:{fontSize:11,color:'#1D4ED8'},title:(r.ubicacion||'')+(r.fecha_posicion?' · '+fdt(r.fecha_posicion):'')},'📍 '+(r.ubicacion?String(r.ubicacion).split(',')[0].slice(0,22):'Mapa')):h('span',{style:{color:'#94A3B8'}},'—')));})))),
@@ -11864,6 +11906,10 @@ function TelemetriaView(p){
       h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8,flexWrap:'wrap',marginBottom:8}},
         h('div',{style:{fontWeight:700,fontSize:13}},'Día a día · '+(sel.nombre_cliente||sel.serie)+' ('+(sel.modelo||'')+' · '+sel.serie+')'+(sel.equipo_codigo?' → '+sel.equipo_codigo:' · sin equipo asignado: no hay cruce con terreno')),
         h(Btn,{sm:true,v:'g',onClick:function(){setSel(null);setDet(null);}},'✕ Cerrar')),
+      alertas&&alertas.grupos&&alertas.grupos.length>0&&h('div',{style:{marginBottom:10,border:'1px solid #FDE68A',background:'#FFFBEB',borderRadius:8,padding:'8px 10px'}},
+        h('div',{style:{fontWeight:700,fontSize:12,color:'#92400E',marginBottom:4}},'Alertas de la máquina en el período: '+alertas.total+' avisos, '+alertas.grupos.length+' distintos'),
+        h('table',{style:{width:'100%',borderCollapse:'collapse'}},h('thead',null,h('tr',null,h('th',{style:thS},'Severidad'),h('th',{style:thS},'Código'),h('th',{style:thS},'Componente'),h('th',{style:thS},'Descripción'),h('th',{style:thR},'Veces'),h('th',{style:thS},'Última vez'))),
+          h('tbody',null,alertas.grupos.slice(0,40).map(function(a,i){var crit=/cr[ií]tic|parada|stop/i.test(a.severidad||'');return h('tr',{key:i},h('td',{style:tdS},h('span',{style:{fontSize:10,fontWeight:700,background:crit?'#FEE2E2':'#E2E8F0',color:crit?'#991B1B':'#475569',borderRadius:8,padding:'1px 6px'}},a.severidad||'—')),h('td',{style:tdS,className:'mono'},a.codigo||'—'),h('td',{style:tdS},a.componente||'—'),h('td',{style:Object.assign({},tdS,{maxWidth:420})},a.texto||'—'),h('td',{style:tdR,className:'mono'},a.veces),h('td',{style:tdS},fdt(a.ultima)));})))),
       !det&&h('div',{style:{fontSize:12,color:'#64748B'}},'Cargando...'),
       det&&h('div',{style:{overflow:'auto'}},h('table',{style:{width:'100%',borderCollapse:'collapse'}},
         h('thead',null,h('tr',null,h('th',{style:thS},'Fecha'),h('th',{style:thS},'Horas motor (telemetría)'),h('th',{style:thR},'Horas'),h('th',{style:thR},'Producción / inactivo'),h('th',{style:thR},'Horas terreno'),h('th',{style:thR},'Dif.'),h('th',{style:thR},'Horóm. final parte'),h('th',{style:thR},'Hrs perdidas'),h('th',{style:thR},'Litros distrib.'),h('th',{style:thR},'Comb. telemetría'))),
@@ -22280,7 +22326,7 @@ function CalChip(p){
 function CalFila(p){
   var x=p.item,a=cmArea(x.area),v=calVencida(x);
   return h('div',{onClick:function(){p.onOpen(x);},style:{display:'flex',gap:10,alignItems:'flex-start',padding:'8px 10px',borderBottom:'1px solid #F1F5F9',cursor:'pointer',background:x.hecha?'#FAFAFA':'#fff'}},
-    x.tipo==='TAREA'&&x.evento_id?h('input',{type:'checkbox',checked:!!x.hecha,onClick:function(e){e.stopPropagation();},onChange:function(){p.onHecha(x,!x.hecha);},style:Object.assign({},CAL_CHK,{marginTop:3}),title:x.hecha?'Desmarcar':'Marcar como hecha'}):h('span',{style:{width:15,flexShrink:0}}),
+    x.evento_id?h('input',{type:'checkbox',checked:!!x.hecha,onClick:function(e){e.stopPropagation();},onChange:function(){p.onHecha(x,!x.hecha);},style:Object.assign({},CAL_CHK,{marginTop:3}),title:x.hecha?'Desmarcar':'Marcar como hecha'}):h('span',{style:{width:15,flexShrink:0}}),
     h('div',{style:{width:52,flexShrink:0,fontSize:11,fontWeight:700,color:v?'#DC2626':'#475569',marginTop:2}},x.hora||(x.fecha_fin&&x.fecha_fin>x.fecha?'varios días':'todo el día')),
     h('div',{style:{flex:1,minWidth:0}},
       h('div',{style:{fontSize:13,fontWeight:600,color:x.hecha?'#94A3B8':'#1E293B',textDecoration:x.hecha?'line-through':'none'}},calIcono(x)?h('span',{style:{marginRight:4}},calIcono(x)):null,x.titulo,v?h('span',{style:{marginLeft:6,fontSize:10,color:'#DC2626',fontWeight:700}},'VENCIDA'):null),
@@ -22351,7 +22397,7 @@ function CalEventoModal(p){
       !esNueva&&data&&data.origen==='SISTEMA'&&h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6,padding:'6px 10px',fontSize:11,color:'#1E3A8A',marginBottom:10}},'🏛 Fecha tributaria precargada por el sistema. Puedes ajustar el día, el responsable o los avisos según la práctica de la empresa.'),
       h('div',{style:{display:'grid',gridTemplateColumns:'2fr 1fr 1fr',gap:10,marginBottom:10}},
         h('div',null,L('Título *'),inp('titulo',{placeholder:'Qué hay que hacer',autoFocus:esNueva})),
-        h('div',null,L('Tipo'),h('select',{value:f.tipo,disabled:ro,onChange:function(e){uF('tipo',e.target.value);},style:CM_INP},h('option',{value:'TAREA'},'Tarea (se marca hecha)'),h('option',{value:'EVENTO'},'Evento / reunión'))),
+        h('div',null,L('Tipo'),h('select',{value:f.tipo,disabled:ro,onChange:function(e){uF('tipo',e.target.value);},style:CM_INP},h('option',{value:'TAREA'},'Tarea'),h('option',{value:'EVENTO'},'Evento / reunión'))),
         h('div',null,L('Prioridad'),h('select',{value:f.prioridad,disabled:ro,onChange:function(e){uF('prioridad',e.target.value);},style:CM_INP},h('option',{value:'baja'},'Baja'),h('option',{value:'normal'},'Normal'),h('option',{value:'alta'},'Alta')))),
       h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10,marginBottom:10}},
         h('div',null,L('Fecha *'),inp('fecha',{type:'date'})),
@@ -22384,7 +22430,7 @@ function CalEventoModal(p){
       h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:6,flexWrap:'wrap'}},
         h('div',{style:{display:'flex',gap:6}},!esNueva&&!ro&&h(Btn,{v:'d',onClick:eliminar},'🗑 Eliminar')),
         h('div',{style:{display:'flex',gap:6,flexWrap:'wrap'}},
-          !esNueva&&f.tipo==='TAREA'&&h(Btn,{v:hechaOcurrencia?'g':'teal',onClick:function(){marcar(!hechaOcurrencia);}},hechaOcurrencia?'↩ Desmarcar '+calFechaCorta(ocurrencia):'✓ Marcar hecha '+(f.rep_tipo!=='NINGUNA'?'('+calFechaCorta(ocurrencia)+')':'')),
+          !esNueva&&h(Btn,{v:hechaOcurrencia?'g':'teal',onClick:function(){marcar(!hechaOcurrencia);}},hechaOcurrencia?'↩ Desmarcar '+calFechaCorta(ocurrencia):'✓ Marcar hecha '+(f.rep_tipo!=='NINGUNA'?'('+calFechaCorta(ocurrencia)+')':'')),
           h(Btn,{v:'g',onClick:p.onClose},ro?'Cerrar':'Cancelar'),
           !ro&&h(Btn,{onClick:guardar,disabled:guardando},guardando?'Guardando…':'💾 Guardar')))));
 }
@@ -22734,7 +22780,7 @@ function MobileCalendario(p){
   var tarjeta=function(x){
     var a=cmArea(x.area),v=calVencida(x);
     return h('div',{key:x.key,onClick:function(){setSel(x);setPantalla('detalle');window.scrollTo(0,0);},style:{display:'flex',gap:10,alignItems:'flex-start',background:x.hecha?'#F8FAFC':'#fff',borderRadius:12,padding:'12px 12px',marginBottom:8,boxShadow:'0 1px 6px rgba(0,0,0,.08)',borderLeft:'5px solid '+(v?'#DC2626':a.c)}},
-      x.tipo==='TAREA'&&x.evento_id?h('div',{onClick:function(e){e.stopPropagation();hecha(x,!x.hecha);},style:{width:28,height:28,flexShrink:0,borderRadius:8,border:'2px solid '+(x.hecha?'#16A34A':'#94A3B8'),background:x.hecha?'#16A34A':'#fff',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:800,marginTop:2}},x.hecha?'✓':''):h('div',{style:{width:28,flexShrink:0,textAlign:'center',fontSize:18,marginTop:2}},(CAL_ORIGEN[x.origen]||{}).i||(x.tipo==='EVENTO'?'📌':'')),
+      x.evento_id?h('div',{onClick:function(e){e.stopPropagation();hecha(x,!x.hecha);},style:{width:28,height:28,flexShrink:0,borderRadius:8,border:'2px solid '+(x.hecha?'#16A34A':'#94A3B8'),background:x.hecha?'#16A34A':'#fff',color:'#fff',display:'flex',alignItems:'center',justifyContent:'center',fontSize:16,fontWeight:800,marginTop:2}},x.hecha?'✓':''):h('div',{style:{width:28,flexShrink:0,textAlign:'center',fontSize:18,marginTop:2}},(CAL_ORIGEN[x.origen]||{}).i||(x.tipo==='EVENTO'?'📌':'')),
       h('div',{style:{flex:1,minWidth:0}},
         h('div',{style:{fontSize:15,fontWeight:700,color:x.hecha?'#94A3B8':'#1E293B',textDecoration:x.hecha?'line-through':'none',lineHeight:1.3}},x.titulo),
         h('div',{style:{fontSize:12,color:v?'#DC2626':'#64748B',marginTop:3,fontWeight:v?700:500}},(x.hora?x.hora+' · ':(rango!=='hoy'||x.fecha!==hoy?'':'Todo el día · '))+(v?'VENCIDA · ':'')+a.i+' '+a.l+(x.responsable_nombre?' · '+x.responsable_nombre:'')+(x.repeticion?' 🔁':'')+(x.visibilidad==='PRIVADA'?' 🔒':''))));
@@ -22765,7 +22811,7 @@ function MobileCalendario(p){
         h('div',{style:{marginTop:14}},
           auto&&h('div',{style:{fontSize:12,color:'#64748B',marginBottom:8}},'Esta fecha viene de '+(o?o.l:'otro módulo')+'; se modifica allá.'),
           auto&&x.enlace&&p.onDesktop&&btn('Abrir en '+(o?o.l:'el módulo')+' →',function(){p.onDesktop(x.enlace);},{background:'#1E3A2D',color:'#D4C5A9',border:'none'}),
-          !auto&&x.tipo==='TAREA'&&btn(x.hecha?'↩ Desmarcar':'✓ Marcar como hecha'+(x.repeticion?' ('+calFechaCorta(x.fecha)+')':''),function(){hecha(x,!x.hecha);},x.hecha?{}:{background:'#16A34A',color:'#fff',border:'none'}),
+          !auto&&btn(x.hecha?'↩ Desmarcar':'✓ Marcar como hecha'+(x.repeticion?' ('+calFechaCorta(x.fecha)+')':''),function(){hecha(x,!x.hecha);},x.hecha?{}:{background:'#16A34A',color:'#fff',border:'none'}),
           !auto&&x.puede_editar&&btn('✏️ Editar',function(){setForm({id:x.evento_id,fecha:x.fecha});setPantalla('form');}),
           !auto&&x.puede_editar&&btn('🗑 Eliminar',function(){eliminar(x);},{color:'#B91C1C',borderColor:'#FECACA',background:'#FEF2F2'}))));
   }
