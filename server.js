@@ -893,6 +893,10 @@ async function autoSetup() {
   await q(`CREATE TABLE IF NOT EXISTS telemetria_maquinas (marca VARCHAR(20) NOT NULL, serie VARCHAR(40) NOT NULL, modelo VARCHAR(60), nombre_cliente VARCHAR(80), equipo_id INT REFERENCES equipos(equipo_id), smr NUMERIC(12,1), ultima_comunicacion TIMESTAMP, lat NUMERIC(10,6), lon NUMERIC(10,6), ubicacion VARCHAR(200), fecha_posicion TIMESTAMP, nivel_pct NUMERIC(5,1), tasa_lh NUMERIC(8,2), estado VARCHAR(30), actualizado_en TIMESTAMP DEFAULT NOW(), PRIMARY KEY(marca,serie))`);
   await q(`CREATE TABLE IF NOT EXISTS telemetria_diaria (id SERIAL PRIMARY KEY, marca VARCHAR(20) NOT NULL, serie VARCHAR(40) NOT NULL, fecha DATE NOT NULL, horas_motor NUMERIC(8,2), combustible_l NUMERIC(10,2), nivel_pct NUMERIC(5,1), fuente VARCHAR(30), actualizado_en TIMESTAMP DEFAULT NOW(), UNIQUE(marca,serie,fecha))`);
   await q('CREATE INDEX IF NOT EXISTS idx_telemetria_diaria_fecha ON telemetria_diaria(fecha)');
+  // Alertas / códigos de falla que informan los portales (Tigercat Diagnóstico, Deere Avisos, Komtrax Precaución)
+  await q(`CREATE TABLE IF NOT EXISTS telemetria_alertas (id SERIAL PRIMARY KEY, marca VARCHAR(20) NOT NULL, serie VARCHAR(40) NOT NULL, fecha_hora TIMESTAMP NOT NULL, severidad VARCHAR(20), codigo VARCHAR(60), componente VARCHAR(160), texto TEXT, fuente VARCHAR(30), creado_en TIMESTAMP DEFAULT NOW())`);
+  await q(`CREATE UNIQUE INDEX IF NOT EXISTS uq_telemetria_alertas ON telemetria_alertas(marca,serie,fecha_hora,COALESCE(codigo,''),md5(COALESCE(texto,'')))`);
+  await q('CREATE INDEX IF NOT EXISTS idx_telemetria_alertas_serie ON telemetria_alertas(marca,serie,fecha_hora)');
   for(const c of ['horas_produccion NUMERIC(8,2)','horas_inactivo NUMERIC(8,2)','tasa_lh NUMERIC(8,2)']){ try{await q('ALTER TABLE telemetria_diaria ADD COLUMN IF NOT EXISTS '+c);}catch(e){} } // Tigercat: producción/inactivo y L/h del día
   try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS iec_carretera BOOLEAN');}catch(e){}
   // Clase inicial por el tipo/nombre del equipo (editable después en el informe): transita por carretera → el impuesto NO se recupera
@@ -3842,7 +3846,15 @@ app.post('/api/telemetria/import', auth, requireModulo('productividad'), async(r
         [marca,serie,f,num(d.horas_motor),num(d.combustible_l),num(d.nivel_pct),fuente,num(d.horas_produccion),num(d.horas_inactivo),num(d.tasa_lh)]);
       nD++;
     }
-    await client.query('COMMIT'); res.json({ok:true,maquinas:nM,dias:nD,sin_equipo:sinEquipo});
+    let nA=0;
+    for(const a of (Array.isArray(req.body.alertas)?req.body.alertas:[])){
+      const serie=String(a.serie||'').trim().slice(0,40); const fh=ts(a.fecha_hora); if(!serie||!fh)continue;
+      const sev=String(a.severidad||'').slice(0,20)||null;
+      await client.query(`INSERT INTO telemetria_alertas(marca,serie,fecha_hora,severidad,codigo,componente,texto,fuente) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,
+        [marca,serie,fh,sev,a.codigo?String(a.codigo).slice(0,60):null,a.componente?String(a.componente).slice(0,160):null,a.texto?String(a.texto).slice(0,2000):null,fuente]);
+      nA++;
+    }
+    await client.query('COMMIT'); res.json({ok:true,maquinas:nM,dias:nD,alertas:nA,sin_equipo:sinEquipo});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
@@ -3865,18 +3877,33 @@ app.get('/api/telemetria/resumen', auth, requireModulo('productividad'), async(r
         (SELECT MAX(d.fecha) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.horas_motor>0) AS ultimo_dia_con_horas,
         (SELECT COALESCE(SUM(r.horometro_final-r.horometro_inicial),0) FROM terreno_registros r WHERE r.equipo_id=t.equipo_id AND r.fecha BETWEEN $1 AND $2) AS horas_terreno,
         (SELECT COUNT(*) FROM terreno_registros r WHERE r.equipo_id=t.equipo_id AND r.fecha BETWEEN $1 AND $2) AS dias_terreno,
+        (SELECT COUNT(*) FROM telemetria_alertas a WHERE a.marca=t.marca AND a.serie=t.serie AND a.fecha_hora>=NOW()-INTERVAL '7 days') AS alertas_7d,
+        (SELECT COUNT(*) FROM telemetria_alertas a WHERE a.marca=t.marca AND a.serie=t.serie AND a.fecha_hora>=NOW()-INTERVAL '7 days' AND LOWER(COALESCE(a.severidad,'')) IN ('crítico','critico','critical','parada','stop')) AS criticas_7d,
+        (SELECT a.texto FROM telemetria_alertas a WHERE a.marca=t.marca AND a.serie=t.serie ORDER BY a.fecha_hora DESC LIMIT 1) AS ultima_alerta,
+        (SELECT a.fecha_hora FROM telemetria_alertas a WHERE a.marca=t.marca AND a.serie=t.serie ORDER BY a.fecha_hora DESC LIMIT 1) AS ultima_alerta_fecha,
+        (SELECT r.horometro_final FROM terreno_registros r WHERE r.equipo_id=t.equipo_id ORDER BY r.fecha DESC,r.registro_id DESC LIMIT 1) AS horometro_terreno,
+        (SELECT r.fecha FROM terreno_registros r WHERE r.equipo_id=t.equipo_id ORDER BY r.fecha DESC,r.registro_id DESC LIMIT 1) AS fecha_horometro_terreno,
         (SELECT COALESCE(SUM(c.litros),0) FROM comb_movimientos c WHERE c.equipo_id=t.equipo_id AND c.tipo_mov='DISTRIBUCION' AND c.estado='ACTIVO' AND c.fecha BETWEEN $1 AND $2) AS litros_distribuidos
       FROM telemetria_maquinas t LEFT JOIN equipos e ON e.equipo_id=t.equipo_id LEFT JOIN empresas emp ON emp.empresa_id=e.empresa_id
       ${marca?'WHERE t.marca=$3':''} ORDER BY t.marca,COALESCE(e.codigo,t.nombre_cliente,t.serie)`,marca?[d1,d2,marca]:[d1,d2]);
     const n=v=>v==null?null:+v;
     const rows=m.rows.map(r=>{ const uc=r.ultima_comunicacion?new Date(r.ultima_comunicacion):null; const diasSin=uc?Math.max(0,Math.floor((Date.now()-uc.getTime())/86400000)):null; // las horas de los portales vienen sin zona: nunca negativo
       return Object.assign({},r,{smr:n(r.smr),lat:n(r.lat),lon:n(r.lon),nivel_pct:n(r.nivel_pct),tasa_lh:n(r.tasa_lh),dias_con_horas:+r.dias_con_horas,horas:+r.horas,combustible_l:+r.combustible_l,horas_inactivo:+r.dias_con_ralenti>0?+r.horas_inactivo:null,horas_produccion:+r.dias_con_ralenti>0?+r.horas_produccion:null,
-        horas_terreno:+r.horas_terreno,dias_terreno:+r.dias_terreno,litros_distribuidos:+r.litros_distribuidos,dias_sin_comunicar:diasSin,ultimo_dia_con_horas:r.ultimo_dia_con_horas?calIso(r.ultimo_dia_con_horas):null}); });
+        horas_terreno:+r.horas_terreno,dias_terreno:+r.dias_terreno,litros_distribuidos:+r.litros_distribuidos,horometro_terreno:n(r.horometro_terreno),fecha_horometro_terreno:r.fecha_horometro_terreno?calIso(r.fecha_horometro_terreno):null,alertas_7d:+r.alertas_7d,criticas_7d:+r.criticas_7d,dias_sin_comunicar:diasSin,ultimo_dia_con_horas:r.ultimo_dia_con_horas?calIso(r.ultimo_dia_con_horas):null}); });
     const T={maquinas:rows.length,reportando:rows.filter(r=>r.dias_sin_comunicar!==null&&r.dias_sin_comunicar<=3).length,sin_reportar:rows.filter(r=>r.dias_sin_comunicar===null||r.dias_sin_comunicar>3).length,
       sin_equipo:rows.filter(r=>!r.equipo_id).length,horas:rows.reduce((s,r)=>s+r.horas,0),horas_terreno:rows.reduce((s,r)=>s+(r.equipo_id?r.horas_terreno:0),0),litros_distribuidos:rows.reduce((s,r)=>s+(r.equipo_id?r.litros_distribuidos:0),0),
       horas_inactivo:rows.reduce((s,r)=>s+(r.horas_inactivo||0),0),horas_con_ralenti:rows.reduce((s,r)=>s+(r.horas_inactivo!=null?r.horas:0),0)};
     const ult=await pool.query('SELECT marca,MAX(actualizado_en) AS ultima_carga FROM telemetria_maquinas GROUP BY marca');
     res.json({desde:d1,hasta:d2,totales:T,maquinas:rows,cargas:ult.rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/telemetria/alertas', auth, requireModulo('productividad'), async(req,res)=>{
+  try{
+    const [d1,d2]=telRango(req.query); const marca=String(req.query.marca||'').toUpperCase(), serie=String(req.query.serie||'');
+    const r=await pool.query(`SELECT fecha_hora,severidad,codigo,componente,texto FROM telemetria_alertas WHERE marca=$1 AND serie=$2 AND fecha_hora>=$3::date AND fecha_hora<($4::date+1) ORDER BY fecha_hora DESC LIMIT 500`,[marca,serie,d1,d2]);
+    // agrupadas por código+texto: cuántas veces y la última vez (los portales repiten el mismo código cada pocos minutos)
+    const g={}; r.rows.forEach(x=>{const k=(x.codigo||'')+'|'+(x.texto||''); const e=g[k]=g[k]||{codigo:x.codigo,severidad:x.severidad,componente:x.componente,texto:x.texto,veces:0,ultima:null,primera:null}; e.veces++; if(!e.ultima||x.fecha_hora>e.ultima)e.ultima=x.fecha_hora; if(!e.primera||x.fecha_hora<e.primera)e.primera=x.fecha_hora;});
+    res.json({marca,serie,desde:d1,hasta:d2,total:r.rows.length,grupos:Object.values(g).sort((a,b)=>(b.ultima>a.ultima?1:-1))});
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.get('/api/telemetria/diario', auth, requireModulo('productividad'), async(req,res)=>{
@@ -10000,6 +10027,48 @@ app.post('/api/prod/oee/datasets', auth, async(req,res)=>{
     await client.query('COMMIT');
     res.json({ok:true, guardados:n, resumen:resumen});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+
+// ═══════════════════════════════════════════════════════════════════
+// RESIDUOS (App OEE) — registro compartido en la base (receta de Gustavo 2026-10-26, etapa 1)
+// Una sola fila con el JSON completo (`resid_v1` de la App) y una versión que impide pisar cambios ajenos:
+// el PUT exige la versión leída; si otro usuario guardó antes responde 409 con lo que hay en la base.
+// ═══════════════════════════════════════════════════════════════════
+async function resTabla(c){
+  await (c||pool).query(`CREATE TABLE IF NOT EXISTS res_registro (id INT PRIMARY KEY DEFAULT 1 CHECK (id=1), datos JSONB NOT NULL, version INT NOT NULL DEFAULT 1, actualizado_por VARCHAR(120), actualizado_en TIMESTAMP DEFAULT NOW())`);
+}
+app.get('/api/prod/residuos', auth, async(req,res)=>{
+  try{
+    await resTabla();
+    const r=await pool.query('SELECT datos, version, actualizado_por, actualizado_en FROM res_registro WHERE id=1');
+    if(!r.rows.length) return res.json({datos:null, version:0});
+    res.json(r.rows[0]);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.put('/api/prod/residuos', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const b=req.body||{}; const datos=b.datos;
+    if(!datos||typeof datos!=='object'||!Array.isArray(datos.lotes)) return res.status(400).json({error:'datos inválidos: se espera el registro completo de Residuos (con lotes[])'});
+    const version=parseInt(b.version)||0;
+    const quien=String(req.user.nombre||req.user.email||req.user.id||'').slice(0,120)||null;
+    await resTabla(client);
+    await client.query('BEGIN');
+    const r=await client.query('SELECT datos, version, actualizado_por, actualizado_en FROM res_registro WHERE id=1 FOR UPDATE');
+    if(!r.rows.length){
+      await client.query('INSERT INTO res_registro(id,datos,version,actualizado_por,actualizado_en) VALUES(1,$1,1,$2,NOW())',[JSON.stringify(datos),quien]);
+      await client.query('COMMIT'); return res.json({ok:true, version:1});
+    }
+    const act=r.rows[0];
+    if(act.version!==version){
+      await client.query('ROLLBACK');
+      return res.status(409).json({error:'conflicto', datos:act.datos, version:act.version, actualizado_por:act.actualizado_por, actualizado_en:act.actualizado_en});
+    }
+    await client.query('UPDATE res_registro SET datos=$1, version=version+1, actualizado_por=$2, actualizado_en=NOW() WHERE id=1',[JSON.stringify(datos),quien]);
+    await client.query('COMMIT');
+    res.json({ok:true, version:act.version+1});
+  }catch(e){try{await client.query('ROLLBACK');}catch(_){ } res.status(500).json({error:e.message});}
   finally{client.release();}
 });
 
