@@ -897,6 +897,8 @@ async function autoSetup() {
   await q(`CREATE TABLE IF NOT EXISTS telemetria_alertas (id SERIAL PRIMARY KEY, marca VARCHAR(20) NOT NULL, serie VARCHAR(40) NOT NULL, fecha_hora TIMESTAMP NOT NULL, severidad VARCHAR(20), codigo VARCHAR(60), componente VARCHAR(160), texto TEXT, fuente VARCHAR(30), creado_en TIMESTAMP DEFAULT NOW())`);
   await q(`CREATE UNIQUE INDEX IF NOT EXISTS uq_telemetria_alertas ON telemetria_alertas(marca,serie,fecha_hora,COALESCE(codigo,''),md5(COALESCE(texto,'')))`);
   await q('CREATE INDEX IF NOT EXISTS idx_telemetria_alertas_serie ON telemetria_alertas(marca,serie,fecha_hora)');
+  await q(`CREATE TABLE IF NOT EXISTS telemetria_alertas_gestion (id SERIAL PRIMARY KEY, marca VARCHAR(20) NOT NULL, serie VARCHAR(40) NOT NULL, codigo VARCHAR(60) NOT NULL DEFAULT '', clave TEXT NOT NULL DEFAULT '', texto TEXT, accion VARCHAR(20) NOT NULL DEFAULT 'estado', estado VARCHAR(20), observacion TEXT, destinatario VARCHAR(120), usuario_id INT, usuario VARCHAR(120), fecha TIMESTAMP DEFAULT NOW())`);
+  await q('CREATE INDEX IF NOT EXISTS idx_telemetria_gestion_grupo ON telemetria_alertas_gestion(marca,serie,codigo,clave,fecha DESC)');
   for(const c of ['horas_produccion NUMERIC(8,2)','horas_inactivo NUMERIC(8,2)','tasa_lh NUMERIC(8,2)']){ try{await q('ALTER TABLE telemetria_diaria ADD COLUMN IF NOT EXISTS '+c);}catch(e){} } // Tigercat: producción/inactivo y L/h del día
   try{await q('ALTER TABLE equipos ADD COLUMN IF NOT EXISTS iec_carretera BOOLEAN');}catch(e){}
   // Clase inicial por el tipo/nombre del equipo (editable después en el informe): transita por carretera → el impuesto NO se recupera
@@ -3810,6 +3812,125 @@ async function telEquipoPorNombre(nombre){
   const hit=r.rows.find(e=>telNorm(e.codigo)===n)||r.rows.find(e=>telNorm(e.nombre)===n)||r.rows.find(e=>n.length>=4&&telNorm(e.nombre).indexOf(n)===0);
   return hit?hit.equipo_id:null;
 }
+// ── Traducción de alertas: Deere y los códigos de anomalía de Komtrax llegan en inglés ──
+// Se traduce una vez por texto distinto (tabla telemetria_traducciones) y se muestra traducido conservando el original.
+// Primero el glosario incorporado; lo nuevo lo traduce la API de Anthropic tras cada importación si hay ANTHROPIC_API_KEY.
+// Nunca bloquea ni hace fallar una importación. Tigercat y las precauciones Komatsu ya vienen en español: no se tocan.
+const TEL_GLOSARIO=[
+ // Deere (Operations Center entrega los avisos en inglés aunque la interfaz esté en español)
+ ['Service light switch stuck or shorted to high source - Switch is held in the ON position for more than {1} sec','Interruptor de la luz de servicio atascado o en corto a fuente alta: el interruptor lleva más de {1} s en posición ON'],
+ ['Booster Power Digging & Fast Travel Mode- P-S Valve FB Low Current','Modo excavación con potencia reforzada y traslado rápido: corriente baja en la retroalimentación de la válvula P-S'],
+ ['CAN Comm Lost from LAS','Comunicación CAN perdida con el LAS'],
+ ['WARATAH HHC CAN NOT RECEIVE THE PC{1} SIGNAL BECAUSE OF CAN BUS ERROR.','El HHC del Waratah no recibe la señal PC{1} por un error del bus CAN.'],
+ ['Front Axle Lube Pressure Loss - Troubleshooting Required','Pérdida de presión de lubricación del eje delantero: requiere diagnóstico'],
+ ['Front Axle Lube Pressure Sensor Circuit Fault - Troubleshooting Required','Falla en el circuito del sensor de presión de lubricación del eje delantero: requiere diagnóstico'],
+ ['Leveler Light ({1}M) Open Circuit','Luz del nivelador ({1}M): circuito abierto'],
+ ['Transmission Charge Filter Restricted','Filtro de carga de la transmisión obstruido'],
+ ['Transmission output torque too high - Bring Machine to a Standstill','Torque de salida de la transmisión demasiado alto: detenga la máquina'],
+ ['Rear Axle Filter Restricted - Replace Filter. Additional troubleshooting may be required.','Filtro del eje trasero obstruido: reemplace el filtro. Puede requerir diagnóstico adicional.'],
+ ['Front Axle Filter Restricted - Replace Filter. Additional troubleshooting may be required.','Filtro del eje delantero obstruido: reemplace el filtro. Puede requerir diagnóstico adicional.'],
+ ['open circuit or short to gnd at high pressure sensor A - Bring Machine to a Standstill','Circuito abierto o corto a tierra en el sensor de alta presión A: detenga la máquina'],
+ ['Mantenimiento - Due at {1} Hours','Mantenimiento: vence a las {1} horas'],
+ ['Service Brake Pressure Low - Troubleshooting Required','Presión baja del freno de servicio: requiere diagnóstico'],
+ ['Articulation Sensor - Calibration Required','Sensor de articulación: requiere calibración'],
+ ['LH Hydrostatic Motor Oil Temperature Very High','Temperatura del aceite del motor hidrostático izquierdo muy alta'],
+ ['Hydraulic Oil Level Low','Nivel de aceite hidráulico bajo'],
+ ['RH Motor Speed Sensor Data Missing','Faltan datos del sensor de velocidad del motor derecho'],
+ // Komtrax: lo que va entre paréntesis en ERRORCODE=XXX(...),SMR=
+ ['COOLANT + DECREASE IN QUANTITY','Refrigerante: disminución de nivel'],
+ ['COOLANT + OVERHEAT','Refrigerante: sobrecalentamiento'],
+ ['ENGINE OIL + DECREASE IN QUANTITY','Aceite de motor: disminución de nivel'],
+ ['REFRIGERANT + INPUT SIGNAL OUT OF SCOPE','Refrigerante: señal de entrada fuera de rango'],
+ ['HYD FILTER BYPASS VALVE SENSOR {1} + CLOGGING','Sensor {1} de la válvula bypass del filtro hidráulico: obstrucción'],
+ ['HYD FILTER BYPASS VALVE SENSOR {1} + DEFECTIVE FUNCTION','Sensor {1} de la válvula bypass del filtro hidráulico: funcionamiento defectuoso'],
+ ['SWING BRAKE SOLENOID VALVE + OPEN CIRCUIT','Válvula solenoide del freno de giro: circuito abierto'],
+ ['FAN CONTROL SOLENOID VALVE + OPEN CIRCUIT','Válvula solenoide de control del ventilador: circuito abierto'],
+ ['FAN CONTROL SOLENOID VALVE + SHORT CIRCUIT','Válvula solenoide de control del ventilador: cortocircuito'],
+ ['FAN CLUTCH FAN SPEED SENSOR + OPEN CIRCUIT','Sensor de velocidad del embrague del ventilador: circuito abierto'],
+ ['RAIL PRESS LOW ERROR','Error: presión del riel (common rail) baja'],
+ ['RAIL PRESS VERY LOW ERROR','Error: presión del riel (common rail) muy baja'],
+ ['RAIL PRESS SENSOR HIGH ERROR','Error: sensor de presión del riel en nivel alto'],
+ ['THROTTLE SENSOR LOW ERROR','Error: sensor del acelerador en nivel bajo'],
+ ['CHG AIR TEMP HIGH TORQUE DERATE','Temperatura alta del aire de carga: reducción de torque'],
+ ['HYD PUMP SWASH PLATE ANGLE SENSOR F + DEFECTIVE FUNCTION','Sensor de ángulo del plato oscilante de la bomba hidráulica delantera (F): funcionamiento defectuoso'],
+ ['HYD PUMP SWASH PLATE ANGLE SENSOR R + DEFECTIVE FUNCTION','Sensor de ángulo del plato oscilante de la bomba hidráulica trasera (R): funcionamiento defectuoso'],
+ ['FRONT PUMP OIL PRESSURE SENSOR + DEFECTIVE FUNCTION','Sensor de presión de aceite de la bomba delantera: funcionamiento defectuoso'],
+ ['REAR PUMP OIL PRESSURE SENSOR + DEFECTIVE FUNCTION','Sensor de presión de aceite de la bomba trasera: funcionamiento defectuoso'],
+ ['ARM IN PPC PRESSURE SENSOR + DEFECTIVE FUNCTION','Sensor de presión PPC de recogida del brazo: funcionamiento defectuoso'],
+ ['ARM DUMP PPC PRESSURE SENSOR + DEFECTIVE FUNCTION','Sensor de presión PPC de extensión del brazo: funcionamiento defectuoso'],
+ ['SWING LEFT PPC PRESSURE SENSOR + DEFECTIVE FUNCTION','Sensor de presión PPC de giro a la izquierda: funcionamiento defectuoso'],
+ ['SWING RIGHT PPC PRESSURE SENSOR + DEFECTIVE FUNCTION','Sensor de presión PPC de giro a la derecha: funcionamiento defectuoso'],
+ ['BUCKET DUMP PPC PRESSURE SENSOR + DEFECTIVE FUNCTION','Sensor de presión PPC de descarga del balde: funcionamiento defectuoso'],
+ ['BUCKET CURL PPC PRESSURE SENSOR + DEFECTIVE FUNCTION','Sensor de presión PPC de recogida del balde: funcionamiento defectuoso'],
+ ['BOOM DOWN PPC PRESSURE SENSOR + DEFECTIVE FUNCTION','Sensor de presión PPC de bajada de la pluma: funcionamiento defectuoso'],
+ ['BOOM UP PPC PRESSURE SENSOR + DEFECTIVE FUNCTION','Sensor de presión PPC de subida de la pluma: funcionamiento defectuoso'],
+ ['ALTERNATOR + DEFECTIVE CHARGING','Alternador: carga defectuosa'],
+ ['AIR CLEANER ELEMENT + CLOGGING','Elemento del filtro de aire: obstrucción'],
+ ['C/R ENG CNTRLR CAN COMMUNICATION {1} + COMMUNICATION ERROR (COMPO LINE)','Comunicación CAN {1} del controlador del motor common rail: error de comunicación (línea de componentes)'],
+];
+const TEL_MODEL=process.env.IA_MODEL_TRADUCCION||'claude-haiku-5-5';
+const TEL_PROMPT='Eres traductor técnico de maquinaria forestal y de construcción (excavadoras Komatsu, skidders y feller bunchers John Deere, procesadores con cabezal Waratah). Recibes un arreglo JSON de mensajes de alerta en inglés y devuelves SOLO un arreglo JSON con la traducción de cada uno al español técnico de Chile, en el mismo orden y con la misma cantidad de elementos, sin comentarios. Reglas: conserva tal cual los marcadores {1}, {2}, etc.; conserva siglas (CAN, PPC, DEF, LAS, HHC, P-S), códigos y nombres propios; LH = izquierdo, RH = derecho; "Troubleshooting Required" = "requiere diagnóstico"; "Bring Machine to a Standstill" = "detenga la máquina"; sé breve y claro para un jefe de taller. Si un texto ya está en español, devuélvelo sin cambios.';
+let _telTradOk=false,_telTradMapa=null,_telTradTs=0;
+async function telTradInit(){
+  if(_telTradOk) return;
+  await pool.query('CREATE TABLE IF NOT EXISTS telemetria_traducciones (clave TEXT PRIMARY KEY, traduccion TEXT NOT NULL, origen VARCHAR(20), creado_en TIMESTAMP DEFAULT NOW())');
+  for(const par of TEL_GLOSARIO) await pool.query("INSERT INTO telemetria_traducciones(clave,traduccion,origen) VALUES($1,$2,'glosario') ON CONFLICT DO NOTHING",[par[0],par[1]]);
+  _telTradOk=true;
+}
+async function telTradMapa(fresco){
+  await telTradInit();
+  if(!fresco&&_telTradMapa&&Date.now()-_telTradTs<120000) return _telTradMapa;
+  const r=await pool.query('SELECT clave,traduccion FROM telemetria_traducciones');
+  _telTradMapa=new Map(r.rows.map(x=>[x.clave,x.traduccion])); _telTradTs=Date.now(); return _telTradMapa;
+}
+// Parte traducible de un texto: Deere entero; Komatsu solo lo que va entre paréntesis en ERRORCODE=XXX(...),SMR= (o un componente en mayúsculas).
+// Los números se enmascaran como {1},{2}… para que 'Due at 5750.00 Hours' y 'Due at 26000.00 Hours' compartan traducción.
+function telClave(marca,texto){
+  if(!texto) return null; const s=String(texto); let pre='',core=s,post='';
+  if(marca==='KOMATSU'){ const m=s.match(/^([\s\S]*ERRORCODE=[^(]*\()([\s\S]+)(\),SMR=[\s\S]*)$/); if(m){pre=m[1];core=m[2];post=m[3];} else if(!/^[A-Z0-9 +\/()@.,_-]+$/.test(s)||!/[A-Z]{3}/.test(s)) return null; }
+  else if(marca!=='DEERE') return null;
+  const nums=[]; const clave=core.replace(/\d+(?:[.,]\d+)?/g,function(n){nums.push(n);return '{'+nums.length+'}';});
+  return {clave:clave,armar:function(t){return pre+String(t).replace(/\{(\d+)\}/g,function(_,i){return nums[+i-1]!=null?nums[+i-1]:'';})+post;}};
+}
+function telTrad(marca,texto,mapa){ const c=telClave(marca,texto); if(!c) return texto; const t=mapa.get(c.clave); return t?c.armar(t):texto; }
+// ── Gestión de alertas: estado, observación e historial por grupo (marca+serie+código+clave del texto) ──
+// Estados: pendiente (sin gestión), en_gestion, resuelta, falsa. Una 'resuelta' que vuelve a sonar después de la fecha de
+// resolución se muestra como 'reaparecio'; una 'falsa' queda así hasta que alguien la cambie. Falsas y resueltas no cuentan en 'Alertas 7d'.
+const TEL_ESTADOS=['pendiente','en_gestion','resuelta','falsa'];
+const TEL_CRITICAS=new Set(['crítico','critico','critical','parada','stop','anomalía','anomalia']);
+function telGrupoClave(marca,texto){ const c=telClave(marca,texto); return c?c.clave:String(texto||''); }
+function telEstadoEfectivo(g,ultima){ if(!g||!g.estado) return 'pendiente'; if(g.estado==='resuelta'&&ultima&&new Date(ultima)>new Date(g.fecha)) return 'reaparecio'; return g.estado; }
+async function telGestionUltimas(marca,serie){
+  const r=await pool.query(`SELECT DISTINCT ON (marca,serie,codigo,clave) marca,serie,codigo,clave,estado,observacion,usuario,fecha FROM telemetria_alertas_gestion WHERE estado IS NOT NULL ${marca?'AND marca=$1 AND serie=$2':''} ORDER BY marca,serie,codigo,clave,fecha DESC`,marca?[marca,serie]:[]);
+  return new Map(r.rows.map(g=>[g.marca+'|'+g.serie+'|'+g.codigo+'|'+g.clave,g]));
+}
+// Traduce los textos de telemetria_alertas que aún no tienen traducción (hasta `limite` por llamada, lotes de 40).
+async function telTraducirPendientes(limite){
+  const mapa=await telTradMapa(true);
+  const r=await pool.query("SELECT DISTINCT marca,texto,componente FROM telemetria_alertas WHERE marca IN ('DEERE','KOMATSU') AND fecha_hora>=NOW()-INTERVAL '180 days'");
+  const pend=new Set();
+  for(const x of r.rows){ for(const s of (x.marca==='DEERE'?[x.texto]:[x.texto,x.componente])){ const c=telClave(x.marca,s); if(c&&!mapa.has(c.clave)) pend.add(c.clave); } } // el componente Deere ('Mantenimiento') ya es español
+  const lista=Array.from(pend).slice(0,limite||120);
+  if(!lista.length) return {pendientes:0,traducidas:0};
+  if(!process.env.ANTHROPIC_API_KEY) return {pendientes:lista.length,traducidas:0,aviso:'Falta ANTHROPIC_API_KEY en el servidor: solo se usa el glosario incorporado'};
+  const marcas=s=>(String(s).match(/\{\d+\}/g)||[]).sort().join(','); let n=0;
+  for(let i=0;i<lista.length;i+=40){
+    const lote=lista.slice(i,i+40);
+    const resp=await iaCallAnthropic({model:TEL_MODEL,max_tokens:4000,system:TEL_PROMPT,messages:[{role:'user',content:JSON.stringify(lote)}]});
+    const txt=(resp.content||[]).filter(c=>c.type==='text').map(c=>c.text).join('');
+    const m=txt.match(/\[[\s\S]*\]/); if(!m) throw new Error('La IA no devolvió un arreglo JSON');
+    const arr=JSON.parse(m[0]); if(!Array.isArray(arr)||arr.length!==lote.length) throw new Error('La IA devolvió '+(arr&&arr.length)+' traducciones para '+lote.length+' textos');
+    for(let j=0;j<lote.length;j++){
+      const t=String(arr[j]||'').trim(); if(!t||marcas(t)!==marcas(lote[j])) continue; // vacía o perdió un número: no se guarda
+      await pool.query('INSERT INTO telemetria_traducciones(clave,traduccion,origen) VALUES($1,$2,$3) ON CONFLICT(clave) DO UPDATE SET traduccion=EXCLUDED.traduccion',[lote[j],t,TEL_MODEL.slice(0,20)]); n++;
+    }
+  }
+  _telTradTs=0; console.log('[telemetria] traducciones nuevas:',n,'de',lista.length);
+  return {pendientes:lista.length,traducidas:n};
+}
+app.post('/api/telemetria/traducir', auth, requireModulo('productividad'), async(req,res)=>{
+  try{ res.json(await telTraducirPendientes(parseInt(req.query.limite)||120)); }catch(e){res.status(500).json({error:e.message});}
+});
 app.post('/api/telemetria/import', auth, requireModulo('productividad'), async(req,res)=>{
   const client=await pool.connect();
   try{
@@ -3855,6 +3976,7 @@ app.post('/api/telemetria/import', auth, requireModulo('productividad'), async(r
       nA++;
     }
     await client.query('COMMIT'); res.json({ok:true,maquinas:nM,dias:nD,alertas:nA,sin_equipo:sinEquipo});
+    if(nA>0) telTraducirPendientes().catch(e=>console.error('[telemetria] traducción de alertas:',e.message)); // en segundo plano: nunca retrasa ni rompe la carga
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
   finally{client.release();}
 });
@@ -3893,6 +4015,14 @@ app.get('/api/telemetria/resumen', auth, requireModulo('productividad'), async(r
     const T={maquinas:rows.length,reportando:rows.filter(r=>r.dias_sin_comunicar!==null&&r.dias_sin_comunicar<=3).length,sin_reportar:rows.filter(r=>r.dias_sin_comunicar===null||r.dias_sin_comunicar>3).length,
       sin_equipo:rows.filter(r=>!r.equipo_id).length,horas:rows.reduce((s,r)=>s+r.horas,0),horas_terreno:rows.reduce((s,r)=>s+(r.equipo_id?r.horas_terreno:0),0),litros_distribuidos:rows.reduce((s,r)=>s+(r.equipo_id?r.litros_distribuidos:0),0),
       horas_inactivo:rows.reduce((s,r)=>s+(r.horas_inactivo||0),0),horas_con_ralenti:rows.reduce((s,r)=>s+(r.horas_inactivo!=null?r.horas:0),0)};
+    // 'Alertas 7d' descuenta las marcadas como falsa alarma o ya resueltas (gestión); una resuelta que vuelve a sonar sí cuenta
+    try{ const al=await pool.query("SELECT marca,serie,codigo,texto,severidad,fecha_hora FROM telemetria_alertas WHERE fecha_hora>=NOW()-INTERVAL '7 days'"+(marca?' AND marca=$1':''),marca?[marca]:[]);
+      const ges=await telGestionUltimas(); const porMaq={};
+      al.rows.forEach(a=>{ const k=a.marca+'|'+a.serie; const gg=ges.get(k+'|'+(a.codigo||'')+'|'+telGrupoClave(a.marca,a.texto)); const est=telEstadoEfectivo(gg,a.fecha_hora); if(est==='falsa'||est==='resuelta') return;
+        const o=porMaq[k]=porMaq[k]||{n:0,c:0,ult:null,txt:null}; o.n++; if(TEL_CRITICAS.has(String(a.severidad||'').toLowerCase())) o.c++; if(!o.ult||a.fecha_hora>o.ult){o.ult=a.fecha_hora;o.txt=a.texto;} });
+      rows.forEach(r=>{ const o=porMaq[r.marca+'|'+r.serie]; r.alertas_7d=o?o.n:0; r.criticas_7d=o?o.c:0; if(o){ r.ultima_alerta=o.txt; r.ultima_alerta_fecha=o.ult; } });
+    }catch(e){ console.error('[telemetria] gestión:',e.message); }
+    try{ const mapa=await telTradMapa(); rows.forEach(r=>{ if(r.ultima_alerta) r.ultima_alerta=telTrad(r.marca,r.ultima_alerta,mapa); }); }catch(e){ console.error('[telemetria] traducción:',e.message); }
     const ult=await pool.query('SELECT marca,MAX(actualizado_en) AS ultima_carga FROM telemetria_maquinas GROUP BY marca');
     res.json({desde:d1,hasta:d2,totales:T,maquinas:rows,cargas:ult.rows});
   }catch(e){res.status(500).json({error:e.message});}
@@ -3902,8 +4032,60 @@ app.get('/api/telemetria/alertas', auth, requireModulo('productividad'), async(r
     const [d1,d2]=telRango(req.query); const marca=String(req.query.marca||'').toUpperCase(), serie=String(req.query.serie||'');
     const r=await pool.query(`SELECT fecha_hora,severidad,codigo,componente,texto FROM telemetria_alertas WHERE marca=$1 AND serie=$2 AND fecha_hora>=$3::date AND fecha_hora<($4::date+1) ORDER BY fecha_hora DESC LIMIT 500`,[marca,serie,d1,d2]);
     // agrupadas por código+texto: cuántas veces y la última vez (los portales repiten el mismo código cada pocos minutos)
-    const g={}; r.rows.forEach(x=>{const k=(x.codigo||'')+'|'+(x.texto||''); const e=g[k]=g[k]||{codigo:x.codigo,severidad:x.severidad,componente:x.componente,texto:x.texto,veces:0,ultima:null,primera:null}; e.veces++; if(!e.ultima||x.fecha_hora>e.ultima)e.ultima=x.fecha_hora; if(!e.primera||x.fecha_hora<e.primera)e.primera=x.fecha_hora;});
-    res.json({marca,serie,desde:d1,hasta:d2,total:r.rows.length,grupos:Object.values(g).sort((a,b)=>(b.ultima>a.ultima?1:-1))});
+    // Se agrupa por código + clave del texto (Komatsu sin el SMR que cambia en cada aviso; Deere con los números enmascarados)
+    const g={}; r.rows.forEach(x=>{const cl=telGrupoClave(marca,x.texto); const k=(x.codigo||'')+'|'+cl; const e=g[k]=g[k]||{codigo:x.codigo,clave:cl,severidad:x.severidad,componente:x.componente,texto:x.texto,veces:0,ultima:null,primera:null}; e.veces++; if(!e.ultima||x.fecha_hora>e.ultima){e.ultima=x.fecha_hora;e.texto=x.texto;} if(!e.primera||x.fecha_hora<e.primera)e.primera=x.fecha_hora;});
+    let mapa=null; try{ mapa=await telTradMapa(); }catch(e){ console.error('[telemetria] traducción:',e.message); }
+    // Gestión: último estado y último envío por WhatsApp de cada grupo
+    const ges=await telGestionUltimas(marca,serie);
+    const wa=await pool.query("SELECT DISTINCT ON (codigo,clave) codigo,clave,destinatario,usuario,fecha FROM telemetria_alertas_gestion WHERE marca=$1 AND serie=$2 AND accion='whatsapp' ORDER BY codigo,clave,fecha DESC",[marca,serie]);
+    const waMap=new Map(wa.rows.map(x=>[x.codigo+'|'+x.clave,x]));
+    const PRIO={reaparecio:0,pendiente:1,en_gestion:2,resuelta:3,falsa:4};
+    const grupos=Object.values(g).map(e=>{
+      const gg=ges.get(marca+'|'+serie+'|'+(e.codigo||'')+'|'+e.clave)||null; e.estado=telEstadoEfectivo(gg,e.ultima); e.gestion=gg; e.whatsapp=waMap.get((e.codigo||'')+'|'+e.clave)||null;
+      if(!mapa) return e;
+      const t=telTrad(marca,e.texto,mapa); if(t!==e.texto){ e.texto_original=e.texto; e.texto=t; }
+      const mk=marca==='KOMATSU'&&e.texto_original&&e.texto_original.match(/ERRORCODE=[^(]*\(([\s\S]+)\),SMR=/); // el componente de una anomalía es el mismo fragmento
+      const comp=mk?telTrad(marca,mk[1],mapa):(marca==='KOMATSU'?telTrad(marca,e.componente,mapa):e.componente); if(comp&&comp!==e.componente){ e.componente_original=e.componente; e.componente=comp; }
+      return e; }).sort((a,b)=>(PRIO[a.estado]-PRIO[b.estado])||(b.ultima>a.ultima?1:-1));
+    const activos=grupos.filter(x=>x.estado!=='falsa'&&x.estado!=='resuelta').reduce((s,x)=>s+x.veces,0);
+    res.json({marca,serie,desde:d1,hasta:d2,total:r.rows.length,activos,grupos});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// Registra una gestión sobre uno o varios grupos de alertas de una máquina (estado, nota o envío por WhatsApp)
+app.post('/api/telemetria/alertas/gestion', auth, requireModulo('productividad'), async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const b=req.body||{}; const marca=String(b.marca||'').toUpperCase().slice(0,20), serie=String(b.serie||'').slice(0,40);
+    if(!marca||!serie) throw new Error('Faltan marca y serie');
+    const grupos=Array.isArray(b.grupos)?b.grupos:[{codigo:b.codigo,clave:b.clave,texto:b.texto,estado:b.estado}];
+    if(!grupos.length) throw new Error('Sin alertas');
+    const accion=['estado','nota','whatsapp'].includes(b.accion)?b.accion:'estado';
+    const obs=b.observacion?String(b.observacion).slice(0,2000):null; const dest=b.destinatario?String(b.destinatario).slice(0,120):null;
+    const quien=req.user.nombre||req.user.email||'';
+    await client.query('BEGIN'); let n=0;
+    for(const g of grupos){
+      const est=g.estado!==undefined?g.estado:b.estado; const estado=est?String(est):null;
+      if(estado&&!TEL_ESTADOS.includes(estado)) throw new Error('Estado no válido: '+estado);
+      if(accion==='estado'&&!estado) throw new Error('Falta el estado');
+      await client.query('INSERT INTO telemetria_alertas_gestion(marca,serie,codigo,clave,texto,accion,estado,observacion,destinatario,usuario_id,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)',
+        [marca,serie,String(g.codigo||'').slice(0,60),String(g.clave||'').slice(0,2000),g.texto?String(g.texto).slice(0,2000):null,accion,estado,obs,dest,req.user.id,quien]); n++;
+    }
+    await client.query('COMMIT'); res.json({ok:true,registros:n});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
+});
+// Historial de gestión: de un grupo (marca+serie+codigo+clave) o de todas las máquinas en un rango de fechas
+app.get('/api/telemetria/gestion', auth, requireModulo('productividad'), async(req,res)=>{
+  try{
+    const q=req.query; const w=[],v=[];
+    if(q.marca){v.push(String(q.marca).toUpperCase());w.push('g.marca=$'+v.length);}
+    if(q.serie){v.push(String(q.serie));w.push('g.serie=$'+v.length);}
+    if(q.clave!==undefined&&q.serie){v.push(String(q.codigo||''));w.push('g.codigo=$'+v.length);v.push(String(q.clave||''));w.push('g.clave=$'+v.length);}
+    else{ const [d1,d2]=telRango(q); v.push(d1);w.push('g.fecha>=$'+v.length+'::date'); v.push(d2);w.push('g.fecha<($'+v.length+'::date+1)'); }
+    const r=await pool.query(`SELECT g.*,t.nombre_cliente,t.modelo,e.codigo AS equipo_codigo FROM telemetria_alertas_gestion g LEFT JOIN telemetria_maquinas t ON t.marca=g.marca AND t.serie=g.serie LEFT JOIN equipos e ON e.equipo_id=t.equipo_id
+      WHERE ${w.join(' AND ')} ORDER BY g.fecha DESC LIMIT 500`,v);
+    let mapa=null; try{ mapa=await telTradMapa(); }catch(e){}
+    res.json({filas:r.rows.map(x=>Object.assign({},x,{texto:mapa?telTrad(x.marca,x.texto,mapa):x.texto}))});
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.get('/api/telemetria/diario', auth, requireModulo('productividad'), async(req,res)=>{
