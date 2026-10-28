@@ -3878,7 +3878,7 @@ app.get('/api/telemetria/resumen', auth, requireModulo('productividad'), async(r
         (SELECT COALESCE(SUM(r.horometro_final-r.horometro_inicial),0) FROM terreno_registros r WHERE r.equipo_id=t.equipo_id AND r.fecha BETWEEN $1 AND $2) AS horas_terreno,
         (SELECT COUNT(*) FROM terreno_registros r WHERE r.equipo_id=t.equipo_id AND r.fecha BETWEEN $1 AND $2) AS dias_terreno,
         (SELECT COUNT(*) FROM telemetria_alertas a WHERE a.marca=t.marca AND a.serie=t.serie AND a.fecha_hora>=NOW()-INTERVAL '7 days') AS alertas_7d,
-        (SELECT COUNT(*) FROM telemetria_alertas a WHERE a.marca=t.marca AND a.serie=t.serie AND a.fecha_hora>=NOW()-INTERVAL '7 days' AND LOWER(COALESCE(a.severidad,'')) IN ('crítico','critico','critical','parada','stop')) AS criticas_7d,
+        (SELECT COUNT(*) FROM telemetria_alertas a WHERE a.marca=t.marca AND a.serie=t.serie AND a.fecha_hora>=NOW()-INTERVAL '7 days' AND LOWER(COALESCE(a.severidad,'')) IN ('crítico','critico','critical','parada','stop','anomalía','anomalia')) AS criticas_7d,
         (SELECT a.texto FROM telemetria_alertas a WHERE a.marca=t.marca AND a.serie=t.serie ORDER BY a.fecha_hora DESC LIMIT 1) AS ultima_alerta,
         (SELECT a.fecha_hora FROM telemetria_alertas a WHERE a.marca=t.marca AND a.serie=t.serie ORDER BY a.fecha_hora DESC LIMIT 1) AS ultima_alerta_fecha,
         (SELECT r.horometro_final FROM terreno_registros r WHERE r.equipo_id=t.equipo_id ORDER BY r.fecha DESC,r.registro_id DESC LIMIT 1) AS horometro_terreno,
