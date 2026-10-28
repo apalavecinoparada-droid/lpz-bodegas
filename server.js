@@ -259,6 +259,8 @@ pool.on('error', function(err){ try{ console.error('[pool] error en cliente ocio
 
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+// Service worker de Transporte (abrir la App sin señal en faena): se sirve sin caché para que los cambios lleguen al tiro
+app.get('/sw-app.js', (req,res)=>{ res.setHeader('Cache-Control','no-cache, no-store, must-revalidate'); res.sendFile(path.join(__dirname,'frontend','sw-app.js')); });
 app.use(express.static(path.join(__dirname, 'frontend')));
 
 async function auth(req, res, next) {
@@ -1400,7 +1402,7 @@ app.post('/api/auth/login', async(req,res)=>{
     const modulos=u.modulos||[];
     const esAdmin=u.es_admin||u.rol==='ADMINISTRADOR';
     const token=jwt.sign({id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos},JWT_SECRET,{expiresIn:'8h'});
-    res.json({token,usuario:{id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos,empresa_id:u.empresa_id||null,faena_id:u.faena_id||null,turno:u.turno||null}});
+    res.json({token,usuario:{id:u.usuario_id,email:u.email,nombre:u.nombre,rol:u.rol_nombre||u.rol,es_admin:esAdmin,modulos:modulos,empresa_id:u.empresa_id||null,faena_id:u.faena_id||null,turno:u.turno||null,persona_id:u.persona_id||null}});
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.get('/api/auth/me', auth, (req,res)=>res.json(req.user));
@@ -11215,6 +11217,33 @@ async function setupTransporte(q){
   await q('CREATE INDEX IF NOT EXISTS idx_plan_fecha ON trans_planificacion(fecha_plan)');
   await q('CREATE INDEX IF NOT EXISTS idx_plan_chofer ON trans_planificacion(chofer_id)');
   await q('CREATE INDEX IF NOT EXISTS idx_plan_estado ON trans_planificacion(estado)');
+  // ── Viaje por tramos, escolta, WhatsApp, incidentes y modo sin señal (Gustavo, 27/28-10-2026). Solo agrega: no toca traslados.
+  for(const col of ["tipo_viaje TEXT DEFAULT 'normal'","equipos_ids JSONB DEFAULT '[]'","grupo_id INT","escolta_id INT REFERENCES personal(persona_id)","escolta_nombre TEXT","escolta_telefono TEXT",
+      "escolta_modo TEXT","escolta_nota TEXT","enviado_wsp_en TIMESTAMP","inicio_en TIMESTAMP","fin_en TIMESTAMP","tercero_nombre TEXT","chofer_externo_nombre TEXT","chofer_externo_telefono TEXT",
+      "va_vacio BOOLEAN DEFAULT false","recorrido_plan JSONB DEFAULT '[]'"]){
+    try{await q('ALTER TABLE trans_planificacion ADD COLUMN IF NOT EXISTS '+col);}catch(e){console.log('[WARN] trans_planificacion',col.split(' ')[0],e.message);}
+  }
+  await q(`CREATE TABLE IF NOT EXISTS trans_viaje_tramos (
+    tramo_id SERIAL PRIMARY KEY, plan_id INT NOT NULL REFERENCES trans_planificacion(plan_id) ON DELETE CASCADE, orden INT,
+    carga TEXT NOT NULL, equipo_id INT REFERENCES equipos(equipo_id), desde TEXT, hasta TEXT, con_escolta BOOLEAN DEFAULT false,
+    inicio_en TIMESTAMP, inicio_km NUMERIC, inicio_lat NUMERIC, inicio_lng NUMERIC, inicio_precision NUMERIC,
+    fin_en TIMESTAMP, fin_km NUMERIC, fin_lat NUMERIC, fin_lng NUMERIC, fin_precision NUMERIC, observaciones TEXT,
+    plan_orden INT, uid TEXT, recibido_en TIMESTAMP, fin_recibido_en TIMESTAMP)`);
+  await q(`CREATE TABLE IF NOT EXISTS trans_viaje_incidentes (
+    incidente_id SERIAL PRIMARY KEY, plan_id INT NOT NULL REFERENCES trans_planificacion(plan_id) ON DELETE CASCADE,
+    tramo_id INT REFERENCES trans_viaje_tramos(tramo_id) ON DELETE SET NULL, camion_id INT REFERENCES equipos(equipo_id),
+    chofer_id INT REFERENCES personal(persona_id), tipo TEXT NOT NULL, detalle TEXT, inicio_en TIMESTAMP, fin_en TIMESTAMP,
+    km NUMERIC, lat NUMERIC, lng NUMERIC, precision NUMERIC, usuario TEXT, uid TEXT, recibido_en TIMESTAMP)`);
+  await q('CREATE TABLE IF NOT EXISTS trans_sync (uid TEXT PRIMARY KEY, respuesta JSONB, recibido_en TIMESTAMP)');
+  for(const col of ["km_corto NUMERIC DEFAULT 0","fijo_corto NUMERIC DEFAULT 0","base_corto TEXT DEFAULT 'total'","tercero TEXT"]){
+    try{await q('ALTER TABLE trans_tarifas ADD COLUMN IF NOT EXISTS '+col);}catch(e){}
+  }
+  try{await q('ALTER TABLE usuarios ADD COLUMN IF NOT EXISTS persona_id INT REFERENCES personal(persona_id)');}catch(e){}
+  // cama baja de un tercero: el traslado se crea sin camión ni chofer propios
+  try{await q('ALTER TABLE trans_traslados ALTER COLUMN camion_id DROP NOT NULL');}catch(e){}
+  try{await q('ALTER TABLE trans_traslados ALTER COLUMN chofer_id DROP NOT NULL');}catch(e){}
+  await q('CREATE INDEX IF NOT EXISTS idx_trans_tramos_plan ON trans_viaje_tramos(plan_id,orden)');
+  await q('CREATE INDEX IF NOT EXISTS idx_trans_inc_plan ON trans_viaje_incidentes(plan_id)');
 
   // Seed camiones cama baja
   try{
@@ -11233,18 +11262,20 @@ app.get('/api/trans/tarifas', auth, async(req,res)=>{
 });
 app.post('/api/trans/tarifas', auth, async(req,res)=>{
   try{
-    const{nombre,empresa_id,valor_km_cargado,valor_km_vacio,costo_fijo_salida,recargo_distancia_km,pct_recargo,vigente_desde,vigente_hasta}=req.body;
+    const{nombre,empresa_id,valor_km_cargado,valor_km_vacio,costo_fijo_salida,recargo_distancia_km,pct_recargo,vigente_desde,vigente_hasta,km_corto,fijo_corto,base_corto,tercero}=req.body;
     if(!nombre)return res.status(400).json({error:'Nombre requerido'});
-    const r=await pool.query('INSERT INTO trans_tarifas(nombre,empresa_id,valor_km_cargado,valor_km_vacio,costo_fijo_salida,recargo_distancia_km,pct_recargo,vigente_desde,vigente_hasta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *',
-      [nombre,empresa_id||null,parseFloat(valor_km_cargado)||0,parseFloat(valor_km_vacio)||0,parseFloat(costo_fijo_salida)||0,parseFloat(recargo_distancia_km)||0,parseFloat(pct_recargo)||0,vigente_desde||new Date().toISOString().slice(0,10),vigente_hasta||null]);
+    const r=await pool.query('INSERT INTO trans_tarifas(nombre,empresa_id,valor_km_cargado,valor_km_vacio,costo_fijo_salida,recargo_distancia_km,pct_recargo,vigente_desde,vigente_hasta,km_corto,fijo_corto,base_corto,tercero) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *',
+      [nombre,empresa_id||null,parseFloat(valor_km_cargado)||0,parseFloat(valor_km_vacio)||0,parseFloat(costo_fijo_salida)||0,parseFloat(recargo_distancia_km)||0,parseFloat(pct_recargo)||0,vigente_desde||new Date().toISOString().slice(0,10),vigente_hasta||null,
+       parseFloat(km_corto)||0,parseFloat(fijo_corto)||0,base_corto==='cargado'?'cargado':'total',String(tercero||'').trim()||null]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.put('/api/trans/tarifas/:id', auth, async(req,res)=>{
   try{
-    const{nombre,empresa_id,valor_km_cargado,valor_km_vacio,costo_fijo_salida,recargo_distancia_km,pct_recargo,vigente_desde,vigente_hasta,activo}=req.body;
-    const r=await pool.query('UPDATE trans_tarifas SET nombre=$1,empresa_id=$2,valor_km_cargado=$3,valor_km_vacio=$4,costo_fijo_salida=$5,recargo_distancia_km=$6,pct_recargo=$7,vigente_desde=$8,vigente_hasta=$9,activo=$10 WHERE tarifa_id=$11 RETURNING *',
-      [nombre,empresa_id||null,parseFloat(valor_km_cargado)||0,parseFloat(valor_km_vacio)||0,parseFloat(costo_fijo_salida)||0,parseFloat(recargo_distancia_km)||0,parseFloat(pct_recargo)||0,vigente_desde,vigente_hasta||null,activo!==false,req.params.id]);
+    const{nombre,empresa_id,valor_km_cargado,valor_km_vacio,costo_fijo_salida,recargo_distancia_km,pct_recargo,vigente_desde,vigente_hasta,activo,km_corto,fijo_corto,base_corto,tercero}=req.body;
+    const r=await pool.query('UPDATE trans_tarifas SET nombre=$1,empresa_id=$2,valor_km_cargado=$3,valor_km_vacio=$4,costo_fijo_salida=$5,recargo_distancia_km=$6,pct_recargo=$7,vigente_desde=$8,vigente_hasta=$9,activo=$10,km_corto=$12,fijo_corto=$13,base_corto=$14,tercero=$15 WHERE tarifa_id=$11 RETURNING *',
+      [nombre,empresa_id||null,parseFloat(valor_km_cargado)||0,parseFloat(valor_km_vacio)||0,parseFloat(costo_fijo_salida)||0,parseFloat(recargo_distancia_km)||0,parseFloat(pct_recargo)||0,vigente_desde,vigente_hasta||null,activo!==false,req.params.id,
+       parseFloat(km_corto)||0,parseFloat(fijo_corto)||0,base_corto==='cargado'?'cargado':'total',String(tercero||'').trim()||null]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -11263,22 +11294,33 @@ app.get('/api/trans/choferes', auth, async(req,res)=>{
 });
 
 // ── Función para resolver tarifa y calcular costos ──
-async function calcularCostoTraslado(empresa_id,fecha,km_cargado,km_vacio){
-  // Buscar tarifa: 1) empresa+fecha, 2) sin empresa+fecha, 3) cualquiera activa
-  let tarifa=null;
-  const q1=await pool.query("SELECT * FROM trans_tarifas WHERE activo=true AND (empresa_id=$1 OR empresa_id IS NULL) AND vigente_desde<=$2 AND (vigente_hasta IS NULL OR vigente_hasta>=$2) ORDER BY empresa_id DESC NULLS LAST LIMIT 1",[empresa_id,fecha]);
-  if(q1.rows.length)tarifa=q1.rows[0];
-  else{const q2=await pool.query("SELECT * FROM trans_tarifas WHERE activo=true ORDER BY vigente_desde DESC LIMIT 1");if(q2.rows.length)tarifa=q2.rows[0];}
-  if(!tarifa)return{tarifa_id:null,costo_km_cargado:0,costo_km_vacio:0,costo_fijo:0,costo_recargo:0,costo_total:0};
-  const ckc=parseFloat(km_cargado)*parseFloat(tarifa.valor_km_cargado);
-  const ckv=parseFloat(km_vacio)*parseFloat(tarifa.valor_km_vacio);
-  const cfijo=parseFloat(tarifa.costo_fijo_salida)||0;
+// Tarifa: la elegida (tarifa_id: cama baja de un tercero, o la que ya tiene un traslado al editarlo) o, si no, la vigente
+// de camiones PROPIOS (columna tercero vacía) en la FECHA del traslado: empresa+fecha, luego sin empresa+fecha, luego la última activa.
+// Traslado corto (Gustavo 27/28-10-2026): si km cargados + vacíos (base_corto='total') o solo cargados ('cargado') no llegan a
+// km_corto, se suma fijo_corto. Es solo valorización: los km se registran igual por separado. La 'Tarifa 2026' (id 1) tiene
+// km_corto 0, así que los traslados viejos no cambian al editarlos.
+const trNum=v=>{const n=parseFloat(v);return isNaN(n)?0:n;};
+const trEnt=v=>{if(v===''||v===null||v===undefined)return null;const n=parseInt(v);return isNaN(n)?null:n;};
+async function trTarifaVigente(c,empresa_id,fecha){
+  const r=await c.query("SELECT * FROM trans_tarifas WHERE activo=true AND (tercero IS NULL OR tercero='') AND (empresa_id=$1 OR empresa_id IS NULL) AND vigente_desde<=$2 AND (vigente_hasta IS NULL OR vigente_hasta>=$2) ORDER BY empresa_id DESC NULLS LAST, vigente_desde DESC LIMIT 1",[empresa_id||null,fecha]);
+  if(r.rows.length)return r.rows[0];
+  const r2=await c.query("SELECT * FROM trans_tarifas WHERE activo=true AND (tercero IS NULL OR tercero='') ORDER BY vigente_desde DESC LIMIT 1");
+  return r2.rows[0]||null;
+}
+async function trValorizar(c,d){
+  const kc=trNum(d.km_cargado),kv=trNum(d.km_vacio); let t=null;
+  if(trEnt(d.tarifa_id)){const r=await c.query('SELECT * FROM trans_tarifas WHERE tarifa_id=$1',[trEnt(d.tarifa_id)]);t=r.rows[0]||null;}
+  if(!t)t=await trTarifaVigente(c,trEnt(d.empresa_id),d.fecha||new Date().toISOString().slice(0,10));
+  if(!t)return{tarifa_id:null,costo_km_cargado:0,costo_km_vacio:0,costo_fijo:0,costo_recargo:0,costo_total:0};
+  const ckc=kc*trNum(t.valor_km_cargado),ckv=kv*trNum(t.valor_km_vacio); let fijo=trNum(t.costo_fijo_salida);
+  const ref=t.base_corto==='cargado'?kc:kc+kv;
+  if(trNum(t.km_corto)>0&&ref<trNum(t.km_corto))fijo+=trNum(t.fijo_corto);
   let recargo=0;
-  const kmTotal=parseFloat(km_cargado)+parseFloat(km_vacio);
-  if(parseFloat(tarifa.recargo_distancia_km)>0&&kmTotal>parseFloat(tarifa.recargo_distancia_km)){
-    recargo=(ckc+ckv)*(parseFloat(tarifa.pct_recargo)/100);
-  }
-  return{tarifa_id:tarifa.tarifa_id,costo_km_cargado:Math.round(ckc),costo_km_vacio:Math.round(ckv),costo_fijo:Math.round(cfijo),costo_recargo:Math.round(recargo),costo_total:Math.round(ckc+ckv+cfijo+recargo)};
+  if(trNum(t.recargo_distancia_km)>0&&kc+kv>trNum(t.recargo_distancia_km))recargo=(ckc+ckv)*(trNum(t.pct_recargo)/100);
+  return{tarifa_id:t.tarifa_id,costo_km_cargado:Math.round(ckc),costo_km_vacio:Math.round(ckv),costo_fijo:Math.round(fijo),costo_recargo:Math.round(recargo),costo_total:Math.round(ckc+ckv+fijo+recargo)};
+}
+async function calcularCostoTraslado(empresa_id,fecha,km_cargado,km_vacio,tarifa_id){
+  return trValorizar(pool,{tarifa_id:tarifa_id,empresa_id:empresa_id,fecha:fecha,km_cargado:km_cargado,km_vacio:km_vacio});
 }
 
 // ── Traslados CRUD ──
@@ -11297,7 +11339,7 @@ app.get('/api/trans/traslados', auth, async(req,res)=>{
     const r=await pool.query(`SELECT t.*,emp.razon_social AS empresa_nombre,cam.nombre AS camion_nombre,cam.patente_serie AS camion_patente,p.nombre_completo AS chofer_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo,est.codigo AS estanque_codigo,est.nombre AS estanque_nombre,
       COALESCE((SELECT json_agg(json_build_object('equipo_id',te.equipo_id,'codigo',e2.codigo,'nombre',e2.nombre,'observacion',te.observacion) ORDER BY te.orden)
                 FROM trans_traslado_equipos te JOIN equipos e2 ON te.equipo_id=e2.equipo_id WHERE te.traslado_id=t.traslado_id), '[]'::json) AS equipos_transportados
-      FROM trans_traslados t JOIN empresas emp ON t.empresa_id=emp.empresa_id JOIN equipos cam ON t.camion_id=cam.equipo_id JOIN personal p ON t.chofer_id=p.persona_id LEFT JOIN faenas f ON t.faena_id=f.faena_id LEFT JOIN equipos eq ON t.equipo_id=eq.equipo_id LEFT JOIN comb_estanques est ON t.estanque_id=est.estanque_id WHERE ${w.join(' AND ')} ORDER BY t.fecha DESC,t.traslado_id DESC`,v);
+      FROM trans_traslados t JOIN empresas emp ON t.empresa_id=emp.empresa_id LEFT JOIN equipos cam ON t.camion_id=cam.equipo_id LEFT JOIN personal p ON t.chofer_id=p.persona_id LEFT JOIN faenas f ON t.faena_id=f.faena_id LEFT JOIN equipos eq ON t.equipo_id=eq.equipo_id LEFT JOIN comb_estanques est ON t.estanque_id=est.estanque_id WHERE ${w.join(' AND ')} ORDER BY t.fecha DESC,t.traslado_id DESC`,v);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -11339,7 +11381,7 @@ app.post('/api/trans/traslados', auth, async(req,res)=>{
     if(eqList.length===0&&equipo_id)eqList=[parseInt(equipo_id)].filter(function(id){return !isNaN(id);});
     // El primer equipo se guarda en la columna principal por compat con código viejo
     const equipoPrincipal=eqList.length>0?eqList[0]:null;
-    const costos=await calcularCostoTraslado(empresa_id,fecha||new Date().toISOString().slice(0,10),kc,kv);
+    const costos=await calcularCostoTraslado(empresa_id,fecha||new Date().toISOString().slice(0,10),kc,kv,req.body.tarifa_id);
     await client.query('BEGIN');
     const r=await client.query(`INSERT INTO trans_traslados(fecha,empresa_id,camion_id,chofer_id,faena_id,equipo_id,origen,destino,km_cargado,km_vacio,odometro_inicio,odometro_fin,tarifa_id,costo_km_cargado,costo_km_vacio,costo_fijo,costo_recargo,costo_total,estado,observaciones,litros_combustible,estanque_id,origen_combustible_externo,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING *`,
       [fecha||new Date().toISOString().slice(0,10),empresa_id,camion_id,chofer_id,faena_id||null,equipoPrincipal,origen,destino,kc,kv,odometro_inicio?parseInt(odometro_inicio):null,odometro_fin?parseInt(odometro_fin):null,costos.tarifa_id,costos.costo_km_cargado,costos.costo_km_vacio,costos.costo_fijo,costos.costo_recargo,costos.costo_total,estado||'finalizado',observaciones||null,lts,estIntId,extCod,req.user.email]);
@@ -11371,7 +11413,9 @@ app.put('/api/trans/traslados/:id', auth, async(req,res)=>{
     let eqList=Array.isArray(equipos_ids)?equipos_ids.map(function(id){return parseInt(id);}).filter(function(id){return !isNaN(id);}):[];
     if(eqList.length===0&&equipo_id)eqList=[parseInt(equipo_id)].filter(function(id){return !isNaN(id);});
     const equipoPrincipal=eqList.length>0?eqList[0]:null;
-    const costos=await calcularCostoTraslado(empresa_id,fecha,kc,kv);
+    // al editar se valoriza con la tarifa que ya tiene el traslado (los viejos, la 1); si no tiene, la vigente en SU fecha
+    const prevT=await pool.query('SELECT tarifa_id FROM trans_traslados WHERE traslado_id=$1',[req.params.id]);
+    const costos=await calcularCostoTraslado(empresa_id,fecha,kc,kv,req.body.tarifa_id||(prevT.rows[0]&&prevT.rows[0].tarifa_id));
     await client.query('BEGIN');
     const r=await client.query(`UPDATE trans_traslados SET fecha=$1,empresa_id=$2,camion_id=$3,chofer_id=$4,faena_id=$5,equipo_id=$6,origen=$7,destino=$8,km_cargado=$9,km_vacio=$10,odometro_inicio=$11,odometro_fin=$12,tarifa_id=$13,costo_km_cargado=$14,costo_km_vacio=$15,costo_fijo=$16,costo_recargo=$17,costo_total=$18,estado=$19,observaciones=$20,litros_combustible=$21,estanque_id=$22,origen_combustible_externo=$23,modificado_en=NOW() WHERE traslado_id=$24 RETURNING *`,
       [fecha,empresa_id,camion_id,chofer_id,faena_id||null,equipoPrincipal,origen,destino,kc,kv,odometro_inicio?parseInt(odometro_inicio):null,odometro_fin?parseInt(odometro_fin):null,costos.tarifa_id,costos.costo_km_cargado,costos.costo_km_vacio,costos.costo_fijo,costos.costo_recargo,costos.costo_total,estado||'finalizado',observaciones||null,lts,estIntId,extCod,req.params.id]);
@@ -11387,7 +11431,30 @@ app.put('/api/trans/traslados/:id', auth, async(req,res)=>{
 });
 
 app.delete('/api/trans/traslados/:id', auth, async(req,res)=>{
-  try{await pool.query('DELETE FROM trans_traslados WHERE traslado_id=$1',[req.params.id]);res.json({ok:true});}catch(e){res.status(400).json({error:e.message});}
+  const client=await pool.connect();
+  try{
+    const tid=parseInt(req.params.id);
+    await client.query('BEGIN');
+    const r=await client.query('SELECT planificacion_id FROM trans_traslados WHERE traslado_id=$1',[tid]);
+    let pid=r.rows.length?r.rows[0].planificacion_id:null;
+    if(!pid){const r2=await client.query('SELECT plan_id FROM trans_planificacion WHERE traslado_id=$1',[tid]);pid=r2.rows.length?r2.rows[0].plan_id:null;}
+    if(pid){
+      // Traslado de un viaje por tramos: los traslados del viaje van juntos. Se borran todos y el viaje se reabre
+      // ('en_curso' si tiene tramos, para corregirlo y cerrarlo de nuevo; sin tramos vuelve a 'programado').
+      const ids=(await client.query('SELECT traslado_id FROM trans_traslados WHERE planificacion_id=$1',[pid])).rows.map(x=>x.traslado_id);
+      if(!ids.includes(tid))ids.push(tid);
+      await client.query('UPDATE trans_planificacion SET traslado_id=NULL WHERE plan_id=$1',[pid]);
+      await client.query('DELETE FROM trans_traslados WHERE traslado_id = ANY($1::int[])',[ids]);
+      const conTramos=await client.query('SELECT 1 FROM trans_viaje_tramos WHERE plan_id=$1 LIMIT 1',[pid]);
+      await client.query('UPDATE trans_planificacion SET fin_en=NULL,estado=$1,modificado_en=NOW() WHERE plan_id=$2',[conTramos.rows.length?'en_curso':'programado',pid]);
+      await client.query('COMMIT');
+      return res.json({ok:true,borrados:ids,plan_id:pid});
+    }
+    await client.query('DELETE FROM trans_traslados WHERE traslado_id=$1',[tid]);
+    await client.query('COMMIT');
+    res.json({ok:true});
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 
 // ── Dashboard transporte ──
@@ -11401,7 +11468,7 @@ app.get('/api/trans/dashboard', auth, async(req,res)=>{
     const wh=w.join(' AND ');
     const totales=await pool.query(`SELECT COUNT(*) AS total,COALESCE(SUM(km_cargado),0) AS km_cargado,COALESCE(SUM(km_vacio),0) AS km_vacio,COALESCE(SUM(km_cargado+km_vacio),0) AS km_total,COALESCE(SUM(costo_total),0) AS costo_total,COALESCE(SUM(litros_combustible),0) AS litros_total FROM trans_traslados t WHERE ${wh}`,v);
     const porEmpresa=await pool.query(`SELECT emp.razon_social,COUNT(*) AS traslados,SUM(km_cargado+km_vacio) AS km,SUM(costo_total) AS costo FROM trans_traslados t JOIN empresas emp ON t.empresa_id=emp.empresa_id WHERE ${wh} GROUP BY emp.razon_social ORDER BY costo DESC`,v);
-    const porCamion=await pool.query(`SELECT cam.nombre,cam.patente_serie,COUNT(*) AS traslados,SUM(km_cargado+km_vacio) AS km,SUM(costo_total) AS costo FROM trans_traslados t JOIN equipos cam ON t.camion_id=cam.equipo_id WHERE ${wh} GROUP BY cam.nombre,cam.patente_serie ORDER BY traslados DESC`,v);
+    const porCamion=await pool.query(`SELECT cam.nombre,cam.patente_serie,COUNT(*) AS traslados,SUM(km_cargado+km_vacio) AS km,SUM(costo_total) AS costo FROM trans_traslados t LEFT JOIN equipos cam ON t.camion_id=cam.equipo_id WHERE ${wh} GROUP BY cam.nombre,cam.patente_serie ORDER BY traslados DESC`,v);
     const porFaena=await pool.query(`SELECT COALESCE(f.nombre,'Sin faena') AS faena,COUNT(*) AS traslados,SUM(km_cargado+km_vacio) AS km,SUM(costo_total) AS costo FROM trans_traslados t LEFT JOIN faenas f ON t.faena_id=f.faena_id WHERE ${wh} GROUP BY f.nombre ORDER BY costo DESC`,v);
     const topEquipos=await pool.query(`SELECT eq.nombre,eq.codigo,COUNT(*) AS traslados,SUM(km_cargado+km_vacio) AS km FROM trans_traslados t JOIN equipos eq ON t.equipo_id=eq.equipo_id WHERE ${wh} AND t.equipo_id IS NOT NULL GROUP BY eq.nombre,eq.codigo ORDER BY traslados DESC LIMIT 10`,v);
     const topDestinos=await pool.query(`SELECT destino,COUNT(*) AS traslados,SUM(km_cargado+km_vacio) AS km FROM trans_traslados t WHERE ${wh} GROUP BY destino ORDER BY traslados DESC LIMIT 10`,v);
@@ -11410,7 +11477,216 @@ app.get('/api/trans/dashboard', auth, async(req,res)=>{
   }catch(e){res.status(500).json({error:e.message});}
 });
 
-// ══ PLANIFICACIÓN DE TRASLADOS ══
+// ══ PLANIFICACIÓN DE TRASLADOS: viaje por tramos, escolta, WhatsApp, incidentes y modo sin señal ══
+// Réplica en Node de servidor_local.py de Gustavo (27/28-10-2026). Un viaje va de base a base; cada tramo es CARGADO (con una
+// máquina) o VACÍO, con hora, km y GPS al salir y al llegar. Al cerrar, cada tramo cargado es un traslado (los vacíos se suman al
+// siguiente; el final, al último) valorizado con la tarifa. Las horas de los tramos son la HORA DE CHILE que manda el celular
+// ('en', validada por trMomento) y se devuelven como texto 'YYYY-MM-DD HH:MM:SS' (la pantalla las recorta con slice).
+const TR_VEL_MAX_KM_H=90, TR_BLOQUEAR_VELOCIDAD=false; // Gustavo 28-10: primero probar con los choferes; para rechazar, true aquí y en MobileViaje
+const TR_TIPOS_INCIDENTE={pana:'Pana del camión',pinchazo:'Pinchazo de neumático',control_faena:'Control de faena',control_carabineros:'Control de Carabineros',obstruccion:'Obstrucción del camino',cuasi_accidente:'Cuasi accidente',otro:'Otro'};
+const TR_ACCIONES=['enviado','iniciar-tramo','terminar-tramo','borrar-ultimo-tramo','cerrar','cerrar-tercero','incidente','incidente-solucionado'];
+function trAhora(){ return new Date().toLocaleString('sv-SE',{timeZone:'America/Santiago',hour12:false}).replace('T',' ').slice(0,19); }
+function trDate(s){ return new Date(String(s||'').slice(0,19).replace(' ','T')); }
+// Hora en que ocurrió según el celular; si no viene o no es creíble (más de 10 min en el futuro o más de 15 días atrás), la del servidor
+function trMomento(b){ const s=String((b&&b.en)||''); if(!/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(s))return trAhora(); const dif=(trDate(s)-trDate(trAhora()))/1000; return (dif>-15*86400&&dif<600)?s:trAhora(); }
+// Control del km que escribe el chofer: nunca menor que el anterior (se rechaza). Si sube más de lo que una cama baja anda en el
+// tiempo que pasó (90 km/h + 5 km), por ahora solo se avisa en el celular y queda en la Revisión del viaje.
+function trRevisarKm(km,kmAntes,tAntes,tAhora,queAntes){
+  if(km<kmAntes)throw new Error('El km ('+km.toFixed(0)+') es menor que el '+queAntes+' ('+kmAntes.toFixed(0)+')');
+  if(!TR_BLOQUEAR_VELOCIDAD||!tAntes)return;
+  const horas=Math.max(0,(trDate(tAhora)-trDate(tAntes))/3600000); if(isNaN(horas))return;
+  const tope=5+horas*TR_VEL_MAX_KM_H;
+  if(km-kmAntes>tope)throw new Error((km-kmAntes).toFixed(0)+' km en '+Math.round(horas*60)+' min no es posible (el '+queAntes+' fue '+kmAntes.toFixed(0)+'; como máximo '+(kmAntes+tope).toFixed(0)+' km). Revisa el km');
+}
+const TR_TS=c=>`to_char(${c},'YYYY-MM-DD HH24:MI:SS')`;
+const TR_PLAN_SQL=`SELECT p.*,${TR_TS('p.enviado_wsp_en')} AS enviado_wsp_en,${TR_TS('p.inicio_en')} AS inicio_en,${TR_TS('p.fin_en')} AS fin_en,
+      emp.razon_social AS empresa_nombre,
+      COALESCE(cam.nombre,'Tercero: '||p.tercero_nombre) AS camion_nombre,COALESCE(cam.patente_serie,CASE WHEN p.tercero_nombre IS NOT NULL THEN 'TERCERO' END) AS camion_patente,cam.patente_carro AS camion_patente_carro,
+      COALESCE(per.nombre_completo,p.chofer_externo_nombre) AS chofer_nombre,per.rut AS chofer_rut,COALESCE(per.telefono,p.chofer_externo_telefono) AS chofer_telefono,
+      f.nombre AS faena_nombre,eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo,tt.nombre AS tarifa_nombre,tt.tercero AS tarifa_tercero
+      FROM trans_planificacion p
+      LEFT JOIN empresas emp ON p.empresa_id=emp.empresa_id
+      LEFT JOIN equipos cam ON p.camion_id=cam.equipo_id
+      LEFT JOIN personal per ON p.chofer_id=per.persona_id
+      LEFT JOIN faenas f ON p.faena_id=f.faena_id
+      LEFT JOIN equipos eq ON p.equipo_id=eq.equipo_id
+      LEFT JOIN trans_tarifas tt ON tt.tarifa_id=p.tarifa_id`;
+const TR_TRAMOS_SQL=`SELECT t.tramo_id,t.plan_id,t.orden,t.carga,t.equipo_id,t.desde,t.hasta,t.con_escolta,t.inicio_km,t.inicio_lat,t.inicio_lng,t.inicio_precision,t.fin_km,t.fin_lat,t.fin_lng,t.fin_precision,t.observaciones,t.plan_orden,t.uid,
+      ${TR_TS('t.inicio_en')} AS inicio_en,${TR_TS('t.fin_en')} AS fin_en,${TR_TS('t.recibido_en')} AS recibido_en,${TR_TS('t.fin_recibido_en')} AS fin_recibido_en,e.codigo AS equipo_codigo,e.nombre AS equipo_nombre
+      FROM trans_viaje_tramos t LEFT JOIN equipos e ON e.equipo_id=t.equipo_id`;
+const trN=v=>v===null||v===undefined?null:+v;
+function trTramo(x){ ['inicio_km','inicio_lat','inicio_lng','inicio_precision','fin_km','fin_lat','fin_lng','fin_precision'].forEach(k=>{x[k]=trN(x[k]);}); x.con_escolta=!!x.con_escolta; return x; }
+async function trIncidentesDe(c,where,args){
+  const r=await c.query(`SELECT i.incidente_id,i.plan_id,i.tramo_id,i.camion_id,i.chofer_id,i.tipo,i.detalle,i.km,i.lat,i.lng,i.precision,i.usuario,i.uid,
+      ${TR_TS('i.inicio_en')} AS inicio_en,${TR_TS('i.fin_en')} AS fin_en,${TR_TS('i.recibido_en')} AS recibido_en,
+      cam.patente_serie AS camion_patente,cam.nombre AS camion_nombre,per.nombre_completo AS chofer_nombre,
+      pl.origen,pl.destino,pl.fecha_plan,t.orden AS tramo_orden,t.desde AS tramo_desde,t.hasta AS tramo_hasta
+      FROM trans_viaje_incidentes i LEFT JOIN equipos cam ON cam.equipo_id=i.camion_id LEFT JOIN personal per ON per.persona_id=i.chofer_id
+      LEFT JOIN trans_planificacion pl ON pl.plan_id=i.plan_id LEFT JOIN trans_viaje_tramos t ON t.tramo_id=i.tramo_id ${where} ORDER BY i.inicio_en`,args);
+  return r.rows.map(x=>{x.km=trN(x.km);x.lat=trN(x.lat);x.lng=trN(x.lng);x.precision=trN(x.precision);x.tipo_nombre=TR_TIPOS_INCIDENTE[x.tipo]||x.tipo;return x;});
+}
+// Agrega a cada planificación sus tramos, las máquinas de la lista y cuáles ya se movieron (en todo el grupo), incidentes y traslados
+async function trCompletar(c,rows){
+  if(!rows.length)return rows;
+  const grupos=[...new Set(rows.map(r=>r.grupo_id||r.plan_id))];
+  const hermanos=(await c.query(TR_PLAN_SQL+' WHERE COALESCE(p.grupo_id,p.plan_id) = ANY($1::int[])',[grupos])).rows;
+  const pids=[...new Set(rows.map(r=>r.plan_id).concat(hermanos.map(r=>r.plan_id)))];
+  const tr={}; (await c.query(TR_TRAMOS_SQL+' WHERE t.plan_id = ANY($1::int[]) ORDER BY t.plan_id,t.orden,t.tramo_id',[pids])).rows.forEach(x=>{(tr[x.plan_id]=tr[x.plan_id]||[]).push(trTramo(x));});
+  const nombres={}; (await c.query('SELECT equipo_id,codigo,nombre FROM equipos')).rows.forEach(e=>{nombres[e.equipo_id]=e;});
+  const ids=rows.map(r=>r.plan_id);
+  const inc={}; (await trIncidentesDe(c,'WHERE i.plan_id = ANY($1::int[])',[ids])).forEach(x=>{(inc[x.plan_id]=inc[x.plan_id]||[]).push(x);});
+  const tras={}; (await c.query('SELECT t.traslado_id,t.planificacion_id,t.origen,t.destino,t.km_cargado,t.km_vacio,t.costo_fijo,t.costo_total,q.codigo AS equipo_codigo FROM trans_traslados t LEFT JOIN equipos q ON q.equipo_id=t.equipo_id WHERE t.planificacion_id = ANY($1::int[]) ORDER BY t.traslado_id',[ids])).rows
+    .forEach(x=>{x.km_cargado=trN(x.km_cargado);x.km_vacio=trN(x.km_vacio);x.costo_fijo=trN(x.costo_fijo);x.costo_total=trN(x.costo_total);(tras[x.planificacion_id]=tras[x.planificacion_id]||[]).push(x);});
+  const km=t=>(t.fin_km||0)-(t.inicio_km||0);
+  for(const r of rows){
+    const g=r.grupo_id||r.plan_id;
+    let eids=Array.isArray(r.equipos_ids)?r.equipos_ids.map(x=>parseInt(x)).filter(x=>!isNaN(x)):[];
+    if(!eids.length&&r.equipo_id)eids=[r.equipo_id];
+    r.equipos_ids=eids; r.equipos_lista=eids.filter(i=>nombres[i]).map(i=>nombres[i]);
+    r.tramos=tr[r.plan_id]||[]; r.tramo_abierto=r.tramos.find(t=>!t.fin_en)||null;
+    r.km_cargado_real=r.tramos.filter(t=>t.fin_en&&t.carga==='cargado').reduce((s,t)=>s+km(t),0);
+    r.km_vacio_real=r.tramos.filter(t=>t.fin_en&&t.carga==='vacio').reduce((s,t)=>s+km(t),0);
+    r.grupo=hermanos.filter(x=>(x.grupo_id||x.plan_id)===g&&x.plan_id!==r.plan_id).map(x=>({plan_id:x.plan_id,camion_patente:x.camion_patente,chofer_nombre:x.chofer_nombre,estado:x.estado}));
+    const movidas={};
+    hermanos.filter(x=>(x.grupo_id||x.plan_id)===g).forEach(x=>{(tr[x.plan_id]||[]).forEach(t=>{if(t.carga==='cargado'&&t.equipo_id)movidas[t.equipo_id]={plan_id:x.plan_id,camion_patente:x.camion_patente,en_camino:!t.fin_en,hasta:t.hasta};});});
+    r.equipos_movidos=movidas;
+    r.recorrido_plan=Array.isArray(r.recorrido_plan)?r.recorrido_plan:[];
+    r.recorrido_plan.forEach(t=>{const e=nombres[t.equipo_id];t.equipo_codigo=e?e.codigo:null;});
+    r.incidentes=inc[r.plan_id]||[]; r.traslados=tras[r.plan_id]||[];
+    r.va_vacio=!!r.va_vacio;
+  }
+  return rows;
+}
+async function trPlanUno(c,pid){ const r=await c.query(TR_PLAN_SQL+' WHERE p.plan_id=$1',[pid]); return r.rows.length?(await trCompletar(c,r.rows))[0]:null; }
+// Recorrido planificado: [{orden, carga, equipo_id, desde, hasta, con_escolta}] en el orden en que se hace
+function trRecorridoLimpio(lista){
+  const out=[];
+  (Array.isArray(lista)?lista:[]).forEach(t=>{const carga=t.carga==='cargado'?'cargado':'vacio'; if(!String(t.hasta||'').trim())return;
+    out.push({orden:out.length+1,carga:carga,equipo_id:carga==='cargado'?trEnt(t.equipo_id):null,desde:String(t.desde||'').trim(),hasta:String(t.hasta).trim(),con_escolta:!!t.con_escolta});});
+  return out;
+}
+function trDatosPlan(b,usuario){
+  const ids=[...new Set((Array.isArray(b.equipos_ids)?b.equipos_ids:[]).map(trEnt).filter(x=>x))];
+  const tercero=b.camion_id==='__tercero', otro=b.chofer_id==='__otro';
+  return {fecha_plan:b.fecha_plan,hora_plan:b.hora_plan||null,empresa_id:trEnt(b.empresa_id),camion_id:tercero?null:trEnt(b.camion_id),chofer_id:otro?null:trEnt(b.chofer_id),
+    faena_id:trEnt(b.faena_id),equipo_id:trEnt(b.equipo_id)||(ids.length?ids[0]:null),origen:b.origen||'',destino:b.destino||'',
+    km_cargado_plan:trNum(b.km_cargado_plan)||0,km_vacio_plan:trNum(b.km_vacio_plan)||0,prioridad:b.prioridad||'normal',estado:b.estado||'pendiente',observaciones:b.observaciones||'',usuario:usuario,
+    tipo_viaje:b.tipo_viaje||'normal',equipos_ids:JSON.stringify(ids),escolta_id:trEnt(b.escolta_id),escolta_nombre:b.escolta_nombre||null,escolta_telefono:b.escolta_telefono||null,
+    escolta_modo:b.escolta_modo||null,escolta_nota:b.escolta_nota||null,tercero_nombre:tercero?(b.tercero_nombre||null):null,
+    chofer_externo_nombre:otro?(b.chofer_externo_nombre||null):null,chofer_externo_telefono:otro?(b.chofer_externo_telefono||null):null,
+    va_vacio:!!b.va_vacio,recorrido_plan:JSON.stringify(trRecorridoLimpio(b.recorrido_plan)),tarifa_id:tercero?trEnt(b.tarifa_id):null};
+}
+const TR_PLAN_COLS=['fecha_plan','hora_plan','empresa_id','camion_id','chofer_id','faena_id','equipo_id','origen','destino','km_cargado_plan','km_vacio_plan','prioridad','estado','observaciones','usuario','tipo_viaje','equipos_ids','escolta_id','escolta_nombre','escolta_telefono','escolta_modo','escolta_nota','tercero_nombre','chofer_externo_nombre','chofer_externo_telefono','va_vacio','recorrido_plan','tarifa_id'];
+async function trInsertarPlan(c,d){
+  const vals=TR_PLAN_COLS.map(k=>d[k]);
+  const r=await c.query(`INSERT INTO trans_planificacion(${TR_PLAN_COLS.join(',')}) VALUES(${TR_PLAN_COLS.map((k,i)=>k==='equipos_ids'||k==='recorrido_plan'?`$${i+1}::jsonb`:`$${i+1}`).join(',')}) RETURNING plan_id`,vals);
+  return r.rows[0].plan_id;
+}
+// Crea un traslado valorizado (igual que POST /trans/traslados) a partir de los datos de un viaje
+async function trInsertarTraslado(c,tb,usuario){
+  const fecha=tb.fecha||new Date().toISOString().slice(0,10); const kc=trNum(tb.km_cargado),kv=trNum(tb.km_vacio);
+  const ids=(tb.equipos_ids||[]).map(trEnt).filter(x=>x); const eqp=trEnt(tb.equipo_id)||ids[0]||null;
+  let estInt=null,ext=null; if(tb.estanque_id){const s=String(tb.estanque_id); if(s.startsWith('EXT-'))ext=s; else estInt=parseInt(s)||null;}
+  const co=await trValorizar(c,{tarifa_id:tb.tarifa_id,empresa_id:tb.empresa_id,fecha:fecha,km_cargado:kc,km_vacio:kv});
+  const r=await c.query(`INSERT INTO trans_traslados(fecha,empresa_id,camion_id,chofer_id,faena_id,equipo_id,origen,destino,km_cargado,km_vacio,odometro_inicio,odometro_fin,tarifa_id,costo_km_cargado,costo_km_vacio,costo_fijo,costo_recargo,costo_total,estado,observaciones,litros_combustible,estanque_id,origen_combustible_externo,usuario,planificacion_id)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25) RETURNING *`,
+    [fecha,tb.empresa_id,tb.camion_id||null,tb.chofer_id||null,tb.faena_id||null,eqp,tb.origen||'',tb.destino||'',kc,kv,tb.odometro_inicio!=null?Math.round(tb.odometro_inicio):null,tb.odometro_fin!=null?Math.round(tb.odometro_fin):null,
+     co.tarifa_id,co.costo_km_cargado,co.costo_km_vacio,co.costo_fijo,co.costo_recargo,co.costo_total,'finalizado',tb.observaciones||'',trNum(tb.litros_combustible),estInt,ext,usuario,tb.planificacion_id||null]);
+  for(let i=0;i<ids.length;i++){try{await c.query('INSERT INTO trans_traslado_equipos(traslado_id,equipo_id,orden) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[r.rows[0].traslado_id,ids[i],i+1]);}catch(e){}}
+  if(tb.camion_id&&tb.odometro_fin)await c.query('UPDATE equipos SET kilometraje_actual=GREATEST(COALESCE(kilometraje_actual,0),$1) WHERE equipo_id=$2',[Math.round(tb.odometro_fin),tb.camion_id]);
+  return r.rows[0];
+}
+// Acciones del viaje (se llaman dentro de una transacción `c`)
+async function trViaje(c,pid,accion,b,usuario){
+  let pl=await trPlanUno(c,pid); if(!pl)throw new Error('No existe la planificación '+pid);
+  let abierto=pl.tramo_abierto; const ahora=trAhora();
+  if(accion==='enviado'){
+    const est=pl.estado==='pendiente'?'programado':pl.estado;
+    await c.query('UPDATE trans_planificacion SET enviado_wsp_en=$1,estado=$2,modificado_en=NOW() WHERE plan_id=$3',[ahora,est,pid]); return {ok:true};
+  }
+  if(accion==='iniciar-tramo'){
+    if(abierto)throw new Error('Hay un tramo sin terminar: primero marca la llegada');
+    if(pl.estado==='ejecutado'||pl.estado==='cancelado')throw new Error('Este viaje ya está '+pl.estado);
+    const km=trNum(b.km); if(km<=0)throw new Error('Falta el kilometraje de salida');
+    const previo=pl.tramos.length?pl.tramos[pl.tramos.length-1]:null; const mom=trMomento(b);
+    if(previo)trRevisarKm(km,trNum(previo.fin_km),previo.fin_en,mom,'de la llegada anterior');
+    else if(pl.camion_id){
+      const u=await c.query('SELECT odometro_fin FROM trans_traslados WHERE camion_id=$1 AND odometro_fin IS NOT NULL ORDER BY fecha DESC,traslado_id DESC LIMIT 1',[pl.camion_id]);
+      if(u.rows.length&&km<trNum(u.rows[0].odometro_fin))throw new Error('El km de salida ('+km.toFixed(0)+') es menor que el último odómetro del camión ('+trNum(u.rows[0].odometro_fin).toFixed(0)+')');
+    }
+    const carga=b.carga==='cargado'?'cargado':'vacio';
+    if(carga==='cargado'&&!trEnt(b.equipo_id))throw new Error('Indica qué máquina va cargada');
+    await c.query(`INSERT INTO trans_viaje_tramos(plan_id,orden,carga,equipo_id,desde,hasta,con_escolta,inicio_en,inicio_km,inicio_lat,inicio_lng,inicio_precision,plan_orden,uid,recibido_en) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
+      [pid,pl.tramos.length+1,carga,carga==='cargado'?trEnt(b.equipo_id):null,b.desde||(previo?previo.hasta:pl.origen)||'',b.hasta||'',!!b.con_escolta,mom,km,b.lat!=null?trNum(b.lat):null,b.lng!=null?trNum(b.lng):null,b.precision!=null?trNum(b.precision):null,trEnt(b.plan_orden),b.uid||null,ahora]);
+    await c.query('UPDATE trans_planificacion SET estado=$1,inicio_en=COALESCE(inicio_en,$2),modificado_en=NOW() WHERE plan_id=$3',['en_curso',mom,pid]);
+    return {ok:true};
+  }
+  if(accion==='terminar-tramo'){
+    if(!abierto)throw new Error('No hay un tramo en camino');
+    const km=trNum(b.km); const mom=trMomento(b);
+    trRevisarKm(km,trNum(abierto.inicio_km),abierto.inicio_en,mom,'de salida');
+    await c.query('UPDATE trans_viaje_tramos SET fin_en=$1,fin_km=$2,fin_lat=$3,fin_lng=$4,fin_precision=$5,observaciones=$6,fin_recibido_en=$7 WHERE tramo_id=$8',
+      [mom,km,b.lat!=null?trNum(b.lat):null,b.lng!=null?trNum(b.lng):null,b.precision!=null?trNum(b.precision):null,b.observaciones||null,ahora,abierto.tramo_id]);
+    return {ok:true};
+  }
+  if(accion==='borrar-ultimo-tramo'){ // el chofer se equivocó: se borra el último tramo para rehacerlo
+    if(!pl.tramos.length)throw new Error('No hay tramos');
+    await c.query('DELETE FROM trans_viaje_tramos WHERE tramo_id=$1',[pl.tramos[pl.tramos.length-1].tramo_id]);
+    if(pl.tramos.length===1)await c.query("UPDATE trans_planificacion SET estado='programado',inicio_en=NULL WHERE plan_id=$1",[pid]);
+    return {ok:true};
+  }
+  if(accion==='incidente'){
+    const tipo=b.tipo; if(!TR_TIPOS_INCIDENTE[tipo])throw new Error('Elige el tipo de incidente');
+    if(tipo==='otro'&&!String(b.detalle||'').trim())throw new Error('Cuenta qué pasó en el detalle');
+    const r=await c.query(`INSERT INTO trans_viaje_incidentes(plan_id,tramo_id,camion_id,chofer_id,tipo,detalle,inicio_en,km,lat,lng,precision,usuario,uid,recibido_en) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING incidente_id`,
+      [pid,abierto?abierto.tramo_id:null,pl.camion_id||null,pl.chofer_id||null,tipo,String(b.detalle||'').trim()||null,trMomento(b),trNum(b.km)||null,b.lat!=null?trNum(b.lat):null,b.lng!=null?trNum(b.lng):null,b.precision!=null?trNum(b.precision):null,pl.chofer_nombre||usuario,b.uid||null,ahora]);
+    return {ok:true,incidente_id:r.rows[0].incidente_id};
+  }
+  if(accion==='incidente-solucionado'){ // por uid (si se registró sin señal) o por incidente_id
+    const x=await c.query('SELECT incidente_id FROM trans_viaje_incidentes WHERE plan_id=$1 AND (uid=$2 OR incidente_id=$3)',[pid,b.incidente_uid||'-',trEnt(b.incidente_id)||-1]);
+    if(!x.rows.length)throw new Error('No se encontró el incidente');
+    await c.query('UPDATE trans_viaje_incidentes SET fin_en=$1 WHERE incidente_id=$2 AND fin_en IS NULL',[trMomento(b),x.rows[0].incidente_id]);
+    return {ok:true};
+  }
+  if(accion==='cerrar-tercero'){ // el tercero no usa la App: el planificador anota los km de cada tramo
+    if(pl.estado==='ejecutado'||pl.estado==='cancelado')throw new Error('Este viaje ya está '+pl.estado);
+    const filas=(Array.isArray(b.tramos)?b.tramos:[]).filter(x=>trNum(x.km)>0);
+    if(!filas.length)throw new Error('Anota al menos un tramo con sus km');
+    if(filas.some(x=>x.carga==='cargado'&&!trEnt(x.equipo_id)))throw new Error('Hay un tramo cargado sin máquina');
+    await c.query('DELETE FROM trans_viaje_tramos WHERE plan_id=$1',[pid]);
+    const hora=(b.fecha||String(pl.fecha_plan instanceof Date?calIso(pl.fecha_plan):pl.fecha_plan).slice(0,10))+' 12:00:00';
+    let acum=0;
+    for(let i=0;i<filas.length;i++){const x=filas[i]; const carga=x.carga==='cargado'?'cargado':'vacio';
+      await c.query(`INSERT INTO trans_viaje_tramos(plan_id,orden,carga,equipo_id,desde,hasta,con_escolta,inicio_en,inicio_km,fin_en,fin_km,plan_orden,observaciones,recibido_en) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+        [pid,i+1,carga,carga==='cargado'?trEnt(x.equipo_id):null,x.desde||'',x.hasta||'',!!x.con_escolta,hora,acum,hora,acum+trNum(x.km),trEnt(x.plan_orden),'Anotado por el planificador (tercero)',ahora]);
+      acum+=trNum(x.km);}
+    pl=await trPlanUno(c,pid); abierto=null; accion='cerrar';
+  }
+  if(accion==='cerrar'){
+    if(abierto)throw new Error('Hay un tramo sin terminar: primero marca la llegada');
+    const hechos=pl.tramos.filter(t=>t.fin_en); if(!hechos.length)throw new Error('El viaje no tiene tramos');
+    // si el viaje se vuelve a cerrar (después de corregirlo), sus traslados anteriores se reemplazan: nunca duplicados
+    await c.query('UPDATE trans_planificacion SET traslado_id=NULL WHERE plan_id=$1',[pid]);
+    await c.query('DELETE FROM trans_traslados WHERE planificacion_id=$1',[pid]);
+    // Regla (Gustavo 27-10-2026): cada tramo CARGADO es un traslado; el vacío de ida se suma al siguiente, el final al último
+    const grupos=[]; let vacios=[];
+    hechos.forEach(t=>{if(t.carga==='cargado'){grupos.push({cargado:t,tramos:vacios.concat([t])});vacios=[];}else vacios.push(t);});
+    if(vacios.length){if(grupos.length)grupos[grupos.length-1].tramos=grupos[grupos.length-1].tramos.concat(vacios);else grupos.push({cargado:null,tramos:vacios});}
+    const km=t=>(t.fin_km||0)-(t.inicio_km||0); const tercero=!pl.camion_id; const creados=[];
+    for(let n=0;n<grupos.length;n++){const g=grupos[n],cg=g.cargado,tr=g.tramos;
+      const d=await trInsertarTraslado(c,{fecha:String((cg||tr[0]).inicio_en).slice(0,10),empresa_id:pl.empresa_id,camion_id:pl.camion_id,chofer_id:pl.chofer_id,faena_id:pl.faena_id,
+        equipos_ids:cg&&cg.equipo_id?[cg.equipo_id]:[],origen:cg?cg.desde:tr[0].desde,destino:cg?cg.hasta:tr[tr.length-1].hasta,
+        km_cargado:cg?Math.round(km(cg)*10)/10:0,km_vacio:Math.round(tr.filter(t=>t.carga==='vacio').reduce((s,t)=>s+km(t),0)*10)/10,
+        odometro_inicio:tercero?null:tr[0].inicio_km,odometro_fin:tercero?null:tr[tr.length-1].fin_km,tarifa_id:pl.tarifa_id,
+        litros_combustible:n===0?b.litros_combustible:0,estanque_id:n===0?b.estanque_id:null,
+        observaciones:'Viaje '+pid+' · traslado '+(n+1)+' de '+grupos.length+'. '+(b.observaciones||''),planificacion_id:pid},usuario);
+      creados.push({traslado_id:d.traslado_id,km_cargado:trN(d.km_cargado),km_vacio:trN(d.km_vacio),costo_fijo:trN(d.costo_fijo),costo_total:trN(d.costo_total),origen:d.origen,destino:d.destino});}
+    await c.query("UPDATE trans_planificacion SET estado='ejecutado',traslado_id=$1,fin_en=$2,modificado_en=NOW() WHERE plan_id=$3",[creados[0].traslado_id,trMomento(b),pid]);
+    return {ok:true,traslado_id:creados[0].traslado_id,traslados:creados,km_cargado:creados.reduce((s,x)=>s+x.km_cargado,0),km_vacio:creados.reduce((s,x)=>s+x.km_vacio,0),costo_total:creados.reduce((s,x)=>s+x.costo_total,0)};
+  }
+  throw new Error('Acción desconocida: '+accion);
+}
+
 app.get('/api/trans/planificacion', auth, async(req,res)=>{
   try{
     const{desde,hasta,chofer_id,estado,solo_pendientes}=req.query;
@@ -11419,82 +11695,111 @@ app.get('/api/trans/planificacion', auth, async(req,res)=>{
     if(hasta){v.push(hasta);w.push(`p.fecha_plan<=$${v.length}`);}
     if(chofer_id){v.push(chofer_id);w.push(`p.chofer_id=$${v.length}`);}
     if(estado){v.push(estado);w.push(`p.estado=$${v.length}`);}
-    if(solo_pendientes==='1')w.push(`p.estado IN ('pendiente','en_curso')`);
-    const r=await pool.query(`SELECT p.*,
-      emp.razon_social AS empresa_nombre,
-      cam.nombre AS camion_nombre,cam.patente_serie AS camion_patente,
-      per.nombre_completo AS chofer_nombre,per.rut AS chofer_rut,
-      f.nombre AS faena_nombre,
-      eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo
-      FROM trans_planificacion p
-      LEFT JOIN empresas emp ON p.empresa_id=emp.empresa_id
-      LEFT JOIN equipos cam ON p.camion_id=cam.equipo_id
-      LEFT JOIN personal per ON p.chofer_id=per.persona_id
-      LEFT JOIN faenas f ON p.faena_id=f.faena_id
-      LEFT JOIN equipos eq ON p.equipo_id=eq.equipo_id
-      WHERE ${w.join(' AND ')}
-      ORDER BY p.fecha_plan,p.hora_plan NULLS LAST,p.plan_id`,v);
-    res.json(r.rows);
+    if(solo_pendientes==='1')w.push(`p.estado IN ('pendiente','programado','en_curso')`);
+    const r=await pool.query(`${TR_PLAN_SQL} WHERE ${w.join(' AND ')} ORDER BY p.fecha_plan,p.hora_plan NULLS LAST,p.plan_id`,v);
+    res.json(await trCompletar(pool,r.rows));
   }catch(e){res.status(500).json({error:e.message});}
 });
 
-app.get('/api/trans/planificacion/:id', auth, async(req,res)=>{
-  try{
-    const r=await pool.query(`SELECT p.*,
-      emp.razon_social AS empresa_nombre,
-      cam.nombre AS camion_nombre,cam.patente_serie AS camion_patente,cam.patente_carro AS camion_patente_carro,
-      per.nombre_completo AS chofer_nombre,per.rut AS chofer_rut,
-      f.nombre AS faena_nombre,
-      eq.nombre AS equipo_nombre,eq.codigo AS equipo_codigo
-      FROM trans_planificacion p
-      LEFT JOIN empresas emp ON p.empresa_id=emp.empresa_id
-      LEFT JOIN equipos cam ON p.camion_id=cam.equipo_id
-      LEFT JOIN personal per ON p.chofer_id=per.persona_id
-      LEFT JOIN faenas f ON p.faena_id=f.faena_id
-      LEFT JOIN equipos eq ON p.equipo_id=eq.equipo_id
-      WHERE p.plan_id=$1`,[req.params.id]);
-    if(!r.rows.length)return res.status(404).json({error:'Planificación no encontrada'});
-    res.json(r.rows[0]);
-  }catch(e){res.status(500).json({error:e.message});}
-});
-
-// Detectar solapamiento horario del chofer
+// Detectar solapamiento horario del chofer (va antes de /:id para que Express no lo tome como id)
 app.get('/api/trans/planificacion/check-solape', auth, async(req,res)=>{
   try{
-    const{fecha,chofer_id,hora,plan_id}=req.query;
+    const{fecha,chofer_id,plan_id}=req.query;
     if(!fecha||!chofer_id)return res.json({solape:false});
-    let w=['p.fecha_plan=$1','p.chofer_id=$2',`p.estado IN ('pendiente','en_curso')`],v=[fecha,chofer_id];
+    let w=['p.fecha_plan=$1','p.chofer_id=$2',`p.estado<>'cancelado'`],v=[fecha,chofer_id];
     if(plan_id){v.push(plan_id);w.push(`p.plan_id!=$${v.length}`);}
-    const r=await pool.query(`SELECT p.plan_id,p.hora_plan,p.origen,p.destino FROM trans_planificacion p WHERE ${w.join(' AND ')}`,v);
+    const r=await pool.query(`SELECT p.plan_id,p.hora_plan,p.origen,p.destino,p.estado FROM trans_planificacion p WHERE ${w.join(' AND ')}`,v);
     res.json({solape:r.rows.length>0,traslados:r.rows});
   }catch(e){res.status(500).json({error:e.message});}
 });
 
-app.post('/api/trans/planificacion', auth, async(req,res)=>{
+// Historial de incidentes (por camión, fechas y tipo)
+app.get('/api/trans/incidentes', auth, async(req,res)=>{
   try{
-    const b=req.body;
-    if(!b.fecha_plan)return res.status(400).json({error:'Fecha es obligatoria'});
-    const r=await pool.query(`INSERT INTO trans_planificacion(fecha_plan,hora_plan,empresa_id,camion_id,chofer_id,faena_id,equipo_id,origen,destino,km_cargado_plan,km_vacio_plan,tarifa_id,prioridad,estado,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING *`,
-      [b.fecha_plan,b.hora_plan||null,b.empresa_id||null,b.camion_id||null,b.chofer_id||null,b.faena_id||null,b.equipo_id||null,b.origen||null,b.destino||null,parseFloat(b.km_cargado_plan)||0,parseFloat(b.km_vacio_plan)||0,b.tarifa_id||null,b.prioridad||'normal',b.estado||'pendiente',b.observaciones||null,req.user.email]);
-    res.status(201).json(r.rows[0]);
+    const{camion_id,desde,hasta,tipo}=req.query; let w=[],v=[];
+    if(camion_id){v.push(camion_id);w.push(`i.camion_id=$${v.length}`);}
+    if(desde){v.push(desde);w.push(`i.inicio_en>=$${v.length}::timestamp`);}
+    if(hasta){v.push(hasta+' 23:59:59');w.push(`i.inicio_en<=$${v.length}::timestamp`);}
+    if(tipo){v.push(tipo);w.push(`i.tipo=$${v.length}`);}
+    res.json(await trIncidentesDe(pool,w.length?'WHERE '+w.join(' AND '):'',v));
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/trans/incidentes/:id/solucionado', auth, async(req,res)=>{ // pana, control u obstrucción que ya se resolvió: cuánto tiempo se perdió
+  try{
+    const extra=String((req.body&&req.body.detalle)||'').trim()||null;
+    await pool.query("UPDATE trans_viaje_incidentes SET fin_en=$1, detalle=CASE WHEN $2::text IS NULL THEN detalle ELSE COALESCE(detalle||' · ','')||$2 END WHERE incidente_id=$3 AND fin_en IS NULL",[trAhora(),extra,req.params.id]);
+    res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
+});
+
+app.get('/api/trans/planificacion/:id', auth, async(req,res)=>{
+  try{
+    const pl=await trPlanUno(pool,parseInt(req.params.id));
+    if(!pl)return res.status(404).json({error:'Planificación no encontrada'});
+    res.json(pl);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+app.post('/api/trans/planificacion', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const b=req.body||{};
+    if(!b.fecha_plan)return res.status(400).json({error:'Fecha es obligatoria'});
+    const d=trDatosPlan(b,req.user.nombre||req.user.email);
+    await client.query('BEGIN');
+    const pid=await trInsertarPlan(client,d);
+    // cambio de fundo con los dos camiones: dos viajes hermanos con la misma lista de máquinas
+    if(trEnt(b.segundo_camion_id)&&trEnt(b.segundo_chofer_id)){
+      const d2=Object.assign({},d,{camion_id:trEnt(b.segundo_camion_id),chofer_id:trEnt(b.segundo_chofer_id),tercero_nombre:null,chofer_externo_nombre:null,chofer_externo_telefono:null});
+      const pid2=await trInsertarPlan(client,d2);
+      await client.query('UPDATE trans_planificacion SET grupo_id=$1 WHERE plan_id IN ($1,$2)',[pid,pid2]);
+      await client.query('COMMIT');
+      return res.status(201).json({ok:true,plan_id:pid,plan_id_2:pid2});
+    }
+    await client.query('COMMIT');
+    res.status(201).json(Object.assign({ok:true,plan_id:pid},await trPlanUno(pool,pid)));
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 
 app.put('/api/trans/planificacion/:id', auth, async(req,res)=>{
+  const client=await pool.connect();
   try{
-    const b=req.body;
-    const r=await pool.query(`UPDATE trans_planificacion SET fecha_plan=$1,hora_plan=$2,empresa_id=$3,camion_id=$4,chofer_id=$5,faena_id=$6,equipo_id=$7,origen=$8,destino=$9,km_cargado_plan=$10,km_vacio_plan=$11,tarifa_id=$12,prioridad=$13,estado=$14,observaciones=$15,modificado_en=NOW() WHERE plan_id=$16 RETURNING *`,
-      [b.fecha_plan,b.hora_plan||null,b.empresa_id||null,b.camion_id||null,b.chofer_id||null,b.faena_id||null,b.equipo_id||null,b.origen||null,b.destino||null,parseFloat(b.km_cargado_plan)||0,parseFloat(b.km_vacio_plan)||0,b.tarifa_id||null,b.prioridad||'normal',b.estado||'pendiente',b.observaciones||null,req.params.id]);
-    res.json(r.rows[0]);
-  }catch(e){res.status(400).json({error:e.message});}
+    const pid=parseInt(req.params.id); const d=trDatosPlan(req.body||{},req.user.nombre||req.user.email);
+    const cols=TR_PLAN_COLS.filter(k=>k!=='usuario');
+    await client.query('BEGIN');
+    await client.query(`UPDATE trans_planificacion SET ${cols.map((k,i)=>`${k}=$${i+1}${k==='equipos_ids'||k==='recorrido_plan'?'::jsonb':''}`).join(',')},modificado_en=NOW() WHERE plan_id=$${cols.length+1}`,cols.map(k=>d[k]).concat([pid]));
+    // la lista de máquinas es una sola para los camiones del mismo cambio de fundo
+    await client.query('UPDATE trans_planificacion SET equipos_ids=$1::jsonb WHERE COALESCE(grupo_id,plan_id)=(SELECT COALESCE(grupo_id,plan_id) FROM trans_planificacion WHERE plan_id=$2)',[d.equipos_ids,pid]);
+    await client.query('COMMIT');
+    res.json(Object.assign({ok:true},await trPlanUno(pool,pid)||{}));
+  }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 
 app.delete('/api/trans/planificacion/:id', auth, async(req,res)=>{
-  try{await pool.query('DELETE FROM trans_planificacion WHERE plan_id=$1',[req.params.id]);res.json({ok:true});}
+  try{await pool.query('DELETE FROM trans_planificacion WHERE plan_id=$1',[req.params.id]);res.json({ok:true});} // tramos e incidentes se borran en cascada
   catch(e){res.status(400).json({error:e.message});}
 });
 
-// Marcar planificación como ejecutada y vincular al traslado real
+// Acciones del viaje. Modo sin señal: `uid` + `en` por registro; si el mismo uid llega dos veces se responde lo guardado (trans_sync).
+TR_ACCIONES.forEach(function(accion){
+  app.post('/api/trans/planificacion/:id/'+accion, auth, async(req,res)=>{
+    const client=await pool.connect();
+    try{
+      const b=req.body||{}; const uid=b.uid?String(b.uid).slice(0,80):null;
+      await client.query('BEGIN');
+      if(uid){const ya=await client.query('SELECT respuesta FROM trans_sync WHERE uid=$1',[uid]); if(ya.rows.length){await client.query('ROLLBACK');return res.json(Object.assign({},ya.rows[0].respuesta,{repetido:true}));}}
+      const r=await trViaje(client,parseInt(req.params.id),accion,b,req.user.nombre||req.user.email);
+      if(uid)await client.query('INSERT INTO trans_sync(uid,respuesta,recibido_en) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[uid,JSON.stringify(r),trAhora()]);
+      await client.query('COMMIT');
+      res.json(r);
+    }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
+    finally{client.release();}
+  });
+});
+
+// Marcar planificación como ejecutada y vincular al traslado real (registro manual, flujo antiguo)
 app.post('/api/trans/planificacion/:id/ejecutar', auth, async(req,res)=>{
   try{
     const{traslado_id}=req.body;
