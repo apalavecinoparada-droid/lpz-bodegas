@@ -15621,6 +15621,58 @@ function MantTareasStdAdmin(p){
 
 
 // ══ MÓDULO TRANSPORTE — TRASLADOS DE MAQUINARIA ══
+// Detalle por tramos de un traslado que viene de un viaje planificado (clic en el Estado de Traslados de Maquinaria)
+function DetalleViajeTraslado(p){
+  var pl=p.plan,tr=p.traslado;
+  function hora(ts){return ts?String(ts).slice(11,16):'';}
+  function dia(ts){return ts?String(ts).slice(8,10)+'/'+String(ts).slice(5,7):'';}
+  function mapa(lat,lng){return lat&&lng?'https://www.google.com/maps?q='+lat+','+lng:null;}
+  function nK(n){return (Math.round(n*10)/10).toLocaleString('es-CL');}
+  var tramos=pl.tramos||[],hechos=tramos.filter(function(t){return t.fin_en;});
+  var kc=0,kv=0;hechos.forEach(function(t){var k=Math.max(0,t.fin_km-t.inicio_km);if(t.carga==='cargado')kc+=k;else kv+=k;});
+  var nC=hechos.filter(function(t){return t.carga==='cargado';}).length;
+  var hrs=hechos.length?(new Date(String(hechos[hechos.length-1].fin_en).replace(' ','T'))-new Date(String(hechos[0].inicio_en).replace(' ','T')))/3600000:0;
+  var tras=pl.traslados||[];
+  var costo=tras.reduce(function(s,t){return s+(parseFloat(t.costo_total)||0);},0);
+  var caja=function(tit,val,col){return h('div',{style:{flex:'1 1 110px',padding:'8px 10px',background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:6}},
+    h('div',{style:{fontSize:10,fontWeight:700,color:'#64748B',letterSpacing:.5}},tit),h('div',{style:{fontSize:18,fontWeight:800,color:col||'#0F172A'}},val));};
+  var td={padding:'4px 6px'};
+  return h(Modal,{lg:true,title:'Viaje por tramos · '+(pl.camion_patente||tr.camion_patente||'')+' · '+(pl.chofer_nombre||tr.chofer_nombre||''),onClose:p.onClose},
+    h('div',{className:'mb'},
+      h('div',{style:{fontSize:12,color:'#475569',marginBottom:8}},
+        'Traslado N° '+tr.traslado_id+' · '+(tr.origen||'?')+' → '+(tr.destino||'?')+' · es '+(tras.length>1?'uno de los '+tras.length+' traslados':'el traslado')+' del viaje '+(pl.origen||'?')+' → '+(pl.destino||'?')+' del '+fmtD(pl.fecha_plan)),
+      !tramos.length?h('div',{style:{padding:10,background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:6,fontSize:12,color:'#92400E'}},'Este viaje se registró sin tramos (antes del registro por tramos, o lo cerró el planificador).'):
+      h('div',null,
+        h('div',{style:{display:'flex',flexWrap:'wrap',gap:8,marginBottom:10}},
+          caja('KM CARGADO',nK(kc),'#15803D'),caja('KM VACÍO',nK(kv),'#64748B'),caja('KM TOTAL',nK(kc+kv)),
+          caja('TRAMOS',hechos.length+' ('+nC+' cargado'+(nC===1?'':'s')+')'),
+          hrs>0&&caja('DURACIÓN',hrs<24?Math.floor(hrs)+' h '+Math.round((hrs%1)*60)+' min':(hrs/24).toFixed(1)+' días'),
+          costo>0&&caja('COSTO DEL VIAJE','$'+Math.round(costo).toLocaleString('es-CL'),'#1E40AF')),
+        h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+          h('thead',null,h('tr',{style:{background:'#1E3A2D',color:'#D4C5A9'}},['#','Carga','Desde → Hasta','Salida','Llegada','Km','Escolta','GPS','Comentario'].map(function(c){return h('th',{key:c,style:{padding:'5px 6px',textAlign:'left'}},c);}))),
+          h('tbody',null,tramos.map(function(t){
+            var km=t.fin_en?(t.fin_km-t.inicio_km):null,m1=mapa(t.inicio_lat,t.inicio_lng),m2=mapa(t.fin_lat,t.fin_lng);
+            return h('tr',{key:t.tramo_id,style:{borderBottom:'1px solid #E2E8F0',background:t.carga==='cargado'?'#F0FDF4':'#fff'}},
+              h('td',{style:td},t.orden),
+              h('td',{style:Object.assign({},td,{fontWeight:600,color:t.carga==='cargado'?'#15803D':'#64748B'})},t.carga==='cargado'?'🚜 '+(t.equipo_codigo||'?'):'Vacío'),
+              h('td',{style:td},(t.desde||'?')+' → '+(t.hasta||'?')),
+              h('td',{style:td},dia(t.inicio_en)+' '+hora(t.inicio_en),h('div',{style:{color:'#94A3B8'}},'km '+Math.round(t.inicio_km).toLocaleString('es-CL'))),
+              h('td',{style:td},t.fin_en?[hora(t.fin_en),h('div',{key:'k',style:{color:'#94A3B8'}},'km '+Math.round(t.fin_km).toLocaleString('es-CL'))]:h('span',{style:{color:'#1E40AF',fontWeight:600}},'en camino')),
+              h('td',{style:Object.assign({},td,{fontWeight:700})},km!==null?Math.round(km):''),
+              h('td',{style:td},t.con_escolta?'🛡':''),
+              h('td',{style:td},m1?h('a',{href:m1,target:'_blank'},'salida'):'—',' ',m2?h('a',{href:m2,target:'_blank'},'llegada'):''),
+              h('td',{style:Object.assign({},td,{color:'#64748B',fontStyle:'italic'})},t.observaciones||''));
+          }))),
+        tras.length>0&&h('div',{style:{marginTop:10}},
+          h('div',{style:{fontSize:11,fontWeight:700,color:'#1E3A2D',marginBottom:3}},'💰 Traslados del viaje'),
+          tras.map(function(x){var es=String(x.traslado_id)===String(tr.traslado_id);
+            return h('div',{key:x.traslado_id,style:{fontSize:11,padding:'2px 0',fontWeight:es?800:400,color:es?'#1E40AF':'#334155'}},
+              (es?'▶ ':'')+'N° '+x.traslado_id+' · '+(x.equipo_codigo||'Vacío')+' · '+(x.origen||'?')+' → '+(x.destino||'?')+' · '+Math.round(x.km_cargado||0)+' km cargado / '+Math.round(x.km_vacio||0)+' vacío · $'+Math.round(parseFloat(x.costo_total)||0).toLocaleString('es-CL'));
+          })))
+    ),
+    h('div',{className:'mf'},h(Btn,{v:'g',onClick:p.onClose},'Cerrar'))
+  );
+}
 function TransporteView(p){
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   var faenas=p.m.faenas||[];
@@ -15644,6 +15696,11 @@ function TransporteView(p){
   var[ultimoOdo,setUltimoOdo]=useState(null);
   var[pendientes,setPendientes]=useState([]);
   var[planSel,setPlanSel]=useState('');
+  var[detalle,setDetalle]=useState(null); // {plan, traslado}: detalle por tramos
+  function verDetalle(r){
+    setMsg('');
+    api('/trans/planificacion/'+r.planificacion_id,'GET',null,p.tok).then(function(pl){setDetalle({plan:pl,traslado:r});}).catch(function(e){setMsg(e.message);});
+  }
 
   function loadBase(){
     api('/trans/camiones','GET',null,p.tok).then(function(r){setCamiones(r||[]);}).catch(function(){});
@@ -15718,7 +15775,11 @@ function TransporteView(p){
       loadTraslados();loadDash();loadPendientes();setShowForm(false);setPlanSel('');setMsg('');
     }).catch(function(e){setMsg('Error: '+e.message);});
   }
-  function eliminar(id){if(!confirm('¿Eliminar este traslado?'))return;api('/trans/traslados/'+id,'DELETE',null,p.tok).then(function(){loadTraslados();loadDash();}).catch(function(e){alert(e.message);});}
+  function eliminar(id){
+    var r=traslados.find(function(x){return x.traslado_id===id;})||{};
+    var n=r.planificacion_id?traslados.filter(function(x){return x.planificacion_id===r.planificacion_id;}).length:0;
+    var txt=r.planificacion_id?'Este traslado es parte de un viaje planificado'+(n>1?' que tiene '+n+' traslados: se borran todos juntos':'')+'.\n\nEl viaje vuelve a "En curso" con sus tramos, para corregirlo y cerrarlo de nuevo. Si quieres partir de cero, borra después el viaje en Planificación.\n\n¿Eliminar?':'¿Eliminar este traslado?';
+    if(!confirm(txt))return;api('/trans/traslados/'+id,'DELETE',null,p.tok).then(function(){loadTraslados();loadDash();}).catch(function(e){alert(e.message);});}
   function upd(k,v){setForm(function(f){return Object.assign({},f,{[k]:v});});}
 
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
@@ -15779,7 +15840,10 @@ function TransporteView(p){
           {lbl:'Km vacío',r:true,render:function(r){return r.km_vacio;}},
           {lbl:'Litros',r:true,render:function(r){return parseFloat(r.litros_combustible)>0?r.litros_combustible:h('span',{style:{color:'#94A3B8'}},'—');}},
           {lbl:'Costo',r:true,render:function(r){return r.costo_total?CLP(Math.round(parseFloat(r.costo_total))):h('span',{style:{color:'#94A3B8'}},'—');}},
-          {lbl:'Estado',render:function(r){var e=ESTADOS.find(function(x){return x.v===r.estado;})||{l:r.estado,c:'g'};return h(Bg,{c:e.c},e.l);}},
+          {lbl:'Estado',render:function(r){var e=ESTADOS.find(function(x){return x.v===r.estado;})||{l:r.estado,c:'g'};
+            if(!r.planificacion_id)return h(Bg,{c:e.c},e.l);
+            // viene de un viaje planificado: clic = detalle por tramos
+            return h('span',{onClick:function(){verDetalle(r);},title:'Ver el detalle del viaje por tramos',style:{cursor:'pointer',whiteSpace:'nowrap'}},h(Bg,{c:e.c},e.l),' 🗺');}},
           {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:4}},h(Btn,{v:'a',sm:true,onClick:function(){openEdit(r);}},null,'✏'),h(Btn,{v:'r',sm:true,onClick:function(){eliminar(r.traslado_id);}},null,'🗑'));}}
         ],rows:traslados,empty:'Sin traslados en el período'})
       )
@@ -15987,7 +16051,8 @@ function TransporteView(p){
       )
     ),
     // Tab content
-    tab==='panel'?renderPanel():renderHistorial()
+    tab==='panel'?renderPanel():renderHistorial(),
+    detalle&&h(DetalleViajeTraslado,{plan:detalle.plan,traslado:detalle.traslado,onClose:function(){setDetalle(null);}})
   );
 }
 
@@ -15998,14 +16063,16 @@ function TransporteTarifas(p){
   var[showForm,setShowForm]=useState(false);
   var[sel,setSel]=useState(null);
   var[msg,setMsg]=useState('');
-  var emptyForm={nombre:'',empresa_id:'',valor_km_cargado:'',valor_km_vacio:'',costo_fijo_salida:'0',recargo_distancia_km:'0',pct_recargo:'0',vigente_desde:new Date().toISOString().slice(0,10),vigente_hasta:'',activo:true};
+  var emptyForm={nombre:'',empresa_id:'',valor_km_cargado:'',valor_km_vacio:'',costo_fijo_salida:'0',recargo_distancia_km:'0',pct_recargo:'0',vigente_desde:new Date().toISOString().slice(0,10),vigente_hasta:'',activo:true,
+    km_corto:'50',fijo_corto:'200000',base_corto:'total',tercero:''};
   var[form,setForm]=useState(emptyForm);
   function load(){api('/trans/tarifas','GET',null,p.tok).then(function(r){setTarifas(Array.isArray(r)?r:[]);}).catch(function(){});}
   useEffect(load,[p.tok]);
   function openNew(){setSel(null);setForm(emptyForm);setShowForm(true);setMsg('');}
-  function openEdit(r){setSel(r);setForm({nombre:r.nombre||'',empresa_id:r.empresa_id||'',valor_km_cargado:r.valor_km_cargado||'',valor_km_vacio:r.valor_km_vacio||'',costo_fijo_salida:r.costo_fijo_salida||'0',recargo_distancia_km:r.recargo_distancia_km||'0',pct_recargo:r.pct_recargo||'0',vigente_desde:r.vigente_desde?(r.vigente_desde+'').slice(0,10):'',vigente_hasta:r.vigente_hasta?(r.vigente_hasta+'').slice(0,10):'',activo:r.activo!==false});setShowForm(true);setMsg('');}
+  function openEdit(r){setSel(r);setForm({tercero:r.tercero||'',km_corto:r.km_corto||'0',fijo_corto:r.fijo_corto||'0',base_corto:r.base_corto||'total',nombre:r.nombre||'',empresa_id:r.empresa_id||'',valor_km_cargado:r.valor_km_cargado||'',valor_km_vacio:r.valor_km_vacio||'',costo_fijo_salida:r.costo_fijo_salida||'0',recargo_distancia_km:r.recargo_distancia_km||'0',pct_recargo:r.pct_recargo||'0',vigente_desde:r.vigente_desde?(r.vigente_desde+'').slice(0,10):'',vigente_hasta:r.vigente_hasta?(r.vigente_hasta+'').slice(0,10):'',activo:r.activo!==false});setShowForm(true);setMsg('');}
   function guardar(){
     if(!form.nombre){setMsg('Nombre requerido');return;}
+    if(form.tercero!==''&&!form.tercero.trim()){setMsg('Escribe la empresa del tercero');return;}
     if(!form.valor_km_cargado&&!form.valor_km_vacio){setMsg('Ingrese al menos un valor por km');return;}
     var url=sel?'/trans/tarifas/'+sel.tarifa_id:'/trans/tarifas';
     var method=sel?'PUT':'POST';
@@ -16023,6 +16090,11 @@ function TransporteTarifas(p){
     showForm&&h('div',{className:'card',style:{marginBottom:12}},
       h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},sel?'Editar tarifa':'Nueva tarifa de transporte'),
       h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
+        h('div',{style:{gridColumn:'1 / -1'}},h('label',{style:lblS},'¿De quién es esta tarifa?'),
+          h('div',{style:{display:'flex',gap:8,alignItems:'center'}},
+            h('select',{value:form.tercero?'t':'p',onChange:function(e){setForm(Object.assign({},form,{tercero:e.target.value==='t'?(form.tercero||' '):''}));},style:Object.assign({},inpS,{width:220})},
+              h('option',{value:'p'},'Camiones propios'),h('option',{value:'t'},'Cama baja arrendada a un tercero')),
+            form.tercero!==''&&conMic(h('input',{type:'text',value:form.tercero.trim()?form.tercero:'',onChange:function(e){setForm(Object.assign({},form,{tercero:e.target.value||' '}));},style:inpS,placeholder:'Empresa del tercero (ej: Transportes Ruiz)'}),'texto',function(v){setForm(function(f){return Object.assign({},f,{tercero:v});});},true))),
         h('div',null,h('label',{style:lblS},'Nombre *'),h('input',{type:'text',value:form.nombre,onChange:function(e){setForm(Object.assign({},form,{nombre:e.target.value}));},style:inpS,placeholder:'Ej: Tarifa estándar 2026'})),
         h('div',null,h('label',{style:lblS},'Empresa (vacío=todas)'),h('select',{value:form.empresa_id,onChange:function(e){setForm(Object.assign({},form,{empresa_id:e.target.value}));},style:inpS},h('option',{value:''},'Todas las empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);}))),
         h('div',null,h('label',{style:lblS},'Vigente desde'),h('input',{type:'date',value:form.vigente_desde,onChange:function(e){setForm(Object.assign({},form,{vigente_desde:e.target.value}));},style:inpS})),
@@ -16033,6 +16105,16 @@ function TransporteTarifas(p){
         h('div',null,h('label',{style:lblS},'% recargo'),h('input',{type:'number',value:form.pct_recargo,onChange:function(e){setForm(Object.assign({},form,{pct_recargo:e.target.value}));},style:inpS,placeholder:'0',step:0.1})),
         h('div',null,h('label',{style:lblS},'Vigente hasta'),h('input',{type:'date',value:form.vigente_hasta,onChange:function(e){setForm(Object.assign({},form,{vigente_hasta:e.target.value}));},style:inpS}))
       ),
+      h('div',{style:{marginTop:10,padding:8,background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6}},
+        h('div',{style:{fontSize:11,fontWeight:700,color:'#1E3A2D',marginBottom:6}},'Traslado corto: cada tramo cargado es un traslado; si es corto se cobra además un precio fijo'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}},
+          h('div',null,h('label',{style:lblS},'Corto si es menor a (km)'),h('input',{type:'number',value:form.km_corto,onChange:function(e){setForm(Object.assign({},form,{km_corto:e.target.value}));},style:inpS,placeholder:'50'})),
+          h('div',null,h('label',{style:lblS},'Precio fijo traslado corto ($)'),h('input',{type:'number',value:form.fijo_corto,onChange:function(e){setForm(Object.assign({},form,{fijo_corto:e.target.value}));},style:inpS,placeholder:'200000'})),
+          h('div',null,h('label',{style:lblS},'Los km se miden con'),h('select',{value:form.base_corto,onChange:function(e){setForm(Object.assign({},form,{base_corto:e.target.value}));},style:inpS},
+            h('option',{value:'total'},'Km cargados + vacíos del traslado'),h('option',{value:'cargado'},'Solo km cargados del traslado')))
+        ),
+        h('div',{style:{fontSize:10,color:'#64748B',marginTop:4,fontStyle:'italic'}},'Bajo el límite: fijo + km cargados × $/km + km vacíos × $/km. Sobre el límite: solo los km. El fijo es solo para valorizar: los km cargados y vacíos se registran igual por separado. Deja el límite en 0 para no usarlo.')
+      ),
       h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:8}},
         h(Btn,{v:'g',onClick:function(){setShowForm(false);}},null,'Cancelar'),
         h(Btn,{onClick:guardar},'Guardar')
@@ -16041,10 +16123,12 @@ function TransporteTarifas(p){
     h('div',{className:'card'},
       h(TBL,{cols:[
         {lbl:'Nombre',k:'nombre'},
+        {lbl:'Para',render:function(r){return r.tercero?h(Bg,{c:'a'},'Tercero: '+r.tercero):'Camiones propios';}},
         {lbl:'Empresa',render:function(r){return r.empresa_nombre||'Todas';}},
         {lbl:'$/km carg.',r:true,render:function(r){return CLP(Math.round(parseFloat(r.valor_km_cargado)||0));}},
         {lbl:'$/km vacío',r:true,render:function(r){return CLP(Math.round(parseFloat(r.valor_km_vacio)||0));}},
         {lbl:'Fijo salida',r:true,render:function(r){return parseFloat(r.costo_fijo_salida)?CLP(Math.round(parseFloat(r.costo_fijo_salida))):'—';}},
+        {lbl:'Traslado corto',r:true,render:function(r){return parseFloat(r.km_corto)>0?CLP(Math.round(parseFloat(r.fijo_corto)||0))+' bajo '+Math.round(r.km_corto)+' km '+(r.base_corto==='cargado'?'(cargados)':'(cargado + vacío)'):'—';}},
         {lbl:'Vigencia',render:function(r){return fmtD(r.vigente_desde)+(r.vigente_hasta?' → '+fmtD(r.vigente_hasta):' → ∞');}},
         {lbl:'Estado',render:function(r){return h(Bg,{c:r.activo?'g':'r'},r.activo?'Activa':'Inactiva');}},
         {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:4}},h(Btn,{v:'a',sm:true,onClick:function(){openEdit(r);}},null,'✏'),h(Btn,{v:'r',sm:true,onClick:function(){eliminar(r.tarifa_id);}},null,'🗑'));}}
@@ -17078,8 +17162,24 @@ function PlanificacionView(p){
   var[solape,setSolape]=useState(null);
   var[msg,setMsg]=useState('');
 
-  var emptyForm={fecha_plan:'',hora_plan:'',empresa_id:'',camion_id:'',chofer_id:'',faena_id:'',equipo_id:'',origen:'',destino:'',km_cargado_plan:'',km_vacio_plan:'',prioridad:'normal',estado:'pendiente',observaciones:''};
+  var emptyForm={fecha_plan:'',hora_plan:'',empresa_id:'',camion_id:'',chofer_id:'',faena_id:'',equipo_id:'',origen:'',destino:'',km_cargado_plan:'',km_vacio_plan:'',prioridad:'normal',estado:'pendiente',observaciones:'',
+    tipo_viaje:'normal',equipos_ids:[],segundo_camion_id:'',segundo_chofer_id:'',escolta_id:'',escolta_nombre:'',escolta_telefono:'',escolta_modo:'',escolta_nota:'',
+    tercero_nombre:'',chofer_externo_nombre:'',chofer_externo_telefono:'',va_vacio:false,recorrido_plan:[],tarifa_id:''};
   var[form,setForm]=useState(emptyForm);
+  var[verRec,setVerRec]=useState(null); // planificación cuyo recorrido (tramos) se está mirando
+  var[verInc,setVerInc]=useState(false); // historial de incidentes por camión
+  var[tarifas,setTarifas]=useState([]);
+  useEffect(function(){api('/trans/tarifas','GET',null,p.tok).then(function(r){setTarifas(Array.isArray(r)?r:[]);}).catch(function(){});},[p.tok]);
+  var[realiz,setRealiz]=useState(null); // viaje de un tercero: el planificador anota lo que hizo (el tercero no usa la App)
+  var[incs,setIncs]=useState([]);
+  var[incCamion,setIncCamion]=useState('');
+  useEffect(function(){
+    if(!verInc)return;
+    var y=parseInt(mes.slice(0,4)),mm=parseInt(mes.slice(5,7));
+    var q='?desde='+mes+'-01&hasta='+mes+'-'+String(new Date(y,mm,0).getDate()).padStart(2,'0')+(incCamion?'&camion_id='+incCamion:'');
+    api('/trans/incidentes'+q,'GET',null,p.tok).then(function(r){setIncs(Array.isArray(r)?r:[]);}).catch(function(){setIncs([]);});
+  },[verInc,mes,incCamion]);
+  function minutos(a,b){return a&&b?Math.round((new Date(String(b).replace(' ','T'))-new Date(String(a).replace(' ','T')))/60000):null;}
 
   function load(){
     var y=parseInt(mes.slice(0,4)),mm=parseInt(mes.slice(5,7));
@@ -17104,19 +17204,24 @@ function PlanificacionView(p){
     setForm({
       fecha_plan:(row.fecha_plan+'').slice(0,10),
       hora_plan:row.hora_plan?row.hora_plan.slice(0,5):'',
-      empresa_id:row.empresa_id||'',camion_id:row.camion_id||'',chofer_id:row.chofer_id||'',
+      empresa_id:row.empresa_id||'',camion_id:row.camion_id||(row.tercero_nombre?'__tercero':''),chofer_id:row.chofer_id||(row.chofer_externo_nombre?'__otro':''),
       faena_id:row.faena_id||'',equipo_id:row.equipo_id||'',
       origen:row.origen||'',destino:row.destino||'',
+      tercero_nombre:row.tercero_nombre||'',chofer_externo_nombre:row.chofer_externo_nombre||'',chofer_externo_telefono:row.chofer_externo_telefono||'',va_vacio:!!row.va_vacio,
+      recorrido_plan:(row.recorrido_plan||[]).map(function(t){return Object.assign({},t);}),tarifa_id:row.tarifa_id||'',
       km_cargado_plan:row.km_cargado_plan||'',km_vacio_plan:row.km_vacio_plan||'',
       prioridad:row.prioridad||'normal',estado:row.estado||'pendiente',
-      observaciones:row.observaciones||''
+      observaciones:row.observaciones||'',
+      tipo_viaje:row.tipo_viaje||'normal',equipos_ids:(row.equipos_ids||[]).slice(),segundo_camion_id:'',segundo_chofer_id:'',
+      escolta_id:row.escolta_id||(row.escolta_nombre?'__otro':''),escolta_nombre:row.escolta_nombre||'',escolta_telefono:row.escolta_telefono||'',
+      escolta_modo:row.escolta_modo||'',escolta_nota:row.escolta_nota||''
     });
     setSolape(null);setMsg('');setShowForm(true);
   }
 
   // Validar solape al cambiar chofer/fecha
   useEffect(function(){
-    if(!form.chofer_id||!form.fecha_plan){setSolape(null);return;}
+    if(!form.chofer_id||form.chofer_id==='__otro'||!form.fecha_plan){setSolape(null);return;}
     var q='?fecha='+form.fecha_plan+'&chofer_id='+form.chofer_id;
     if(sel)q+='&plan_id='+sel.plan_id;
     api('/trans/planificacion/check-solape'+q,'GET',null,p.tok).then(function(r){
@@ -17124,12 +17229,135 @@ function PlanificacionView(p){
     }).catch(function(){});
   },[form.chofer_id,form.fecha_plan]);
 
-  function guardar(){
+  function guardar(enviar){
     if(!form.fecha_plan){setMsg('Fecha obligatoria');return;}
     if(!form.chofer_id||!form.camion_id){setMsg('Chofer y camión son obligatorios');return;}
+    if(form.camion_id==='__tercero'&&!form.tercero_nombre){setMsg('Escribe quién presta el servicio (empresa, camión, patente)');return;}
+    if(form.camion_id==='__tercero'&&!form.tarifa_id){setMsg('Elige la tarifa del tercero (si no existe, créala en Transporte → Tarifas Valorización)');return;}
+    if(form.chofer_id==='__otro'&&!form.chofer_externo_nombre){setMsg('Escribe el nombre del chofer');return;}
+    if(enviar&&!telWsp(form.chofer_id==='__otro'?form.chofer_externo_telefono:telChofer(form.chofer_id))){setMsg('El chofer no tiene teléfono: no se le puede enviar por WhatsApp');return;}
+    // la ventana se abre antes de guardar para que el navegador no la bloquee
+    var w=enviar?window.open('about:blank','_blank'):null;
     var url=sel?'/trans/planificacion/'+sel.plan_id:'/trans/planificacion';
     var method=sel?'PUT':'POST';
-    api(url,method,form,p.tok).then(function(){setShowForm(false);load();}).catch(function(e){setMsg('Error: '+e.message);});
+    var body=Object.assign({},form);
+    if(enviar&&body.estado==='pendiente')body.estado='programado';
+    var recEq=(body.recorrido_plan||[]).filter(function(t){return t.carga==='cargado'&&t.equipo_id;}).map(function(t){return parseInt(t.equipo_id);});
+    if((body.recorrido_plan||[]).some(function(t){return t.carga==='cargado'&&!t.equipo_id;})){if(w)w.close();setMsg('En el recorrido hay un tramo CARGADO sin máquina');return;}
+    if(recEq.length){
+      body.equipos_ids=(body.equipos_ids||[]).map(Number).concat(recEq).filter(function(x,i,a){return a.indexOf(x)===i;});
+      body.equipo_id=body.equipos_ids[0];body.va_vacio=false;
+    }
+    api(url,method,body,p.tok).then(function(r){
+      var pid=sel?sel.plan_id:(r&&r.plan_id);
+      if(w&&pid)return api('/trans/planificacion/'+pid,'GET',null,p.tok).then(function(pl){
+        w.location.href=linkWsp(pl,'chofer');
+        api('/trans/planificacion/'+pid+'/enviado','POST',{},p.tok).catch(function(){});
+        if(r&&r.plan_id_2)alert('Se programaron los 2 camiones. Ahora envía el WhatsApp al 2º chofer con el botón 📲 de su viaje en la Agenda.');
+      });
+    }).then(function(){setShowForm(false);load();}).catch(function(e){if(w)w.close();setMsg('Error: '+e.message);});
+  }
+
+  // ── WhatsApp al chofer / escolta (wa.me abre WhatsApp con el texto listo; el envío lo confirma quien planifica) ──
+  var TIPOS_VIAJE={normal:'Traslado normal',interno:'Traslados internos en la faena',cambio_fundo:'Cambio de fundo'};
+  function telChofer(id){var c=choferes.find(function(x){return String(x.persona_id)===String(id);});return c?c.telefono:'';}
+  function telWsp(t){var d=String(t||'').replace(/\D/g,'');if(d.length===9&&d[0]==='9')d='56'+d;if(d.length===8)d='569'+d;return d.length>=11?d:'';}
+  function textoWsp(pl,para){
+    var f=new Date((pl.fecha_plan+'').slice(0,10)+'T00:00:00');
+    var L=[];
+    L.push('*'+(para==='escolta'?'ESCOLTA – ':'')+'TRASLADO PROGRAMADO*');
+    L.push('📅 '+f.toLocaleDateString('es-CL',{weekday:'long',day:'numeric',month:'long'})+(pl.hora_plan?' a las '+pl.hora_plan.slice(0,5):''));
+    L.push('🚛 '+(pl.camion_nombre||'')+(pl.camion_patente&&pl.camion_patente!=='TERCERO'?' ('+pl.camion_patente+')':'')+' – chofer '+(pl.chofer_nombre||''));
+    L.push('📋 '+(TIPOS_VIAJE[pl.tipo_viaje]||'Traslado'));
+    L.push('📍 '+(pl.origen||'?')+' → '+(pl.destino||'?'));
+    var eqs=pl.equipos_lista||[];
+    if(pl.va_vacio)L.push('🚜 Va vacío (sin máquina)');
+    else if(eqs.length)L.push('🚜 Máquinas: '+eqs.map(function(e){return e.codigo;}).join(', '));
+    if((pl.grupo||[]).length)L.push('👥 Junto con '+pl.grupo.map(function(g){return g.camion_patente+' ('+(g.chofer_nombre||'').split(' ')[0]+')';}).join(', ')+': se reparten las máquinas en terreno');
+    if(pl.escolta_nombre)L.push('🛡 Escolta: '+pl.escolta_nombre+(pl.escolta_telefono?' '+pl.escolta_telefono:'')+(pl.escolta_modo==='todo'?' – todo el viaje':pl.escolta_nota?' – '+pl.escolta_nota:''));
+    var rec=pl.recorrido_plan||[];
+    if(rec.length){
+      L.push('','🧭 *Recorrido:*');
+      rec.forEach(function(t){L.push(t.orden+'. '+(t.carga==='cargado'?'CARGADO con '+(t.equipo_codigo||'?'):'VACÍO')+': '+t.desde+' → '+t.hasta+(t.con_escolta?' 🛡':''));});
+      L.push('');
+    }
+    if(pl.observaciones)L.push('📝 '+pl.observaciones);
+    if(para!=='escolta'&&pl.chofer_id)L.push('','Al salir abre la App → Transporte y toca *Iniciar traslado*: '+location.origin); // el chofer externo no tiene usuario
+    return L.join('\n');
+  }
+  function linkWsp(pl,para){var t=para==='escolta'?pl.escolta_telefono:(pl.chofer_telefono||telChofer(pl.chofer_id));return 'https://wa.me/'+telWsp(t)+'?text='+encodeURIComponent(textoWsp(pl,para));}
+  function enviarWsp(pl,para){
+    var t=para==='escolta'?pl.escolta_telefono:(pl.chofer_telefono||telChofer(pl.chofer_id));
+    if(!telWsp(t)){alert('No hay teléfono del '+(para==='escolta'?'escolta':'chofer')+'. Agrégalo en '+(para==='escolta'?'la planificación':'Personal')+'.');return;}
+    window.open(linkWsp(pl,para),'_blank');
+    if(para!=='escolta')api('/trans/planificacion/'+pl.plan_id+'/enviado','POST',{},p.tok).then(load).catch(function(){});
+  }
+  function fmtHora(ts){return ts?String(ts).slice(11,16):'';}
+  function linkMapa(lat,lng){return lat&&lng?'https://www.google.com/maps?q='+lat+','+lng:null;}
+
+  // ── Revisión del viaje: busca lo que no calza en la secuencia de tramos que registró el chofer ──
+  // nivel 'error' = dato malo que cambia los km o el costo; 'aviso' = revisar con el chofer
+  function revisarViaje(pl){
+    var tr=pl.tramos||[],out=[];
+    function n(x){return String(x||'').toUpperCase().replace(/\s+/g,' ').trim();}
+    function dist(a1,o1,a2,o2){if(!a1||!a2)return null;var R=6371,r=Math.PI/180,da=(a2-a1)*r,dl=(o2-o1)*r;var x=Math.sin(da/2)*Math.sin(da/2)+Math.cos(a1*r)*Math.cos(a2*r)*Math.sin(dl/2)*Math.sin(dl/2);return 2*R*Math.asin(Math.sqrt(x));}
+    function fd(f){return String(f).slice(8,10)+'/'+String(f).slice(5,7);}
+    if(!tr.length)return out;
+    var ini=String(tr[0].inicio_en).slice(0,10),plan=String(pl.fecha_plan).slice(0,10);
+    if(ini<plan)out.push({nivel:'aviso',texto:'Se inició el '+fd(ini)+', antes de la fecha programada ('+fd(plan)+').'});
+    if(ini>plan)out.push({nivel:'aviso',texto:'Se inició el '+fd(ini)+', después de la fecha programada ('+fd(plan)+').'});
+    var planif=(pl.equipos_ids||[]).map(String),llevadas={};
+    tr.forEach(function(t,i){
+      var et='Tramo '+t.orden+': ';
+      var prev=tr[i-1];
+      if(prev&&prev.fin_en&&Math.abs((t.inicio_km||0)-(prev.fin_km||0))>=1)
+        out.push({nivel:'error',texto:et+'salió con km '+Math.round(t.inicio_km)+' pero el tramo anterior llegó con '+Math.round(prev.fin_km)+' ('+Math.round(t.inicio_km-prev.fin_km)+' km sin explicar).'});
+      if(prev&&n(t.desde)!==n(prev.hasta))
+        out.push({nivel:'aviso',texto:et+'sale de «'+t.desde+'» pero el tramo anterior llegó a «'+prev.hasta+'».'});
+      if(n(t.desde)===n(t.hasta))
+        out.push({nivel:'aviso',texto:et+'va de «'+t.desde+'» a «'+t.hasta+'» (mismo lugar): falta el sector o el destino'+(t.observaciones?' — el chofer escribió en el comentario: «'+t.observaciones+'»':'')+'.'});
+      if(!t.fin_en){
+        var hrs=(Date.now()-new Date(String(t.inicio_en).replace(' ','T')).getTime())/3600000;
+        if(hrs>12)out.push({nivel:'aviso',texto:et+'lleva '+Math.round(hrs)+' h sin marcar la llegada.'});
+        return;
+      }
+      var km=(t.fin_km||0)-(t.inicio_km||0);
+      var min=(new Date(String(t.fin_en).replace(' ','T'))-new Date(String(t.inicio_en).replace(' ','T')))/60000;
+      if(km<=0)out.push({nivel:'error',texto:et+'0 km recorridos.'});
+      else if(pl.camion_id&&min>0&&km/(min/60)>80)out.push({nivel:'error',texto:et+Math.round(km)+' km en '+Math.round(min)+' min ('+Math.round(km/(min/60))+' km/h): el km o la hora no calzan.'});
+      var d=pl.camion_id?dist(t.inicio_lat,t.inicio_lng,t.fin_lat,t.fin_lng):undefined; // tercero: sin App, sin GPS
+      if(d===null)out.push({nivel:'aviso',texto:et+'sin GPS'+(t.inicio_lat?' al llegar':' al salir')+'.'});
+      else if(km>2&&d<0.3)out.push({nivel:'aviso',texto:et+'el odómetro marca '+Math.round(km)+' km pero el GPS no se movió (el celular quedó en un solo lugar o no tenía señal).'});
+      else if(d>km+2)out.push({nivel:'error',texto:et+'el GPS se movió '+d.toFixed(1)+' km en línea recta y el odómetro solo '+Math.round(km)+' km.'});
+      // registrado sin señal: la hora es la del celular y llegó al servidor después
+      var tard=t.recibido_en?(new Date(String(t.recibido_en).replace(' ','T'))-new Date(String(t.inicio_en).replace(' ','T')))/60000:0;
+      if(pl.camion_id&&tard>15)out.push({nivel:'aviso',texto:et+'se registró sin señal y llegó al servidor '+(tard>=90?Math.round(tard/60)+' h':Math.round(tard)+' min')+' después (horas del celular del chofer).'});
+      if(t.carga==='cargado'&&t.equipo_id){
+        llevadas[String(t.equipo_id)]=1;
+        if(planif.indexOf(String(t.equipo_id))<0)out.push({nivel:'aviso',texto:et+'llevó '+(t.equipo_codigo||'una máquina')+', que no estaba en la planificación'+(pl.va_vacio?' (se programó vacío)':'')+'.'});
+      }
+      if(pl.escolta_modo==='todo'&&!t.con_escolta)out.push({nivel:'aviso',texto:et+'sin escolta, y se programó escolta para todo el viaje.'});
+    });
+    var pasos=pl.recorrido_plan||[];
+    if(pasos.length){
+      var hechos={};
+      tr.forEach(function(t){
+        if(t.plan_orden)hechos[t.plan_orden]=1;
+        else out.push({nivel:'aviso',texto:'Tramo '+t.orden+' ('+(t.desde||'?')+' → '+(t.hasta||'?')+') fuera del recorrido planificado: el chofer marcó "Cambió el plan".'});
+      });
+      if(pl.estado==='ejecutado')pasos.forEach(function(x){if(!hechos[x.orden])out.push({nivel:'aviso',texto:'No se hizo el paso '+x.orden+' del plan: '+(x.carga==='cargado'?(x.equipo_codigo||'?'):'vacío')+' '+x.desde+' → '+x.hasta+'.'});});
+    }
+    (pl.incidentes||[]).forEach(function(x){
+      var m=minutos(x.inicio_en,x.fin_en);
+      out.push({nivel:'aviso',texto:'🚨 '+x.tipo_nombre+(x.tramo_orden?' en el tramo '+x.tramo_orden:'')+', '+String(x.inicio_en).slice(11,16)+(m!==null?' ('+m+' min)':'')+(x.detalle?': '+x.detalle:'')+'.'});
+      if(!x.fin_en&&{pana:1,pinchazo:1,control_faena:1,control_carabineros:1,obstruccion:1}[x.tipo])out.push({nivel:'aviso',texto:x.tipo_nombre+' sin marcar como solucionado.'});
+    });
+    if(pl.estado==='ejecutado'){
+      (pl.equipos_lista||[]).forEach(function(e){if(!llevadas[String(e.equipo_id)]&&!(pl.equipos_movidos||{})[String(e.equipo_id)])out.push({nivel:'aviso',texto:'No se movió '+e.codigo+', que estaba en la planificación.'});});
+      var ult=tr[tr.length-1];
+      if(n(ult.hasta).indexOf('BASE')<0)out.push({nivel:'aviso',texto:'El viaje se cerró en «'+ult.hasta+'», no en la base.'});
+    }
+    return out;
   }
   function eliminar(id){if(!confirm('¿Eliminar esta planificación?'))return;api('/trans/planificacion/'+id,'DELETE',null,p.tok).then(load).catch(function(e){alert(e.message);});}
 
@@ -17139,6 +17367,7 @@ function PlanificacionView(p){
   // Contadores
   var total=items.length;
   var pend=items.filter(function(x){return x.estado==='pendiente';}).length;
+  var prog=items.filter(function(x){return x.estado==='programado';}).length;
   var curso=items.filter(function(x){return x.estado==='en_curso';}).length;
   var ejec=items.filter(function(x){return x.estado==='ejecutado';}).length;
   var canc=items.filter(function(x){return x.estado==='cancelado';}).length;
@@ -17165,7 +17394,8 @@ function PlanificacionView(p){
     var hoy=new Date().toISOString().slice(0,10);
 
     var nombresDia=['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
-    var colorEstado={pendiente:'#F59E0B',en_curso:'#3B82F6',ejecutado:'#10B981',cancelado:'#94A3B8'};
+    var colorEstado={pendiente:'#F59E0B',programado:'#0D9488',en_curso:'#3B82F6',ejecutado:'#10B981',cancelado:'#94A3B8'};
+    var nombreEstado={pendiente:'Pendiente',programado:'Programado',en_curso:'En curso',ejecutado:'Ejecutado',cancelado:'Cancelado'};
     return h('div',{className:'card',style:{padding:0,overflow:'hidden'}},
       // Encabezado días
       h('div',{style:{display:'grid',gridTemplateColumns:'repeat(7,1fr)',background:'#1E3A2D',color:'#D4C5A9'}},
@@ -17184,7 +17414,8 @@ function PlanificacionView(p){
             c.eventos.slice(0,3).map(function(ev,i){
               return h('div',{key:i,onClick:function(e){e.stopPropagation();openEdit(ev);},style:{fontSize:9,padding:'2px 4px',borderRadius:3,marginBottom:2,background:'#fff',borderLeft:'3px solid '+(colorEstado[ev.estado]||'#94A3B8'),color:'#0F172A',cursor:'pointer',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'},title:ev.origen+' → '+ev.destino+' ('+(ev.chofer_nombre||'')+')'},
                 ev.hora_plan?h('strong',{style:{marginRight:3}},ev.hora_plan.slice(0,5)):null,
-                (ev.camion_patente||ev.camion_nombre||'?')+' · '+((ev.chofer_nombre||'').split(' ')[0]||'?')
+                (ev.camion_patente||ev.camion_nombre||'?')+' · '+((ev.chofer_nombre||'').split(' ')[0]||'?'),
+                h('div',{style:{fontSize:9,fontWeight:700,color:colorEstado[ev.estado]||'#94A3B8'}},nombreEstado[ev.estado]||ev.estado||'')
               );
             }),
             c.eventos.length>3&&h('div',{style:{fontSize:9,color:'#64748B',textAlign:'center',marginTop:2}},'+'+(c.eventos.length-3)+' más')
@@ -17204,8 +17435,8 @@ function PlanificacionView(p){
     });
     var fechas=Object.keys(porDia).sort();
     if(fechas.length===0)return h('div',{className:'card',style:{textAlign:'center',padding:30,color:'#94A3B8'}},'Sin traslados planificados en este período');
-    var estLbl={pendiente:'Pendiente',en_curso:'En curso',ejecutado:'Ejecutado',cancelado:'Cancelado'};
-    var estCol={pendiente:'y',en_curso:'b',ejecutado:'g',cancelado:'gray'};
+    var estLbl={pendiente:'Pendiente',programado:'Programado',en_curso:'En curso',ejecutado:'Ejecutado',cancelado:'Cancelado'};
+    var estCol={pendiente:'a',programado:'teal',en_curso:'b',ejecutado:'g',cancelado:'gray'};
     var priCol={normal:'#64748B',alta:'#F59E0B',urgente:'#DC2626'};
     return h('div',null,fechas.map(function(f){
       var d=new Date(f+'T00:00:00');
@@ -17223,11 +17454,30 @@ function PlanificacionView(p){
               h('div',{style:{fontSize:11,color:'#64748B',marginTop:2}},
                 '🚛 '+(ev.camion_nombre||'?')+(ev.camion_patente?' ('+ev.camion_patente+')':''),
                 ' · 👤 '+(ev.chofer_nombre||'?'),
-                ev.equipo_nombre?' · 📦 '+ev.equipo_nombre:''
+                ev.va_vacio?' · 📦 Vacío':(ev.equipos_lista||[]).length?' · 📦 '+ev.equipos_lista.map(function(e){return e.codigo;}).join(', '):(ev.equipo_nombre?' · 📦 '+ev.equipo_nombre:'')
+              ),
+              h('div',{style:{fontSize:10,color:'#475569',marginTop:2}},
+                TIPOS_VIAJE[ev.tipo_viaje||'normal'],
+                (ev.grupo||[]).length?' · junto con '+ev.grupo.map(function(g){return g.camion_patente;}).join(', '):'',
+                ev.escolta_nombre?' · 🛡 '+ev.escolta_nombre:'',
+                ev.enviado_wsp_en?h('span',{style:{color:'#0F766E',fontWeight:600}},' · 📲 enviado '+String(ev.enviado_wsp_en).slice(8,10)+'/'+String(ev.enviado_wsp_en).slice(5,7)+' '+fmtHora(ev.enviado_wsp_en)):''
+              ),
+              (ev.incidentes||[]).length>0&&h('div',{style:{fontSize:10,color:'#B91C1C',marginTop:2,fontWeight:700}},'🚨 '+ev.incidentes.map(function(x){return x.tipo_nombre;}).join(', ')),
+              (ev.tramos||[]).length>0&&h('div',{style:{fontSize:10,color:'#1E40AF',marginTop:2,fontWeight:600}},
+                ev.tramo_abierto?('🚚 En camino '+(ev.tramo_abierto.carga==='cargado'?'cargado con '+(ev.tramo_abierto.equipo_codigo||'?'):'vacío')+' → '+(ev.tramo_abierto.hasta||'?')+' (salió '+fmtHora(ev.tramo_abierto.inicio_en)+')'):
+                  ('Último: llegó a '+(ev.tramos[ev.tramos.length-1].hasta||'?')+' '+fmtHora(ev.tramos[ev.tramos.length-1].fin_en)),
+                ' · '+ev.tramos.length+' tramo(s) · '+Math.round(ev.km_cargado_real)+' km cargado / '+Math.round(ev.km_vacio_real)+' vacío'
               ),
               ev.observaciones?h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:2,fontStyle:'italic'}},ev.observaciones):null
             ),
             h('div',{style:{display:'flex',gap:4}},
+              !ev.camion_id&&ev.tercero_nombre&&ev.estado!=='ejecutado'&&ev.estado!=='cancelado'&&h(Btn,{v:'a',sm:true,onClick:function(){
+                var base=(ev.recorrido_plan||[]).length?ev.recorrido_plan:[{carga:ev.va_vacio?'vacio':'cargado',equipo_id:(ev.equipos_ids||[])[0]||'',desde:ev.origen,hasta:ev.destino},{carga:'vacio',desde:ev.destino,hasta:ev.origen}];
+                setRealiz({plan:ev,fecha:String(ev.fecha_plan).slice(0,10),tramos:base.map(function(t){return {carga:t.carga,equipo_id:t.equipo_id||'',desde:t.desde||'',hasta:t.hasta||'',km:'',plan_orden:t.orden||null,con_escolta:!!t.con_escolta};})});
+              }},null,'📝 Realizado'),
+              ev.estado!=='ejecutado'&&ev.estado!=='cancelado'&&h(Btn,{v:'teal',sm:true,onClick:function(){enviarWsp(ev,'chofer');}},null,'📲'),
+              ev.escolta_telefono&&ev.estado!=='ejecutado'&&ev.estado!=='cancelado'&&h(Btn,{v:'a',sm:true,onClick:function(){enviarWsp(ev,'escolta');}},null,'🛡📲'),
+              (ev.tramos||[]).length>0&&(function(){var nr=revisarViaje(ev).length;return h(Btn,{v:nr?'a':'g',sm:true,onClick:function(){setVerRec(ev);}},null,nr?'🗺 ⚠'+nr:'🗺 ✓');})(),
               h(Btn,{v:'g',sm:true,onClick:function(){openEdit(ev);}},null,'✏'),
               h(Btn,{v:'r',sm:true,onClick:function(){eliminar(ev.plan_id);}},null,'🗑')
             )
@@ -17248,6 +17498,7 @@ function PlanificacionView(p){
       h('select',{value:filtEstado,onChange:function(e){setFiltEstado(e.target.value);},style:Object.assign({},inpS,{width:150})},
         h('option',{value:''},'Todos los estados'),
         h('option',{value:'pendiente'},'Pendientes'),
+        h('option',{value:'programado'},'Programados'),
         h('option',{value:'en_curso'},'En curso'),
         h('option',{value:'ejecutado'},'Ejecutados'),
         h('option',{value:'cancelado'},'Cancelados')
@@ -17257,11 +17508,12 @@ function PlanificacionView(p){
         h('button',{onClick:function(){setVista('agenda');},style:{padding:'6px 10px',background:vista==='agenda'?'#1E3A2D':'#fff',color:vista==='agenda'?'#fff':'#475569',border:'none',fontSize:11,cursor:'pointer'}},'📋 Agenda')
       ),
       h('div',{style:{flex:1}}),
+      h(Btn,{v:'d',onClick:function(){setVerInc(true);}},'🚨 Incidentes'),
       h(Btn,{onClick:function(){openNew();}},'+ Nueva planificación')
     ),
     // KPIs
-    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:8,marginBottom:12}},
-      [{l:'Total mes',v:total,c:'#1E3A2D'},{l:'Pendientes',v:pend,c:'#F59E0B'},{l:'En curso',v:curso,c:'#3B82F6'},{l:'Ejecutados',v:ejec,c:'#10B981'},{l:'Cancelados',v:canc,c:'#94A3B8'}].map(function(k,i){
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:8,marginBottom:12}},
+      [{l:'Total mes',v:total,c:'#1E3A2D'},{l:'Pendientes',v:pend,c:'#F59E0B'},{l:'Programados',v:prog,c:'#0D9488'},{l:'En curso',v:curso,c:'#3B82F6'},{l:'Ejecutados',v:ejec,c:'#10B981'},{l:'Cancelados',v:canc,c:'#94A3B8'}].map(function(k,i){
         return h('div',{key:i,className:'card',style:{padding:10,textAlign:'center'}},
           h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600,textTransform:'uppercase'}},k.l),
           h('div',{style:{fontSize:24,fontWeight:700,color:k.c,marginTop:2}},k.v)
@@ -17278,6 +17530,17 @@ function PlanificacionView(p){
           '⚠ Este chofer ya tiene ',solape.length,' traslado(s) planificado(s) ese día: ',
           solape.map(function(s){return (s.hora_plan?s.hora_plan.slice(0,5)+' ':'')+(s.origen||'?')+' → '+(s.destino||'?');}).join(' · ')
         ),
+        h('div',{style:{marginBottom:8}},
+          h('label',{style:lblS},'Tipo de viaje'),
+          h('div',{style:{display:'flex',gap:4}},['normal','interno','cambio_fundo'].map(function(t){
+            var on=form.tipo_viaje===t;
+            return h('button',{key:t,type:'button',onClick:function(){upd('tipo_viaje',t);},style:{flex:1,padding:'7px 6px',fontSize:11,fontWeight:on?700:500,cursor:'pointer',borderRadius:5,border:'1px solid '+(on?'#1E3A2D':'#CBD5E1'),background:on?'#1E3A2D':'#fff',color:on?'#fff':'#475569'}},TIPOS_VIAJE[t]);
+          })),
+          h('div',{style:{fontSize:10,color:'#64748B',marginTop:3,fontStyle:'italic'}},
+            form.tipo_viaje==='interno'?'Sale vacío de la base, mueve las máquinas entre sectores de la faena (cargado → vuelve vacío → cargado…) y regresa a la base.':
+            form.tipo_viaje==='cambio_fundo'?'Sale vacío a la faena, lleva las máquinas al fundo nuevo y vuelve por la siguiente; puede durar varios días. Con 2 camiones los choferes se reparten las máquinas.':
+            'Sale cargado de la base con la máquina a la faena y regresa (vacío o con otra máquina).')
+        ),
         h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8,marginBottom:8}},
           h('div',null,h('label',{style:lblS},'Fecha *'),h('input',{type:'date',value:form.fecha_plan,onChange:function(e){upd('fecha_plan',e.target.value);},style:inpS})),
           h('div',null,h('label',{style:lblS},'Hora estimada'),h('input',{type:'time',value:form.hora_plan,onChange:function(e){upd('hora_plan',e.target.value);},style:inpS})),
@@ -17287,38 +17550,296 @@ function PlanificacionView(p){
         ),
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}},
           h('div',null,h('label',{style:lblS},'Empresa'),h('select',{value:form.empresa_id,onChange:function(e){upd('empresa_id',e.target.value);},style:inpS},h('option',{value:''},'—'),empresas.map(function(emp){return h('option',{key:emp.empresa_id,value:emp.empresa_id},emp.razon_social);}))),
-          h('div',null,h('label',{style:lblS},'Faena destino'),h('select',{value:form.faena_id,onChange:function(e){upd('faena_id',e.target.value);},style:inpS},h('option',{value:''},'—'),faenas.filter(function(f){return !form.empresa_id||String(f.empresa_id)===String(form.empresa_id);}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})))
+          h('div',null,h('label',{style:lblS},'Faena destino'),h('select',{value:form.faena_id,onChange:function(e){var id=e.target.value;var fa=faenas.find(function(f){return String(f.faena_id)===String(id);});setForm(function(f){var ant=faenas.find(function(x){return String(x.faena_id)===String(f.faena_id);});var cambia=fa&&(!f.destino||(ant&&f.destino.toUpperCase().indexOf(ant.nombre.toUpperCase())===0)||f.faena_id!==id);return Object.assign({},f,{faena_id:id},cambia?{destino:fa.nombre.toUpperCase()}:{});});},style:inpS},h('option',{value:''},'—'),faenas.filter(function(f){return !form.empresa_id||String(f.empresa_id)===String(form.empresa_id);}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})))
         ),
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}},
-          h('div',null,h('label',{style:lblS},'Camión *'),h('select',{value:form.camion_id,onChange:function(e){upd('camion_id',e.target.value);},style:inpS},h('option',{value:''},'—'),camiones.map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.nombre+(c.patente_serie?' ('+c.patente_serie+')':''));}))),
-          h('div',null,h('label',{style:lblS},'Chofer *'),h('select',{value:form.chofer_id,onChange:function(e){upd('chofer_id',e.target.value);},style:inpS},h('option',{value:''},'—'),choferes.map(function(ch){return h('option',{key:ch.persona_id,value:ch.persona_id},ch.nombre_completo);})))
+          h('div',null,h('label',{style:lblS},'Camión *'),h('select',{value:form.camion_id,onChange:function(e){upd('camion_id',e.target.value);},style:inpS},h('option',{value:''},'—'),camiones.map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.nombre+(c.patente_serie?' ('+c.patente_serie+')':''));}),h('option',{value:'__tercero'},'➕ Servicio de tercero…')),
+            form.camion_id==='__tercero'&&h('div',{style:{marginTop:4}},
+              h('select',{value:form.tarifa_id,onChange:function(e){
+                var id=e.target.value;var t=tarifas.find(function(x){return String(x.tarifa_id)===String(id);});
+                setForm(function(f){return Object.assign({},f,{tarifa_id:id,tercero_nombre:f.tercero_nombre||(t?t.tercero:'')});});
+              },style:Object.assign({},inpS,{marginBottom:4},!form.tarifa_id?{borderColor:'#F87171'}:{})},
+                h('option',{value:''},'¿Qué tarifa cobra el tercero?'),
+                tarifas.filter(function(t){return t.tercero&&t.activo;}).map(function(t){return h('option',{key:t.tarifa_id,value:t.tarifa_id},t.tercero+' — '+t.nombre);})),
+              conMic(h('input',{type:'text',value:form.tercero_nombre,onChange:function(e){upd('tercero_nombre',e.target.value);},style:inpS,placeholder:'Empresa / camión / patente del tercero'}),'texto',function(v){upd('tercero_nombre',v);},true))),
+          h('div',null,h('label',{style:lblS},'Chofer *'),h('select',{value:form.chofer_id,onChange:function(e){upd('chofer_id',e.target.value);},style:inpS},h('option',{value:''},'—'),choferes.map(function(ch){return h('option',{key:ch.persona_id,value:ch.persona_id},ch.nombre_completo);}),h('option',{value:'__otro'},'➕ Otro (escribir)…')),
+            form.chofer_id==='__otro'&&h('div',{style:{display:'grid',gridTemplateColumns:'1.4fr 1fr',gap:4,marginTop:4}},
+              conMic(h('input',{type:'text',value:form.chofer_externo_nombre,onChange:function(e){upd('chofer_externo_nombre',e.target.value);},style:inpS,placeholder:'Nombre del chofer'}),'texto',function(v){upd('chofer_externo_nombre',v);},true),
+              conMic(h('input',{type:'tel',value:form.chofer_externo_telefono,onChange:function(e){upd('chofer_externo_telefono',e.target.value);},style:inpS,placeholder:'+56 9 …'}),'tel',function(v){upd('chofer_externo_telefono',v);},true)))
+        ),
+        !sel&&form.tipo_viaje==='cambio_fundo'&&h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8,padding:8,background:'#F0FDFA',border:'1px dashed #5EEAD4',borderRadius:6}},
+          h('div',null,h('label',{style:lblS},'2º camión (opcional)'),h('select',{value:form.segundo_camion_id,onChange:function(e){upd('segundo_camion_id',e.target.value);},style:inpS},h('option',{value:''},'—'),camiones.filter(function(c){return String(c.equipo_id)!==String(form.camion_id);}).map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.nombre+(c.patente_serie?' ('+c.patente_serie+')':''));}))),
+          h('div',null,h('label',{style:lblS},'2º chofer'),h('select',{value:form.segundo_chofer_id,onChange:function(e){upd('segundo_chofer_id',e.target.value);},style:inpS},h('option',{value:''},'—'),choferes.filter(function(c){return String(c.persona_id)!==String(form.chofer_id);}).map(function(ch){return h('option',{key:ch.persona_id,value:ch.persona_id},ch.nombre_completo);})))
         ),
         h('div',{style:{marginBottom:8}},
-          h('label',{style:lblS},'Equipo a trasladar'),
-          h('select',{value:form.equipo_id,onChange:function(e){upd('equipo_id',e.target.value);},style:inpS},h('option',{value:''},'—'),equipos.filter(function(eq){return !eq.es_transporte;}).map(function(eq){return h('option',{key:eq.equipo_id,value:eq.equipo_id},eq.codigo+' — '+eq.nombre);}))
+          h('label',{style:lblS},form.tipo_viaje==='normal'?'Máquina(s) a trasladar':'Máquinas a trasladar (lista del día)'),
+          h('div',{style:{display:'flex',flexWrap:'wrap',gap:4,marginBottom:4}},
+            form.va_vacio&&h('span',{style:{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#F1F5F9',border:'1px solid #CBD5E1',borderRadius:12,fontSize:11,fontWeight:600,color:'#475569'}},
+              'Vacío (sin máquina)',h('button',{type:'button',onClick:function(){upd('va_vacio',false);},style:{border:'none',background:'none',cursor:'pointer',color:'#475569',fontWeight:700,padding:0}},'×')),
+            (form.equipos_ids||[]).map(function(id){
+              var eq=equipos.find(function(e){return String(e.equipo_id)===String(id);});
+              return h('span',{key:id,style:{display:'inline-flex',alignItems:'center',gap:4,padding:'3px 8px',background:'#DCFCE7',border:'1px solid #86EFAC',borderRadius:12,fontSize:11,fontWeight:600,color:'#15803D'}},
+                eq?eq.codigo:id,
+                h('button',{type:'button',onClick:function(){var nu=form.equipos_ids.filter(function(x){return String(x)!==String(id);});upd('equipos_ids',nu);upd('equipo_id',nu[0]||'');},style:{border:'none',background:'none',cursor:'pointer',color:'#15803D',fontWeight:700,padding:0}},'×'));
+            })
+          ),
+          h(SelEquipo,{agregar:true,value:'',style:inpS,
+            placeholder:form.empresa_id?'+ Agregar máquina…':'+ Agregar máquina… (elige la empresa para ver solo las suyas)',
+            extra:!form.va_vacio&&h('option',{value:'__vacio'},'Vacío (va sin máquina)'),
+            maqs:equipos.filter(function(eq){return !eq.es_transporte&&eq.tipo_cargo==='maquinaria'&&(!form.empresa_id||String(eq.empresa_id)===String(form.empresa_id))&&(form.equipos_ids||[]).map(String).indexOf(String(eq.equipo_id))<0;}),
+            otros:otrosEquiposCamaBaja(equipos,form.empresa_id,form.equipos_ids),
+            onChange:function(val){
+              if(val==='__vacio'){setForm(function(f){return Object.assign({},f,{va_vacio:true,equipos_ids:[],equipo_id:''});});return;}
+              var v=parseInt(val);if(!v)return;var nu=(form.equipos_ids||[]).filter(function(x){return String(x)!==String(v);}).concat([v]);
+              setForm(function(f){return Object.assign({},f,{equipos_ids:nu,equipo_id:nu[0],va_vacio:false});});
+            }})
+        ),
+        h('div',{style:{marginBottom:8,padding:8,background:'#FFFBEB',border:'1px solid #FDE68A',borderRadius:6}},
+          h('div',{style:{display:'grid',gridTemplateColumns:'1.3fr 1fr 1fr',gap:8}},
+            h('div',null,h('label',{style:lblS},'🛡 Escolta'),h('select',{value:form.escolta_id,onChange:function(e){
+              var id=e.target.value;var per=personal.find(function(x){return String(x.persona_id)===String(id);});
+              setForm(function(f){return Object.assign({},f,{escolta_id:id,escolta_nombre:per?per.nombre_completo:'',escolta_telefono:per?(per.telefono||''):'',escolta_modo:id?(f.escolta_modo||'todo'):''});});
+            },style:inpS},h('option',{value:''},'Sin escolta'),personal.map(function(x){return h('option',{key:x.persona_id,value:x.persona_id},x.nombre_completo);}),h('option',{value:'__otro'},'➕ Otro (escribir)…')),
+              form.escolta_id==='__otro'&&h('div',{style:{marginTop:4}},conMic(h('input',{type:'text',value:form.escolta_nombre,onChange:function(e){upd('escolta_nombre',e.target.value);},style:inpS,placeholder:'Nombre del escolta'}),'texto',function(v){upd('escolta_nombre',v);},true))),
+            h('div',null,h('label',{style:lblS},'Teléfono escolta'),conMic(h('input',{type:'tel',value:form.escolta_telefono,onChange:function(e){upd('escolta_telefono',e.target.value);},style:inpS,placeholder:'+56 9 …',disabled:!form.escolta_id}),'tel',function(v){upd('escolta_telefono',v);},true)),
+            h('div',null,h('label',{style:lblS},'Acompaña'),h('select',{value:form.escolta_modo,onChange:function(e){upd('escolta_modo',e.target.value);},style:inpS,disabled:!form.escolta_id},
+              h('option',{value:'todo'},'Todo el viaje'),h('option',{value:'tramos'},'Solo algunos tramos')))
+          ),
+          form.escolta_id&&form.escolta_modo==='tramos'&&h('div',{style:{marginTop:6}},conMic(h('input',{type:'text',value:form.escolta_nota,onChange:function(e){upd('escolta_nota',e.target.value);},style:inpS,placeholder:'¿Dónde? Ej: desde cruce Coihue hasta pasada la romana; ruta Q-180'}),'agregar',function(v){setForm(function(f){return Object.assign({},f,{escolta_nota:f.escolta_nota?f.escolta_nota+' '+v:v});});},true))
         ),
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}},
-          h('div',null,h('label',{style:lblS},'Origen'),h('input',{type:'text',value:form.origen,onChange:function(e){upd('origen',e.target.value);},style:inpS,placeholder:'Ej: Faena Mec 3'})),
-          h('div',null,h('label',{style:lblS},'Destino'),h('input',{type:'text',value:form.destino,onChange:function(e){upd('destino',e.target.value);},style:inpS,placeholder:'Ej: Taller Lpoo'}))
+          h('div',null,h('label',{style:lblS},form.tipo_viaje==='cambio_fundo'?'Fundo actual (de dónde salen las máquinas)':form.tipo_viaje==='interno'?'Faena / fundo':'Origen'),conMic(h('input',{type:'text',value:form.origen,onChange:function(e){upd('origen',e.target.value);},style:inpS,placeholder:form.tipo_viaje==='normal'?'Ej: Base Nacimiento':'Ej: Fundo El Encanto'}),'texto',function(v){upd('origen',v);},true)),
+          h('div',null,h('label',{style:lblS},form.tipo_viaje==='cambio_fundo'?'Fundo nuevo (a dónde van)':form.tipo_viaje==='interno'?'Sector de destino (si se sabe)':'Destino'),conMic(h('input',{type:'text',value:form.destino,onChange:function(e){upd('destino',e.target.value);},style:inpS,placeholder:form.tipo_viaje==='cambio_fundo'?'Ej: Fundo Las Pataguas':'Ej: Faena Mec 3 Fdo El Encanto'}),'texto',function(v){upd('destino',v);},true))
         ),
-        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:8}},
-          h('div',null,h('label',{style:lblS},'Km cargado (est.)'),h('input',{type:'number',step:'0.1',value:form.km_cargado_plan,onChange:function(e){upd('km_cargado_plan',e.target.value);},style:inpS})),
-          h('div',null,h('label',{style:lblS},'Km vacío (est.)'),h('input',{type:'number',step:'0.1',value:form.km_vacio_plan,onChange:function(e){upd('km_vacio_plan',e.target.value);},style:inpS})),
+        (function(){
+          // ── Recorrido planificado: el chofer lo sigue paso a paso en el celular ──
+          var rec=form.recorrido_plan||[];
+          var maqs=equipos.filter(function(eq){return !eq.es_transporte&&eq.tipo_cargo==='maquinaria'&&(!form.empresa_id||String(eq.empresa_id)===String(form.empresa_id));}); // solo maquinaria de la empresa del viaje
+          var otros=otrosEquiposCamaBaja(equipos,form.empresa_id);
+          function setRec(fn){setForm(function(f){
+            var r=(f.recorrido_plan||[]).map(function(x){return Object.assign({},x);});
+            fn(r,f);
+            for(var i=0;i<r.length;i++){r[i].orden=i+1;if(i>0)r[i].desde=r[i-1].hasta;} // cada tramo parte donde llegó el anterior
+            return Object.assign({},f,{recorrido_plan:r});
+          });}
+          function agregar(){setRec(function(r,f){
+            var u=r[r.length-1];
+            r.push({carga:u?(u.carga==='cargado'?'vacio':'cargado'):((f.va_vacio||f.tipo_viaje!=='normal')?'vacio':'cargado'),equipo_id:'',
+              desde:u?u.hasta:(f.tipo_viaje==='normal'?(f.origen||'BASE NACIMIENTO'):'BASE NACIMIENTO'),hasta:'',con_escolta:false});
+          });}
+          function basico(){
+            if(rec.length&&!confirm('¿Reemplazar el recorrido que ya armaste?'))return;
+            setRec(function(r,f){
+              r.length=0;var base='BASE NACIMIENTO',o=f.origen||base,d=f.destino||'',eqs=(f.equipos_ids||[]);
+              if(f.tipo_viaje==='normal'){
+                if(f.va_vacio||!eqs.length)r.push({carga:'vacio',desde:o,hasta:d});
+                else r.push({carga:'cargado',equipo_id:eqs[0],desde:o,hasta:d});
+                r.push({carga:'vacio',desde:d,hasta:o});
+              }else{
+                r.push({carga:'vacio',desde:base,hasta:o});
+                (eqs.length?eqs:['']).forEach(function(id,i,a){
+                  r.push({carga:'cargado',equipo_id:id,desde:o,hasta:d});
+                  if(i<a.length-1)r.push({carga:'vacio',desde:d,hasta:o});
+                });
+                r.push({carga:'vacio',desde:d,hasta:base});
+              }
+              r.forEach(function(t){t.con_escolta=false;});
+            });
+          }
+          var cel={padding:'5px 6px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,boxSizing:'border-box',width:'100%'};
+          return h('div',{style:{marginBottom:8,padding:8,background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6}},
+            h('div',{style:{display:'flex',alignItems:'center',gap:6,marginBottom:4}},
+              h('label',{style:Object.assign({},lblS,{marginBottom:0,flex:1})},'🧭 Recorrido planificado ',h('span',{style:{fontWeight:400,color:'#64748B'}},'— el chofer lo sigue paso a paso y solo pone el km')),
+              h(Btn,{v:'g',sm:true,onClick:basico},null,'↺ Armar básico'),
+              h(Btn,{sm:true,onClick:agregar},null,'+ Tramo')
+            ),
+            rec.length===0&&h('div',{style:{fontSize:11,color:'#64748B',fontStyle:'italic'}},'Sin recorrido: el chofer elige en terreno cada salida (útil en cambio de fundo con 2 camiones). Toca "↺ Armar básico" o "+ Tramo".'),
+            rec.map(function(t,i){
+              return h('div',{key:i,style:{background:'#fff',border:'1px solid #DBEAFE',borderLeft:'4px solid '+(t.carga==='cargado'?'#16A34A':'#94A3B8'),borderRadius:5,padding:6,marginTop:4}},
+                h('div',{style:{display:'grid',gridTemplateColumns:'22px 100px 1fr auto auto',gap:6,alignItems:'center'}},
+                  h('strong',{style:{fontSize:12,color:'#1E3A2D'}},t.orden+'.'),
+                  h('select',{value:t.carga,onChange:function(e){var v=e.target.value;setRec(function(r){r[i].carga=v;if(v==='vacio')r[i].equipo_id='';});},style:cel},
+                    h('option',{value:'vacio'},'Vacío'),h('option',{value:'cargado'},'Cargado')),
+                  t.carga==='cargado'?h(SelEquipo,{value:t.equipo_id||'',maqs:maqs,otros:otros,style:Object.assign({},cel,!t.equipo_id?{borderColor:'#F87171'}:{}),
+                    onChange:function(v){setRec(function(r){r[i].equipo_id=v;});}}):h('span',{style:{fontSize:11,color:'#94A3B8'}},'sin máquina'),
+                  h('label',{title:'Este tramo va con escolta',style:{fontSize:11,display:'flex',alignItems:'center',gap:3,cursor:'pointer',whiteSpace:'nowrap'}},
+                    h('input',{type:'checkbox',checked:!!t.con_escolta,onChange:function(e){var v=e.target.checked;setRec(function(r){r[i].con_escolta=v;});},style:{width:'auto'}}),'🛡'),
+                  h('button',{type:'button',title:'Quitar tramo',onClick:function(){setRec(function(r){r.splice(i,1);});},style:{border:'none',background:'none',cursor:'pointer',color:'#B91C1C',fontSize:14}},'✕')
+                ),
+                h('div',{style:{display:'grid',gridTemplateColumns:'1fr 16px 1.3fr',gap:6,alignItems:'center',marginTop:4}},
+                  i===0?conMic(h('input',{type:'text',value:t.desde||'',onChange:function(e){var v=e.target.value;setRec(function(r){r[0].desde=v;});},style:cel,placeholder:'Desde'}),'texto',function(v){setRec(function(r){r[0].desde=v;});},true)
+                    :h('div',{style:{fontSize:11,color:'#475569',padding:'5px 2px'}},t.desde||'—'),
+                  h('span',{style:{color:'#64748B'}},'→'),
+                  conMic(h('input',{type:'text',value:t.hasta||'',onChange:function(e){var v=e.target.value;setRec(function(r){r[i].hasta=v;});},style:Object.assign({},cel,!t.hasta?{borderColor:'#F87171'}:{}),placeholder:'Hacia (ej: Fundo Maipo sector 2)'}),'texto',function(v){setRec(function(r){r[i].hasta=v;});},true)
+                )
+              );
+            })
+          );
+        })(),
+        // Sin "Km cargado/vacío (est.)": los km los registra el chofer tramo a tramo (28-10)
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 2fr',gap:8,marginBottom:8}},
           h('div',null,h('label',{style:lblS},'Estado'),h('select',{value:form.estado,onChange:function(e){upd('estado',e.target.value);},style:inpS},
-            h('option',{value:'pendiente'},'Pendiente'),h('option',{value:'en_curso'},'En curso'),h('option',{value:'ejecutado'},'Ejecutado'),h('option',{value:'cancelado'},'Cancelado')
+            h('option',{value:'pendiente'},'Pendiente (borrador)'),h('option',{value:'programado'},'Programado'),h('option',{value:'en_curso'},'En curso'),h('option',{value:'ejecutado'},'Ejecutado'),h('option',{value:'cancelado'},'Cancelado')
           ))
         ),
         h('div',null,
-          h('label',{style:lblS},'Observaciones'),
-          h('textarea',{value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},rows:2,style:Object.assign({},inpS,{resize:'vertical'})})
+          h('label',{style:lblS},'Observaciones (le llegan al chofer)'),
+          conMic(h('textarea',{value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},rows:2,style:Object.assign({},inpS,{resize:'vertical'})}),'agregar',function(v){setForm(function(f){return Object.assign({},f,{observaciones:f.observaciones?f.observaciones+' '+v:v});});},true)
         )
       ),
       h('div',{className:'mf'},
+        sel&&(sel.tramos||[]).length>0&&h(Btn,{v:'a',onClick:function(){setShowForm(false);setVerRec(sel);}},null,'🗺 Ver recorrido y traslados'),
         sel&&h(Btn,{v:'r',onClick:function(){eliminar(sel.plan_id);setShowForm(false);}},null,'Eliminar'),
         h(Btn,{v:'g',onClick:function(){setShowForm(false);}},null,'Cancelar'),
-        h(Btn,{onClick:guardar},'Guardar')
+        h(Btn,{v:'g',onClick:function(){guardar(false);}},'Guardar'),
+        h(Btn,{onClick:function(){guardar(true);}},'📲 Programar y enviar al chofer')
       )
-    )
+    ),
+    // Recorrido del viaje: cada tramo con hora, km y GPS
+    verRec&&h(Modal,{lg:true,title:'Recorrido · '+(verRec.camion_patente||'')+' · '+(verRec.chofer_nombre||''),onClose:function(){setVerRec(null);}},
+      h('div',{className:'mb'},
+        (function(){
+          var rv=revisarViaje(verRec);
+          var nErr=rv.filter(function(x){return x.nivel==='error';}).length;
+          if(!rv.length)return h('div',{style:{padding:10,marginBottom:10,background:'#DCFCE7',border:'1px solid #86EFAC',borderRadius:6,fontSize:12,fontWeight:700,color:'#166534'}},'✓ Revisión: la secuencia de tramos calza (km, horas, lugares, GPS y máquinas).');
+          return h('div',{style:{padding:10,marginBottom:10,background:nErr?'#FEF2F2':'#FFFBEB',border:'1px solid '+(nErr?'#FCA5A5':'#FDE68A'),borderRadius:6,fontSize:12}},
+            h('div',{style:{fontWeight:800,color:nErr?'#991B1B':'#92400E',marginBottom:4}},'Revisión del viaje: '+rv.length+' observación(es)'+(nErr?' · '+nErr+' afectan los km o el costo':'')),
+            rv.map(function(x,i){return h('div',{key:i,style:{padding:'2px 0',color:x.nivel==='error'?'#991B1B':'#78350F'}},(x.nivel==='error'?'✗ ':'⚠ ')+x.texto);})
+          );
+        })(),
+        // Resumen del viaje: km cargados y vacíos (como en Traslados de Maquinaria)
+        (function(){
+          var tr=(verRec.tramos||[]).filter(function(t){return t.fin_en;});
+          if(!tr.length)return null;
+          var kc=0,kv=0;tr.forEach(function(t){var k=Math.max(0,t.fin_km-t.inicio_km);if(t.carga==='cargado')kc+=k;else kv+=k;});
+          var nC=tr.filter(function(t){return t.carga==='cargado';}).length;
+          var nK=function(n){return (Math.round(n*10)/10).toLocaleString('es-CL');};
+          var hrs=(new Date(String(tr[tr.length-1].fin_en).replace(' ','T'))-new Date(String(tr[0].inicio_en).replace(' ','T')))/3600000;
+          var costo=(verRec.traslados||[]).reduce(function(s,t){return s+(parseFloat(t.costo_total)||0);},0);
+          var caja=function(tit,val,col){return h('div',{style:{flex:'1 1 110px',padding:'8px 10px',background:'#F8FAFC',border:'1px solid #E2E8F0',borderRadius:6}},
+            h('div',{style:{fontSize:10,fontWeight:700,color:'#64748B',letterSpacing:.5}},tit),h('div',{style:{fontSize:18,fontWeight:800,color:col||'#0F172A'}},val));};
+          return h('div',{style:{display:'flex',flexWrap:'wrap',gap:8,marginBottom:10}},
+            caja('KM CARGADO',nK(kc),'#15803D'),caja('KM VACÍO',nK(kv),'#64748B'),caja('KM TOTAL',nK(kc+kv)),
+            caja('TRAMOS',tr.length+' ('+nC+' cargado'+(nC===1?'':'s')+')'),
+            hrs>0&&caja('DURACIÓN',hrs<24?Math.floor(hrs)+' h '+Math.round((hrs%1)*60)+' min':(hrs/24).toFixed(1)+' días'),
+            costo>0&&caja('COSTO','$'+Math.round(costo).toLocaleString('es-CL'),'#1E40AF'));
+        })(),
+        h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+          h('thead',null,h('tr',{style:{background:'#1E3A2D',color:'#D4C5A9'}},['#','Carga','Desde → Hasta','Salida','Llegada','Km','Escolta','GPS','Comentario'].map(function(c){return h('th',{key:c,style:{padding:'5px 6px',textAlign:'left'}},c);}))),
+          h('tbody',null,(verRec.tramos||[]).map(function(t){
+            var km=t.fin_en?(t.fin_km-t.inicio_km):null;
+            var m1=linkMapa(t.inicio_lat,t.inicio_lng),m2=linkMapa(t.fin_lat,t.fin_lng);
+            return h('tr',{key:t.tramo_id,style:{borderBottom:'1px solid #E2E8F0',background:t.carga==='cargado'?'#F0FDF4':'#fff'}},
+              h('td',{style:{padding:'4px 6px'}},t.orden),
+              h('td',{style:{padding:'4px 6px',fontWeight:600,color:t.carga==='cargado'?'#15803D':'#64748B'}},t.carga==='cargado'?'🚜 '+(t.equipo_codigo||'?'):'Vacío'),
+              h('td',{style:{padding:'4px 6px'}},(t.desde||'?')+' → '+(t.hasta||'?')),
+              h('td',{style:{padding:'4px 6px'}},String(t.inicio_en).slice(8,10)+'/'+String(t.inicio_en).slice(5,7)+' '+fmtHora(t.inicio_en),h('div',{style:{color:'#94A3B8'}},'km '+Math.round(t.inicio_km).toLocaleString('es-CL'))),
+              h('td',{style:{padding:'4px 6px'}},t.fin_en?[fmtHora(t.fin_en),h('div',{key:'k',style:{color:'#94A3B8'}},'km '+Math.round(t.fin_km).toLocaleString('es-CL'))]:h('span',{style:{color:'#1E40AF',fontWeight:600}},'en camino')),
+              h('td',{style:{padding:'4px 6px',fontWeight:700}},km!==null?Math.round(km):''),
+              h('td',{style:{padding:'4px 6px'}},t.con_escolta?'🛡':''),
+              h('td',{style:{padding:'4px 6px'}},m1?h('a',{href:m1,target:'_blank'},'salida'):'—',' ',m2?h('a',{href:m2,target:'_blank'},'llegada'):''),
+              h('td',{style:{padding:'4px 6px',color:'#64748B',fontStyle:'italic'}},t.observaciones||'')
+            );
+          }))
+        ),
+        (verRec.recorrido_plan||[]).length>0&&h('div',{style:{marginTop:10,fontSize:11}},
+          h('div',{style:{fontWeight:700,color:'#1E3A2D',marginBottom:3}},'🧭 Recorrido planificado'),
+          verRec.recorrido_plan.map(function(x){
+            var hecho=(verRec.tramos||[]).some(function(t){return t.plan_orden===x.orden&&t.fin_en;});
+            return h('div',{key:x.orden,style:{color:hecho?'#15803D':'#94A3B8'}},(hecho?'✓ ':'○ ')+x.orden+'. '+(x.carga==='cargado'?(x.equipo_codigo||'?'):'Vacío')+' · '+x.desde+' → '+x.hasta+(x.con_escolta?' 🛡':''));
+          })),
+        (verRec.incidentes||[]).length>0&&h('div',{style:{marginTop:10,fontSize:11}},
+          h('div',{style:{fontWeight:700,color:'#991B1B',marginBottom:3}},'🚨 Incidentes'),
+          verRec.incidentes.map(function(x){
+            var m=minutos(x.inicio_en,x.fin_en),mp=linkMapa(x.lat,x.lng);
+            return h('div',{key:x.incidente_id,style:{color:'#7F1D1D'}},String(x.inicio_en).slice(8,10)+'/'+String(x.inicio_en).slice(5,7)+' '+fmtHora(x.inicio_en)+' · '+x.tipo_nombre+(x.tramo_orden?' · tramo '+x.tramo_orden:'')+(m!==null?' · '+m+' min':'')+(x.detalle?' · '+x.detalle:'')+(x.km?' · km '+Math.round(x.km):''),' ',mp?h('a',{href:mp,target:'_blank'},'mapa'):null);
+          })),
+        (verRec.traslados||[]).length>0&&h('div',{style:{marginTop:10}},
+          h('div',{style:{fontSize:11,fontWeight:700,color:'#1E3A2D',marginBottom:3}},'💰 Traslados del viaje (cada tramo cargado es un traslado; los vacíos se suman al que pertenecen)'),
+          h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+            h('thead',null,h('tr',{style:{background:'#F1F5F9'}},['N°','Máquina','Desde → Hasta','Km cargado','Km vacío','Fijo','Costo'].map(function(c){return h('th',{key:c,style:{padding:'4px 6px',textAlign:'left'}},c);}))),
+            h('tbody',null,verRec.traslados.map(function(t){return h('tr',{key:t.traslado_id,style:{borderBottom:'1px solid #E2E8F0'}},
+              h('td',{style:{padding:'3px 6px'}},t.traslado_id),h('td',{style:{padding:'3px 6px'}},t.equipo_codigo||'Vacío'),
+              h('td',{style:{padding:'3px 6px'}},(t.origen||'?')+' → '+(t.destino||'?')),
+              h('td',{style:{padding:'3px 6px'}},Math.round(t.km_cargado||0)),h('td',{style:{padding:'3px 6px'}},Math.round(t.km_vacio||0)),
+              h('td',{style:{padding:'3px 6px'}},parseFloat(t.costo_fijo)?'$'+Math.round(t.costo_fijo).toLocaleString('es-CL'):'—'),
+              h('td',{style:{padding:'3px 6px',fontWeight:700}},'$'+Math.round(t.costo_total||0).toLocaleString('es-CL')));}),
+              h('tr',{style:{fontWeight:800}},h('td',{colSpan:6,style:{padding:'4px 6px',textAlign:'right'}},'Total viaje'),
+                h('td',{style:{padding:'4px 6px'}},'$'+Math.round(verRec.traslados.reduce(function(a,t){return a+(parseFloat(t.costo_total)||0);},0)).toLocaleString('es-CL'))))
+          )),
+        h('div',{style:{marginTop:10,fontSize:12,fontWeight:600}},'Total: '+Math.round(verRec.km_cargado_real)+' km cargado · '+Math.round(verRec.km_vacio_real)+' km vacío'+((verRec.traslados||[]).length?' · '+verRec.traslados.length+' traslado(s)':''))
+      ),
+      h('div',{className:'mf'},h(Btn,{v:'g',onClick:function(){setVerRec(null);}},null,'Cerrar'))
+    ),
+    // Historial de incidentes del mes por camión
+    verInc&&h(Modal,{lg:true,title:'🚨 Incidentes de '+mes.slice(5,7)+'/'+mes.slice(0,4),onClose:function(){setVerInc(false);}},
+      h('div',{className:'mb'},
+        h('div',{style:{display:'flex',gap:8,alignItems:'center',marginBottom:8}},
+          h('select',{value:incCamion,onChange:function(e){setIncCamion(e.target.value);},style:Object.assign({},inpS,{width:240})},
+            h('option',{value:''},'Todos los camiones'),camiones.map(function(c){return h('option',{key:c.equipo_id,value:c.equipo_id},c.nombre+(c.patente_serie?' ('+c.patente_serie+')':''));})),
+          h('span',{style:{fontSize:11,color:'#64748B'}},'Cambia el mes en la barra de Planificación')
+        ),
+        (function(){
+          var res={};incs.forEach(function(x){var k=x.tipo_nombre;if(!res[k])res[k]={n:0,min:0};res[k].n++;res[k].min+=minutos(x.inicio_en,x.fin_en)||0;});
+          var ks=Object.keys(res);
+          if(!ks.length)return h('div',{style:{padding:20,textAlign:'center',color:'#94A3B8'}},'Sin incidentes en el mes');
+          return h('div',null,
+            h('div',{style:{display:'flex',flexWrap:'wrap',gap:6,marginBottom:10}},ks.map(function(k){return h('span',{key:k,style:{padding:'4px 10px',borderRadius:12,background:'#FEE2E2',color:'#991B1B',fontSize:11,fontWeight:700}},k+': '+res[k].n+(res[k].min?' · '+res[k].min+' min':''));})),
+            h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+              h('thead',null,h('tr',{style:{background:'#1E3A2D',color:'#D4C5A9'}},['Fecha','Camión','Chofer','Incidente','Tramo','Duración','Detalle','GPS'].map(function(c){return h('th',{key:c,style:{padding:'5px 6px',textAlign:'left'}},c);}))),
+              h('tbody',null,incs.map(function(x){
+                var m=minutos(x.inicio_en,x.fin_en),mp=linkMapa(x.lat,x.lng);
+                return h('tr',{key:x.incidente_id,style:{borderBottom:'1px solid #E2E8F0'}},
+                  h('td',{style:{padding:'4px 6px'}},String(x.inicio_en).slice(8,10)+'/'+String(x.inicio_en).slice(5,7)+' '+fmtHora(x.inicio_en)),
+                  h('td',{style:{padding:'4px 6px'}},x.camion_patente||'—'),
+                  h('td',{style:{padding:'4px 6px'}},(x.chofer_nombre||'').split(' ').slice(0,2).join(' ')),
+                  h('td',{style:{padding:'4px 6px',fontWeight:700,color:'#991B1B'}},x.tipo_nombre),
+                  h('td',{style:{padding:'4px 6px'}},x.tramo_orden?(x.tramo_desde+' → '+x.tramo_hasta):'—'),
+                  h('td',{style:{padding:'4px 6px'}},m!==null?m+' min':({pana:1,pinchazo:1,control_faena:1,control_carabineros:1,obstruccion:1}[x.tipo]?'sin solucionar':'—')),
+                  h('td',{style:{padding:'4px 6px',color:'#475569'}},x.detalle||''),
+                  h('td',{style:{padding:'4px 6px'}},mp?h('a',{href:mp,target:'_blank'},'mapa'):'—'));
+              }))
+            )
+          );
+        })()
+      ),
+      h('div',{className:'mf'},h(Btn,{v:'g',onClick:function(){setVerInc(false);}},null,'Cerrar'))
+    ),
+    // Viaje de una cama baja de tercero: se anotan los km de cada tramo según lo que informa/cobra el tercero
+    realiz&&(function(){
+      var maqs=equipos.filter(function(eq){return !eq.es_transporte&&eq.tipo_cargo==='maquinaria'&&(!realiz.plan.empresa_id||String(eq.empresa_id)===String(realiz.plan.empresa_id));});
+      var otros=otrosEquiposCamaBaja(equipos,realiz.plan.empresa_id);
+      var cel={padding:'5px 6px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,boxSizing:'border-box',width:'100%'};
+      function setT(i,k,v){setRealiz(function(r){var t=r.tramos.map(function(x){return Object.assign({},x);});t[i][k]=v;if(k==='carga'&&v==='vacio')t[i].equipo_id='';if(k==='hasta'&&t[i+1])t[i+1].desde=v;return Object.assign({},r,{tramos:t});});}
+      var tar=tarifas.find(function(t){return String(t.tarifa_id)===String(realiz.plan.tarifa_id);});
+      function guardarR(){
+        api('/trans/planificacion/'+realiz.plan.plan_id+'/cerrar-tercero','POST',{fecha:realiz.fecha,tramos:realiz.tramos},p.tok).then(function(r){
+          setRealiz(null);load();
+          alert('Quedaron '+r.traslados.length+' traslado(s) por $'+Math.round(r.costo_total).toLocaleString('es-CL')+' con la tarifa de '+(tar?tar.tercero:'el tercero')+'.');
+        }).catch(function(e){alert(e.message);});
+      }
+      return h(Modal,{lg:true,title:'📝 Lo que hizo el tercero · '+(realiz.plan.camion_nombre||''),onClose:function(){setRealiz(null);}},
+        h('div',{className:'mb'},
+          h('div',{style:{fontSize:11,color:'#475569',marginBottom:8}},'El tercero no usa la App: anota los km de cada tramo según lo que informa o cobra. Cada tramo cargado queda como un traslado y los vacíos se suman al que pertenecen. ',
+            tar?h('strong',null,'Tarifa: '+tar.tercero+' — $'+Math.round(tar.valor_km_cargado).toLocaleString('es-CL')+'/km cargado, $'+Math.round(tar.valor_km_vacio).toLocaleString('es-CL')+'/km vacío'+(parseFloat(tar.km_corto)>0?', fijo $'+Math.round(tar.fijo_corto).toLocaleString('es-CL')+' bajo '+Math.round(tar.km_corto)+' km':'')):h('span',{style:{color:'#B91C1C'}},'⚠ Este viaje no tiene tarifa de tercero: edítalo (✏) y elígela.')),
+          h('div',{style:{marginBottom:8}},h('label',{style:lblS},'Fecha del traslado'),h('input',{type:'date',value:realiz.fecha,onChange:function(e){var v=e.target.value;setRealiz(function(r){return Object.assign({},r,{fecha:v});});},style:Object.assign({},inpS,{width:170})})),
+          realiz.tramos.map(function(t,i){
+            return h('div',{key:i,style:{display:'grid',gridTemplateColumns:'20px 90px 1.2fr 1fr 1fr 110px 22px',gap:5,alignItems:'center',marginBottom:4}},
+              h('strong',{style:{fontSize:11}},(i+1)+'.'),
+              h('select',{value:t.carga,onChange:function(e){setT(i,'carga',e.target.value);},style:cel},h('option',{value:'vacio'},'Vacío'),h('option',{value:'cargado'},'Cargado')),
+              t.carga==='cargado'?h(SelEquipo,{value:t.equipo_id||'',maqs:maqs,otros:otros,style:Object.assign({},cel,!t.equipo_id?{borderColor:'#F87171'}:{}),
+                onChange:function(v){setT(i,'equipo_id',v);}}):h('span',{style:{fontSize:11,color:'#94A3B8'}},'sin máquina'),
+              conMic(h('input',{type:'text',value:t.desde,onChange:function(e){setT(i,'desde',e.target.value);},style:cel,placeholder:'Desde'}),'texto',function(v){setT(i,'desde',v);},true),
+              conMic(h('input',{type:'text',value:t.hasta,onChange:function(e){setT(i,'hasta',e.target.value);},style:cel,placeholder:'Hacia'}),'texto',function(v){setT(i,'hasta',v);},true),
+              conMic(h('input',{type:'number',value:t.km,onChange:function(e){setT(i,'km',e.target.value);},style:Object.assign({},cel,!t.km?{borderColor:'#F87171'}:{}),placeholder:'Km'}),'num',function(v){setT(i,'km',v);},true),
+              h('button',{type:'button',onClick:function(){setRealiz(function(r){return Object.assign({},r,{tramos:r.tramos.filter(function(_,j){return j!==i;})});});},style:{border:'none',background:'none',color:'#B91C1C',cursor:'pointer'}},'✕')
+            );
+          }),
+          h(Btn,{sm:true,v:'g',onClick:function(){setRealiz(function(r){var u=r.tramos[r.tramos.length-1];return Object.assign({},r,{tramos:r.tramos.concat([{carga:u&&u.carga==='cargado'?'vacio':'cargado',equipo_id:'',desde:u?u.hasta:'',hasta:'',km:''}])});});}},null,'+ Tramo')
+        ),
+        h('div',{className:'mf'},h(Btn,{v:'g',onClick:function(){setRealiz(null);}},null,'Cancelar'),h(Btn,{onClick:guardarR},'Guardar y valorizar'))
+      );
+    })()
   );
 }
 
@@ -25439,6 +25960,7 @@ function MobileTransporte(p){
   var[fHistMes,setFHistMes]=useState(new Date().toISOString().slice(0,7));
   var[fHistCamion,setFHistCamion]=useState('');
   var[planActivo,setPlanActivo]=useState(null);
+  var[viajeSel,setViajeSel]=useState(null); // planificación que el chofer está haciendo por tramos
   var[msg,setMsg]=useState('');
   var[saved,setSaved]=useState(false);
   var emptyForm={fecha:new Date().toISOString().slice(0,10),empresa_id:'',camion_id:'',chofer_id:'',faena_id:'',equipo_id:'',equipos_ids:[],origen:'',destino:'',odometro_inicio:'',odometro_fin:'',km_cargado:'',km_vacio:'0',litros_combustible:'0',estanque_id:'',observaciones:''};
@@ -25453,8 +25975,12 @@ function MobileTransporte(p){
   function loadPendientes(){
     var hoy=new Date().toISOString().slice(0,10);
     var d=new Date();d.setDate(d.getDate()+14);var hasta=d.toISOString().slice(0,10);
-    api('/trans/planificacion?solo_pendientes=1&desde='+hoy+'&hasta='+hasta,'GET',null,p.tok).then(function(r){
-      setPendientes(Array.isArray(r)?r:[]);
+    var d0=new Date();d0.setDate(d0.getDate()-7);var desde=d0.toISOString().slice(0,10); // un viaje en curso puede venir de días atrás
+    var q='?solo_pendientes=1&desde='+desde+'&hasta='+hasta+(p.user&&p.user.persona_id?'&chofer_id='+p.user.persona_id:'');
+    var kc='trans_pend_'+((p.user&&p.user.persona_id)||'todos');
+    api('/trans/planificacion'+q,'GET',null,p.tok).catch(function(e){if(esSinSenal(e))return cacheLeer(kc)||[];throw e;}).then(function(r){
+      if(Array.isArray(r))cacheGuardar(kc,r);
+      setPendientes((Array.isArray(r)?r:[]).filter(function(x){return x.estado==='en_curso'||(x.fecha_plan+'').slice(0,10)>=hoy;}));
     }).catch(function(){});
   }
   useEffect(loadPendientes,[p.tok]);
@@ -25532,6 +26058,8 @@ function MobileTransporte(p){
   var F=function(lbl,content){return h('div',{className:'mob-field'},h('label',null,lbl),content);};
   var priCol={normal:'#64748B',alta:'#F59E0B',urgente:'#DC2626'};
 
+  if(viajeSel)return h(MobileViaje,{plan:viajeSel,tok:p.tok,m:p.m,onBack:function(){setViajeSel(null);loadPendientes();}});
+
   // Pantalla éxito
   if(saved)return h('div',{className:'mob-wrap'},
     h('div',{className:'mob-topbar'},h('button',{onClick:volver},'←'),h('h3',null,'Traslado')),
@@ -25547,6 +26075,7 @@ function MobileTransporte(p){
   // Pantalla pendientes (default al entrar)
   if(modo==='pendientes')return h('div',{className:'mob-wrap'},
     h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Traslados')),
+    h(BannerCola,{tok:p.tok,onSync:loadPendientes}),
     // Tabs
     h('div',{style:{display:'flex',background:'#F1F5F9',borderRadius:8,padding:3,margin:10,gap:3}},
       h('button',{onClick:function(){setModo('pendientes');},style:{flex:1,padding:10,background:'#fff',color:'#1E3A2D',border:'none',borderRadius:6,fontSize:13,fontWeight:700,cursor:'pointer',boxShadow:'0 1px 3px rgba(0,0,0,0.1)'}},'📋 Pendientes ('+pendientes.length+')'),
@@ -25565,7 +26094,7 @@ function MobileTransporte(p){
           var d=new Date(fecha+'T00:00:00');
           var hoy=new Date().toISOString().slice(0,10);
           var esHoy=fecha===hoy;
-          return h('div',{key:pl.plan_id,onClick:function(){ejecutarPlan(pl);},style:{padding:14,marginBottom:10,background:esHoy?'#FEF3C7':'#fff',borderLeft:'5px solid '+priCol[pl.prioridad||'normal'],borderRadius:8,boxShadow:'0 1px 3px rgba(0,0,0,.08)',cursor:'pointer'}},
+          return h('div',{key:pl.plan_id,onClick:function(){setViajeSel(pl);},style:{padding:14,marginBottom:10,background:pl.estado==='en_curso'?'#DBEAFE':esHoy?'#FEF3C7':'#fff',borderLeft:'5px solid '+priCol[pl.prioridad||'normal'],borderRadius:8,boxShadow:'0 1px 3px rgba(0,0,0,.08)',cursor:'pointer'}},
             h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:6}},
               h('div',{style:{fontSize:13,fontWeight:700,color:'#1E3A2D'}},
                 esHoy?'HOY':d.toLocaleDateString('es-CL',{weekday:'short',day:'numeric',month:'short'}).toUpperCase(),
@@ -25576,10 +26105,11 @@ function MobileTransporte(p){
             h('div',{style:{fontSize:14,fontWeight:600,color:'#0F172A',marginBottom:4}},(pl.origen||'?')+' → '+(pl.destino||'?')),
             h('div',{style:{fontSize:11,color:'#64748B'}},
               '🚛 '+(pl.camion_patente||pl.camion_nombre||'?'),
-              pl.equipo_nombre?' · 📦 '+pl.equipo_nombre:''
+              (pl.equipos_lista||[]).length?' · 📦 '+pl.equipos_lista.map(function(e){return e.codigo;}).join(', '):(pl.equipo_nombre?' · 📦 '+pl.equipo_nombre:''),
+              pl.escolta_nombre?' · 🛡 escolta':''
             ),
             pl.observaciones?h('div',{style:{fontSize:11,color:'#94A3B8',marginTop:4,fontStyle:'italic'}},pl.observaciones):null,
-            h('div',{style:{marginTop:8,fontSize:11,color:'#1E3A2D',fontWeight:600}},'Tocar para ejecutar →')
+            h('div',{style:{marginTop:8,fontSize:12,color:pl.estado==='en_curso'?'#1E40AF':'#1E3A2D',fontWeight:700}},pl.estado==='en_curso'?'🚚 En curso · tocar para seguir →':'▶ Tocar para iniciar traslado →')
           );
         })
       )
@@ -25735,8 +26265,8 @@ function MobileTransporte(p){
           '✓ Traslado interno con '+form.equipos_ids.length+' equipos'
         )
       ),
-      F('Origen (lugar de salida)',h('input',{type:'text',value:form.origen,onChange:function(e){upd('origen',e.target.value);},placeholder:'Ej: Taller Los Ángeles'})),
-      F('Destino (lugar de llegada)',h('input',{type:'text',value:form.destino,onChange:function(e){upd('destino',e.target.value);},placeholder:'Ej: Fundo El Roble, Nacimiento'})),
+      F('Origen (lugar de salida)',conMic(h('input',{type:'text',value:form.origen,onChange:function(e){upd('origen',e.target.value);},placeholder:'Ej: Taller Los Ángeles'}),'texto',function(v){upd('origen',v);})),
+      F('Destino (lugar de llegada)',conMic(h('input',{type:'text',value:form.destino,onChange:function(e){upd('destino',e.target.value);},placeholder:'Ej: Fundo El Roble, Nacimiento'}),'texto',function(v){upd('destino',v);})),
       // ── Bloque guiado de kilometraje (odómetro → desglose) ──
       (function(){
         var oi=parseFloat(form.odometro_inicio)||0;
@@ -25770,11 +26300,11 @@ function MobileTransporte(p){
           h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:10}},
             h('div',null,
               h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#475569'}},'Odómetro inicial *'),
-              h('input',{type:'number',value:form.odometro_inicio,onChange:function(e){upd('odometro_inicio',e.target.value);},style:inpStyle,inputMode:'numeric',placeholder:'Ej: 125430'})
+              conMic(h('input',{type:'number',value:form.odometro_inicio,onChange:function(e){upd('odometro_inicio',e.target.value);},style:inpStyle,inputMode:'numeric',placeholder:'Ej: 125430'}),'num',function(v){upd('odometro_inicio',v);})
             ),
             h('div',null,
               h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#475569'}},'Odómetro final *'),
-              h('input',{type:'number',value:form.odometro_fin,onChange:function(e){upd('odometro_fin',e.target.value);},style:inpStyle,inputMode:'numeric',placeholder:'Ej: 125678'})
+              conMic(h('input',{type:'number',value:form.odometro_fin,onChange:function(e){upd('odometro_fin',e.target.value);},style:inpStyle,inputMode:'numeric',placeholder:'Ej: 125678'}),'num',function(v){upd('odometro_fin',v);})
             )
           ),
           // Resultado del cálculo
@@ -25792,11 +26322,11 @@ function MobileTransporte(p){
             h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:8}},
               h('div',null,
                 h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#15803D'}},'Km con carga *'),
-                h('input',{type:'number',value:form.km_cargado,onChange:function(e){onKc(e.target.value);},style:coincide?inpOK:excede?inpBad:inpStyle,inputMode:'decimal',placeholder:'0',min:0,max:kmTotal,step:0.1})
+                conMic(h('input',{type:'number',value:form.km_cargado,onChange:function(e){onKc(e.target.value);},style:coincide?inpOK:excede?inpBad:inpStyle,inputMode:'decimal',placeholder:'0',min:0,max:kmTotal,step:0.1}),'num',function(v){onKc(v);})
               ),
               h('div',null,
                 h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#64748B'}},'Km sin carga *'),
-                h('input',{type:'number',value:form.km_vacio,onChange:function(e){upd('km_vacio',e.target.value);},style:coincide?inpOK:excede?inpBad:inpStyle,inputMode:'decimal',placeholder:'0',min:0,max:kmTotal,step:0.1})
+                conMic(h('input',{type:'number',value:form.km_vacio,onChange:function(e){upd('km_vacio',e.target.value);},style:coincide?inpOK:excede?inpBad:inpStyle,inputMode:'decimal',placeholder:'0',min:0,max:kmTotal,step:0.1}),'num',function(v){upd('km_vacio',v);})
               )
             ),
             // Verificación visual
@@ -25824,18 +26354,18 @@ function MobileTransporte(p){
             h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}},
               h('div',null,
                 h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#15803D'}},'Km con carga *'),
-                h('input',{type:'number',value:form.km_cargado,onChange:function(e){upd('km_cargado',e.target.value);},style:inpStyle,inputMode:'decimal',placeholder:'0',min:0,step:0.1})
+                conMic(h('input',{type:'number',value:form.km_cargado,onChange:function(e){upd('km_cargado',e.target.value);},style:inpStyle,inputMode:'decimal',placeholder:'0',min:0,step:0.1}),'num',function(v){upd('km_cargado',v);})
               ),
               h('div',null,
                 h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#64748B'}},'Km sin carga'),
-                h('input',{type:'number',value:form.km_vacio,onChange:function(e){upd('km_vacio',e.target.value);},style:inpStyle,inputMode:'decimal',placeholder:'0',min:0,step:0.1})
+                conMic(h('input',{type:'number',value:form.km_vacio,onChange:function(e){upd('km_vacio',e.target.value);},style:inpStyle,inputMode:'decimal',placeholder:'0',min:0,step:0.1}),'num',function(v){upd('km_vacio',v);})
               )
             )
           )
         );
       })(),
       h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}},
-        F('Litros combustible',h('input',{type:'number',value:form.litros_combustible,onChange:function(e){upd('litros_combustible',e.target.value);},placeholder:'0',min:0,inputMode:'decimal'})),
+        F('Litros combustible',conMic(h('input',{type:'number',value:form.litros_combustible,onChange:function(e){upd('litros_combustible',e.target.value);},placeholder:'0',min:0,inputMode:'decimal'}),'num',function(v){upd('litros_combustible',v);})),
         F('Origen combustible',h('select',{value:form.estanque_id,onChange:function(e){upd('estanque_id',e.target.value);}},
           h('option',{value:''},'—'),
           h('optgroup',{label:'Proveedores externos'},
@@ -25847,8 +26377,613 @@ function MobileTransporte(p){
           )
         ))
       ),
-      F('Observaciones',h('textarea',{value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},rows:2,placeholder:'Opcional'})),
+      F('Observaciones',conMic(h('textarea',{value:form.observaciones,onChange:function(e){upd('observaciones',e.target.value);},rows:2,placeholder:'Opcional'}),'agregar',function(v){setForm(function(f){return Object.assign({},f,{observaciones:f.observaciones?f.observaciones+' '+v:v});});})),
       h('button',{onClick:guardar,className:'mob-submit'},planActivo?'✅ Confirmar ejecución':'Registrar traslado')
+    )
+  );
+}
+
+// ── Dictado por voz para los campos que se escriben a mano (el chofer va manejando) ──
+// Usa el reconocimiento de voz del navegador (Chrome/Android, Safari/iPhone); necesita https o localhost.
+// Si el celular no lo trae, el campo queda normal (igual sirve el micrófono del teclado del celular).
+function vozSoportada(){return !!(window.SpeechRecognition||window.webkitSpeechRecognition);}
+var NUM_VOZ={cero:0,un:1,uno:1,una:1,dos:2,tres:3,cuatro:4,cinco:5,seis:6,siete:7,ocho:8,nueve:9,diez:10,once:11,doce:12,trece:13,catorce:14,quince:15,
+  dieciseis:16,diecisiete:17,dieciocho:18,diecinueve:19,veinte:20,veintiun:21,veintiuno:21,veintidos:22,veintitres:23,veinticuatro:24,veinticinco:25,
+  veintiseis:26,veintisiete:27,veintiocho:28,veintinueve:29,treinta:30,cuarenta:40,cincuenta:50,sesenta:60,setenta:70,ochenta:80,noventa:90,
+  cien:100,ciento:100,doscientos:200,trescientos:300,cuatrocientos:400,quinientos:500,seiscientos:600,setecientos:700,ochocientos:800,novecientos:900};
+function numeroDeVoz(t){
+  t=String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/kilometros?|km|litros?|lts?/g,'').trim();
+  // "210169", "210.169", "210 169", "45,5"
+  if(/^[\d\s.,]+$/.test(t)){
+    var d=t.replace(/\s/g,'').replace(/\.(?=\d{3}(\D|$))/g,'').replace(',','.');
+    return isNaN(parseFloat(d))?null:parseFloat(d);
+  }
+  // "doscientos diez mil ciento sesenta y nueve", "210 mil 169", "cuarenta coma cinco"
+  var total=0,cur=0,dec='',enDec=false,algo=false;
+  t.split(/[\s-]+/).forEach(function(w){
+    if(!w||w==='y')return;
+    if(w==='coma'||w==='punto'){enDec=true;return;}
+    var v=/^\d+$/.test(w)?parseInt(w,10):NUM_VOZ[w];
+    if(enDec){if(v!==undefined)dec+=String(v);return;}
+    if(w==='mil'){cur=(cur||1)*1000;total+=cur;cur=0;algo=true;return;}
+    if(w==='millon'||w==='millones'){total=(total+cur||1)*1000000;cur=0;algo=true;return;}
+    if(v!==undefined){cur+=v;algo=true;}
+  });
+  if(!algo)return null;
+  return parseFloat(String(total+cur)+(dec?'.'+dec:''));
+}
+function MicBtn(p){
+  var[on,setOn]=useState(false);
+  var rec=useRef(null);
+  function escuchar(){
+    if(on&&rec.current){rec.current.stop();return;}
+    var R=window.SpeechRecognition||window.webkitSpeechRecognition;
+    var r=new R();rec.current=r;
+    r.lang='es-CL';r.interimResults=false;r.maxAlternatives=3;
+    r.onresult=function(e){
+      var alts=[];for(var i=0;i<e.results[0].length;i++)alts.push(e.results[0][i].transcript);
+      if(p.modo==='tel'){
+        var dig=telefonoDeVoz(alts[0]);
+        if(dig.length<8)alert('No entendí el teléfono: «'+alts[0]+'». Díctalo número por número o escríbelo.');else p.alTexto(dig);
+      }else if(p.modo==='num'){
+        var n=null;for(var k=0;k<alts.length&&n===null;k++)n=numeroDeVoz(alts[k]);
+        if(n===null)alert('No entendí el número: «'+alts[0]+'». Repítelo o escríbelo.');else p.alTexto(String(n));
+      }else{var t=alts[0].trim();p.alTexto(t.charAt(0).toUpperCase()+t.slice(1));}
+    };
+    r.onerror=function(ev){
+      setOn(false);
+      if(ev.error==='not-allowed'||ev.error==='service-not-allowed')alert('El celular no dio permiso para usar el micrófono. Actívalo en los permisos del navegador para esta página.');
+      else if(ev.error==='network')alert(/Android|iPhone|iPad/i.test(navigator.userAgent)
+        ?'El dictado del navegador no respondió (sin señal o el navegador no lo permite). Toca el campo y usa el micrófono 🎤 del teclado del celular.'
+        :'Este navegador no deja dictar (Edge en PC suele fallar así).\n\nOpción 1: toca el campo y aprieta las teclas  Windows + H  para dictar con Windows.\nOpción 2: abre la App en Google Chrome, ahí el 🎙 funciona.');
+      else if(ev.error!=='no-speech'&&ev.error!=='aborted')alert('No se pudo usar el micrófono ('+ev.error+'). Revisa la señal o escribe el dato.');
+    };
+    r.onend=function(){setOn(false);};
+    try{r.start();setOn(true);}catch(x){setOn(false);}
+  }
+  return h('button',{type:'button',onClick:escuchar,title:on?'Escuchando… toca para parar':'Dictar por voz',
+    style:{flex:'0 0 '+(p.sm?30:48)+'px',width:p.sm?30:48,height:p.sm?30:48,borderRadius:24,border:'none',cursor:'pointer',fontSize:p.sm?14:22,padding:0,
+      background:on?'#DC2626':'#1E3A2D',color:'#fff',boxShadow:on?'0 0 0 4px rgba(220,38,38,.3)':'none'}},on?'⏺':'🎙');
+}
+// campo + micrófono al lado. modo: 'num' (lee el número dicho), 'texto' (reemplaza), 'agregar' (suma al texto que ya había)
+// sm=true: botón chico para los formularios de escritorio
+function conMic(campo,modo,alTexto,sm){
+  if(!vozSoportada())return campo;
+  return h('div',{style:{display:'flex',gap:sm?4:6,alignItems:'center'}},h('div',{style:{flex:1,minWidth:0}},campo),h(MicBtn,{modo:modo==='agregar'?'texto':modo,alTexto:alTexto,sm:sm}));
+}
+// teléfono dictado: "nueve ocho cinco cero..." o "985 014 181" -> solo dígitos
+function telefonoDeVoz(t){
+  t=String(t||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,'').replace(/mas/g,' ');
+  var out='';
+  t.split(/[\s.,-]+/).forEach(function(w){
+    if(/^\d+$/.test(w))out+=w;
+    else if(NUM_VOZ[w]!==undefined)out+=String(NUM_VOZ[w]);
+  });
+  return out;
+}
+
+// Cama baja: normalmente traslada maquinaria. En casos especiales puede subir un furgón u otro equipo menor:
+// se ofrecen aparte, bajo "Otros equipos (caso especial)". Nunca los camiones de transporte.
+function otrosEquiposCamaBaja(eqs,empresaId,excluir){
+  excluir=(excluir||[]).map(String);
+  var noFisicos=['faena','administracion','cargo','taller']; // centros de costo, no son equipos que se puedan subir
+  // cuentas que están en Equipos pero no son algo físico (cuenta corriente, fletes de vehículo propio, bodega)
+  var noEquipo=/^(CTA-CTE|FLETES-USO|BOD$)/i;
+  return (eqs||[]).filter(function(e){return e.activo!==false&&!e.es_transporte&&e.tipo_cargo!=='maquinaria'&&noFisicos.indexOf(e.tipo_cargo)<0&&!noEquipo.test(String(e.codigo||'').trim())&&!/cuenta corriente/i.test(e.tipo||'')&&(!empresaId||String(e.empresa_id)===String(empresaId))&&excluir.indexOf(String(e.equipo_id))<0;})
+    .sort(function(a,b){return String(a.codigo).localeCompare(String(b.codigo));});
+}
+function SelEquipo(p){
+  var[otro,setOtro]=useState(false);
+  var esOtro=!!p.value&&(p.otros||[]).some(function(e){return String(e.equipo_id)===String(p.value);});
+  var ver=otro||esOtro;
+  function elegir(v){if(p.agregar)setOtro(false);p.onChange(v);}
+  return h('div',null,
+    h('select',{value:ver?'__otro':(p.value||''),onChange:function(e){var v=e.target.value;if(v==='__otro'){setOtro(true);if(!p.agregar)p.onChange('');return;}setOtro(false);elegir(v);},style:p.style},
+      h('option',{value:''},p.placeholder||'¿Qué máquina?'),
+      p.extra||null,
+      (p.maqs||[]).map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre+(p.sufijo?p.sufijo(e):''));}),
+      p.extraFin||null,
+      (p.otros||[]).length>0&&h('option',{value:'__otro'},'➕ Otro equipo (caso especial)…')),
+    ver&&h('select',{value:esOtro?p.value:'',onChange:function(e){if(e.target.value)elegir(e.target.value);},
+      style:Object.assign({},p.style,{marginTop:4,borderColor:'#F59E0B',background:'#FFFBEB'})},
+      h('option',{value:''},'¿Qué otro equipo? (furgón, equipo menor…)'),
+      (p.otros||[]).map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);}))
+  );
+}
+function optOtros(eqs){
+  return eqs.length?h('optgroup',{label:'Otros equipos (caso especial)'},eqs.map(function(e){return h('option',{key:'o'+e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);})):null;
+}
+
+// ── Modo SIN SEÑAL del chofer ──
+// En faena hay tramos sin cobertura. Lo que el chofer registra (salir, llegar, incidente, cerrar) se intenta enviar;
+// si no hay señal queda en una cola en el celular con la hora del momento (`en`) y un identificador (`uid`),
+// y se envía solo, en orden, cuando vuelve la señal. El servidor no repite un envío que ya recibió (mismo uid).
+var COLA_TRANS='trans_cola_v1',RECHAZOS_TRANS='trans_rechazos_v1';
+function colaLeer(k){try{return JSON.parse(localStorage.getItem(k||COLA_TRANS)||'[]');}catch(e){return [];}}
+function colaGuardar(c,k){try{localStorage.setItem(k||COLA_TRANS,JSON.stringify(c));}catch(e){}try{window.dispatchEvent(new Event('trans-cola'));}catch(e){}}
+function ahoraLocal(){var d=new Date(),z=function(n){return String(n).padStart(2,'0');};return d.getFullYear()+'-'+z(d.getMonth()+1)+'-'+z(d.getDate())+' '+z(d.getHours())+':'+z(d.getMinutes())+':'+z(d.getSeconds());}
+function nuevoUid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8);}
+function esSinSenal(e){return !navigator.onLine||!!(e&&(e.name==='TypeError'||/failed to fetch|networkerror|load failed|sin señal|error 50[234]/i.test(e.message||'')));}
+function cacheLeer(k){try{return JSON.parse(localStorage.getItem(k)||'null');}catch(e){return null;}}
+function cacheGuardar(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+var _sincronizando=false;
+function sincronizarCola(tok){
+  if(_sincronizando||!navigator.onLine)return Promise.resolve();
+  var c=colaLeer();if(!c.length)return Promise.resolve();
+  _sincronizando=true;var x=c[0];
+  function sacar(){colaGuardar(colaLeer().filter(function(y){return y.body.uid!==x.body.uid;}));}
+  return api(x.ruta,'POST',x.body,tok).then(function(){sacar();_sincronizando=false;return sincronizarCola(tok);})
+    .catch(function(e){
+      _sincronizando=false;
+      if(esSinSenal(e))return; // sigue sin señal: queda en la cola
+      // el servidor lo rechazó (dato inválido): se aparta para que el planificador lo revise y se sigue con lo demás
+      sacar();colaGuardar(colaLeer(RECHAZOS_TRANS).concat([Object.assign({},x,{error:e.message})]),RECHAZOS_TRANS);
+      return sincronizarCola(tok);
+    });
+}
+// intenta enviar; sin señal lo deja en la cola. Si ya hay cola, se encola igual para no desordenar.
+function enviarViaje(pid,accion,body,tok){
+  var b=Object.assign({},body,{uid:nuevoUid(),en:ahoraLocal()});
+  var x={ruta:'/trans/planificacion/'+pid+'/'+accion,body:b,plan_id:pid,accion:accion};
+  function encolar(){colaGuardar(colaLeer().concat([x]));return {encolado:true,body:b};}
+  if(colaLeer().length){var r=encolar();sincronizarCola(tok);return Promise.resolve(r);}
+  return api(x.ruta,'POST',b,tok).then(function(r){
+      // también se anota en la copia del celular: si la señal se corta justo después, el chofer ve lo que ya mandó
+      var k='trans_plan_'+pid,c=cacheLeer(k);if(c)cacheGuardar(k,aplicarLocal(c,x));
+      return Object.assign({encolado:false,body:b},r);})
+    .catch(function(e){if(!esSinSenal(e))throw e;return encolar();});
+}
+// la cola se empuja sola mientras la App esté abierta, en cualquier pantalla (cada 15 s y al volver la señal)
+(function(){
+  function empujar(){var t=localStorage.getItem('lpz_token');if(t&&colaLeer().length)sincronizarCola(t).catch(function(){});}
+  try{window.addEventListener('online',empujar);setInterval(empujar,15000);}catch(e){}
+})();
+var NOM_INC={pana:'Pana del camión',pinchazo:'Pinchazo de neumático',control_faena:'Control de faena',control_carabineros:'Control de Carabineros',
+  obstruccion:'Obstrucción del camino',cuasi_accidente:'Cuasi accidente',otro:'Otro'};
+// aplica en el celular lo que todavía está en la cola, para que el chofer vea su viaje al día aunque no haya señal
+function aplicarLocal(pl,x,eqCod){
+  pl=JSON.parse(JSON.stringify(pl));
+  eqCod=eqCod||function(id){var e=(pl.equipos_lista||[]).concat(pl.recorrido_plan||[]).find(function(y){return String(y.equipo_id)===String(id);});return e?(e.codigo||e.equipo_codigo):null;};var b=x.body;var tr=pl.tramos=pl.tramos||[];pl.incidentes=pl.incidentes||[];
+  var ab=tr.find(function(t){return !t.fin_en;}),prev=tr[tr.length-1];
+  if(x.accion==='iniciar-tramo')tr.push({tramo_id:'L'+b.uid,uid:b.uid,orden:tr.length+1,carga:b.carga,equipo_id:b.carga==='cargado'?b.equipo_id:null,
+    equipo_codigo:b.carga==='cargado'?eqCod(b.equipo_id):null,desde:b.desde||(prev?prev.hasta:pl.origen),hasta:b.hasta,con_escolta:!!b.con_escolta,
+    inicio_en:b.en,inicio_km:parseFloat(b.km),inicio_lat:b.lat,inicio_lng:b.lng,plan_orden:b.plan_orden||null,fin_en:null,local:true});
+  if(x.accion==='iniciar-tramo')pl.estado='en_curso';
+  if(x.accion==='terminar-tramo'&&ab){ab.fin_en=b.en;ab.fin_km=parseFloat(b.km);ab.fin_lat=b.lat;ab.fin_lng=b.lng;ab.observaciones=b.observaciones||null;ab.local=true;}
+  if(x.accion==='borrar-ultimo-tramo')tr.pop();
+  if(x.accion==='incidente')pl.incidentes.push({incidente_id:'L'+b.uid,uid:b.uid,tipo:b.tipo,tipo_nombre:NOM_INC[b.tipo]||b.tipo,detalle:b.detalle||null,
+    inicio_en:b.en,fin_en:null,tramo_orden:ab?ab.orden:null,km:b.km,local:true});
+  if(x.accion==='incidente-solucionado'){var i=pl.incidentes.find(function(k){return (b.incidente_uid&&k.uid===b.incidente_uid)||(b.incidente_id&&String(k.incidente_id)===String(b.incidente_id));});if(i)i.fin_en=b.en;}
+  if(x.accion==='cerrar')pl.estado='ejecutado';
+  pl.tramo_abierto=tr.find(function(t){return !t.fin_en;})||null;
+  function km(c){return tr.filter(function(t){return t.fin_en&&t.carga===c;}).reduce(function(a,t){return a+((t.fin_km||0)-(t.inicio_km||0));},0);}
+  pl.km_cargado_real=km('cargado');pl.km_vacio_real=km('vacio');
+  pl.equipos_movidos=Object.assign({},pl.equipos_movidos||{});
+  tr.forEach(function(t){if(t.carga==='cargado'&&t.equipo_id)pl.equipos_movidos[String(t.equipo_id)]={plan_id:pl.plan_id,camion_patente:pl.camion_patente,en_camino:!t.fin_en,hasta:t.hasta};});
+  return pl;
+}
+function conCola(pl,eqCod){return colaLeer().filter(function(x){return String(x.plan_id)===String(pl.plan_id);}).reduce(function(a,x){return aplicarLocal(a,x,eqCod);},pl);}
+// franja de estado: sin señal / registros por enviar / rechazados. Además empuja la cola cada 15 s y al volver la señal.
+function BannerCola(p){
+  var[n,setN]=useState(colaLeer().length);
+  var[rech,setRech]=useState(colaLeer(RECHAZOS_TRANS));
+  var[online,setOnline]=useState(navigator.onLine);
+  useEffect(function(){
+    var vivo=true;
+    function act(){if(!vivo)return;setN(colaLeer().length);setRech(colaLeer(RECHAZOS_TRANS));setOnline(navigator.onLine);}
+    function sync(){var antes=colaLeer().length;sincronizarCola(p.tok).then(function(){act();if(antes&&!colaLeer().length&&p.onSync)p.onSync();});}
+    window.addEventListener('online',sync);window.addEventListener('offline',act);window.addEventListener('trans-cola',act);
+    var t=setInterval(sync,15000);sync();
+    return function(){vivo=false;clearInterval(t);window.removeEventListener('online',sync);window.removeEventListener('offline',act);window.removeEventListener('trans-cola',act);};
+  },[p.tok]);
+  if(!n&&!rech.length&&online)return null;
+  return h('div',null,
+    (n>0||!online)&&h('div',{style:{padding:'8px 12px',background:online?'#FEF3C7':'#334155',color:online?'#92400E':'#fff',fontSize:12,fontWeight:700}},
+      (online?'⏳ Enviando ':'📵 Sin señal · ')+(n?n+' registro(s) guardado(s) en el celular: se envían solos cuando vuelva la señal':'puedes seguir registrando, queda guardado en el celular')),
+    rech.length>0&&h('div',{style:{padding:'8px 12px',background:'#FEE2E2',color:'#991B1B',fontSize:12}},
+      h('strong',null,'⚠ '+rech.length+' registro(s) no los aceptó el servidor. Avisa al planificador. '),
+      rech.map(function(x,i){return h('div',{key:i},'· '+x.accion+' ('+String(x.body.en).slice(11,16)+'): '+x.error);}),
+      h('button',{onClick:function(){if(confirm('¿Ya avisaste al planificador? Se borra este aviso.')){colaGuardar([],RECHAZOS_TRANS);}},style:{marginTop:4,border:'none',background:'none',color:'#991B1B',textDecoration:'underline',cursor:'pointer',fontSize:12}},'Ya avisé, quitar aviso'))
+  );
+}
+
+// ── Viaje por tramos en el celular del chofer (28-10-2026) ──
+// Cada tramo es un trayecto CARGADO (con una máquina) o VACÍO. Al salir y al llegar se guardan la hora,
+// el km y el GPS; al volver a la base se cierra el viaje y queda el traslado con los km cargado/vacío.
+function MobileViaje(p){
+  var estanques=(p.m.combEstanques||[]).filter(function(e){return e.activo;});
+  var[pl,setPl]=useState(p.plan);
+  var[msg,setMsg]=useState('');
+  var[ok,setOk]=useState('');
+  var[busy,setBusy]=useState(false);
+  var[sig,setSig]=useState({carga:'vacio',equipo_id:'',hasta:'',km:'',con_escolta:false});
+  var[kmFin,setKmFin]=useState('');
+  var[obsFin,setObsFin]=useState('');
+  var[verCierre,setVerCierre]=useState(false);
+  var[cierre,setCierre]=useState({litros_combustible:'',estanque_id:'',observaciones:''});
+  var[fin,setFin]=useState(null);
+  var[cambioPlan,setCambioPlan]=useState(false); // el chofer se sale del recorrido planificado
+  var[verInc,setVerInc]=useState(false);
+  var[inc,setInc]=useState({tipo:'',detalle:'',km:''});
+  var TIPOS_INC=[['pana','🔧','Pana del camión'],['pinchazo','🛞','Pinchazo'],['control_faena','🚧','Control de faena'],
+    ['control_carabineros','👮','Control Carabineros'],['obstruccion','🌲','Camino obstruido'],['cuasi_accidente','⚠️','Cuasi accidente'],['otro','📝','Otro']];
+  var DURAN={pana:1,pinchazo:1,control_faena:1,control_carabineros:1,obstruccion:1}; // los que tienen "ya se solucionó"
+
+  var TIPOS={normal:'Traslado normal',interno:'Traslados internos',cambio_fundo:'Cambio de fundo'};
+
+  function sugerir(x,kmUlt){
+    x=Object.assign({},x,{tipo_viaje:x.tipo_viaje||'normal'}); // los planes antiguos no traen tipo
+    var tr=x.tramos||[];var ult=tr[tr.length-1];
+    var movidas=x.equipos_movidos||{};
+    var libre=(x.equipos_ids||[]).find(function(id){return !movidas[String(id)];});
+    var carga,hasta;
+    if(!ult){carga=x.tipo_viaje==='normal'&&!x.va_vacio?'cargado':'vacio';hasta=x.tipo_viaje==='normal'?x.destino:(x.origen||'');}
+    else if(ult.carga==='cargado'){carga='vacio';hasta=ult.desde||'';}
+    else{carga='cargado';hasta=x.tipo_viaje==='interno'?'':(x.destino||'');}
+    var desdeSug=ult?ult.hasta:(x.tipo_viaje==='normal'?(x.origen||'BASE'):'BASE');
+    if(String(hasta||'').trim().toUpperCase()===String(desdeSug).trim().toUpperCase())hasta='';
+    setSig({carga:carga,equipo_id:libre||'',desde:ult?ult.hasta:(x.tipo_viaje==='normal'?(x.origen||'BASE'):'BASE'),hasta:hasta||'',km:ult?String(ult.fin_km||''):(kmUlt||''),con_escolta:x.escolta_modo==='todo'});
+    if(!ult)setKmCamion(parseFloat(kmUlt)||null);
+  }
+  // Control del km: nunca menor que el anterior (bloquea). Si sube más de lo que alcanza a andar una cama baja
+  // en el tiempo que pasó (90 km/h + 5 km de holgura) por ahora solo AVISA y deja seguir (Gustavo 28-10:
+  // primero se prueba con los choferes; después se decide si se bloquea con BLOQUEAR_VELOCIDAD=true).
+  // El servidor aplica la misma regla.
+  var[kmCamion,setKmCamion]=useState(null); // último odómetro conocido del camión (para el primer tramo)
+  // El km se anota SOLO al llegar a cada punto (Gustavo 28-10): al salir al tramo siguiente se usa el de la
+  // llegada anterior, porque el camión no se movió. Solo el primer tramo pide el km de partida.
+  // "corregir" deja escribirlo a mano para el caso raro (se movió entremedio, error en la llegada).
+  var[corrKm,setCorrKm]=useState(false);
+  var VEL_MAX=90,BLOQUEAR_VELOCIDAD=false;
+  function fmtKm(n){return Math.round(n).toLocaleString('es-CL');}
+  function topeKm(antes,tAntes){
+    if(!tAntes)return null;
+    var hrs=Math.max(0,(new Date(ahoraLocal().replace(' ','T'))-new Date(String(tAntes).slice(0,19).replace(' ','T')))/3600000);
+    return {km:parseFloat(antes)+5+hrs*VEL_MAX,min:Math.round(hrs*60)};
+  }
+  function kmMalo(km,antes,tAntes,que){
+    km=parseFloat(km);antes=parseFloat(antes);
+    if(!(km>0)||!(antes>0))return '';
+    if(km<antes)return 'El km ('+fmtKm(km)+') no puede ser menor que el '+que+' ('+fmtKm(antes)+').';
+    return BLOQUEAR_VELOCIDAD?kmRapido(km,antes,tAntes,que):'';
+  }
+  function kmRapido(km,antes,tAntes,que){ // km que no calza con el tiempo que pasó
+    km=parseFloat(km);antes=parseFloat(antes);
+    if(!(km>0)||!(antes>0)||km<antes)return '';
+    var t=topeKm(antes,tAntes);
+    if(t&&km>t.km)return fmtKm(km-antes)+' km en '+t.min+' min no es posible: el '+que+' fue '+fmtKm(antes)+', así que ahora el camión debería marcar como máximo '+fmtKm(t.km)+'. Revisa el km (¿un número de más?).';
+    return '';
+  }
+  function malaSalida(km){
+    if(ult)return kmMalo(km,ult.fin_km,ult.fin_en,'km de la llegada anterior');
+    if(kmCamion&&parseFloat(km)<kmCamion)return 'El km ('+fmtKm(km)+') no puede ser menor que el último odómetro de este camión ('+fmtKm(kmCamion)+'). Si el último está mal, avisa al planificador.';
+    return '';
+  }
+  function kmSalida(){return ult&&!corrKm?String(ult.fin_km):sig.km;}
+  function salidaRapida(km){return ult&&!BLOQUEAR_VELOCIDAD?kmRapido(km,ult.fin_km,ult.fin_en,'km de la llegada anterior'):'';}
+  function avisoRapido(txt){return txt?h('div',{style:{fontSize:13,marginTop:4,padding:'6px 8px',borderRadius:6,fontWeight:700,background:'#FEF3C7',color:'#92400E'}},'⚠ '+txt+' Si está bien, puedes seguir.'):null;}
+  function seguirIgual(txt){return !txt||confirm('⚠ '+txt+'\n\n¿El km está bien y quieres seguir igual?');}
+  function avisoKm(txt){return txt?h('div',{style:{fontSize:13,marginTop:4,padding:'6px 8px',borderRadius:6,fontWeight:700,background:'#FEE2E2',color:'#991B1B'}},'✗ '+txt):null;}
+  function eqCod(id){
+    var e=(pl.equipos_lista||[]).concat(p.m.equipos||[]).find(function(x){return String(x.equipo_id)===String(id);});
+    if(e)return e.codigo;var r=(pl.recorrido_plan||[]).find(function(x){return String(x.equipo_id)===String(id);});return r?r.equipo_codigo:null;
+  }
+  var[sinSenal,setSinSenal]=useState(false);
+  // trae el viaje del servidor (y lo guarda en el celular); sin señal usa la copia guardada. Encima aplica lo que está en la cola.
+  function load(){
+    var k='trans_plan_'+p.plan.plan_id;
+    return api('/trans/planificacion/'+p.plan.plan_id,'GET',null,p.tok).then(function(x){
+      cacheGuardar(k,x);setSinSenal(false);
+      var y=conCola(x,eqCod);setPl(y);
+      if(!(y.tramos||[]).length&&y.camion_id){
+        api('/trans/ultimo-odometro/'+y.camion_id,'GET',null,p.tok).then(function(r){cacheGuardar('trans_odo_'+y.camion_id,r);sugerir(y,r&&r.odometro_fin?String(r.odometro_fin):'');}).catch(function(){var r=cacheLeer('trans_odo_'+y.camion_id);sugerir(y,r&&r.odometro_fin?String(r.odometro_fin):'');});
+      }else sugerir(y,'');
+    }).catch(function(e){
+      if(!esSinSenal(e))throw e;
+      setSinSenal(true);
+      var y=conCola(cacheLeer(k)||p.plan,eqCod);setPl(y);
+      var r=cacheLeer('trans_odo_'+y.camion_id);sugerir(y,!(y.tramos||[]).length&&r&&r.odometro_fin?String(r.odometro_fin):'');
+    });
+  }
+  useEffect(function(){load().catch(function(e){setMsg(e.message);});},[p.plan.plan_id]);
+  function aviso(r,txt){return (r&&r.encolado?'📵 Sin señal: quedó guardado en el celular y se envía solo · ':'')+txt;}
+
+  // GPS: si el celular no lo entrega en 12 s se guarda igual, sin coordenadas
+  function gps(){
+    return new Promise(function(res){
+      if(!navigator.geolocation)return res({});
+      navigator.geolocation.getCurrentPosition(function(g){res({lat:g.coords.latitude,lng:g.coords.longitude,precision:Math.round(g.coords.accuracy)});},
+        function(){res({});},{enableHighAccuracy:true,timeout:20000,maximumAge:30000}); // sin internet el GPS igual funciona (satélites)
+    });
+  }
+  function txtGps(g){return g.lat?'📍 GPS guardado (±'+g.precision+' m)':'⚠ Sin GPS (revisa que la ubicación esté activada)';}
+  function hora(ts){return ts?String(ts).slice(11,16):'';}
+  function dia(ts){return ts?String(ts).slice(8,10)+'/'+String(ts).slice(5,7):'';}
+  function nomEq(id){var e=(pl.equipos_lista||[]).find(function(x){return String(x.equipo_id)===String(id);});return e?e.codigo+' — '+e.nombre:String(id);}
+
+  var tramos=pl.tramos||[];
+  var abierto=pl.tramo_abierto;
+  var ult=tramos[tramos.length-1];
+  var desde=ult?ult.hasta:(sig.desde||'');
+  var movidas=pl.equipos_movidos||{};
+  // recorrido planificado: el próximo paso es el primero que todavía no se hizo
+  var pasos=pl.recorrido_plan||[];
+  var hechosPlan={};tramos.forEach(function(t){if(t.plan_orden)hechosPlan[t.plan_orden]=1;});
+  var proximo=pasos.find(function(x){return !hechosPlan[x.orden];});
+  var guiado=pasos.length>0&&!cambioPlan;
+  var pasoKey=(abierto?'a'+(abierto.uid||abierto.tramo_id):'s')+tramos.length;
+  useEffect(function(){setMsg('');setCorrKm(false);},[pasoKey]);
+  // campo del km de salida: el primer tramo lo pide; los siguientes muestran el de la llegada (con "corregir")
+  function campoKmSalida(){
+    var lnk={background:'none',border:'none',color:'#1D4ED8',fontSize:12,textDecoration:'underline',cursor:'pointer',padding:0};
+    if(ult&&!corrKm)return h('div',{style:{marginTop:10,padding:'9px 10px',background:'#F1F5F9',borderRadius:8,fontSize:13,color:'#334155',display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}},
+      h('span',null,'Sales con km ',h('strong',null,fmtKm(ult.fin_km)),h('br'),h('span',{style:{fontSize:11,color:'#64748B'}},'el que anotaste al llegar · no tienes que escribir nada')),
+      h('button',{onClick:function(){setSig(function(x){return Object.assign({},x,{km:String(ult.fin_km||'')});});setCorrKm(true);},style:lnk},'corregir'));
+    return h('div',null,
+      h('label',{style:lbl},ult?'Km del camión al salir (corrección) *':'Km del camión al partir el viaje *'),
+      conMic(h('input',{type:'number',inputMode:'numeric',value:sig.km,onChange:function(e){setSig(Object.assign({},sig,{km:e.target.value}));},style:inp}),'num',function(v){setSig(function(x){return Object.assign({},x,{km:v});});}),
+      h('div',{style:{fontSize:11,color:'#64748B',marginTop:3}},ult?'Llegaste al punto anterior con km '+fmtKm(ult.fin_km)+'. Cámbialo solo si el camión se movió entremedio.':kmCamion?'Último odómetro del camión: '+fmtKm(kmCamion):'Mira el odómetro del camión antes de partir.'),
+      avisoKm(malaSalida(sig.km)),avisoRapido(salidaRapida(sig.km)),
+      ult&&h('button',{onClick:function(){setCorrKm(false);},style:Object.assign({},lnk,{marginTop:4})},'Usar el km de la llegada ('+fmtKm(ult.fin_km)+')'));
+  }
+
+  function iniciar(){
+    setMsg('');setOk('');
+    var km=kmSalida();
+    if(!(parseFloat(km)>0)){setMsg('Escribe el kilometraje del camión al partir');return;}
+    if(sig.carga==='cargado'&&!sig.equipo_id){setMsg('Elige qué máquina llevas cargada');return;}
+    if(!sig.hasta){setMsg('Escribe hacia dónde vas');return;}
+    if(String(sig.hasta).trim().toUpperCase()===String(desde).trim().toUpperCase()){setMsg('«Hacia» es el mismo lugar de donde sales ('+desde+'). Escribe el sector o el fundo al que vas, por ejemplo «'+desde+' sector 2».');return;}
+    var mk=malaSalida(km);if(mk){setMsg(mk);return;}
+    if(!seguirIgual(salidaRapida(km)))return;
+    setBusy(true);
+    gps().then(function(g){
+      return enviarViaje(pl.plan_id,'iniciar-tramo',Object.assign({},sig,g,{desde:desde,km:km}),p.tok).then(function(r){setCambioPlan(false);setOk(aviso(r,(tramos.length?'Salida registrada · ':'Traslado iniciado · ')+txtGps(g)));setKmFin('');setObsFin('');return load();});
+    }).catch(function(e){setMsg(e.message);}).finally(function(){setBusy(false);});
+  }
+  function iniciarPaso(){
+    setMsg('');setOk('');
+    var km=kmSalida();
+    if(!(parseFloat(km)>0)){setMsg('Escribe el kilometraje del camión al partir');return;}
+    var mk=malaSalida(km);if(mk){setMsg(mk);return;}
+    if(!seguirIgual(salidaRapida(km)))return;
+    setBusy(true);
+    gps().then(function(g){
+      var b=Object.assign({carga:proximo.carga,equipo_id:proximo.equipo_id,desde:ult?ult.hasta:proximo.desde,hasta:proximo.hasta,
+        km:km,con_escolta:proximo.con_escolta,plan_orden:proximo.orden},g);
+      return enviarViaje(pl.plan_id,'iniciar-tramo',b,p.tok).then(function(r){setOk(aviso(r,'Tramo '+proximo.orden+' iniciado · '+txtGps(g)));setKmFin('');setObsFin('');return load();});
+    }).catch(function(e){setMsg(e.message);}).finally(function(){setBusy(false);});
+  }
+  function registrarInc(){
+    setMsg('');setOk('');
+    if(!inc.tipo){setMsg('Elige qué pasó');return;}
+    if(inc.tipo==='otro'&&!inc.detalle.trim()){setMsg('Cuenta qué pasó en el detalle');return;}
+    setBusy(true);
+    gps().then(function(g){
+      return enviarViaje(pl.plan_id,'incidente',Object.assign({},inc,g),p.tok).then(function(r){
+        setOk(aviso(r,'🚨 Incidente registrado · '+txtGps(g)+(inc.tipo==='cuasi_accidente'?' · Recuerda llenar el Reporte de Novedades':'')));
+        setVerInc(false);setInc({tipo:'',detalle:'',km:''});return load();
+      });
+    }).catch(function(e){setMsg(e.message);}).finally(function(){setBusy(false);});
+  }
+  function solucionado(x){
+    var b=typeof x.incidente_id==='number'?{incidente_id:x.incidente_id,incidente_uid:x.uid}:{incidente_uid:x.uid};
+    enviarViaje(pl.plan_id,'incidente-solucionado',b,p.tok).then(function(r){setOk(aviso(r,'✓ '+x.tipo_nombre+' solucionado'));return load();}).catch(function(e){setMsg(e.message);});
+  }
+  function llegar(){
+    setMsg('');setOk('');
+    if(!(parseFloat(kmFin)>0)){setMsg('Escribe el kilometraje al llegar');return;}
+    var mk=kmMalo(kmFin,abierto.inicio_km,abierto.inicio_en,'km de salida');if(mk){setMsg(mk);return;}
+    if(!seguirIgual(kmRapido(kmFin,abierto.inicio_km,abierto.inicio_en,'km de salida')))return;
+    setBusy(true);
+    gps().then(function(g){
+      return enviarViaje(pl.plan_id,'terminar-tramo',Object.assign({km:kmFin,observaciones:obsFin},g),p.tok).then(function(r){setOk(aviso(r,'Llegada registrada · '+Math.round(kmFin-abierto.inicio_km)+' km · '+txtGps(g)));return load();});
+    }).catch(function(e){setMsg(e.message);}).finally(function(){setBusy(false);});
+  }
+  function deshacer(){
+    if(!confirm('¿Borrar el último tramo registrado para hacerlo de nuevo?'))return;
+    enviarViaje(pl.plan_id,'borrar-ultimo-tramo',{},p.tok).then(load).catch(function(e){setMsg(e.message);});
+  }
+  function cerrar(){
+    if(!confirm((proximo?'⚠ Quedan tramos del recorrido sin hacer (el próximo era el '+proximo.orden+': '+proximo.desde+' → '+proximo.hasta+').\n\n':'')+'¿Terminaste el viaje y estás de vuelta en la base?'))return;
+    setBusy(true);
+    enviarViaje(pl.plan_id,'cerrar',cierre,p.tok).then(function(r){
+      setFin(r.encolado?{encolado:true,km_cargado:pl.km_cargado_real,km_vacio:pl.km_vacio_real,
+        n_traslados:Math.max(1,tramos.filter(function(t){return t.carga==='cargado';}).length)}:r);
+    }).catch(function(e){setMsg(e.message);}).finally(function(){setBusy(false);});
+  }
+
+  var big={width:'100%',padding:'16px',border:'none',borderRadius:10,fontSize:16,fontWeight:800,cursor:busy?'wait':'pointer',marginTop:8};
+  var inp={width:'100%',padding:'12px 10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:16,boxSizing:'border-box',background:'#fff'};
+  var lbl={fontSize:12,fontWeight:700,color:'#475569',display:'block',margin:'10px 0 4px'};
+
+  if(fin)return h('div',{className:'mob-wrap'},
+    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Traslado')),
+    h('div',{style:{textAlign:'center',padding:'50px 20px'}},
+      h('div',{style:{fontSize:48}},'✅'),
+      h('div',{style:{fontSize:17,fontWeight:800,color:'#166534',margin:'10px 0'}},'Viaje terminado'),
+      h('div',{style:{fontSize:14,color:'#334155'}},Math.round(fin.km_cargado)+' km cargado · '+Math.round(fin.km_vacio)+' km vacío'),
+      (fin.traslados||[]).length>0&&h('div',{style:{margin:'14px auto 0',maxWidth:320,textAlign:'left'}},
+        fin.traslados.map(function(t,i){return h('div',{key:t.traslado_id,style:{background:'#fff',borderLeft:'4px solid '+(t.km_cargado?'#16A34A':'#94A3B8'),borderRadius:6,padding:'6px 10px',marginBottom:5,fontSize:12}},
+          h('strong',null,'Traslado '+(i+1)+' · N° '+t.traslado_id),h('div',{style:{color:'#475569'}},t.origen+' → '+t.destino),
+          h('div',{style:{color:'#64748B'}},Math.round(t.km_cargado)+' km cargado · '+Math.round(t.km_vacio)+' km vacío'));})),
+      h('div',{style:{fontSize:12,color:'#64748B',marginTop:4}},fin.encolado?(tramos.length+' tramos · '+fin.n_traslados+' traslado(s) · 📵 sin señal: el cierre quedó guardado en el celular y se envía solo cuando vuelva la señal'):(tramos.length+' tramos · '+((fin.traslados||[]).length||1)+' traslado(s) registrado(s)')),
+      h('button',{onClick:p.onBack,style:Object.assign({},big,{background:'#1E3A2D',color:'#D4C5A9',maxWidth:260})},'Volver')
+    )
+  );
+
+  return h('div',{className:'mob-wrap'},
+    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,TIPOS[pl.tipo_viaje||'normal'])),
+    h(BannerCola,{tok:p.tok,onSync:function(){load().catch(function(){});}}),
+    h('div',{style:{padding:12,paddingBottom:60}},
+      // datos del viaje
+      h('div',{style:{background:'#fff',borderRadius:10,padding:12,boxShadow:'0 1px 3px rgba(0,0,0,.08)',marginBottom:10}},
+        h('div',{style:{fontSize:12,color:'#64748B',fontWeight:700}},new Date((pl.fecha_plan+'').slice(0,10)+'T00:00:00').toLocaleDateString('es-CL',{weekday:'long',day:'numeric',month:'long'}).toUpperCase()+(pl.hora_plan?' · '+pl.hora_plan.slice(0,5):'')),
+        h('div',{style:{fontSize:15,fontWeight:800,color:'#0F172A',margin:'4px 0'}},(pl.origen||'?')+' → '+(pl.destino||'?')),
+        h('div',{style:{fontSize:12,color:'#475569'}},'🚛 '+(pl.camion_patente||'')+' · '+(pl.chofer_nombre||'')),
+        (pl.grupo||[]).length>0&&h('div',{style:{fontSize:12,color:'#0F766E',marginTop:2}},'👥 Junto con '+pl.grupo.map(function(g){return g.camion_patente+' ('+(g.chofer_nombre||'').split(' ')[0]+')';}).join(', ')),
+        pl.escolta_nombre&&h('div',{style:{fontSize:12,color:'#92400E',marginTop:2}},'🛡 Escolta: '+pl.escolta_nombre+(pl.escolta_telefono?' · '+pl.escolta_telefono:'')+(pl.escolta_modo==='todo'?' · todo el viaje':pl.escolta_nota?' · '+pl.escolta_nota:'')),
+        pl.observaciones&&h('div',{style:{fontSize:12,color:'#64748B',marginTop:4,fontStyle:'italic'}},'📝 '+pl.observaciones),
+        (pl.equipos_lista||[]).length>0&&h('div',{style:{marginTop:8,display:'flex',flexWrap:'wrap',gap:4}},
+          pl.equipos_lista.map(function(e){
+            var mv=movidas[String(e.equipo_id)];
+            var col=!mv?['#F1F5F9','#475569','']:mv.en_camino?['#DBEAFE','#1E40AF','🚚 ']:['#DCFCE7','#15803D','✓ '];
+            return h('span',{key:e.equipo_id,style:{padding:'4px 9px',borderRadius:12,fontSize:12,fontWeight:700,background:col[0],color:col[1]}},
+              col[2]+e.codigo+(mv&&String(mv.plan_id)!==String(pl.plan_id)?' ('+mv.camion_patente+')':''));
+          }))
+      ),
+      msg&&h('div',{className:'al al-e',style:{marginBottom:8,fontSize:13}},msg),
+      ok&&h('div',{style:{marginBottom:8,padding:10,background:'#DCFCE7',border:'1px solid #86EFAC',borderRadius:8,fontSize:13,color:'#166534',fontWeight:600}},ok),
+
+      // incidentes: pana, pinchazo, controles, camino obstruido, cuasi accidente
+      pl.estado!=='ejecutado'&&pl.estado!=='cancelado'&&h('div',{style:{marginBottom:10}},
+        (pl.incidentes||[]).filter(function(x){return DURAN[x.tipo]&&!x.fin_en;}).map(function(x){
+          return h('div',{key:x.incidente_id,style:{display:'flex',alignItems:'center',gap:8,padding:10,marginBottom:6,background:'#FEF2F2',border:'2px solid #FCA5A5',borderRadius:10}},
+            h('div',{style:{flex:1,fontSize:13,color:'#991B1B'}},h('strong',null,'🚨 '+x.tipo_nombre),' desde las '+hora(x.inicio_en)+(x.detalle?' · '+x.detalle:'')),
+            h('button',{onClick:function(){solucionado(x);},style:{padding:'10px 12px',borderRadius:8,border:'none',background:'#16A34A',color:'#fff',fontWeight:800,fontSize:13,cursor:'pointer'}},'✓ Ya se solucionó'));
+        }),
+        !verInc?h('button',{onClick:function(){setVerInc(true);setMsg('');},style:{width:'100%',padding:12,borderRadius:10,border:'2px solid #DC2626',background:'#fff',color:'#DC2626',fontSize:15,fontWeight:800,cursor:'pointer'}},'🚨 Registrar incidente'):
+        h('div',{style:{background:'#fff',border:'2px solid #DC2626',borderRadius:12,padding:12}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center'}},
+            h('div',{style:{fontSize:13,fontWeight:800,color:'#DC2626'}},'🚨 ¿QUÉ PASÓ?'),
+            h('button',{onClick:function(){setVerInc(false);},style:{border:'none',background:'none',fontSize:20,cursor:'pointer',color:'#64748B'}},'×')),
+          h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginTop:8}},
+            TIPOS_INC.map(function(t){
+              var on=inc.tipo===t[0];
+              return h('button',{key:t[0],onClick:function(){setInc(Object.assign({},inc,{tipo:t[0]}));},style:{padding:'12px 6px',borderRadius:8,fontSize:13,fontWeight:700,cursor:'pointer',border:'2px solid '+(on?'#DC2626':'#E2E8F0'),background:on?'#FEE2E2':'#F8FAFC',color:on?'#991B1B':'#334155'}},t[1]+' '+t[2]);
+            })),
+          h('label',{style:lbl},'Detalle'+(inc.tipo==='otro'?' *':' (opcional)')),
+          conMic(h('textarea',{value:inc.detalle,onChange:function(e){setInc(Object.assign({},inc,{detalle:e.target.value}));},rows:2,style:Object.assign({},inp,{fontSize:14}),placeholder:'Ej: neumático trasero derecho, esperando grúa'}),'agregar',function(v){setInc(function(x){return Object.assign({},x,{detalle:x.detalle?x.detalle+' '+v:v});});}),
+          h('label',{style:lbl},'Km del camión (opcional)'),
+          conMic(h('input',{type:'number',inputMode:'numeric',value:inc.km,onChange:function(e){setInc(Object.assign({},inc,{km:e.target.value}));},style:inp}),'num',function(v){setInc(function(x){return Object.assign({},x,{km:v});});}),
+          inc.tipo==='cuasi_accidente'&&h('div',{style:{fontSize:12,color:'#92400E',background:'#FEF3C7',padding:8,borderRadius:6,marginTop:8}},'⚠ Un cuasi accidente además se informa en el Reporte de Novedades (SGSST-REG-06).'),
+          h('button',{onClick:registrarInc,disabled:busy,style:Object.assign({},big,{background:'#DC2626',color:'#fff'})},busy?'⏳ Guardando…':'Registrar incidente'),
+          h('div',{style:{fontSize:11,color:'#94A3B8',textAlign:'center',marginTop:6}},'Se guardan solos la hora y la ubicación')
+        )
+      ),
+
+      // tramo en camino
+      abierto&&h('div',{style:{background:'#1E40AF',color:'#fff',borderRadius:12,padding:14}},
+        h('div',{style:{fontSize:11,opacity:.8,fontWeight:700,letterSpacing:1}},'EN CAMINO · TRAMO '+(abierto.plan_orden&&pasos.length?abierto.plan_orden+' DE '+pasos.length:abierto.orden)),
+        h('div',{style:{fontSize:17,fontWeight:800,margin:'4px 0'}},abierto.carga==='cargado'?'🚜 Cargado con '+(abierto.equipo_codigo||'?'):'Vacío'),
+        h('div',{style:{fontSize:13}},(abierto.desde||'?')+' → '+(abierto.hasta||'?')),
+        h('div',{style:{fontSize:12,opacity:.85,marginTop:2}},'Salió '+dia(abierto.inicio_en)+' '+hora(abierto.inicio_en)+' · km '+Math.round(abierto.inicio_km).toLocaleString('es-CL')+(abierto.con_escolta?' · 🛡 con escolta':'')),
+        h('label',{style:Object.assign({},lbl,{color:'#fff',fontSize:14})},'✍ Cuando llegues'+(abierto.hasta?' a '+abierto.hasta:'')+', anota el km que marca el camión *'),
+        conMic(h('input',{type:'number',inputMode:'numeric',value:kmFin,onChange:function(e){setKmFin(e.target.value);},style:inp,placeholder:'Ej: '+Math.round(abierto.inicio_km+20)}),'num',function(v){setKmFin(v);}),
+        (function(){
+          var t=topeKm(abierto.inicio_km,abierto.inicio_en);
+          return t&&h('div',{style:{fontSize:11,opacity:.85,marginTop:3}},'Lo normal: entre '+fmtKm(abierto.inicio_km)+' y '+fmtKm(t.km)+' (lleva '+t.min+' min en camino)');
+        })(),
+        avisoKm(kmMalo(kmFin,abierto.inicio_km,abierto.inicio_en,'km de salida')),
+        !BLOQUEAR_VELOCIDAD&&avisoRapido(kmRapido(kmFin,abierto.inicio_km,abierto.inicio_en,'km de salida')),
+        !kmMalo(kmFin,abierto.inicio_km,abierto.inicio_en,'km de salida')&&parseFloat(kmFin)>=abierto.inicio_km&&h('div',{style:{fontSize:13,marginTop:4,fontWeight:700,color:'#FCD34D'}},'= '+Math.round(kmFin-abierto.inicio_km)+' km '+(abierto.carga==='cargado'?'cargado':'vacío')),
+        conMic(h('input',{type:'text',value:obsFin,onChange:function(e){setObsFin(e.target.value);},style:Object.assign({},inp,{marginTop:8,fontSize:14}),placeholder:'Comentario (opcional, no es el destino)'}),'agregar',function(v){setObsFin(function(o){return o?o+' '+v:v;});}),
+        h('button',{onClick:llegar,disabled:busy,style:Object.assign({},big,{background:'#FCD34D',color:'#1E3A2D'})},busy?'⏳ Guardando…':'📍 Llegué'+(abierto.hasta?' a '+abierto.hasta:''))
+      ),
+
+      // siguiente tramo
+      !abierto&&guiado&&pl.estado!=='ejecutado'&&pl.estado!=='cancelado'&&(proximo?
+        h('div',{style:{background:'#fff',borderRadius:12,padding:14,boxShadow:'0 1px 3px rgba(0,0,0,.08)',border:'2px solid '+(proximo.carga==='cargado'?'#16A34A':'#94A3B8')}},
+          h('div',{style:{fontSize:12,fontWeight:800,color:'#1E3A2D',letterSpacing:1}},(tramos.length?'SIGUIENTE · ':'INICIAR TRASLADO · ')+'TRAMO '+proximo.orden+' DE '+pasos.length),
+          h('div',{style:{fontSize:20,fontWeight:900,margin:'8px 0 2px',color:proximo.carga==='cargado'?'#15803D':'#475569'}},proximo.carga==='cargado'?'🚜 CARGADO con '+(proximo.equipo_codigo||'?'):'VACÍO'),
+          h('div',{style:{fontSize:16,fontWeight:700,color:'#0F172A'}},(ult?ult.hasta:proximo.desde)+' → '+proximo.hasta),
+          proximo.con_escolta&&h('div',{style:{fontSize:13,color:'#92400E',fontWeight:700,marginTop:4}},'🛡 Este tramo va con escolta'+(pl.escolta_nombre?': '+pl.escolta_nombre:'')),
+          ult&&proximo.desde&&String(ult.hasta).toUpperCase()!==String(proximo.desde).toUpperCase()&&h('div',{style:{fontSize:11,color:'#92400E',marginTop:4}},'⚠ El plan decía salir de '+proximo.desde),
+          campoKmSalida(),
+          h('button',{onClick:iniciarPaso,disabled:busy,style:Object.assign({},big,{background:'#16A34A',color:'#fff'})},busy?'⏳ Tomando ubicación…':(tramos.length?'▶ Salir hacia ':'▶ Iniciar traslado hacia ')+proximo.hasta),
+          h('div',{style:{display:'flex',justifyContent:'space-between',marginTop:8}},
+            h('span',{style:{fontSize:11,color:'#94A3B8'}},'Se guardan solos la hora y la ubicación'),
+            h('button',{onClick:function(){setCambioPlan(true);},style:{background:'none',border:'none',color:'#B45309',fontSize:12,textDecoration:'underline',cursor:'pointer'}},'Cambió el plan')),
+          h('div',{style:{marginTop:10,borderTop:'1px dashed #E2E8F0',paddingTop:6}},pasos.map(function(x){
+            var hecho=hechosPlan[x.orden],act=x===proximo;
+            return h('div',{key:x.orden,style:{fontSize:11,padding:'2px 0',color:hecho?'#16A34A':act?'#0F172A':'#94A3B8',fontWeight:act?700:400}},
+              (hecho?'✓ ':act?'▶ ':'○ ')+x.orden+'. '+(x.carga==='cargado'?(x.equipo_codigo||'?'):'Vacío')+' · '+x.desde+' → '+x.hasta);
+          }))
+        ):
+        h('div',{style:{background:'#DCFCE7',border:'2px solid #86EFAC',borderRadius:12,padding:14,textAlign:'center'}},
+          h('div',{style:{fontSize:15,fontWeight:800,color:'#166534'}},'✓ Hiciste todo el recorrido planificado'),
+          h('div',{style:{fontSize:12,color:'#166534',marginTop:4}},'Si ya estás en la base, cierra el viaje abajo.'),
+          h('button',{onClick:function(){setCambioPlan(true);},style:{background:'none',border:'none',color:'#B45309',fontSize:12,textDecoration:'underline',cursor:'pointer',marginTop:6}},'Necesito hacer otro tramo'))
+      ),
+      !abierto&&!guiado&&pl.estado!=='ejecutado'&&pl.estado!=='cancelado'&&h('div',{style:{background:'#fff',borderRadius:12,padding:14,boxShadow:'0 1px 3px rgba(0,0,0,.08)'}},
+        pasos.length>0&&h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',padding:8,marginBottom:8,background:'#FEF3C7',borderRadius:6,fontSize:12,color:'#92400E'}},
+          h('span',null,'⚠ Tramo fuera del recorrido planificado'),
+          h('button',{onClick:function(){setCambioPlan(false);},style:{background:'none',border:'none',color:'#1D4ED8',fontSize:12,textDecoration:'underline',cursor:'pointer'}},'Volver al plan')),
+        h('div',{style:{fontSize:12,fontWeight:800,color:'#1E3A2D',letterSpacing:1}},tramos.length?'SIGUIENTE TRAMO':'INICIAR TRASLADO'),
+        h('div',{style:{display:'flex',gap:6,marginTop:8}},
+          [['cargado','🚜 Cargado'],['vacio','Vacío']].map(function(o){
+            var on=sig.carga===o[0];
+            return h('button',{key:o[0],onClick:function(){setSig(Object.assign({},sig,{carga:o[0]}));},style:{flex:1,padding:14,borderRadius:8,fontSize:15,fontWeight:800,cursor:'pointer',border:'2px solid '+(on?'#15803D':'#CBD5E1'),background:on?'#DCFCE7':'#fff',color:on?'#15803D':'#64748B'}},o[1]);
+          })
+        ),
+        sig.carga==='cargado'&&h('div',null,
+          h('label',{style:lbl},'¿Qué máquina llevas? *'),
+          (function(){
+            var otrasMaq=(p.m.equipos||[]).filter(function(e){return e.activo&&!e.es_transporte&&e.tipo_cargo==='maquinaria'&&(!pl.empresa_id||String(e.empresa_id)===String(pl.empresa_id))&&(pl.equipos_ids||[]).indexOf(e.equipo_id)<0;});
+            return h(SelEquipo,{value:sig.equipo_id,style:inp,placeholder:'Elige la máquina…',maqs:pl.equipos_lista||[],
+              sufijo:function(e){var mv=movidas[String(e.equipo_id)];return mv?(mv.en_camino?' (en camino con '+mv.camion_patente+')':' (ya movida por '+mv.camion_patente+')'):'';},
+              extraFin:otrasMaq.length>0&&h('optgroup',{label:'Otra máquina (no estaba en la lista)'},otrasMaq.map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);})),
+              otros:otrosEquiposCamaBaja(p.m.equipos,pl.empresa_id,pl.equipos_ids),
+              onChange:function(v){setSig(function(x){return Object.assign({},x,{equipo_id:v});});}});
+          })()
+        ),
+        ult?h('div',{style:{fontSize:12,color:'#64748B',marginTop:10}},'Desde: ',h('strong',null,desde||'—')):
+          h('div',null,h('label',{style:lbl},'Desde'),conMic(h('input',{type:'text',value:sig.desde||'',onChange:function(e){setSig(Object.assign({},sig,{desde:e.target.value}));},style:inp}),'texto',function(v){setSig(function(x){return Object.assign({},x,{desde:v});});})),
+        h('label',{style:lbl},'Hacia *'),
+        conMic(h('input',{type:'text',value:sig.hasta,onChange:function(e){setSig(Object.assign({},sig,{hasta:e.target.value}));},style:inp,placeholder:pl.tipo_viaje==='interno'?'Ej: Sector 2 del fundo':'Ej: Fundo nuevo / Base'}),'texto',function(v){setSig(function(x){return Object.assign({},x,{hasta:v});});}),
+        h('div',{style:{display:'flex',flexWrap:'wrap',gap:4,marginTop:4}},
+          [pl.origen,pl.destino,ult&&ult.desde,'BASE'].filter(function(x,i,a){return x&&a.indexOf(x)===i&&x!==desde;}).map(function(x){
+            return h('button',{key:x,onClick:function(){setSig(Object.assign({},sig,{hasta:x}));},style:{padding:'6px 10px',borderRadius:14,border:'1px solid #CBD5E1',background:sig.hasta===x?'#1E3A2D':'#F8FAFC',color:sig.hasta===x?'#fff':'#475569',fontSize:12,cursor:'pointer'}},x);
+          })
+        ),
+        campoKmSalida(),
+        pl.escolta_nombre&&h('label',{style:{display:'flex',alignItems:'center',gap:8,marginTop:10,fontSize:14,fontWeight:600,color:'#92400E'}},
+          h('input',{type:'checkbox',checked:!!sig.con_escolta,onChange:function(e){setSig(Object.assign({},sig,{con_escolta:e.target.checked}));},style:{width:22,height:22}}),'🛡 Este tramo va con escolta'),
+        h('button',{onClick:iniciar,disabled:busy,style:Object.assign({},big,{background:'#16A34A',color:'#fff'})},busy?'⏳ Tomando ubicación…':tramos.length?'▶ Salir':'▶ Iniciar traslado'),
+        h('div',{style:{fontSize:11,color:'#94A3B8',textAlign:'center',marginTop:6}},'Se guardan solos la hora y la ubicación del celular')
+      ),
+
+      // cierre del viaje
+      !abierto&&tramos.length>0&&!(guiado&&proximo)&&pl.estado!=='ejecutado'&&h('div',{style:{marginTop:12}},
+        !verCierre?h('button',{onClick:function(){setVerCierre(true);},style:Object.assign({},big,{background:'#1E3A2D',color:'#D4C5A9'})},'🏁 Terminé el viaje (estoy en la base)'):
+        h('div',{style:{background:'#fff',borderRadius:12,padding:14,border:'2px solid #1E3A2D'}},
+          h('div',{style:{fontSize:13,fontWeight:800,color:'#1E3A2D'}},'🏁 CERRAR EL VIAJE'),
+          h('div',{style:{fontSize:13,color:'#334155',marginTop:4}},tramos.length+' tramos · '+Math.round(pl.km_cargado_real)+' km cargado · '+Math.round(pl.km_vacio_real)+' km vacío'),
+          h('label',{style:lbl},'Litros de combustible cargados'),
+          conMic(h('input',{type:'number',inputMode:'decimal',value:cierre.litros_combustible,onChange:function(e){setCierre(Object.assign({},cierre,{litros_combustible:e.target.value}));},style:inp,placeholder:'0'}),'num',function(v){setCierre(function(c){return Object.assign({},c,{litros_combustible:v});});}),
+          h('label',{style:lbl},'¿Dónde cargó?'),
+          h('select',{value:cierre.estanque_id,onChange:function(e){setCierre(Object.assign({},cierre,{estanque_id:e.target.value}));},style:inp},
+            h('option',{value:''},'—'),
+            h('optgroup',{label:'Proveedores externos'},h('option',{value:'EXT-COPEC'},'COPEC'),h('option',{value:'EXT-CTN'},'C. y T. Nacimiento')),
+            h('optgroup',{label:'Estanques internos'},estanques.map(function(es){return h('option',{key:es.estanque_id,value:es.estanque_id},es.codigo+' — '+es.nombre);}))
+          ),
+          h('label',{style:lbl},'Observaciones'),
+          conMic(h('textarea',{value:cierre.observaciones,onChange:function(e){setCierre(Object.assign({},cierre,{observaciones:e.target.value}));},rows:2,style:Object.assign({},inp,{fontSize:14})}),'agregar',function(v){setCierre(function(c){return Object.assign({},c,{observaciones:c.observaciones?c.observaciones+' '+v:v});});}),
+          h('button',{onClick:cerrar,disabled:busy,style:Object.assign({},big,{background:'#16A34A',color:'#fff'})},busy?'⏳ Guardando…':'✅ Cerrar viaje')
+        )
+      ),
+
+      // incidentes registrados en el viaje
+      (pl.incidentes||[]).length>0&&h('div',{style:{marginTop:14}},
+        h('div',{style:{fontSize:11,fontWeight:800,color:'#64748B',letterSpacing:1,marginBottom:6}},'INCIDENTES DE ESTE VIAJE'),
+        pl.incidentes.slice().reverse().map(function(x){
+          return h('div',{key:x.incidente_id,style:{background:'#fff',borderLeft:'4px solid #DC2626',borderRadius:6,padding:'8px 10px',marginBottom:6,fontSize:12}},
+            h('div',{style:{fontWeight:700,color:'#991B1B'}},'🚨 '+x.tipo_nombre+(x.tramo_orden?' · tramo '+x.tramo_orden:'')),
+            h('div',{style:{color:'#64748B',marginTop:2}},dia(x.inicio_en)+' '+hora(x.inicio_en)+(x.fin_en?' → '+hora(x.fin_en)+' solucionado':DURAN[x.tipo]?' · sin solucionar':'')+(x.detalle?' · '+x.detalle:'')));
+        })
+      ),
+
+      // tramos hechos
+      tramos.length>0&&h('div',{style:{marginTop:14}},
+        h('div',{style:{fontSize:11,fontWeight:800,color:'#64748B',letterSpacing:1,marginBottom:6}},'TRAMOS DE ESTE VIAJE'),
+        tramos.slice().reverse().map(function(t){
+          return h('div',{key:t.tramo_id,style:{background:'#fff',borderLeft:'4px solid '+(t.carga==='cargado'?'#16A34A':'#94A3B8'),borderRadius:6,padding:'8px 10px',marginBottom:6,fontSize:12}},
+            h('div',{style:{fontWeight:700,color:'#0F172A'}},t.orden+'. '+(t.carga==='cargado'?'🚜 '+(t.equipo_codigo||'?'):'Vacío')+' · '+(t.desde||'?')+' → '+(t.hasta||'?')),
+            h('div',{style:{color:'#64748B',marginTop:2}},dia(t.inicio_en)+' '+hora(t.inicio_en)+' → '+(t.fin_en?hora(t.fin_en)+' · '+Math.round(t.fin_km-t.inicio_km)+' km':'en camino')+(t.con_escolta?' · 🛡':'')+(t.inicio_lat?'':' · sin GPS'))
+          );
+        }),
+        pl.estado!=='ejecutado'&&h('button',{onClick:deshacer,style:{background:'none',border:'none',color:'#B91C1C',fontSize:12,textDecoration:'underline',cursor:'pointer',marginTop:4}},'Me equivoqué: borrar el último tramo')
+      )
     )
   );
 }
@@ -28810,10 +29945,12 @@ function App(){
 }
 const root=ReactDOM.createRoot(document.getElementById('root'));
 root.render(h(App,null));
-// ── Service Worker DESACTIVADO: desregistrar cualquiera existente y limpiar cachés ──
+// ── Service Worker solo para abrir la App SIN SEÑAL (27-10-2026, Transporte en faena) ──
+// Antes estaba desactivado. sw-app.js trabaja con RED PRIMERO: con internet la App se actualiza igual que antes;
+// la copia guardada se usa solo sin señal. Se desregistra cualquier otro service worker antiguo.
 if('serviceWorker' in navigator){
-  try{ navigator.serviceWorker.getRegistrations().then(function(rs){ (rs||[]).forEach(function(r){ r.unregister(); }); }).catch(function(){}); }catch(e){}
-  try{ if(window.caches&&caches.keys){ caches.keys().then(function(ks){ (ks||[]).forEach(function(k){ caches.delete(k); }); }).catch(function(){}); } }catch(e){}
+  try{ navigator.serviceWorker.getRegistrations().then(function(rs){ (rs||[]).forEach(function(r){ var w=r.active||r.waiting||r.installing; if(!w||w.scriptURL.indexOf('/sw-app.js')<0) r.unregister(); }); }).catch(function(){}); }catch(e){}
+  try{ navigator.serviceWorker.register('/sw-app.js').catch(function(){}); }catch(e){}
 }
 // ── PWA: Install prompt ──
 var deferredPrompt=null;
