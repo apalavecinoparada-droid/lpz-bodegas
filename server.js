@@ -3959,7 +3959,8 @@ app.get('/api/telemetria/alertas-terreno', auth, requireModulo('productividad'),
       const k=x.marca+'|'+x.serie;
       const m=maqs[k]=maqs[k]||{marca:x.marca,serie:x.serie,nombre_cliente:x.nombre_cliente,modelo:x.modelo,ultima_comunicacion:x.ultima_comunicacion,equipo_id:x.equipo_id,equipo_codigo:x.equipo_codigo,equipo_nombre:x.equipo_nombre,
         empresa_id:x.empresa_id,empresa_nombre:x.empresa_nombre||'Sin empresa',faena_id:x.faena_id,faena_nombre:x.faena_nombre||'Sin faena',alertas:{},total:0,criticas:0};
-      const ka=(x.codigo||'')+'|'+cl; const g=m.alertas[ka]=m.alertas[ka]||{codigo:x.codigo,severidad:x.severidad,componente:x.componente,texto:x.texto,veces:0,ultima:null,estado:est,critica:TEL_CRITICAS.has(String(x.severidad||'').toLowerCase())};
+      const ka=(x.codigo||'')+'|'+cl; const g=m.alertas[ka]=m.alertas[ka]||{codigo:x.codigo,clave:cl,severidad:x.severidad,componente:x.componente,texto:x.texto,veces:0,ultima:null,estado:est,critica:TEL_CRITICAS.has(String(x.severidad||'').toLowerCase()),
+        gestion:gg?{estado:gg.estado,observacion:gg.observacion,usuario:gg.usuario,fecha:gg.fecha}:null};
       g.veces++; m.total++; if(g.critica)m.criticas++; if(!g.ultima||x.fecha_hora>g.ultima){g.ultima=x.fecha_hora;g.texto=x.texto;}
     }
     const PRIO={reaparecio:0,pendiente:1,en_gestion:2};
