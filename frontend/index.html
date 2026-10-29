@@ -25319,12 +25319,13 @@ function MobileHome(p){
     {id:'inventario',icon:'📦',label:'Inventario',sub:'Stock y movimientos',mod:'inventario'},
     {id:'mantencion',icon:'🛠',label:'Mantención',sub:'Avisos, OT, programación',mod:'mantencion'},
     {id:'terreno',icon:'🌲',label:'Terreno',sub:'Registro diario horómetros',mod:'terreno'},
-    {id:'trans-traslados',icon:'🚛',label:'Transporte',sub:'Registrar viaje cama baja',mod:'transporte'},
+    {id:'trans-traslados',icon:'🚛',label:'Transporte',sub:'Viajes de cama baja por tramos',mod:'transporte'},
     {id:'solicitudes',icon:'📋',label:'Solicitudes',sub:'Nueva solicitud',mod:'solicitudes'},
     {id:'calendario',icon:'📅',label:'Calendario',sub:'Tareas y recordatorios',mod:'calendario'},
     {id:'comite',icon:'🗂',label:'Comité de Gestión',sub:'Mis compromisos y actas',mod:'comite'},
     {id:'rendiciones',icon:'💰',label:'Rendiciones',sub:'Registrar gasto',mod:'rendiciones'},
-    {id:'prod-oee',icon:'📈',label:'OEE Cosecha',sub:'Indicadores en vista celular',mod:'productividad'}
+    {id:'prod-oee',icon:'📈',label:'OEE Cosecha',sub:'Indicadores en vista celular',mod:'productividad'},
+    {id:'telemetria',icon:'📡',label:'Telemetría',sub:'Alertas de las máquinas por faena',mod:'productividad'}
   ];
   function canSee(mod){if(!p.user)return false;if(p.user.es_admin)return true;if(!p.user.modulos||p.user.modulos.length===0)return false;return p.user.modulos.indexOf(mod)>=0;}
   var accesibles=ACCIONES.filter(function(a){return canSee(a.mod);});
@@ -26082,11 +26083,11 @@ function MobileTransporte(p){
       h('button',{onClick:function(){setModo('historial');},style:{flex:1,padding:10,background:'transparent',color:'#64748B',border:'none',borderRadius:6,fontSize:13,fontWeight:600,cursor:'pointer'}},'🚚 Realizados')
     ),
     h('div',{style:{padding:'0 12px 12px'}},
-      h('button',{onClick:nuevoDirecto,style:{width:'100%',padding:'14px',background:'#1E3A2D',color:'#D4C5A9',border:'none',borderRadius:10,fontSize:15,fontWeight:700,marginBottom:16,cursor:'pointer'}},'+ Nuevo traslado directo'),
+      // Andrés 29-10-2026: en el celular ya no se registran traslados a mano; todo viaje nace en Planificación y se hace por tramos (MobileViaje)
       pendientes.length===0?h('div',{style:{textAlign:'center',padding:'40px 20px',color:'#94A3B8'}},
         h('div',{style:{fontSize:40,marginBottom:8}},'📭'),
         h('div',{style:{fontSize:14}},'Sin traslados planificados'),
-        h('div',{style:{fontSize:11,marginTop:4}},'Use el botón de arriba para registrar uno nuevo')
+        h('div',{style:{fontSize:11,marginTop:4}},'Los viajes los programa Planificación y aparecen aquí para hacerlos por tramos')
       ):h('div',null,
         h('div',{style:{fontSize:11,fontWeight:700,color:'#64748B',marginBottom:8,textTransform:'uppercase',letterSpacing:1}},'Pendientes próximos 14 días'),
         pendientes.map(function(pl){
@@ -26989,6 +26990,56 @@ function MobileViaje(p){
 }
 
 // ── Formulario de SOLICITUDES móvil ──
+// ── TELEMETRÍA en el celular: alertas activas de las máquinas por empresa → faena → cargo (equipo). Andrés 29-10-2026.
+// Solo lectura, pensado para el personal de terreno: lo que gestiona el jefe de taller queda en Productividad → Telemetría.
+function MobileTelemetria(p){
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});var faenas=p.m.faenas||[];
+  var[dias,setDias]=useState(7);var[emp,setEmp]=useState(p.user&&p.user.empresa_id?String(p.user.empresa_id):'');var[fae,setFae]=useState(p.user&&p.user.faena_id?String(p.user.faena_id):'');
+  var[data,setData]=useState(null);var[err,setErr]=useState('');var[abierta,setAbierta]=useState({});
+  function cargar(){setErr('');api('/telemetria/alertas-terreno?dias='+dias+(emp?'&empresa_id='+emp:'')+(fae?'&faena_id='+fae:''),'GET',null,p.tok).then(setData).catch(function(e){setErr(e.message);});}
+  useEffect(cargar,[dias,emp,fae]);
+  var fdt=function(v){if(!v)return '';var d=new Date(v);if(isNaN(d))return String(v).slice(0,16);return d.toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});};
+  var MARCA={KOMATSU:'Komatsu',TIGERCAT:'Tigercat',DEERE:'John Deere'};
+  var EST={pendiente:{l:'Pendiente',bg:'#FEF9C3',c:'#854D0E'},reaparecio:{l:'Reapareció',bg:'#FFEDD5',c:'#9A3412'},en_gestion:{l:'En gestión',bg:'#DBEAFE',c:'#1E40AF'}};
+  var sel={padding:'10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13,boxSizing:'border-box',background:'#fff',width:'100%'};
+  var maqs=(data&&data.maquinas)||[];
+  // agrupar: empresa → faena → equipos (ya vienen ordenados así)
+  var grupos=[];maqs.forEach(function(m){var g=grupos[grupos.length-1];if(!g||g.empresa_id!==m.empresa_id){g={empresa_id:m.empresa_id,empresa_nombre:m.empresa_nombre,faenas:[]};grupos.push(g);}
+    var f=g.faenas[g.faenas.length-1];if(!f||f.faena_id!==m.faena_id){f={faena_id:m.faena_id,faena_nombre:m.faena_nombre,maquinas:[]};g.faenas.push(f);}f.maquinas.push(m);});
+  var totAl=maqs.reduce(function(s,m){return s+m.total;},0),totCr=maqs.reduce(function(s,m){return s+m.criticas;},0);
+  return h('div',{className:'mob-wrap'},
+    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Telemetría · alertas')),
+    h('div',{style:{padding:'0 10px',marginBottom:8}},
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:6}},
+        h('select',{value:emp,onChange:function(e){setEmp(e.target.value);setFae('');},style:sel},h('option',{value:''},'Todas las empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})),
+        h('select',{value:fae,onChange:function(e){setFae(e.target.value);},style:sel},h('option',{value:''},'Todas las faenas'),faenas.filter(function(f){return f.activo&&(!emp||String(f.empresa_id)===String(emp));}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
+      h('div',{style:{display:'flex',gap:6}},[7,30].map(function(d){return h('button',{key:d,onClick:function(){setDias(d);},style:{flex:1,padding:8,border:'1px solid #CBD5E1',borderRadius:6,background:dias===d?'#1E3A2D':'#fff',color:dias===d?'#D4C5A9':'#475569',fontSize:12,fontWeight:700,cursor:'pointer'}},'Últimos '+d+' días');}),
+        h('button',{onClick:cargar,style:{padding:'8px 12px',border:'1px solid #CBD5E1',borderRadius:6,background:'#fff',fontSize:12,cursor:'pointer'}},'↻'))),
+    err&&h('div',{style:{margin:'0 10px 8px',padding:10,background:'#FEE2E2',color:'#991B1B',borderRadius:6,fontSize:12}},err),
+    data&&h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6,padding:'0 10px',marginBottom:10}},
+      h('div',{style:{background:'#1E3A2D',color:'#fff',padding:10,borderRadius:8,textAlign:'center'}},h('div',{style:{fontSize:10,opacity:0.8}},'MÁQUINAS'),h('div',{style:{fontSize:20,fontWeight:700,color:'#FCD34D'}},maqs.length)),
+      h('div',{style:{background:'#B45309',color:'#fff',padding:10,borderRadius:8,textAlign:'center'}},h('div',{style:{fontSize:10,opacity:0.8}},'ALERTAS'),h('div',{style:{fontSize:20,fontWeight:700}},totAl)),
+      h('div',{style:{background:totCr?'#B91C1C':'#16A34A',color:'#fff',padding:10,borderRadius:8,textAlign:'center'}},h('div',{style:{fontSize:10,opacity:0.8}},'CRÍTICAS'),h('div',{style:{fontSize:20,fontWeight:700}},totCr))),
+    !data&&!err&&h('div',{style:{textAlign:'center',padding:30,color:'#94A3B8'}},'Cargando...'),
+    data&&!maqs.length&&h('div',{style:{textAlign:'center',padding:40,color:'#94A3B8'}},h('div',{style:{fontSize:40,marginBottom:8}},'✅'),h('div',{style:{fontSize:13}},'Sin alertas activas en este período')),
+    h('div',{style:{padding:'0 10px 40px'}},grupos.map(function(g){return h('div',{key:g.empresa_id||'x',style:{marginBottom:14}},
+      h('div',{style:{fontSize:11,fontWeight:700,color:'#64748B',textTransform:'uppercase',letterSpacing:1,margin:'6px 0'}},'🏢 '+g.empresa_nombre),
+      g.faenas.map(function(f){return h('div',{key:f.faena_id||'x',style:{marginBottom:8}},
+        h('div',{style:{fontSize:12,fontWeight:700,color:'#1E3A2D',padding:'6px 8px',background:'#E7EDE9',borderRadius:6,marginBottom:6}},'🌲 '+f.faena_nombre),
+        f.maquinas.map(function(m){var k=m.marca+'|'+m.serie;var ab=abierta[k]!==false;return h('div',{key:k,style:{background:'#fff',borderLeft:'4px solid '+(m.criticas?'#DC2626':'#F59E0B'),borderRadius:6,padding:10,marginBottom:8,boxShadow:'0 1px 3px rgba(0,0,0,0.05)'}},
+          h('div',{onClick:function(){var s=Object.assign({},abierta);s[k]=!ab;setAbierta(s);},style:{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}},
+            h('div',null,h('div',{style:{fontSize:14,fontWeight:700,color:'#0F172A'}},(m.equipo_codigo||'')+' · '+(m.equipo_nombre||m.nombre_cliente||'')),h('div',{style:{fontSize:11,color:'#64748B'}},(MARCA[m.marca]||m.marca)+' '+(m.modelo||'')+(m.ultima_comunicacion?' · comunicó '+fdt(m.ultima_comunicacion):''))),
+            h('div',{style:{textAlign:'right',whiteSpace:'nowrap'}},h('span',{style:{fontSize:12,fontWeight:700,background:m.criticas?'#FEE2E2':'#FEF9C3',color:m.criticas?'#991B1B':'#854D0E',borderRadius:10,padding:'2px 8px'}},(m.criticas?'⛔ ':'⚠ ')+m.total),h('div',{style:{fontSize:10,color:'#94A3B8'}},m.alertas.length+' distintas '+(ab?'▲':'▼')))),
+          ab&&h('div',{style:{marginTop:8}},m.alertas.map(function(a,i){var e=EST[a.estado]||EST.pendiente;return h('div',{key:i,style:{padding:'6px 0',borderTop:'1px solid #F1F5F9',fontSize:12}},
+            h('div',{style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}},
+              h('span',{style:{fontSize:10,fontWeight:700,background:a.critica?'#FEE2E2':'#E2E8F0',color:a.critica?'#991B1B':'#475569',borderRadius:8,padding:'1px 6px'}},a.severidad||'Aviso'),
+              a.codigo?h('span',{className:'mono',style:{fontSize:11,color:'#475569'}},a.codigo):null,
+              h('span',{style:{fontSize:10,fontWeight:700,background:e.bg,color:e.c,borderRadius:8,padding:'1px 6px'}},e.l),
+              h('span',{style:{fontSize:10,color:'#94A3B8',marginLeft:'auto'}},a.veces+(a.veces===1?' vez':' veces')+' · '+fdt(a.ultima))),
+            h('div',{style:{color:'#0F172A'}},a.texto||'—'),
+            a.componente&&a.componente!==a.texto?h('div',{style:{fontSize:11,color:'#64748B'}},a.componente):null);})));}));}));})));
+}
+
 function MobileSolicitudes(p){
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   var faenas=p.m.faenas||[];
@@ -29661,6 +29712,7 @@ function App(){
     }
     // Módulo específico en mobile con topbar de vuelta
     if(mobileView==='trans-traslados')return h(MobileTransporte,{tok:tok,m:m,user:user,onBack:mobileBack});
+    if(mobileView==='telemetria')return h(MobileTelemetria,{tok:tok,m:m,user:user,onBack:mobileBack});
     if(mobileView==='solicitudes')return h(MobileSolicitudes,{tok:tok,m:m,user:user,onBack:mobileBack});
     if(mobileView==='calendario')return h(MobileCalendario,{tok:tok,m:m,user:user,onBack:mobileBack,onDesktop:function(v){setMobileMode(false);setView(v);}});
     if(mobileView==='rendiciones')return h(MobileRendiciones,{tok:tok,m:m,user:user,onBack:mobileBack});
