@@ -3930,6 +3930,36 @@ async function telTraducirPendientes(limite){
   _telTradTs=0; console.log('[telemetria] traducciones nuevas:',n,'de',lista.length);
   return {pendientes:lista.length,traducidas:n};
 }
+// Alertas activas por empresa → faena → cargo (equipo), para el personal de terreno (menú Telemetría del celular).
+// Solo máquinas con equipo asignado; excluye las marcadas falsa alarma o resueltas (gestión). Andrés 29-10-2026.
+app.get('/api/telemetria/alertas-terreno', auth, requireModulo('productividad'), async(req,res)=>{
+  try{
+    const dias=Math.min(90,Math.max(1,parseInt(req.query.dias)||7)); const emp=parseInt(req.query.empresa_id)||null, fae=parseInt(req.query.faena_id)||null;
+    const w=['t.equipo_id IS NOT NULL'],v=[dias]; if(emp){v.push(emp);w.push('e.empresa_id=$'+v.length);} if(fae){v.push(fae);w.push('e.faena_id=$'+v.length);}
+    const r=await pool.query(`SELECT t.marca,t.serie,t.nombre_cliente,t.modelo,t.ultima_comunicacion,e.equipo_id,e.codigo AS equipo_codigo,e.nombre AS equipo_nombre,e.empresa_id,emp.razon_social AS empresa_nombre,e.faena_id,f.nombre AS faena_nombre,
+        a.codigo,a.severidad,a.componente,a.texto,a.fecha_hora
+      FROM telemetria_maquinas t JOIN equipos e ON e.equipo_id=t.equipo_id LEFT JOIN empresas emp ON emp.empresa_id=e.empresa_id LEFT JOIN faenas f ON f.faena_id=e.faena_id
+      JOIN telemetria_alertas a ON a.marca=t.marca AND a.serie=t.serie AND a.fecha_hora>=NOW()-($1||' days')::interval
+      WHERE ${w.join(' AND ')} ORDER BY emp.razon_social NULLS LAST,f.nombre NULLS LAST,e.codigo,a.fecha_hora DESC`,v);
+    const ges=await telGestionUltimas(); let mapa=null; try{mapa=await telTradMapa();}catch(e){}
+    const maqs={};
+    for(const x of r.rows){
+      const cl=telGrupoClave(x.marca,x.texto); const gg=ges.get(x.marca+'|'+x.serie+'|'+(x.codigo||'')+'|'+cl); const est=telEstadoEfectivo(gg,x.fecha_hora);
+      if(est==='falsa'||est==='resuelta')continue;
+      const k=x.marca+'|'+x.serie;
+      const m=maqs[k]=maqs[k]||{marca:x.marca,serie:x.serie,nombre_cliente:x.nombre_cliente,modelo:x.modelo,ultima_comunicacion:x.ultima_comunicacion,equipo_id:x.equipo_id,equipo_codigo:x.equipo_codigo,equipo_nombre:x.equipo_nombre,
+        empresa_id:x.empresa_id,empresa_nombre:x.empresa_nombre||'Sin empresa',faena_id:x.faena_id,faena_nombre:x.faena_nombre||'Sin faena',alertas:{},total:0,criticas:0};
+      const ka=(x.codigo||'')+'|'+cl; const g=m.alertas[ka]=m.alertas[ka]||{codigo:x.codigo,severidad:x.severidad,componente:x.componente,texto:x.texto,veces:0,ultima:null,estado:est,critica:TEL_CRITICAS.has(String(x.severidad||'').toLowerCase())};
+      g.veces++; m.total++; if(g.critica)m.criticas++; if(!g.ultima||x.fecha_hora>g.ultima){g.ultima=x.fecha_hora;g.texto=x.texto;}
+    }
+    const PRIO={reaparecio:0,pendiente:1,en_gestion:2};
+    const lista=Object.values(maqs).map(m=>{ m.alertas=Object.values(m.alertas).map(g=>{ if(mapa){const t=telTrad(m.marca,g.texto,mapa); if(t!==g.texto){g.texto_original=g.texto;g.texto=t;}
+        const mk=m.marca==='KOMATSU'&&g.texto_original&&g.texto_original.match(/ERRORCODE=[^(]*\(([\s\S]+)\),SMR=/); const comp=mk?telTrad(m.marca,mk[1],mapa):(m.marca==='KOMATSU'?telTrad(m.marca,g.componente,mapa):g.componente); if(comp&&comp!==g.componente)g.componente=comp; }
+        return g; }).sort((a,b)=>((b.critica?1:0)-(a.critica?1:0))||((PRIO[a.estado]||9)-(PRIO[b.estado]||9))||(b.ultima>a.ultima?1:-1));
+      return m; });
+    res.json({dias,maquinas:lista});
+  }catch(e){res.status(500).json({error:e.message});}
+});
 app.post('/api/telemetria/traducir', auth, requireModulo('productividad'), async(req,res)=>{
   try{ res.json(await telTraducirPendientes(parseInt(req.query.limite)||120)); }catch(e){res.status(500).json({error:e.message});}
 });
@@ -11668,23 +11698,24 @@ async function trViaje(c,pid,accion,b,usuario){
     // si el viaje se vuelve a cerrar (después de corregirlo), sus traslados anteriores se reemplazan: nunca duplicados
     await c.query('UPDATE trans_planificacion SET traslado_id=NULL WHERE plan_id=$1',[pid]);
     await c.query('DELETE FROM trans_traslados WHERE planificacion_id=$1',[pid]);
-    // Regla (Gustavo 27-10-2026): cada tramo CARGADO es un traslado; el vacío de ida se suma al siguiente, el final al último
-    const grupos=[]; let vacios=[];
-    hechos.forEach(t=>{if(t.carga==='cargado'){grupos.push({cargado:t,tramos:vacios.concat([t])});vacios=[];}else vacios.push(t);});
-    if(vacios.length){if(grupos.length)grupos[grupos.length-1].tramos=grupos[grupos.length-1].tramos.concat(vacios);else grupos.push({cargado:null,tramos:vacios});}
-    const km=t=>(t.fin_km||0)-(t.inicio_km||0); const tercero=!pl.camion_id; const creados=[];
-    for(let n=0;n<grupos.length;n++){const g=grupos[n],cg=g.cargado,tr=g.tramos;
-      const d=await trInsertarTraslado(c,{fecha:String((cg||tr[0]).inicio_en).slice(0,10),empresa_id:pl.empresa_id,camion_id:pl.camion_id,chofer_id:pl.chofer_id,faena_id:pl.faena_id,
-        equipos_ids:cg&&cg.equipo_id?[cg.equipo_id]:[],origen:cg?cg.desde:tr[0].desde,destino:cg?cg.hasta:tr[tr.length-1].hasta,
-        km_cargado:cg?Math.round(km(cg)*10)/10:0,km_vacio:Math.round(tr.filter(t=>t.carga==='vacio').reduce((s,t)=>s+km(t),0)*10)/10,
-        odometro_inicio:tercero?null:tr[0].inicio_km,odometro_fin:tercero?null:tr[tr.length-1].fin_km,tarifa_id:pl.tarifa_id,
-        litros_combustible:n===0?b.litros_combustible:0,estanque_id:n===0?b.estanque_id:null,
-        observaciones:'Viaje '+pid+' · traslado '+(n+1)+' de '+grupos.length+'. '+(b.observaciones||''),planificacion_id:pid},usuario);
-      creados.push({traslado_id:d.traslado_id,km_cargado:trN(d.km_cargado),km_vacio:trN(d.km_vacio),costo_fijo:trN(d.costo_fijo),costo_total:trN(d.costo_total),origen:d.origen,destino:d.destino});}
-    await c.query("UPDATE trans_planificacion SET estado='ejecutado',traslado_id=$1,fin_en=$2,modificado_en=NOW() WHERE plan_id=$3",[creados[0].traslado_id,trMomento(b),pid]);
-    return {ok:true,traslado_id:creados[0].traslado_id,traslados:creados,km_cargado:creados.reduce((s,x)=>s+x.km_cargado,0),km_vacio:creados.reduce((s,x)=>s+x.km_vacio,0),costo_total:creados.reduce((s,x)=>s+x.costo_total,0)};
+    // Andrés 29-10-2026: el viaje completo es UN registro del historial: se suman los km cargados y los vacíos de todos
+    // los tramos (reemplaza la regla de un traslado por tramo cargado de Gustavo). La tarifa, incluido el traslado corto,
+    // se aplica sobre esos totales. Máquinas = todas las que fueron cargadas en el viaje.
+    const km=t=>(t.fin_km||0)-(t.inicio_km||0); const tercero=!pl.camion_id;
+    const cargados=hechos.filter(t=>t.carga==='cargado'), vacios=hechos.filter(t=>t.carga==='vacio');
+    const maquinas=[...new Set(cargados.map(t=>t.equipo_id).filter(x=>x))];
+    const ultimoCargado=cargados.length?cargados[cargados.length-1]:null;
+    const d=await trInsertarTraslado(c,{fecha:String(hechos[0].inicio_en).slice(0,10),empresa_id:pl.empresa_id,camion_id:pl.camion_id,chofer_id:pl.chofer_id,faena_id:pl.faena_id,
+      equipos_ids:maquinas,origen:hechos[0].desde||pl.origen,destino:ultimoCargado?ultimoCargado.hasta:(hechos[hechos.length-1].hasta||pl.destino),
+      km_cargado:Math.round(cargados.reduce((s,t)=>s+km(t),0)*10)/10,km_vacio:Math.round(vacios.reduce((s,t)=>s+km(t),0)*10)/10,
+      odometro_inicio:tercero?null:hechos[0].inicio_km,odometro_fin:tercero?null:hechos[hechos.length-1].fin_km,tarifa_id:pl.tarifa_id,
+      litros_combustible:b.litros_combustible,estanque_id:b.estanque_id,
+      observaciones:'Viaje '+pid+' · '+hechos.length+' tramos ('+cargados.length+' cargados'+(maquinas.length?': '+maquinas.length+' máquina'+(maquinas.length>1?'s':''):'')+'). '+(b.observaciones||''),planificacion_id:pid},usuario);
+    const creados=[{traslado_id:d.traslado_id,km_cargado:trN(d.km_cargado),km_vacio:trN(d.km_vacio),costo_fijo:trN(d.costo_fijo),costo_total:trN(d.costo_total),origen:d.origen,destino:d.destino}];
+    await c.query("UPDATE trans_planificacion SET estado='ejecutado',traslado_id=$1,fin_en=$2,modificado_en=NOW() WHERE plan_id=$3",[d.traslado_id,trMomento(b),pid]);
+    return {ok:true,traslado_id:d.traslado_id,traslados:creados,km_cargado:creados[0].km_cargado,km_vacio:creados[0].km_vacio,costo_total:creados[0].costo_total};
   }
-  throw new Error('Acción desconocida: '+accion);
+  throw new Error('Acción desconocida: '+accion);  throw new Error('Acción desconocida: '+accion);
 }
 
 app.get('/api/trans/planificacion', auth, async(req,res)=>{
