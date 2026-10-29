@@ -3930,12 +3930,22 @@ async function telTraducirPendientes(limite){
   _telTradTs=0; console.log('[telemetria] traducciones nuevas:',n,'de',lista.length);
   return {pendientes:lista.length,traducidas:n};
 }
+// Alcance por usuario (Andrés 29-10-2026): los administradores ven toda la flota; un usuario sin permisos de administrador con
+// faena asignada ve solo las máquinas (equipos) de su faena, y con solo empresa, las de su empresa. Vale para el panel y el celular.
+async function telAlcance(req){
+  if(!req.user||req.user.es_admin)return null;
+  const r=await pool.query('SELECT empresa_id,faena_id FROM usuarios WHERE usuario_id=$1',[req.user.id]); const u=r.rows[0]||{};
+  if(!u.faena_id&&!u.empresa_id)return null;
+  return {empresa_id:u.empresa_id||null,faena_id:u.faena_id||null};
+}
 // Alertas activas por empresa → faena → cargo (equipo), para el personal de terreno (menú Telemetría del celular).
 // Solo máquinas con equipo asignado; excluye las marcadas falsa alarma o resueltas (gestión). Andrés 29-10-2026.
 app.get('/api/telemetria/alertas-terreno', auth, requireModulo('productividad'), async(req,res)=>{
   try{
     const dias=Math.min(90,Math.max(1,parseInt(req.query.dias)||7)); const emp=parseInt(req.query.empresa_id)||null, fae=parseInt(req.query.faena_id)||null;
-    const w=['t.equipo_id IS NOT NULL'],v=[dias]; if(emp){v.push(emp);w.push('e.empresa_id=$'+v.length);} if(fae){v.push(fae);w.push('e.faena_id=$'+v.length);}
+    const w=['t.equipo_id IS NOT NULL'],v=[dias]; const alc=await telAlcance(req);
+    if(alc){ if(alc.faena_id){v.push(alc.faena_id);w.push('e.faena_id=$'+v.length);} else {v.push(alc.empresa_id);w.push('e.empresa_id=$'+v.length);} }
+    else { if(emp){v.push(emp);w.push('e.empresa_id=$'+v.length);} if(fae){v.push(fae);w.push('e.faena_id=$'+v.length);} }
     const r=await pool.query(`SELECT t.marca,t.serie,t.nombre_cliente,t.modelo,t.ultima_comunicacion,e.equipo_id,e.codigo AS equipo_codigo,e.nombre AS equipo_nombre,e.empresa_id,emp.razon_social AS empresa_nombre,e.faena_id,f.nombre AS faena_nombre,
         a.codigo,a.severidad,a.componente,a.texto,a.fecha_hora
       FROM telemetria_maquinas t JOIN equipos e ON e.equipo_id=t.equipo_id LEFT JOIN empresas emp ON emp.empresa_id=e.empresa_id LEFT JOIN faenas f ON f.faena_id=e.faena_id
@@ -3957,7 +3967,7 @@ app.get('/api/telemetria/alertas-terreno', auth, requireModulo('productividad'),
         const mk=m.marca==='KOMATSU'&&g.texto_original&&g.texto_original.match(/ERRORCODE=[^(]*\(([\s\S]+)\),SMR=/); const comp=mk?telTrad(m.marca,mk[1],mapa):(m.marca==='KOMATSU'?telTrad(m.marca,g.componente,mapa):g.componente); if(comp&&comp!==g.componente)g.componente=comp; }
         return g; }).sort((a,b)=>((b.critica?1:0)-(a.critica?1:0))||((PRIO[a.estado]||9)-(PRIO[b.estado]||9))||(b.ultima>a.ultima?1:-1));
       return m; });
-    res.json({dias,maquinas:lista});
+    res.json({dias,alcance:alc,maquinas:lista});
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.post('/api/telemetria/traducir', auth, requireModulo('productividad'), async(req,res)=>{
@@ -4021,7 +4031,7 @@ function telRango(q){ const hoy=new Date().toISOString().slice(0,10); const ok=v
 app.get('/api/telemetria/resumen', auth, requireModulo('productividad'), async(req,res)=>{
   try{
     const [d1,d2]=telRango(req.query); const marca=req.query.marca?String(req.query.marca).toUpperCase():null;
-    const m=await pool.query(`SELECT t.*,e.codigo AS equipo_codigo,e.nombre AS equipo_nombre,e.empresa_id,emp.razon_social AS empresa_nombre,
+    const m=await pool.query(`SELECT t.*,e.codigo AS equipo_codigo,e.nombre AS equipo_nombre,e.empresa_id,e.faena_id,emp.razon_social AS empresa_nombre,
         (SELECT COUNT(*) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.fecha BETWEEN $1 AND $2 AND d.horas_motor>0) AS dias_con_horas,
         (SELECT COALESCE(SUM(d.horas_motor),0) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.fecha BETWEEN $1 AND $2) AS horas,
         (SELECT COALESCE(SUM(d.combustible_l),0) FROM telemetria_diaria d WHERE d.marca=t.marca AND d.serie=t.serie AND d.fecha BETWEEN $1 AND $2) AS combustible_l,
@@ -4041,9 +4051,11 @@ app.get('/api/telemetria/resumen', auth, requireModulo('productividad'), async(r
       FROM telemetria_maquinas t LEFT JOIN equipos e ON e.equipo_id=t.equipo_id LEFT JOIN empresas emp ON emp.empresa_id=e.empresa_id
       ${marca?'WHERE t.marca=$3':''} ORDER BY t.marca,COALESCE(e.codigo,t.nombre_cliente,t.serie)`,marca?[d1,d2,marca]:[d1,d2]);
     const n=v=>v==null?null:+v;
-    const rows=m.rows.map(r=>{ const uc=r.ultima_comunicacion?new Date(r.ultima_comunicacion):null; const diasSin=uc?Math.max(0,Math.floor((Date.now()-uc.getTime())/86400000)):null; // las horas de los portales vienen sin zona: nunca negativo
+    let rows=m.rows.map(r=>{ const uc=r.ultima_comunicacion?new Date(r.ultima_comunicacion):null; const diasSin=uc?Math.max(0,Math.floor((Date.now()-uc.getTime())/86400000)):null; // las horas de los portales vienen sin zona: nunca negativo
       return Object.assign({},r,{smr:n(r.smr),lat:n(r.lat),lon:n(r.lon),nivel_pct:n(r.nivel_pct),tasa_lh:n(r.tasa_lh),dias_con_horas:+r.dias_con_horas,horas:+r.horas,combustible_l:+r.combustible_l,horas_inactivo:+r.dias_con_ralenti>0?+r.horas_inactivo:null,horas_produccion:+r.dias_con_ralenti>0?+r.horas_produccion:null,
         horas_terreno:+r.horas_terreno,dias_terreno:+r.dias_terreno,litros_distribuidos:+r.litros_distribuidos,horometro_terreno:n(r.horometro_terreno),fecha_horometro_terreno:r.fecha_horometro_terreno?calIso(r.fecha_horometro_terreno):null,alertas_7d:+r.alertas_7d,criticas_7d:+r.criticas_7d,dias_sin_comunicar:diasSin,ultimo_dia_con_horas:r.ultimo_dia_con_horas?calIso(r.ultimo_dia_con_horas):null}); });
+    const alc=await telAlcance(req); // jefe de faena: solo las máquinas de su faena (las sin equipo asignado no se ven)
+    if(alc)rows=rows.filter(r=>r.equipo_id&&(alc.faena_id?String(r.faena_id)===String(alc.faena_id):String(r.empresa_id)===String(alc.empresa_id)));
     const T={maquinas:rows.length,reportando:rows.filter(r=>r.dias_sin_comunicar!==null&&r.dias_sin_comunicar<=3).length,sin_reportar:rows.filter(r=>r.dias_sin_comunicar===null||r.dias_sin_comunicar>3).length,
       sin_equipo:rows.filter(r=>!r.equipo_id).length,horas:rows.reduce((s,r)=>s+r.horas,0),horas_terreno:rows.reduce((s,r)=>s+(r.equipo_id?r.horas_terreno:0),0),litros_distribuidos:rows.reduce((s,r)=>s+(r.equipo_id?r.litros_distribuidos:0),0),
       horas_inactivo:rows.reduce((s,r)=>s+(r.horas_inactivo||0),0),horas_con_ralenti:rows.reduce((s,r)=>s+(r.horas_inactivo!=null?r.horas:0),0)};
@@ -4056,7 +4068,7 @@ app.get('/api/telemetria/resumen', auth, requireModulo('productividad'), async(r
     }catch(e){ console.error('[telemetria] gestión:',e.message); }
     try{ const mapa=await telTradMapa(); rows.forEach(r=>{ if(r.ultima_alerta) r.ultima_alerta=telTrad(r.marca,r.ultima_alerta,mapa); }); }catch(e){ console.error('[telemetria] traducción:',e.message); }
     const ult=await pool.query('SELECT marca,MAX(actualizado_en) AS ultima_carga FROM telemetria_maquinas GROUP BY marca');
-    res.json({desde:d1,hasta:d2,totales:T,maquinas:rows,cargas:ult.rows});
+    res.json({desde:d1,hasta:d2,totales:T,maquinas:rows,cargas:ult.rows,alcance:alc});
   }catch(e){res.status(500).json({error:e.message});}
 });
 app.get('/api/telemetria/alertas', auth, requireModulo('productividad'), async(req,res)=>{
@@ -4130,7 +4142,7 @@ app.get('/api/telemetria/diario', auth, requireModulo('productividad'), async(re
     const T={},L={}; terr.rows.forEach(r=>{T[calIso(r.fecha)]=r;}); dist.rows.forEach(r=>{L[calIso(r.fecha)]=+r.litros;});
     const dias=[]; for(let f=d1;f<=d2;f=calAddDias(f,1)){ const x=d.rows.find(r=>calIso(r.fecha)===f); const t=T[f];
       dias.push({fecha:f,horas_motor:x&&x.horas_motor!=null?+x.horas_motor:null,combustible_l:x&&x.combustible_l!=null?+x.combustible_l:null,nivel_pct:x&&x.nivel_pct!=null?+x.nivel_pct:null,horas_produccion:x&&x.horas_produccion!=null?+x.horas_produccion:null,horas_inactivo:x&&x.horas_inactivo!=null?+x.horas_inactivo:null,tasa_lh:x&&x.tasa_lh!=null?+x.tasa_lh:null,
-        horas_terreno:t?+t.horas:null,horometro_final:t?+t.horometro_final:null,horas_perdidas:t?+t.horas_perdidas:null,litros_distribuidos:L[f]!==undefined?L[f]:null}); }
+        horas_terreno:t?+t.horas:null,horometro_final:t?+t.horometro_final:null,horas_perdidas:t?+t.horas_perdidas:null,litros_terreno:t&&t.litros_combustible!=null?+t.litros_combustible:null,litros_distribuidos:L[f]!==undefined?L[f]:null}); }
     res.json({marca,serie,equipo_id:eq,desde:d1,hasta:d2,dias});
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -4896,20 +4908,29 @@ app.get('/api/comb/rendimientos', auth, async(req,res)=>{
         GROUP BY equipo_id
       ),
       horas AS (
-        SELECT equipo_id, COALESCE(SUM(horas_trabajadas),0) AS horas
+        SELECT equipo_id, COALESCE(SUM(horas_trabajadas),0) AS horas, COALESCE(SUM(litros_combustible),0) AS litros_terreno
         FROM terreno_registros WHERE fecha BETWEEN $1 AND $2 GROUP BY equipo_id
+      ),
+      tele AS (
+        -- consumo medido por la máquina (bot de telemetría), sumado por equipo asignado
+        SELECT tm.equipo_id, SUM(td.combustible_l) AS litros_tele, COUNT(*) FILTER (WHERE td.combustible_l IS NOT NULL) AS dias_tele,
+               SUM(td.horas_motor) FILTER (WHERE td.combustible_l IS NOT NULL) AS horas_tele
+        FROM telemetria_diaria td JOIN telemetria_maquinas tm ON tm.marca=td.marca AND tm.serie=td.serie
+        WHERE td.fecha BETWEEN $1 AND $2 AND tm.equipo_id IS NOT NULL GROUP BY tm.equipo_id
       )
       SELECT eq.equipo_id, eq.codigo, eq.nombre, eq.tipo_cargo, eq.faena_id,
              f.nombre AS faena_nombre, emp.razon_social AS empresa_nombre,
              COALESCE(l.litros,0) AS litros, COALESCE(l.costo,0) AS costo, COALESCE(l.n_dist,0) AS n_dist,
              l.km_max, l.km_min, l.h_max, l.h_min,
-             COALESCE(h.horas,0) AS horas_terreno
-      FROM litros l
-      JOIN equipos eq ON l.equipo_id=eq.equipo_id
+             COALESCE(h.horas,0) AS horas_terreno, COALESCE(h.litros_terreno,0) AS litros_terreno,
+             t.litros_tele, COALESCE(t.dias_tele,0) AS dias_tele, t.horas_tele
+      FROM equipos eq
+      LEFT JOIN litros l ON l.equipo_id=eq.equipo_id
       LEFT JOIN horas h ON h.equipo_id=eq.equipo_id
+      LEFT JOIN tele t ON t.equipo_id=eq.equipo_id
       LEFT JOIN faenas f ON eq.faena_id=f.faena_id
       LEFT JOIN empresas emp ON eq.empresa_id=emp.empresa_id
-      ${wEq}
+      ${wEq?wEq+' AND ':' WHERE '}(l.equipo_id IS NOT NULL OR t.litros_tele>0 OR h.litros_terreno>0)
       ORDER BY f.nombre NULLS LAST, eq.codigo`, vals);
 
     // Clasificación por tipo de cargo → categoría visible, orden y métrica
@@ -4949,10 +4970,20 @@ app.get('/api/comb/rendimientos', auth, async(req,res)=>{
         unidad='km/L';
         if(km&&km>0&&litros>0){rendimiento=km/litros; l_100=litros/km*100;}
       }
+      // Conciliación (Andrés 29-10-2026): estanque (distribuciones) vs terreno (litros del parte diario) vs telemetría (consumo medido).
+      // Terreno debería ser igual al estanque (es el mismo litro anotado dos veces). Telemetría se compara en semanas o meses:
+      // lo cargado un día se quema en dos o tres. Tolerancia: 10 % del estanque, mínimo 20 L.
+      const lTerr=parseFloat(x.litros_terreno)||0, lTele=x.litros_tele!=null?parseFloat(x.litros_tele):null, hTele=x.horas_tele!=null?parseFloat(x.horas_tele):null;
+      const tol=Math.max(20,litros*0.10);
+      const difTerr=lTerr-litros, difTele=lTele!=null?lTele-litros:null;
+      const estado=cat.metric!=='h'?null:(lTele==null&&lTerr===0&&litros===0)?null:((Math.abs(difTerr)>tol)||(difTele!=null&&Math.abs(difTele)>tol)?'revisar':'ok');
       return{
         equipo_id:x.equipo_id, codigo:x.codigo, nombre:x.nombre, tipo_cargo:tc,
         categoria:cat.label, categoria_orden:cat.orden, metric:cat.metric,
         faena_id:x.faena_id, faena_nombre:x.faena_nombre||'Sin faena', empresa_nombre:x.empresa_nombre||'',
+        litros_terreno:Math.round(lTerr*10)/10, litros_tele:lTele!=null?Math.round(lTele*10)/10:null, dias_tele:parseInt(x.dias_tele)||0,
+        horas_tele:hTele!=null?Math.round(hTele*10)/10:null, lh_real:(lTele!=null&&hTele>0)?Math.round(lTele/hTele*100)/100:null,
+        dif_terreno:Math.round(difTerr*10)/10, dif_tele:difTele!=null?Math.round(difTele*10)/10:null, tolerancia:Math.round(tol), conciliacion:estado,
         litros:Math.round(litros*10)/10, costo:Math.round(parseFloat(x.costo)||0), n_dist:parseInt(x.n_dist)||0,
         horas:Math.round(horas*10)/10, horas_origen:horas_origen,
         km:km!=null?Math.round(km):null,
