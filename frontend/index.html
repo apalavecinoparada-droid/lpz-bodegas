@@ -27023,23 +27023,63 @@ function MobileViaje(p){
 }
 
 // ── Formulario de SOLICITUDES móvil ──
-// ── TELEMETRÍA en el celular: alertas activas de las máquinas por empresa → faena → cargo (equipo). Andrés 29-10-2026.
-// Solo lectura, pensado para el personal de terreno: lo que gestiona el jefe de taller queda en Productividad → Telemetría.
+// ── TELEMETRÍA en el celular: alertas activas por empresa → faena → cargo (equipo), con la misma gestión del escritorio
+// (estado + observación, historial y WhatsApp al mecánico). Andrés 29-10-2026. El alcance por faena lo pone el servidor.
 function MobileTelemetria(p){
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});var faenas=p.m.faenas||[];
   var[dias,setDias]=useState(7);var[emp,setEmp]=useState(p.user&&p.user.empresa_id?String(p.user.empresa_id):'');var[fae,setFae]=useState(p.user&&p.user.faena_id?String(p.user.faena_id):'');
-  var[data,setData]=useState(null);var[err,setErr]=useState('');var[abierta,setAbierta]=useState({});
+  var[data,setData]=useState(null);var[err,setErr]=useState('');var[abierta,setAbierta]=useState({});var[msg,setMsg]=useState('');
+  var[ges,setGes]=useState(null);var[gesForm,setGesForm]=useState({estado:'en_gestion',obs:''});var[gesHist,setGesHist]=useState(null);
+  var[mecs,setMecs]=useState([]);var[dest,setDest]=useState('');var[destOtro,setDestOtro]=useState('');var[waDe,setWaDe]=useState(null);
   function cargar(){setErr('');api('/telemetria/alertas-terreno?dias='+dias+(emp?'&empresa_id='+emp:'')+(fae?'&faena_id='+fae:''),'GET',null,p.tok).then(setData).catch(function(e){setErr(e.message);});}
   useEffect(cargar,[dias,emp,fae]);
+  useEffect(function(){api('/mant/mecanicos-telefonos','GET',null,p.tok).then(function(r){var l=(r||[]).filter(function(x){return x.telefono;});setMecs(l);if(l.length)setDest(l[0].telefono);}).catch(function(){});},[]);
   var fdt=function(v){if(!v)return '';var d=new Date(v);if(isNaN(d))return String(v).slice(0,16);return d.toLocaleDateString('es-CL',{day:'2-digit',month:'2-digit'})+' '+d.toLocaleTimeString('es-CL',{hour:'2-digit',minute:'2-digit'});};
   var MARCA={KOMATSU:'Komatsu',TIGERCAT:'Tigercat',DEERE:'John Deere'};
-  var EST={pendiente:{l:'Pendiente',bg:'#FEF9C3',c:'#854D0E'},reaparecio:{l:'Reapareció',bg:'#FFEDD5',c:'#9A3412'},en_gestion:{l:'En gestión',bg:'#DBEAFE',c:'#1E40AF'}};
+  var EST={pendiente:{l:'Pendiente',bg:'#FEF9C3',c:'#854D0E'},reaparecio:{l:'Reapareció',bg:'#FFEDD5',c:'#9A3412'},en_gestion:{l:'En gestión',bg:'#DBEAFE',c:'#1E40AF'},resuelta:{l:'Resuelta',bg:'#DCFCE7',c:'#166534'},falsa:{l:'Falsa alarma',bg:'#E2E8F0',c:'#64748B'}};
+  var ACC={estado:'Cambio de estado',nota:'Nota',whatsapp:'Enviada por WhatsApp'};
   var sel={padding:'10px',border:'1px solid #CBD5E1',borderRadius:6,fontSize:13,boxSizing:'border-box',background:'#fff',width:'100%'};
+  var btnChico=function(activo){return {flex:1,padding:'8px 4px',border:'1px solid #CBD5E1',borderRadius:6,background:activo?'#1E3A2D':'#fff',color:activo?'#D4C5A9':'#475569',fontSize:11,fontWeight:700,cursor:'pointer'};};
+  var aviso=function(t){setMsg(t);setTimeout(function(){setMsg('');},2000);};
+  function gKey(m,a){return m.marca+'|'+m.serie+'|'+(a.codigo||'')+'|'+(a.clave||'');}
+  function abrirGes(m,a){var k=gKey(m,a);if(ges&&ges.k===k){setGes(null);return;}
+    setGes({k:k,m:m,a:a});setWaDe(null);setGesForm({estado:(a.estado==='resuelta'||a.estado==='falsa'||a.estado==='en_gestion')?a.estado:'en_gestion',obs:''});setGesHist(null);
+    api('/telemetria/gestion?marca='+m.marca+'&serie='+encodeURIComponent(m.serie)+'&codigo='+encodeURIComponent(a.codigo||'')+'&clave='+encodeURIComponent(a.clave||''),'GET',null,p.tok).then(function(r){setGesHist(r.filas||[]);}).catch(function(){setGesHist([]);});}
+  function guardarGes(){if(!ges)return;var m=ges.m,a=ges.a;
+    api('/telemetria/alertas/gestion','POST',{marca:m.marca,serie:m.serie,accion:'estado',estado:gesForm.estado,observacion:gesForm.obs,grupos:[{codigo:a.codigo,clave:a.clave,texto:a.texto_original||a.texto}]},p.tok)
+      .then(function(){aviso('✓ Gestión guardada');setGes(null);cargar();}).catch(function(e){setErr(e.message);});}
+  function enviarWa(m,a){var tel=String((dest==='otro'?destOtro:dest)||'').replace(/[\s\-\+\(\)\.]/g,'');if(/^9\d{8}$/.test(tel))tel='56'+tel;else if(/^\d{8}$/.test(tel))tel='569'+tel;
+    if(!tel){setErr('Elige un mecánico con WhatsApp o escribe el número');return;}
+    var mec=mecs.find(function(x){return x.telefono===dest;});var nombre=mec?mec.nombre:'';
+    var txt='Hola'+(nombre?' '+String(nombre).split(' ')[0]:'')+', alerta de la máquina *'+(m.equipo_codigo||m.nombre_cliente||m.serie)+'* ('+(MARCA[m.marca]||m.marca)+(m.modelo?' '+m.modelo:'')+' · serie '+m.serie+')'+(m.faena_nombre?' en '+m.faena_nombre:'')+':\n\n'+
+      (a.critica?'⛔':'⚠')+' *'+(a.severidad||'Aviso')+'*'+(a.codigo?' '+a.codigo:'')+' — '+(a.texto||'')+' ('+a.veces+(a.veces===1?' vez':' veces')+', última '+fdt(a.ultima)+')'+
+      '\n\nAvisa '+(p.user&&p.user.nombre?p.user.nombre.split(' ')[0]:'terreno')+'. Por favor revisar y dejar la gestión registrada en el sistema: '+location.origin;
+    window.open('https://wa.me/'+tel+'?text='+encodeURIComponent(txt),'_blank');
+    api('/telemetria/alertas/gestion','POST',{marca:m.marca,serie:m.serie,accion:'whatsapp',destinatario:(nombre?nombre+' ':'')+'+'+tel,observacion:'Enviada por WhatsApp desde terreno',
+      grupos:[{codigo:a.codigo,clave:a.clave,texto:a.texto_original||a.texto,estado:(a.estado==='pendiente'||a.estado==='reaparecio')?'en_gestion':null}]},p.tok)
+      .then(function(){aviso('✓ Envío registrado');setWaDe(null);cargar();}).catch(function(e){setErr(e.message);});}
   var maqs=(data&&data.maquinas)||[];
-  // agrupar: empresa → faena → equipos (ya vienen ordenados así)
   var grupos=[];maqs.forEach(function(m){var g=grupos[grupos.length-1];if(!g||g.empresa_id!==m.empresa_id){g={empresa_id:m.empresa_id,empresa_nombre:m.empresa_nombre,faenas:[]};grupos.push(g);}
     var f=g.faenas[g.faenas.length-1];if(!f||f.faena_id!==m.faena_id){f={faena_id:m.faena_id,faena_nombre:m.faena_nombre,maquinas:[]};g.faenas.push(f);}f.maquinas.push(m);});
   var totAl=maqs.reduce(function(s,m){return s+m.total;},0),totCr=maqs.reduce(function(s,m){return s+m.criticas;},0);
+  function panelGestion(m,a){var e=EST[gesForm.estado]||EST.en_gestion;return h('div',{style:{marginTop:6,padding:8,background:'#FFFBEB',border:'1px solid #FCD34D',borderRadius:6}},
+    h('div',{style:{fontSize:11,fontWeight:700,marginBottom:6}},'Gestión de esta alerta'),
+    h('div',{style:{display:'flex',gap:4,marginBottom:6}},[['en_gestion','En gestión'],['resuelta','Resuelta'],['falsa','Falsa alarma'],['pendiente','Pendiente']].map(function(o){return h('button',{key:o[0],onClick:function(){setGesForm(Object.assign({},gesForm,{estado:o[0]}));},style:btnChico(gesForm.estado===o[0])},o[1]);})),
+    gesForm.estado==='falsa'&&h('div',{style:{fontSize:10,color:'#64748B',marginBottom:4}},'Falsa alarma: deja de contar en el panel hasta que alguien cambie el estado.'),
+    h('textarea',{value:gesForm.obs,onChange:function(ev){setGesForm(Object.assign({},gesForm,{obs:ev.target.value}));},rows:2,placeholder:'Qué se revisó, qué se hizo, por qué es falsa…',style:Object.assign({},sel,{fontFamily:'inherit',marginBottom:6})}),
+    h('div',{style:{display:'flex',gap:6}},h('button',{onClick:guardarGes,style:Object.assign(btnChico(true),{padding:'10px'})},'Guardar'),h('button',{onClick:function(){setGes(null);},style:Object.assign(btnChico(false),{padding:'10px'})},'Cancelar')),
+    h('div',{style:{marginTop:8,fontSize:10,fontWeight:700,color:'#475569'}},'Historial'),
+    !gesHist&&h('div',{style:{fontSize:10,color:'#94A3B8'}},'Cargando...'),
+    gesHist&&!gesHist.length&&h('div',{style:{fontSize:10,color:'#94A3B8'}},'Sin gestiones anteriores.'),
+    gesHist&&gesHist.length>0&&h('div',{style:{maxHeight:140,overflow:'auto'}},gesHist.map(function(x){var ex=EST[x.estado];return h('div',{key:x.id,style:{fontSize:10,padding:'3px 0',borderTop:'1px solid #FDE68A'}},
+      h('span',{style:{color:'#64748B'}},fdt(x.fecha)),' · ',h('b',null,x.usuario||''),' · ',(ACC[x.accion]||x.accion)+(x.destinatario?' a '+x.destinatario:''),ex?[' → ',h('span',{style:{fontWeight:700,background:ex.bg,color:ex.c,borderRadius:8,padding:'0 5px'}},ex.l)]:null,
+      x.observacion?h('div',{style:{color:'#475569',whiteSpace:'pre-wrap'}},x.observacion):null);})));}
+  function panelWa(m,a){return h('div',{style:{marginTop:6,padding:8,background:'#ECFDF5',border:'1px solid #6EE7B7',borderRadius:6}},
+    h('div',{style:{fontSize:11,fontWeight:700,marginBottom:6}},'💬 Enviar esta alerta por WhatsApp'),
+    h('select',{value:dest,onChange:function(ev){setDest(ev.target.value);},style:Object.assign({},sel,{marginBottom:6})},mecs.map(function(x){return h('option',{key:x.telefono,value:x.telefono},x.nombre);}),h('option',{value:'otro'},'Otro número…')),
+    dest==='otro'&&h('input',{value:destOtro,onChange:function(ev){setDestOtro(ev.target.value);},placeholder:'9 1234 5678',inputMode:'tel',style:Object.assign({},sel,{marginBottom:6})}),
+    !mecs.length&&h('div',{style:{fontSize:10,color:'#94A3B8',marginBottom:4}},'No hay mecánicos con WhatsApp registrado (Mantención → Programación): escribe el número.'),
+    h('div',{style:{display:'flex',gap:6}},h('button',{onClick:function(){enviarWa(m,a);},style:Object.assign(btnChico(true),{padding:'10px',background:'#128C7E',color:'#fff'})},'Abrir WhatsApp'),h('button',{onClick:function(){setWaDe(null);},style:Object.assign(btnChico(false),{padding:'10px'})},'Cancelar')));}
   return h('div',{className:'mob-wrap'},
     h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Telemetría · alertas')),
     h('div',{style:{padding:'0 10px',marginBottom:8}},
@@ -27047,8 +27087,9 @@ function MobileTelemetria(p){
       !(data&&data.alcance)&&h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:6}},
         h('select',{value:emp,onChange:function(e){setEmp(e.target.value);setFae('');},style:sel},h('option',{value:''},'Todas las empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})),
         h('select',{value:fae,onChange:function(e){setFae(e.target.value);},style:sel},h('option',{value:''},'Todas las faenas'),faenas.filter(function(f){return f.activo&&(!emp||String(f.empresa_id)===String(emp));}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
-      h('div',{style:{display:'flex',gap:6}},[7,30].map(function(d){return h('button',{key:d,onClick:function(){setDias(d);},style:{flex:1,padding:8,border:'1px solid #CBD5E1',borderRadius:6,background:dias===d?'#1E3A2D':'#fff',color:dias===d?'#D4C5A9':'#475569',fontSize:12,fontWeight:700,cursor:'pointer'}},'Últimos '+d+' días');}),
+      h('div',{style:{display:'flex',gap:6}},[7,30].map(function(d){return h('button',{key:d,onClick:function(){setDias(d);},style:btnChico(dias===d)},'Últimos '+d+' días');}),
         h('button',{onClick:cargar,style:{padding:'8px 12px',border:'1px solid #CBD5E1',borderRadius:6,background:'#fff',fontSize:12,cursor:'pointer'}},'↻'))),
+    msg&&h('div',{style:{margin:'0 10px 8px',padding:8,background:'#DCFCE7',color:'#166534',borderRadius:6,fontSize:12,fontWeight:700}},msg),
     err&&h('div',{style:{margin:'0 10px 8px',padding:10,background:'#FEE2E2',color:'#991B1B',borderRadius:6,fontSize:12}},err),
     data&&h('div',{style:{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:6,padding:'0 10px',marginBottom:10}},
       h('div',{style:{background:'#1E3A2D',color:'#fff',padding:10,borderRadius:8,textAlign:'center'}},h('div',{style:{fontSize:10,opacity:0.8}},'MÁQUINAS'),h('div',{style:{fontSize:20,fontWeight:700,color:'#FCD34D'}},maqs.length)),
@@ -27064,14 +27105,20 @@ function MobileTelemetria(p){
           h('div',{onClick:function(){var s=Object.assign({},abierta);s[k]=!ab;setAbierta(s);},style:{display:'flex',justifyContent:'space-between',alignItems:'center',cursor:'pointer'}},
             h('div',null,h('div',{style:{fontSize:14,fontWeight:700,color:'#0F172A'}},(m.equipo_codigo||'')+' · '+(m.equipo_nombre||m.nombre_cliente||'')),h('div',{style:{fontSize:11,color:'#64748B'}},(MARCA[m.marca]||m.marca)+' '+(m.modelo||'')+(m.ultima_comunicacion?' · comunicó '+fdt(m.ultima_comunicacion):''))),
             h('div',{style:{textAlign:'right',whiteSpace:'nowrap'}},h('span',{style:{fontSize:12,fontWeight:700,background:m.criticas?'#FEE2E2':'#FEF9C3',color:m.criticas?'#991B1B':'#854D0E',borderRadius:10,padding:'2px 8px'}},(m.criticas?'⛔ ':'⚠ ')+m.total),h('div',{style:{fontSize:10,color:'#94A3B8'}},m.alertas.length+' distintas '+(ab?'▲':'▼')))),
-          ab&&h('div',{style:{marginTop:8}},m.alertas.map(function(a,i){var e=EST[a.estado]||EST.pendiente;return h('div',{key:i,style:{padding:'6px 0',borderTop:'1px solid #F1F5F9',fontSize:12}},
+          ab&&h('div',{style:{marginTop:8}},m.alertas.map(function(a,i){var e=EST[a.estado]||EST.pendiente;var ka=gKey(m,a);var esG=ges&&ges.k===ka;var esW=waDe===ka;return h('div',{key:i,style:{padding:'6px 0',borderTop:'1px solid #F1F5F9',fontSize:12}},
             h('div',{style:{display:'flex',gap:6,alignItems:'center',flexWrap:'wrap',marginBottom:2}},
               h('span',{style:{fontSize:10,fontWeight:700,background:a.critica?'#FEE2E2':'#E2E8F0',color:a.critica?'#991B1B':'#475569',borderRadius:8,padding:'1px 6px'}},a.severidad||'Aviso'),
               a.codigo?h('span',{className:'mono',style:{fontSize:11,color:'#475569'}},a.codigo):null,
               h('span',{style:{fontSize:10,fontWeight:700,background:e.bg,color:e.c,borderRadius:8,padding:'1px 6px'}},e.l),
               h('span',{style:{fontSize:10,color:'#94A3B8',marginLeft:'auto'}},a.veces+(a.veces===1?' vez':' veces')+' · '+fdt(a.ultima))),
             h('div',{style:{color:'#0F172A'}},a.texto||'—'),
-            a.componente&&a.componente!==a.texto?h('div',{style:{fontSize:11,color:'#64748B'}},a.componente):null);})));}));}));})));
+            a.componente&&a.componente!==a.texto?h('div',{style:{fontSize:11,color:'#64748B'}},a.componente):null,
+            a.gestion&&a.gestion.observacion?h('div',{style:{fontSize:10,color:'#475569',marginTop:2,fontStyle:'italic'}},'✎ '+a.gestion.observacion+' — '+(a.gestion.usuario||'')+' '+fdt(a.gestion.fecha)):null,
+            h('div',{style:{display:'flex',gap:6,marginTop:6}},
+              h('button',{onClick:function(){setWaDe(null);abrirGes(m,a);},style:btnChico(esG)},esG?'Cerrar':'✎ Gestionar'),
+              h('button',{onClick:function(){setGes(null);setWaDe(esW?null:ka);},style:Object.assign(btnChico(esW),esW?{}:{color:'#128C7E',borderColor:'#6EE7B7'})},'💬 WhatsApp')),
+            esG?panelGestion(m,a):null,
+            esW?panelWa(m,a):null);})));}));}));})));
 }
 
 function MobileSolicitudes(p){
