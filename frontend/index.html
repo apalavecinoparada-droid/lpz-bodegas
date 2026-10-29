@@ -11887,6 +11887,7 @@ function TelemetriaView(p){
   var difH=function(r){return r.equipo_id?r.horas-r.horas_terreno:null;};
   var lh=function(r){return r.horas>0&&r.combustible_l>0?r.combustible_l/r.horas:(r.tasa_lh||null);};
   return h('div',null,
+    data&&data.alcance&&h('div',{className:'al al-w',style:{marginBottom:10,fontSize:12}},'Ves solo las máquinas de tu '+(data.alcance.faena_id?'faena':'empresa')+'; las que no tienen equipo asignado no aparecen.'),
     h('div',{className:'al al-i',style:{marginBottom:12,fontSize:12}},'Datos leídos de los portales de cada marca por el bot de telemetría (horas de motor por día, horómetro, posición, combustible). El cruce con Terreno usa los horómetros del parte diario y las distribuciones de combustible del equipo asignado.'),
     h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',alignItems:'flex-end',marginBottom:12}},
       h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block'}},'Desde'),h('input',{type:'date',value:desde,onChange:function(e){setDesde(e.target.value);},style:CM_INP})),
@@ -11974,7 +11975,7 @@ function TelemetriaView(p){
           gesHist&&gesHist.length>0&&h('div',{style:{maxHeight:160,overflow:'auto'}},gesHist.map(function(x){return h('div',{key:x.id,style:{fontSize:11,padding:'3px 0',borderBottom:'1px solid #F1F5F9'}},h('span',{className:'mono',style:{color:'#64748B'}},fdt(x.fecha)),' · ',h('b',null,x.usuario||''),' · ',(ACC[x.accion]||x.accion)+(x.destinatario?' a '+x.destinatario:''),x.estado?[' → ',chipEst(x.estado)]:null,x.observacion?h('div',{style:{color:'#475569',whiteSpace:'pre-wrap'}},x.observacion):null);})))),
       !det&&h('div',{style:{fontSize:12,color:'#64748B'}},'Cargando...'),
       det&&h('div',{style:{overflow:'auto'}},h('table',{style:{width:'100%',borderCollapse:'collapse'}},
-        h('thead',null,h('tr',null,h('th',{style:thS},'Fecha'),h('th',{style:thS},'Horas motor (telemetría)'),h('th',{style:thR},'Horas'),h('th',{style:thR},'Producción / inactivo'),h('th',{style:thR},'Horas terreno'),h('th',{style:thR},'Dif.'),h('th',{style:thR},'Horóm. final parte'),h('th',{style:thR},'Hrs perdidas'),h('th',{style:thR},'Litros distrib.'),h('th',{style:thR},'Comb. telemetría'))),
+        h('thead',null,h('tr',null,h('th',{style:thS},'Fecha'),h('th',{style:thS},'Horas motor (telemetría)'),h('th',{style:thR},'Horas'),h('th',{style:thR},'Producción / inactivo'),h('th',{style:thR},'Horas terreno'),h('th',{style:thR},'Dif.'),h('th',{style:thR},'Horóm. final parte'),h('th',{style:thR},'Hrs perdidas'),h('th',{style:thR,title:'Litros entregados por el camión estanque ese día'},'Litros distrib.'),h('th',{style:thR,title:'Litros cargados que anotó el jefe de faena en el parte diario'},'Litros parte'),h('th',{style:thR,title:'Litros consumidos según la máquina'},'Comb. telemetría'))),
         h('tbody',null,det.dias.map(function(x){var hm=x.horas_motor;var ht=x.horas_terreno;var d=(hm!=null&&ht!=null)?hm-ht:null;var w=hm!=null?Math.min(100,hm/14*100):0;
           return h('tr',{key:x.fecha,style:{background:hm==null&&ht==null?'#FAFAFA':'transparent'}},
             h('td',{style:tdS},fmtD(x.fecha)),
@@ -11986,6 +11987,7 @@ function TelemetriaView(p){
             h('td',{style:tdR,className:'mono'},x.horometro_final==null?'—':f1(x.horometro_final)),
             h('td',{style:tdR,className:'mono'},x.horas_perdidas==null?'—':f1(x.horas_perdidas)),
             h('td',{style:tdR,className:'mono'},x.litros_distribuidos==null?'—':f0(x.litros_distribuidos)),
+            h('td',{style:Object.assign({},tdR,{color:(x.litros_terreno!=null&&x.litros_distribuidos!=null&&Math.abs(x.litros_terreno-x.litros_distribuidos)>0.5)?'#B91C1C':'#1E293B'}),className:'mono',title:'Litros del parte diario de terreno; rojo si no calza con lo distribuido ese día'},x.litros_terreno==null?'—':f0(x.litros_terreno)),
             h('td',{style:tdR,className:'mono',title:x.tasa_lh!=null?x.tasa_lh+' L/h':''},x.combustible_l==null?(x.tasa_lh!=null?f1(x.tasa_lh)+' L/h':'—'):f0(x.combustible_l)));}))))));
 }
 function CombIecView(p){
@@ -12645,7 +12647,13 @@ function CombRendimientosView(p){
       {header:'Categoría',value:function(r){return r.categoria;}},
       {header:'Código',value:function(r){return r.codigo;}},
       {header:'Equipo',value:function(r){return r.nombre;}},
-      {header:'Litros',value:function(r){return r.litros;}},
+      {header:'Estanque (L)',value:function(r){return r.litros;}},
+      {header:'Terreno (L)',value:function(r){return r.metric==='h'?r.litros_terreno:'';}},
+      {header:'Telemetría (L)',value:function(r){return r.metric==='h'&&r.litros_tele!=null?r.litros_tele:'';}},
+      {header:'Dif. terreno',value:function(r){return r.metric==='h'?r.dif_terreno:'';}},
+      {header:'Dif. telemetría',value:function(r){return r.metric==='h'&&r.dif_tele!=null?r.dif_tele:'';}},
+      {header:'Conciliación',value:function(r){return r.conciliacion||'';}},
+      {header:'L/h real (telemetría)',value:function(r){return r.lh_real==null?'':r.lh_real;}},
       {header:'Horas trabajadas',value:function(r){return r.metric==='h'?r.horas:'';}},
       {header:'Km recorridos',value:function(r){return r.metric==='km'?(r.km==null?'':r.km):'';}},
       {header:'Rendimiento',value:function(r){return r.rendimiento==null?'':r.rendimiento;}},
@@ -12674,16 +12682,35 @@ function CombRendimientosView(p){
     var head, body, subtotal;
     if(metric==='h'){
       var rp=horas>0?litros/horas:null;
-      head=h('tr',null,h('th',{style:th},'Código'),h('th',{style:th},'Equipo'),h('th',{style:thR},'Litros'),h('th',{style:thR},'Horas trab.'),h('th',{style:thR},'Rend. (L/h)'),h('th',{style:thR},'N° distr.'),h('th',{style:thR},'Costo'));
-      body=items.map(function(r){return h('tr',{key:r.equipo_id},
-        h('td',{style:Object.assign({},td,{fontWeight:600,fontFamily:'monospace'})},r.codigo),
+      // Conciliación (29-10-2026): estanque vs terreno vs telemetría, con diferencias y semáforo
+      var lTerr=items.reduce(function(s,r){return s+(r.litros_terreno||0);},0);
+      var conTele=items.filter(function(r){return r.litros_tele!=null;});
+      var lTele=conTele.reduce(function(s,r){return s+r.litros_tele;},0), hTele=conTele.reduce(function(s,r){return s+(r.horas_tele||0);},0);
+      var difCol=function(d,tol){return d==null?'#CBD5E1':Math.abs(d)>tol?'#B91C1C':'#166534';};
+      var fdif=function(d){return d==null?'—':(d>0?'+':'')+nf(d,0);};
+      head=h('tr',null,h('th',{style:th},'Código'),h('th',{style:th},'Equipo'),
+        h('th',{style:thR,title:'Litros entregados por el camión estanque (distribuciones de Combustible)'},'Estanque (L)'),
+        h('th',{style:thR,title:'Litros cargados que anotó el jefe de faena en el parte diario de Terreno'},'Terreno (L)'),
+        h('th',{style:thR,title:'Litros realmente consumidos según la máquina (telemetría), en los días con dato'},'Telemetría (L)'),
+        h('th',{style:thR,title:'Terreno menos estanque: debería ser 0 (es el mismo litro anotado dos veces)'},'Dif. terreno'),
+        h('th',{style:thR,title:'Telemetría menos estanque: positivo = la máquina quemó más de lo entregado; negativo = se entregó más de lo que quemó. Mirar en semanas o meses, no por día'},'Dif. telem.'),
+        h('th',{style:thR},'Horas trab.'),h('th',{style:thR,title:'Litros del estanque por hora de terreno'},'L/h'),h('th',{style:thR,title:'Litros medidos por hora de motor (telemetría)'},'L/h real'),h('th',{style:thR},'N° distr.'),h('th',{style:thR},'Costo'));
+      body=items.map(function(r){var sem=r.conciliacion==='revisar'?'🔴':r.conciliacion==='ok'?'🟢':'';return h('tr',{key:r.equipo_id,style:{background:r.conciliacion==='revisar'?'#FFF1F2':'transparent'}},
+        h('td',{style:Object.assign({},td,{fontWeight:600,fontFamily:'monospace'})},sem?h('span',{title:r.conciliacion==='revisar'?'Diferencia mayor a la tolerancia ('+nf(r.tolerancia)+' L)':'Dentro de la tolerancia ('+nf(r.tolerancia)+' L)',style:{marginRight:4}},sem):null,r.codigo),
         h('td',{style:td},r.nombre,r.horas_origen==='terreno'&&h('span',{style:{marginLeft:5,fontSize:8,color:'#B45309',background:'#FEF3C7',padding:'1px 4px',borderRadius:6},title:'Sin 2+ lecturas de horómetro al cargar combustible en el período: se usaron las horas de Terreno'},'horas terreno')),
         h('td',{style:tdR},nf(r.litros,1)),
+        h('td',{style:tdR},nf(r.litros_terreno,1)),
+        h('td',{style:tdR,title:r.litros_tele!=null?r.dias_tele+' días con dato de la máquina':'Sin telemetría o sin equipo asignado en el panel'},r.litros_tele==null?'—':nf(r.litros_tele,1)),
+        h('td',{style:Object.assign({},tdR,{fontWeight:700,color:difCol(r.dif_terreno,r.tolerancia)})},fdif(r.dif_terreno)),
+        h('td',{style:Object.assign({},tdR,{fontWeight:700,color:difCol(r.dif_tele,r.tolerancia)})},fdif(r.dif_tele)),
         h('td',{style:tdR},r.horas>0?nf(r.horas,1):'—'),
         h('td',{style:Object.assign({},tdR,{fontWeight:700,color:r.rendimiento==null?'#CBD5E1':color})},r.rendimiento==null?'—':nf(r.rendimiento,2)),
+        h('td',{style:Object.assign({},tdR,{fontWeight:700,color:r.lh_real==null?'#CBD5E1':'#1D4ED8'})},r.lh_real==null?'—':nf(r.lh_real,2)),
         h('td',{style:tdR},r.n_dist),
         h('td',{style:tdR},CLP(r.costo)));});
-      subtotal=h('tr',{key:'st',style:{background:'#F8FAFC',fontWeight:700}},h('td',{style:td,colSpan:2},'Subtotal'),h('td',{style:tdR},nf(litros,1)),h('td',{style:tdR},nf(horas,1)),h('td',{style:tdR},rp==null?'—':nf(rp,2)),h('td',{style:tdR},''),h('td',{style:tdR},CLP(costo)));
+      subtotal=h('tr',{key:'st',style:{background:'#F8FAFC',fontWeight:700}},h('td',{style:td,colSpan:2},'Subtotal'),h('td',{style:tdR},nf(litros,1)),h('td',{style:tdR},nf(lTerr,1)),h('td',{style:tdR},conTele.length?nf(lTele,1):'—'),
+        h('td',{style:tdR},fdif(lTerr-litros)),h('td',{style:tdR},conTele.length?fdif(lTele-conTele.reduce(function(s,r){return s+r.litros;},0)):'—'),
+        h('td',{style:tdR},nf(horas,1)),h('td',{style:tdR},rp==null?'—':nf(rp,2)),h('td',{style:tdR},hTele>0?nf(lTele/hTele,2):'—'),h('td',{style:tdR},''),h('td',{style:tdR},CLP(costo)));
     }else if(metric==='km'){
       var rp2=(km>0&&litros>0)?km/litros:null, l100=km>0?litros/km*100:null;
       head=h('tr',null,h('th',{style:th},'Código'),h('th',{style:th},'Equipo'),h('th',{style:thR},'Litros'),h('th',{style:thR},'Km recorridos'),h('th',{style:thR},'Rend. (km/L)'),h('th',{style:thR},'L/100km'),h('th',{style:thR},'Costo'));
@@ -12733,9 +12760,15 @@ function CombRendimientosView(p){
         h(Btn,{onClick:load},'Calcular'),
         rows.length>0&&h(Btn,{v:'g',onClick:exportar},'Exportar Excel')
       ),
-      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Litros desde las distribuciones de combustible. Los equipos se agrupan por su clasificación (tipo de cargo). Máquinas: rendimiento L/h con horas según los horómetros registrados al cargar combustible (si faltan lecturas, se usan las horas de Terreno como respaldo). Vehículos/camiones: rendimiento km/L (y L/100km como referencia) según el odómetro registrado al cargar combustible. Otros cargos: solo litros y costo.')
+      h('div',{style:{fontSize:10,color:'#94A3B8',marginTop:8}},'Conciliación en máquinas: Estanque = distribuciones del camión estanque; Terreno = litros del parte diario del jefe de faena (debería ser igual al estanque); Telemetría = consumo medido por la máquina (compararlo en semanas o meses, porque lo cargado un día se quema en varios). Rojo: diferencia mayor al 10 % del estanque (mínimo 20 L). Los equipos se agrupan por su clasificación (tipo de cargo). Máquinas: rendimiento L/h con horas según los horómetros registrados al cargar combustible (si faltan lecturas, se usan las horas de Terreno como respaldo). Vehículos/camiones: rendimiento km/L (y L/100km como referencia) según el odómetro registrado al cargar combustible. Otros cargos: solo litros y costo.')
     ),
     err&&h('div',{style:{padding:10,background:'#FEE2E2',color:'#991B1B',borderRadius:6,marginBottom:12,fontSize:12}},err),
+    !loading&&rows.some(function(r){return r.metric==='h';})&&(function(){var mq=rows.filter(function(r){return r.metric==='h';});var rev=mq.filter(function(r){return r.conciliacion==='revisar';});var sinT=mq.filter(function(r){return r.litros_tele==null;});
+      var est=mq.reduce(function(s,r){return s+r.litros;},0),ter=mq.reduce(function(s,r){return s+r.litros_terreno;},0),tel=mq.reduce(function(s,r){return s+(r.litros_tele||0);},0);
+      return h('div',{style:{marginBottom:14,padding:'10px 14px',background:rev.length?'#FFF1F2':'#F0FDF4',border:'1px solid '+(rev.length?'#FECACA':'#BBF7D0'),borderRadius:8,fontSize:12}},
+        h('div',{style:{fontWeight:700,color:rev.length?'#991B1B':'#166534',marginBottom:4}},'Conciliación de combustible en máquinas: '+(rev.length?rev.length+' equipo(s) con diferencia mayor a la tolerancia':'todo dentro de la tolerancia')),
+        h('div',{style:{color:'#475569'}},'Estanque '+nf(est)+' L · Terreno '+nf(ter)+' L ('+(ter-est>0?'+':'')+nf(ter-est)+') · Telemetría '+nf(tel)+' L en '+(mq.length-sinT.length)+' de '+mq.length+' máquinas con dato'+(sinT.length?' · sin telemetría: '+sinT.map(function(r){return r.codigo;}).join(', '):'')),
+        rev.length?h('div',{style:{color:'#7F1D1D',marginTop:4}},rev.map(function(r){return r.codigo+' (terreno '+(r.dif_terreno>0?'+':'')+nf(r.dif_terreno)+(r.dif_tele!=null?', telemetría '+(r.dif_tele>0?'+':'')+nf(r.dif_tele):'')+')';}).join(' · ')):null);})(),
     !loading&&vehSinKm.length>0&&h('div',{style:{marginBottom:14,padding:'10px 14px',background:'#FFFBEB',border:'1px solid #FCD34D',borderRadius:8}},
       h('div',{onClick:function(){setVkOpen(!vkOpen);},style:{display:'flex',alignItems:'center',gap:10,cursor:'pointer'}},
         h('span',{style:{fontSize:18}},'⚠'),
@@ -27010,7 +27043,8 @@ function MobileTelemetria(p){
   return h('div',{className:'mob-wrap'},
     h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'Telemetría · alertas')),
     h('div',{style:{padding:'0 10px',marginBottom:8}},
-      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:6}},
+      data&&data.alcance&&h('div',{style:{padding:'8px 10px',background:'#E7EDE9',borderRadius:6,fontSize:12,color:'#1E3A2D',marginBottom:6}},'Ves solo las máquinas de '+(data.alcance.faena_id?'tu faena: '+((faenas.find(function(f){return String(f.faena_id)===String(data.alcance.faena_id);})||{}).nombre||''):'tu empresa: '+((empresas.find(function(e){return String(e.empresa_id)===String(data.alcance.empresa_id);})||{}).razon_social||''))),
+      !(data&&data.alcance)&&h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:6}},
         h('select',{value:emp,onChange:function(e){setEmp(e.target.value);setFae('');},style:sel},h('option',{value:''},'Todas las empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})),
         h('select',{value:fae,onChange:function(e){setFae(e.target.value);},style:sel},h('option',{value:''},'Todas las faenas'),faenas.filter(function(f){return f.activo&&(!emp||String(f.empresa_id)===String(emp));}).map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
       h('div',{style:{display:'flex',gap:6}},[7,30].map(function(d){return h('button',{key:d,onClick:function(){setDias(d);},style:{flex:1,padding:8,border:'1px solid #CBD5E1',borderRadius:6,background:dias===d?'#1E3A2D':'#fff',color:dias===d?'#D4C5A9':'#475569',fontSize:12,fontWeight:700,cursor:'pointer'}},'Últimos '+d+' días');}),
