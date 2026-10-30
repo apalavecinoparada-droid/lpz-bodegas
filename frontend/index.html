@@ -19571,7 +19571,9 @@ function FinLiquidacionesView(p){
   var[saving,setSaving]=useState(false);var[msg,setMsg]=useState('');
   function hoyLocal(){var d=new Date();return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2);}
   function nf(n,dec){return new Intl.NumberFormat('es-CL',{minimumFractionDigits:dec||0,maximumFractionDigits:dec||0}).format(parseFloat(n)||0);}
-  var lineaVacia=function(){return{equipo_contrato:'',fundo_codigo:'',fundo_nombre:'',faena_id:'',tipo:'PRODUCCION',concepto:'',volumen_m3:'',monto:''};};
+  var lineaVacia=function(){return{equipo_contrato:'',fundo_codigo:'',fundo_nombre:'',faena_id:'',tipo:'PRODUCCION',concepto:'',volumen_m3:'',monto:'',rodal:'',vma:'',tarifa_base:'',tarifa_final:'',factores:{},linea:'',contrato:'',equipo_real:'',especie:''};};
+  // VMA pagado ponderado por m³ de una lista de líneas (solo producción con VMA)
+  var vmaPond=function(ls){var s=0,v=0;(ls||[]).forEach(function(x){var m=parseFloat(x.volumen_m3)||0,w=parseFloat(x.vma);if(x.tipo!=='PE'&&w>0&&m>0){s+=w*m;v+=m;}});return v>0?s/v:null;};
   function load2(){
     setLoad(true);
     var qs=[];if(fEmpresa)qs.push('empresa_id='+fEmpresa);if(fAnio)qs.push('anio='+fAnio);
@@ -19590,7 +19592,8 @@ function FinLiquidacionesView(p){
   function editar(l){
     api('/fin/liquidaciones/'+l.liq_id,'GET',null,p.tok).then(function(r){
       setForm({liq_id:r.liq_id,empresa_id:r.empresa_id||'',mandante:r.mandante||'',periodo:r.periodo||'',numero_ref:r.numero_ref||'',fecha_recepcion:r.fecha_recepcion?(r.fecha_recepcion+'').slice(0,10):'',observaciones:r.observaciones||'',force:true,
-        lineas:(r.lineas||[]).map(function(x){return{equipo_contrato:x.equipo_contrato||'',fundo_codigo:x.fundo_codigo||'',fundo_nombre:x.fundo_nombre||'',faena_id:x.faena_id||'',tipo:x.tipo||'PRODUCCION',concepto:x.concepto||'',volumen_m3:x.volumen_m3||'',monto:x.monto||''};})});
+        lineas:(r.lineas||[]).map(function(x){return{equipo_contrato:x.equipo_contrato||'',fundo_codigo:x.fundo_codigo||'',fundo_nombre:x.fundo_nombre||'',faena_id:x.faena_id||'',tipo:x.tipo||'PRODUCCION',concepto:x.concepto||'',volumen_m3:x.volumen_m3||'',monto:x.monto||'',
+          rodal:x.rodal||'',vma:x.vma!=null?x.vma:'',tarifa_base:x.tarifa_base!=null?x.tarifa_base:'',tarifa_final:x.tarifa_final!=null?x.tarifa_final:'',factores:x.factores||{},linea:x.linea||'',contrato:x.contrato||'',equipo_real:x.equipo_real||'',especie:x.especie||''};})});
       setDet(null);setMsg('');
     }).catch(function(e){alert(e.message);});
   }
@@ -19742,31 +19745,44 @@ function FinLiquidacionesView(p){
       if(hIdx<0)return;
       var hdr=rows[hIdx].map(function(c){return String(c||'').trim();});
       var colLike=function(sub){return hdr.findIndex(function(hh){return hh.toLowerCase().indexOf(sub.toLowerCase())>=0;});};
-      var cEq=colLike('EquipoContrato'),cFundo=hdr.findIndex(function(hh){return hh==='Fundo';}),cFundoD=colLike('FundoDescripcion'),cVol=colLike('Volumen'),cVal=colLike('VALOR FINAL'),cNotas=hdr.findIndex(function(hh){return hh==='Notas';});
+      var colEx=function(nm){return hdr.findIndex(function(hh){return hh===nm;});};
+      var cEq=colLike('EquipoContrato'),cFundo=colEx('Fundo'),cFundoD=colLike('FundoDescripcion'),cVol=colLike('Volumen'),cVal=colLike('VALOR FINAL'),cNotas=colEx('Notas');
+      // 2026-10-30: detalle por rodal de la hoja Cosecha (VMA pagado, tarifas y factores). En la hoja PE no existen.
+      var cRodal=colEx('Rodal'),cVMA=colEx('VMA'),cTarB=colEx('TARIFA_BASE'),cTarR=colEx('TARIFA_BASE_REAJ'),cTarF=colEx('TARIFA_FINAL'),cLinea=colEx('Linea'),cContrato=colEx('Contrato'),cEqReal=colEx('EquipoReal'),cEspecie=colEx('Especie');
+      var cFact={FTA_FAC:colEx('FTA_FAC'),FACTOR_REAJUSTE_POL:colEx('FACTOR_REAJUSTE_POL'),FMAV_FAC:colEx('FMAV_FAC'),FACTOR_DMM:colEx('FACTOR_DMM'),FACTOR_PENDIENTE:colEx('FACTOR_PENDIENTE'),FACTOR_AJUSTE:colEx('FACTOR_AJUSTE')};
       if(cVol<0||cVal<0)return;
       var esPE=cNotas>=0;
-      var lastEq=null,lastFundo=null,lastFundoD=null;
+      var num=function(v){var n=parseFloat(v);return isNaN(n)?null:n;};
+      var lastEq=null,lastFundo=null,lastFundoD=null,lastLinea=null,lastContrato=null,lastEqReal=null;
       for(var i=hIdx+1;i<rows.length;i++){
         var r=rows[i]||[];
         // Saltar filas de subtotales del pivote ("Total 1", "Total CA", "Total general"...)
         var esTotal=r.some(function(c){return /^total/i.test(String(c==null?'':c).trim());});
         if(esTotal)continue;
+        // el pivote deja en blanco los valores repetidos: se arrastra el último visto
         if(cEq>=0&&r[cEq]!=null&&String(r[cEq]).trim()!=='')lastEq=String(r[cEq]).trim();
         if(cFundo>=0&&r[cFundo]!=null&&String(r[cFundo]).trim()!=='')lastFundo=String(r[cFundo]).trim();
         if(cFundoD>=0&&r[cFundoD]!=null&&String(r[cFundoD]).trim()!=='')lastFundoD=String(r[cFundoD]).trim();
+        if(cLinea>=0&&r[cLinea]!=null&&String(r[cLinea]).trim()!=='')lastLinea=String(r[cLinea]).trim();
+        if(cContrato>=0&&r[cContrato]!=null&&String(r[cContrato]).trim()!=='')lastContrato=String(r[cContrato]).trim();
+        if(cEqReal>=0&&r[cEqReal]!=null&&String(r[cEqReal]).trim()!=='')lastEqReal=String(r[cEqReal]).trim();
         var monto=parseFloat(r[cVal]);
         if(isNaN(monto)||monto===0)continue;
         var vol=parseFloat(r[cVol]);
+        var factores={};Object.keys(cFact).forEach(function(k){if(cFact[k]>=0&&num(r[cFact[k]])!=null)factores[k]=num(r[cFact[k]]);});
         out.push({equipo_contrato:lastEq||'',fundo_codigo:lastFundo||'',fundo_nombre:lastFundoD||'',faena_id:'',
           tipo:esPE?'PE':'PRODUCCION',
           concepto:esPE?(String(r[cNotas]||'').trim()||'Partida especial'):'',
-          volumen_m3:isNaN(vol)?0:vol,monto:monto});
+          volumen_m3:isNaN(vol)?0:vol,monto:monto,
+          rodal:cRodal>=0&&r[cRodal]!=null?String(r[cRodal]).trim():'',vma:cVMA>=0?(num(r[cVMA])!=null?num(r[cVMA]):''):'',
+          tarifa_base:cTarB>=0?(num(r[cTarB])!=null?num(r[cTarB]):''):'',tarifa_base_reaj:cTarR>=0?num(r[cTarR]):null,tarifa_final:cTarF>=0?(num(r[cTarF])!=null?num(r[cTarF]):''):'',
+          factores:factores,linea:lastLinea||'',contrato:lastContrato||'',equipo_real:lastEqReal||'',especie:cEspecie>=0&&r[cEspecie]!=null?String(r[cEspecie]).trim():''});
       }
     });
-    // Agrupar: PRODUCCION por equipo+fundo · PE por equipo+fundo+concepto
+    // Agrupar: PRODUCCION por equipo+fundo+RODAL (cada rodal tiene su VMA y su tarifa) · PE por equipo+fundo+concepto
     var map={},orden=[];
     out.forEach(function(l){
-      var k=l.tipo+'|'+l.equipo_contrato+'|'+l.fundo_codigo+'|'+(l.tipo==='PE'?l.concepto:'');
+      var k=l.tipo+'|'+l.equipo_contrato+'|'+l.fundo_codigo+'|'+(l.tipo==='PE'?l.concepto:(l.rodal+'|'+l.equipo_real));
       if(!map[k]){map[k]=Object.assign({},l);orden.push(k);}
       else{map[k].volumen_m3+=l.volumen_m3;map[k].monto+=l.monto;}
     });
@@ -19780,7 +19796,7 @@ function FinLiquidacionesView(p){
       try{
         var wb=XLSX.read(ev.target.result,{type:'array'});
         var lineas=parseLiquidacionXLSX(wb);
-        if(!lineas.length){alert('No se encontraron líneas válidas. El archivo debe tener el formato del detalle de liquidación del mandante (columnas TipoBoletin, EquipoContrato, Fundo, Suma de Volumen M3, Suma de VALOR FINAL BOLETIN).');return;}
+        if(!lineas.length){alert('No se encontraron líneas válidas. El archivo debe tener el formato del detalle de liquidación del mandante (columnas TipoBoletin, EquipoContrato, Fundo, Rodal, VMA, TARIFA_FINAL, Suma de Volumen M3, Suma de VALOR FINAL BOLETIN).');return;}
         setForm({empresa_id:empresas.length===1?empresas[0].empresa_id:'',mandante:'Forestal Mininco (CMPC)',periodo:'',numero_ref:'',fecha_recepcion:hoyLocal(),observaciones:'Importada desde Excel: '+file.name,lineas:lineas,force:false,importada:true});
         setMsg('');
       }catch(ex){alert('Error al leer el archivo: '+ex.message);}
@@ -19809,7 +19825,8 @@ function FinLiquidacionesView(p){
       kpiCard('VOLUMEN',nf(tot.vol,1)+' m³','#0F766E'),
       kpiCard('PRODUCCIÓN',CLP(tot.prod),'#16A34A'),
       kpiCard('PARTIDAS ESPECIALES',CLP(tot.pe),tot.pe<0?'#DC2626':'#16A34A'),
-      kpiCard('NETO',CLP(tot.neto),'#1E3A2D',tot.vol>0?('$'+nf(tot.neto/tot.vol,0)+' por m³'):null)
+      kpiCard('NETO',CLP(tot.neto),'#1E3A2D',tot.vol>0?('$'+nf(tot.neto/tot.vol,0)+' por m³'):null),
+      (function(){var s=0,v=0;lista.forEach(function(l){var w=parseFloat(l.vma_pagado),m=parseFloat(l.m3_con_vma)||0;if(w>0&&m>0){s+=w*m;v+=m;}});return kpiCard('VMA PAGADO',v>0?nf(s/v,2)+' m³/árbol':'—','#7C3AED',v>0?'ponderado por '+nf(v,0)+' m³':'líneas sin VMA (importa el Excel por rodal)');})()
     ),
     // ── Gráfico: producción del año mes a mes (m³), filtrable por faena ──
     (function(){
@@ -19872,8 +19889,8 @@ function FinLiquidacionesView(p){
     h('div',{className:'card',style:{padding:0,overflow:'auto'}},
       h('table',{style:{width:'100%',fontSize:12,borderCollapse:'collapse'}},
         h('thead',null,h('tr',{style:{background:'#F1F5F9'}},
-          ['Período','Empresa','Mandante','N° Ref','m³','Producción','Part. Esp.','Neto','$/m³','Acciones'].map(function(c,j){
-            return h('th',{key:j,style:{padding:8,textAlign:j>=4&&j<=8?'right':'left',fontSize:10,color:'#475569'}},c);
+          ['Período','Empresa','Mandante','N° Ref','m³','VMA','Producción','Part. Esp.','Neto','$/m³','Acciones'].map(function(c,j){
+            return h('th',{key:j,style:{padding:8,textAlign:j>=4&&j<=9?'right':'left',fontSize:10,color:'#475569'},title:c==='VMA'?'VMA pagado por CMPC, ponderado por m³ (m³ por árbol)':''},c);
           })
         )),
         h('tbody',null,lista.map(function(l){
@@ -19885,6 +19902,7 @@ function FinLiquidacionesView(p){
             h('td',{style:{padding:8,fontSize:11,color:'#64748B'}},l.mandante||'—'),
             h('td',{style:{padding:8,fontSize:11}},l.numero_ref||'—'),
             h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace'}},nf(vol,1)),
+            h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',color:'#7C3AED',fontWeight:600},title:l.vma_pagado?'Ponderado por '+nf(l.m3_con_vma,0)+' m³ con VMA':'Sin VMA: importa el Excel de CMPC por rodal'},l.vma_pagado?nf(l.vma_pagado,2):'—'),
             h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',color:'#16A34A'}},CLP(l.total_produccion)),
             h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',color:(parseFloat(l.total_pe)||0)<0?'#DC2626':'#16A34A'}},CLP(l.total_pe)),
             h('td',{style:{padding:8,textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'#1E3A2D'}},CLP(neto)),
@@ -19895,19 +19913,22 @@ function FinLiquidacionesView(p){
                 h('button',{onClick:function(){eliminar(l);},title:'Eliminar',style:{padding:'3px 8px',fontSize:11,background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:4,cursor:'pointer',color:'#DC2626'}},'🗑')
               ))
           ),
-          abierto&&h('tr',{key:'d'+l.liq_id},h('td',{colSpan:10,style:{padding:0,background:'#F8FAFC'}},
+          abierto&&h('tr',{key:'d'+l.liq_id},h('td',{colSpan:11,style:{padding:0,background:'#F8FAFC'}},
             h('div',{style:{padding:'10px 14px'}},
               h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
                 h('thead',null,h('tr',{style:{color:'#64748B'}},
-                  ['Tipo','Equipo','Fundo','Faena','Concepto','m³','Monto','$/m³'].map(function(c,j){return h('th',{key:j,style:{padding:'4px 8px',textAlign:j>=5?'right':'left',fontSize:9,borderBottom:'1px solid #E2E8F0'}},c);}))),
+                  ['Tipo','Equipo','Fundo','Rodal','Faena','Concepto','VMA','Tarifa $/m³','m³','Monto','$/m³'].map(function(c,j){return h('th',{key:j,style:{padding:'4px 8px',textAlign:j>=6?'right':'left',fontSize:9,borderBottom:'1px solid #E2E8F0'}},c);}))),
                 h('tbody',null,(det.lineas||[]).map(function(x){
                   var xv=parseFloat(x.volumen_m3)||0,xm=parseFloat(x.monto)||0;
                   return h('tr',{key:x.linea_id},
                     h('td',{style:{padding:'4px 8px'}},x.tipo==='PE'?h('span',{style:{padding:'1px 7px',background:'#FEF3C7',color:'#92400E',borderRadius:8,fontSize:9,fontWeight:700}},'PE'):h('span',{style:{padding:'1px 7px',background:'#DCFCE7',color:'#15803D',borderRadius:8,fontSize:9,fontWeight:700}},'PROD')),
                     h('td',{style:{padding:'4px 8px'}},x.equipo_contrato||'—'),
                     h('td',{style:{padding:'4px 8px'}},(x.fundo_codigo?x.fundo_codigo+' — ':'')+(x.fundo_nombre||'—')),
+                    h('td',{style:{padding:'4px 8px',fontFamily:'monospace'},title:x.especie?'Especie '+x.especie:''},x.rodal||'—'),
                     h('td',{style:{padding:'4px 8px',color:'#0F766E'}},x.faena_nombre||'—'),
                     h('td',{style:{padding:'4px 8px',fontSize:10,color:'#64748B'}},x.concepto||'—'),
+                    h('td',{style:{padding:'4px 8px',textAlign:'right',fontFamily:'monospace',color:'#7C3AED',fontWeight:600}},x.vma!=null&&x.vma!==''?nf(x.vma,2):'—'),
+                    h('td',{style:{padding:'4px 8px',textAlign:'right',fontFamily:'monospace'},title:x.factores&&Object.keys(x.factores).length?('Base '+nf(x.tarifa_base,0)+' · factores: '+Object.keys(x.factores).map(function(k){return k+' '+x.factores[k];}).join(', ')):''},x.tarifa_final!=null&&x.tarifa_final!==''?nf(x.tarifa_final,0):'—'),
                     h('td',{style:{padding:'4px 8px',textAlign:'right',fontFamily:'monospace'}},nf(xv,1)),
                     h('td',{style:{padding:'4px 8px',textAlign:'right',fontFamily:'monospace',fontWeight:600,color:xm<0?'#DC2626':'#1E293B'}},CLP(xm)),
                     h('td',{style:{padding:'4px 8px',textAlign:'right',fontFamily:'monospace',color:'#94A3B8'}},(x.tipo!=='PE'&&xv>0)?nf(xm/xv,0):'—')
@@ -19915,6 +19936,7 @@ function FinLiquidacionesView(p){
                 }))
               ),
               h('div',{style:{marginTop:8,fontSize:11,color:'#475569',display:'flex',gap:18,flexWrap:'wrap'}},
+                (function(){var w=vmaPond(det.lineas);return h('span',null,'VMA pagado ponderado: ',h('strong',{style:{color:'#7C3AED'}},w?nf(w,2)+' m³/árbol':'—'));})(),
                 h('span',null,'Neto: ',h('strong',null,CLP(l.total_neto))),
                 h('span',null,'IVA (19%): ',h('strong',null,CLP(Math.round((parseFloat(l.total_neto)||0)*0.19)))),
                 h('span',null,'Total factura estimado: ',h('strong',{style:{color:'#1E3A2D'}},CLP(Math.round((parseFloat(l.total_neto)||0)*1.19))))
@@ -19947,16 +19969,19 @@ function FinLiquidacionesView(p){
         h('div',{style:{maxHeight:'42vh',overflowY:'auto',border:'1px solid #E2E8F0',borderRadius:6}},
           h('table',{style:{width:'100%',fontSize:11,borderCollapse:'collapse'}},
             h('thead',null,h('tr',{style:{background:'#F1F5F9',position:'sticky',top:0}},
-              ['Tipo','Equipo','Cód. fundo','Fundo','Faena ERP','Concepto (PE)','Volumen m³','Monto $',''].map(function(c,j){return h('th',{key:j,style:{padding:'6px 6px',fontSize:9,color:'#475569',textAlign:'left'}},c);}))),
+              ['Tipo','Equipo','Cód. fundo','Fundo','Rodal','Faena ERP','Concepto (PE)','VMA','Tarifa final','Volumen m³','Monto $',''].map(function(c,j){return h('th',{key:j,style:{padding:'6px 6px',fontSize:9,color:'#475569',textAlign:'left'}},c);}))),
             h('tbody',null,form.lineas.map(function(l,i){
               return h('tr',{key:i,style:{borderTop:'1px solid #F1F5F9',background:l.tipo==='PE'?'#FFFBEB':'transparent'}},
                 h('td',{style:{padding:4,width:90}},h('select',{value:l.tipo,onChange:function(e){setL(i,'tipo',e.target.value);},style:inpL},h('option',{value:'PRODUCCION'},'Producción'),h('option',{value:'PE'},'Part. especial'))),
                 h('td',{style:{padding:4,width:60}},h('input',{type:'text',value:l.equipo_contrato,onChange:function(e){setL(i,'equipo_contrato',e.target.value);},style:inpL,placeholder:'1'})),
                 h('td',{style:{padding:4,width:70}},h('input',{type:'text',value:l.fundo_codigo,onChange:function(e){setL(i,'fundo_codigo',e.target.value);},style:inpL,placeholder:'549'})),
                 h('td',{style:{padding:4}},h('input',{type:'text',value:l.fundo_nombre,onChange:function(e){setL(i,'fundo_nombre',e.target.value);},style:inpL,placeholder:'Nombre fundo'})),
+                h('td',{style:{padding:4,width:70}},h('input',{type:'text',value:l.rodal||'',onChange:function(e){setL(i,'rodal',e.target.value);},style:inpL,placeholder:'201007'})),
                 h('td',{style:{padding:4,width:130}},h('select',{value:l.faena_id,onChange:function(e){setL(i,'faena_id',e.target.value);},style:inpL},
                   h('option',{value:''},'— sin faena —'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);}))),
                 h('td',{style:{padding:4}},h('input',{type:'text',value:l.concepto,onChange:function(e){setL(i,'concepto',e.target.value);},style:inpL,placeholder:l.tipo==='PE'?'Ej: Ajuste inventario, multa...':'—'})),
+                h('td',{style:{padding:4,width:62}},h('input',{type:'number',step:'0.01',value:l.vma==null?'':l.vma,onChange:function(e){setL(i,'vma',e.target.value);},style:Object.assign({},inpL,{textAlign:'right',color:'#7C3AED'}),title:'VMA pagado (m³ por árbol)'})),
+                h('td',{style:{padding:4,width:80}},h('input',{type:'number',value:l.tarifa_final==null?'':l.tarifa_final,onChange:function(e){setL(i,'tarifa_final',e.target.value);},style:Object.assign({},inpL,{textAlign:'right'}),title:'Tarifa final $/m³'+(l.factores&&Object.keys(l.factores).length?' · factores '+Object.keys(l.factores).map(function(k){return k+' '+l.factores[k];}).join(', '):'')})),
                 h('td',{style:{padding:4,width:90}},h('input',{type:'number',value:l.volumen_m3,onChange:function(e){setL(i,'volumen_m3',e.target.value);},style:Object.assign({},inpL,{textAlign:'right'})})),
                 h('td',{style:{padding:4,width:110}},h('input',{type:'number',value:l.monto,onChange:function(e){setL(i,'monto',e.target.value);},style:Object.assign({},inpL,{textAlign:'right',fontWeight:600})})),
                 h('td',{style:{padding:4,width:30,textAlign:'center'}},h('button',{onClick:function(){delLinea(i);},title:'Quitar línea',style:{padding:'2px 7px',fontSize:11,background:'#FEF2F2',border:'1px solid #FCA5A5',borderRadius:4,cursor:'pointer',color:'#DC2626'}},'✕'))
@@ -19971,6 +19996,7 @@ function FinLiquidacionesView(p){
         // Totales del formulario
         totF&&h('div',{style:{marginTop:12,padding:'10px 14px',background:'#E9F1EC',border:'1px solid #1E3A2D',borderRadius:6,display:'flex',gap:20,flexWrap:'wrap',fontSize:12,color:'#1E3A2D'}},
           h('span',null,'Volumen: ',h('strong',null,nf(totF.vol,1)+' m³')),
+          (function(){var w=vmaPond(form.lineas);return w?h('span',null,'VMA pagado: ',h('strong',{style:{color:'#7C3AED'}},nf(w,2)+' m³/árbol')):null;})(),
           h('span',null,'Producción: ',h('strong',null,CLP(totF.prod))),
           h('span',null,'Part. especiales: ',h('strong',{style:{color:totF.pe<0?'#DC2626':'#166534'}},CLP(totF.pe))),
           h('span',null,'NETO: ',h('strong',{style:{fontSize:14}},CLP(totF.prod+totF.pe))),
@@ -20636,6 +20662,7 @@ function ContratosView(p){
   var emptyForm={persona_id:'',empresa_id:'',tipo_contrato:'indefinido',es_actualizacion:false,fecha_contrato:new Date().toISOString().slice(0,10),fecha_inicio:new Date().toISOString().slice(0,10),fecha_termino:'',lugar_firma:'Nacimiento',funcion_texto:'',jornada_tipo:'taller_42',jornada_horas:42,jornada_texto:'en promedio, conforme a un sistema rotativo de turnos en ciclos de dos semanas, según el siguiente esquema: SEMANA A (40 horas), de lunes a viernes, de 08:30 a 12:00 hrs. y de 13:30 a 18:00 hrs.; SEMANA B (44 horas), de lunes a viernes, de 08:30 a 12:00 hrs. y de 13:30 a 18:00 hrs., y el día sábado de 09:00 a 13:00 hrs. El tiempo destinado a colación, esto es, de 12:00 a 13:30 hrs., no será imputable a la jornada de trabajo. Las semanas A y B se alternarán entre el personal del taller, según el rol de turnos que la Empresa determine y comunicará oportunamente al trabajador, garantizándose el promedio de 42 horas semanales conforme al artículo 28 del Código del Trabajo',lugar_prestacion:'',sueldo_base:'',bono_responsabilidad:'0',bono_produccion_fijo:'0',bono_produccion_variable:false,bono_produccion_tarifa:'0',bono_produccion_detalle:'',semana_corrida:false,asig_colacion:'0',asig_movilizacion:'0',asig_viatico:'0',tiene_alimentacion:false,alimentacion_detalle:'tres comidas preparadas según dieta, sin costo para el trabajador',otros_beneficios:'',observaciones:''};
   var[form,setForm]=useState(emptyForm);
   var[editId,setEditId]=useState(null);
+  var[renov,setRenov]=useState(null); // contrato a plazo fijo que se está renovando (modal)
 
   function loadContratos(){
     var q=fPersona?'?persona_id='+fPersona:'';
@@ -20996,8 +21023,8 @@ function ContratosView(p){
       h('div',{style:{display:'flex',justifyContent:'flex-end',gap:6,marginTop:10}},
         editId&&h(Btn,{v:'g',onClick:cancelarEdicion},null,'Cancelar edición'),
         !editId&&h(Btn,{v:'g',onClick:function(){setForm(emptyForm);setSelPersona(null);setMsg('');}},null,'Limpiar'),
-        h(Btn,{onClick:function(){guardar('word');}},editId?'💾 Guardar cambios + Word':'💾 Guardar + Word'),
-        h(Btn,{onClick:function(){guardar('pdf');}},editId?'💾 Guardar cambios + PDF':'💾 Guardar + PDF')
+        h(Btn,{onClick:function(){guardar('pdf');}},editId?'💾 Guardar cambios + PDF':'💾 Guardar + PDF'),
+        h(Btn,{v:'g',onClick:function(){guardar('word');},title:'Solo si necesitas editar el texto en Word'},editId?'Guardar + Word':'Guardar + Word')
       )
     ),
 
@@ -21023,7 +21050,7 @@ function ContratosView(p){
           {lbl:'Trabajador',render:function(r){return r.nombre_completo;}},
           {lbl:'RUT',render:function(r){return r.persona_rut;}},
           {lbl:'Empresa',render:function(r){return r.empresa_nombre;}},
-          {lbl:'Tipo',render:function(r){var m={indefinido:'Indefinido',plazo_fijo:'Plazo fijo',obra_servicio:'Obra/Servicio'};return h(Bg,{c:r.tipo_contrato==='indefinido'?'g':r.tipo_contrato==='plazo_fijo'?'b':'y'},m[r.tipo_contrato]);}},
+          {lbl:'Tipo',render:function(r){var m={indefinido:'Indefinido',plazo_fijo:'Plazo fijo',obra_servicio:'Obra/Servicio'};var n=parseInt(r.renovaciones)||0;return h('span',null,h(Bg,{c:r.tipo_contrato==='indefinido'?'g':r.tipo_contrato==='plazo_fijo'?'b':'y'},m[r.tipo_contrato]),n>0?h('span',{style:{marginLeft:4,fontSize:9,color:'#B45309',background:'#FEF3C7',padding:'1px 5px',borderRadius:6},title:'Renovaciones por anexo'},n+(n===1?' renov.':' renov.')):null);}},
           {lbl:'Inicio',render:function(r){return fmtD(r.fecha_inicio);}},
           {lbl:'Término',render:function(r){return r.fecha_termino?fmtD(r.fecha_termino):'—';}},
           {lbl:'Sueldo',r:true,render:function(r){return CLP(Math.round(parseFloat(r.sueldo_base)||0));}},
@@ -21031,6 +21058,7 @@ function ContratosView(p){
           {lbl:'',render:function(r){return h('div',{style:{display:'flex',gap:4}},
             h(Btn,{v:'a',sm:true,onClick:function(){generarContratoDoc(r.contrato_id,'word');},title:'Descargar Word'},null,'📄 Word'),
             h(Btn,{v:'a',sm:true,onClick:function(){generarContratoDoc(r.contrato_id,'pdf');},title:'Ver/imprimir PDF'},null,'📑 PDF'),
+            r.tipo_contrato==='plazo_fijo'&&h(Btn,{sm:true,onClick:function(){setRenov(r);},title:'Anexo de renovación o cambio a término de faena / indefinido'},null,'🔁 Renovar'),
             h(Btn,{v:'g',sm:true,onClick:function(){editarContrato(r.contrato_id);},title:'Editar contrato'},null,'✏ Editar'),
             h(Btn,{v:'r',sm:true,onClick:function(){eliminar(r.contrato_id);}},null,'🗑')
           );}}
@@ -21042,6 +21070,7 @@ function ContratosView(p){
       )
     ),
 
+    renov&&h(RenovarContratoModal,{c:renov,tok:p.tok,onClose:function(){setRenov(null);},onHecho:function(){setRenov(null);setMsg('Anexo de renovación generado; contrato y ficha actualizados');loadContratos();if(p.onRefresh)p.onRefresh();}}),
     // TAB ANEXOS
     tab==='anexos'&&h(AnexosView,{tok:p.tok,m:p.m,empresas:empresas,personal:personal}),
 
@@ -23737,7 +23766,7 @@ function AnexosView(p){
     }).catch(function(e){alert('Error: '+e.message);});
   }
   var[selPersonas,setSelPersonas]=useState([]);
-  var[formatoSalida,setFormatoSalida]=useState('word'); // 'word' o 'pdf'
+  var[formatoSalida,setFormatoSalida]=useState('pdf'); // 'pdf' por defecto (Andrés 30-10-2026: nunca usó el Word) o 'word'
 
   function loadAnexos(){
     var qs=fPersona?'?persona_id='+fPersona:'';
@@ -24116,6 +24145,69 @@ function AnexosView(p){
 }
 
 // ── Builder HTML del anexo ──
+// ── Renovación de contrato a plazo fijo en un clic (Andrés 2026-10-30) ──
+// Política: 30 días, una renovación de 30 días y luego término de faena o indefinido. Crea el anexo, actualiza contrato y ficha, y descarga el documento.
+function descargarAnexoDoc(a,formato){
+  var html=buildAnexoHTML(a);
+  var nombre=(a.nombre_completo||'anexo').replace(/\s+/g,'_');
+  var fecha=(a.fecha_anexo+'').slice(0,10).replace(/-/g,'');
+  if(formato==='pdf'){imprimirHTMLViaIframe(html,'Anexo_'+nombre+'_'+fecha);return;}
+  var blob=new Blob(['﻿'+html],{type:'application/msword;charset=utf-8'});
+  var url=URL.createObjectURL(blob);var link=document.createElement('a');link.href=url;link.download='Anexo_'+nombre+'_'+fecha+'.doc';
+  document.body.appendChild(link);link.click();setTimeout(function(){document.body.removeChild(link);URL.revokeObjectURL(url);},100);
+}
+function RenovarContratoModal(p){
+  var c=p.c; var hoy=new Date().toISOString().slice(0,10);
+  var fTerm=c.fecha_termino?(c.fecha_termino+'').slice(0,10):'';
+  var renov=parseInt(c.renovaciones)||0;
+  var[modalidad,setModalidad]=useState(renov>=1?'obra_servicio':'plazo_fijo');
+  var[nuevaFecha,setNuevaFecha]=useState(fTerm?calAdd(fTerm,30):calAdd(hoy,30));
+  var[fechaAnexo,setFechaAnexo]=useState(hoy);
+  var[lugar,setLugar]=useState('Nacimiento');
+  var[faenaTxt,setFaenaTxt]=useState(c.faena_nombre||'');
+  var[obs,setObs]=useState('');
+  var[formato,setFormato]=useState('pdf'); // PDF por defecto
+  var[busy,setBusy]=useState(false);var[msg,setMsg]=useState('');
+  var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3,color:'#475569'};
+  var inpS={width:'100%',padding:'7px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
+  var dias=fTerm&&nuevaFecha?Math.round((new Date(nuevaFecha+'T00:00:00')-new Date(fTerm+'T00:00:00'))/86400000):null;
+  var OPC=[{k:'plazo_fijo',l:'🔁 Renovar a plazo fijo',d:'Prorroga el plazo. Lo normal: 30 días más.'},{k:'obra_servicio',l:'🌲 Pasar a término de faena',d:'Contrato por obra o faena (art. 159 N° 5).'},{k:'indefinido',l:'📄 Pasar a indefinido',d:'Deja sin efecto el plazo.'}];
+  function generar(){
+    if(modalidad==='plazo_fijo'&&(!nuevaFecha||(fTerm&&nuevaFecha<=fTerm))){setMsg('La nueva fecha de término debe ser posterior a '+fmtD(fTerm));return;}
+    if(modalidad==='obra_servicio'&&!faenaTxt.trim()){setMsg('Indica la faena u obra');return;}
+    setBusy(true);setMsg('');
+    api('/contratos/'+c.contrato_id+'/renovar','POST',{modalidad:modalidad,fecha_anexo:fechaAnexo,nueva_fecha_termino:nuevaFecha,faena_texto:faenaTxt,lugar_firma:lugar,observaciones:obs},p.tok).then(function(r){
+      return api('/anexos/'+r.anexo_id,'GET',null,p.tok).then(function(a){descargarAnexoDoc(a,formato);if(r.aviso)alert('⚠ '+r.aviso);p.onHecho(r);});
+    }).catch(function(e){setMsg(e.message);setBusy(false);});
+  }
+  return h(Modal,{title:'🔁 Renovación de contrato · '+nombresPrimero(c.nombre_completo||''),onClose:p.onClose,lg:true},
+    h('div',{style:{padding:'0 4px'}},
+      h('div',{style:{background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:6,padding:'8px 10px',fontSize:12,color:'#1E40AF',marginBottom:10}},
+        h('div',null,h('b',null,'Contrato a plazo fijo'),' del '+fmtD(c.fecha_contrato)+(fTerm?' · vence el '+h2txt(fTerm):'')+' · '+(c.empresa_nombre||'')),
+        h('div',{style:{marginTop:3}},'Renovaciones anteriores de este contrato: ',h('b',null,renov),renov>=1?' — según la política y la ley, lo que corresponde ahora es término de faena o indefinido.':' — según la política, corresponde una renovación de 30 días.')),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:10}},OPC.map(function(o){var on=modalidad===o.k;return h('div',{key:o.k,onClick:function(){setModalidad(o.k);},style:{cursor:'pointer',border:'2px solid '+(on?'#1E3A2D':'#E2E8F0'),background:on?'#F0FDF4':'#fff',borderRadius:8,padding:10}},
+        h('div',{style:{fontSize:12,fontWeight:700,color:on?'#1E3A2D':'#334155'}},o.l),h('div',{style:{fontSize:10,color:'#64748B',marginTop:3}},o.d));})),
+      modalidad==='plazo_fijo'&&h('div',{style:{display:'grid',gridTemplateColumns:'220px 1fr',gap:10,marginBottom:10,alignItems:'end'}},
+        h('div',null,h('label',{style:lblS},'Nueva fecha de término *'),h('input',{type:'date',value:nuevaFecha,onChange:function(e){setNuevaFecha(e.target.value);},style:inpS})),
+        h('div',{style:{display:'flex',gap:6,alignItems:'center'}},
+          [30,60,90].map(function(n){return h('button',{key:n,onClick:function(){setNuevaFecha(calAdd(fTerm||hoy,n));},style:{padding:'6px 10px',border:'1px solid #CBD5E1',borderRadius:5,background:dias===n?'#1E3A2D':'#fff',color:dias===n?'#D4C5A9':'#475569',fontSize:11,fontWeight:700,cursor:'pointer'}},'+'+n+' días');}),
+          dias!=null&&h('span',{style:{fontSize:11,color:'#64748B'}},dias+' días desde el vencimiento actual'))),
+      modalidad==='obra_servicio'&&h('div',{style:{marginBottom:10}},h('label',{style:lblS},'Faena u obra *'),h('input',{type:'text',value:faenaTxt,onChange:function(e){setFaenaTxt(e.target.value);},style:inpS,placeholder:'Ej: Faena Mec 4, Fundo Caballo de Palo'})),
+      modalidad==='indefinido'&&renov===0&&h('div',{style:{fontSize:11,color:'#92400E',background:'#FEF3C7',padding:'6px 8px',borderRadius:5,marginBottom:10}},'Aún no se usó la renovación de 30 días que permite la política; pasar a indefinido ahora es válido, solo confírmalo.'),
+      h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 2fr',gap:10,marginBottom:10}},
+        h('div',null,h('label',{style:lblS},'Fecha del anexo *'),h('input',{type:'date',value:fechaAnexo,onChange:function(e){setFechaAnexo(e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:lblS},'Lugar de firma'),h('input',{type:'text',value:lugar,onChange:function(e){setLugar(e.target.value);},style:inpS})),
+        h('div',null,h('label',{style:lblS},'Observación (interna, no va al documento)'),h('input',{type:'text',value:obs,onChange:function(e){setObs(e.target.value);},style:inpS,placeholder:'(opcional)'}))),
+      msg&&h('div',{style:{padding:8,background:'#FEE2E2',color:'#991B1B',borderRadius:5,fontSize:12,marginBottom:8}},msg),
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:8}},
+        h('div',{style:{display:'flex',alignItems:'center',gap:6}},h('span',{style:{fontSize:11,fontWeight:600,color:'#475569'}},'Formato:'),
+          h('button',{onClick:function(){setFormato('word');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formato==='word'?'#1E40AF':'#CBD5E1'),background:formato==='word'?'#DBEAFE':'transparent',fontWeight:formato==='word'?700:400,fontSize:11,cursor:'pointer'}},'📄 Word'),
+          h('button',{onClick:function(){setFormato('pdf');},style:{padding:'5px 12px',borderRadius:5,border:'1px solid '+(formato==='pdf'?'#DC2626':'#CBD5E1'),background:formato==='pdf'?'#FEE2E2':'transparent',fontWeight:formato==='pdf'?700:400,fontSize:11,cursor:'pointer'}},'📑 PDF')),
+        h('div',{style:{display:'flex',gap:8}},h(Btn,{v:'g',onClick:p.onClose},'Cancelar'),h(Btn,{onClick:generar,disabled:busy},busy?'Generando...':'💾 Crear anexo y generar '+(formato==='pdf'?'PDF':'Word'))))
+    ));
+}
+function h2txt(f){return fmtD(f);}
+
 function buildAnexoHTML(a){
   var cs=Array.isArray(a.clausulas)?a.clausulas:[];
   var fechaTxt=fmtFechaLarga(a.fecha_anexo);
@@ -26116,11 +26208,12 @@ function MobileTransporte(p){
       h('button',{onClick:function(){setModo('historial');},style:{flex:1,padding:10,background:'transparent',color:'#64748B',border:'none',borderRadius:6,fontSize:13,fontWeight:600,cursor:'pointer'}},'🚚 Realizados')
     ),
     h('div',{style:{padding:'0 12px 12px'}},
-      // Andrés 29-10-2026: en el celular ya no se registran traslados a mano; todo viaje nace en Planificación y se hace por tramos (MobileViaje)
+      // Andrés 30-10-2026: conviven las dos formas: el viaje por tramos (planificado) y el registro directo de un traslado
+      h('button',{onClick:nuevoDirecto,style:{width:'100%',padding:'14px',background:'#1E3A2D',color:'#D4C5A9',border:'none',borderRadius:10,fontSize:15,fontWeight:700,marginBottom:16,cursor:'pointer'}},'+ Nuevo traslado directo'),
       pendientes.length===0?h('div',{style:{textAlign:'center',padding:'40px 20px',color:'#94A3B8'}},
         h('div',{style:{fontSize:40,marginBottom:8}},'📭'),
         h('div',{style:{fontSize:14}},'Sin traslados planificados'),
-        h('div',{style:{fontSize:11,marginTop:4}},'Los viajes los programa Planificación y aparecen aquí para hacerlos por tramos')
+        h('div',{style:{fontSize:11,marginTop:4}},'Los viajes planificados aparecen aquí para hacerlos por tramos; también puedes registrar un traslado directo con el botón de arriba')
       ):h('div',null,
         h('div',{style:{fontSize:11,fontWeight:700,color:'#64748B',marginBottom:8,textTransform:'uppercase',letterSpacing:1}},'Pendientes próximos 14 días'),
         pendientes.map(function(pl){
