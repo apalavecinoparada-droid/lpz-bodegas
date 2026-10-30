@@ -23862,8 +23862,10 @@ function AnexosView(p){
   }
 
   function eliminarAnexo(id){
-    if(!confirm('¿Eliminar este anexo?'))return;
-    api('/anexos/'+id,'DELETE',null,p.tok).then(function(){loadAnexos();}).catch(function(e){alert(e.message);});
+    var ax=(anexos||[]).find(function(x){return x.anexo_id===id;})||{};
+    var esRenov=ax.tipo==='renovacion'||ax.tipo==='cambio_modalidad';
+    if(!confirm(esRenov?'¿Eliminar este anexo de renovación?\n\nEl contrato y la ficha del trabajador volverán a la modalidad y fecha de término que tenían antes del anexo.':'¿Eliminar este anexo?'))return;
+    api('/anexos/'+id,'DELETE',null,p.tok).then(function(r){loadAnexos();if(r&&r.revertido)alert('Anexo eliminado. El contrato volvió a '+({plazo_fijo:'plazo fijo',obra_servicio:'obra/faena',indefinido:'indefinido'}[r.tipo_contrato]||r.tipo_contrato)+(r.fecha_termino?' con término el '+fmtD(r.fecha_termino):'')+'; ya puedes generar la renovación de nuevo.');}).catch(function(e){alert(e.message);});
   }
   // Selección múltiple para eliminación masiva
   var[selAnexos,setSelAnexos]=useState([]);
@@ -23882,7 +23884,7 @@ function AnexosView(p){
     if(!selAnexos.length){alert('No hay anexos seleccionados');return;}
     if(!confirm('⚠ ELIMINAR MASIVAMENTE\n\nSe eliminarán '+selAnexos.length+' anexo(s) seleccionado(s).\n\n¿Está seguro? Esta acción no se puede deshacer.'))return;
     api('/anexos/eliminar-masivo','POST',{ids:selAnexos},p.tok).then(function(r){
-      alert('✅ Se eliminaron '+r.eliminados+' anexo(s)');
+      alert('✅ Se eliminaron '+r.eliminados+' anexo(s)'+(r.revertidos?' · '+r.revertidos+' contrato(s) volvieron a su estado anterior':''));
       setSelAnexos([]);loadAnexos();
     }).catch(function(e){alert(e.message);});
   }
