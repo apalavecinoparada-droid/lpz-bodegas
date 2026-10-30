@@ -12527,9 +12527,56 @@ app.get('/api/contratos', auth, async(req,res)=>{
     const{persona_id}=req.query;
     let w=['1=1'],v=[];
     if(persona_id){v.push(persona_id);w.push(`c.persona_id=$${v.length}`);}
-    const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut AS persona_rut,p.cargo,p.faena_id,fa.nombre AS faena_nombre,e.razon_social AS empresa_nombre FROM contratos c JOIN personal p ON c.persona_id=p.persona_id LEFT JOIN faenas fa ON p.faena_id=fa.faena_id JOIN empresas e ON c.empresa_id=e.empresa_id WHERE ${w.join(' AND ')} ORDER BY c.fecha_contrato DESC,c.contrato_id DESC`,v);
+    const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut AS persona_rut,p.cargo,p.faena_id,fa.nombre AS faena_nombre,e.razon_social AS empresa_nombre,
+      (SELECT COUNT(*) FROM contrato_anexos a WHERE a.contrato_id=c.contrato_id AND a.tipo='renovacion') AS renovaciones,
+      (SELECT MAX(a.fecha_anexo) FROM contrato_anexos a WHERE a.contrato_id=c.contrato_id AND a.tipo IN ('renovacion','cambio_modalidad')) AS ultimo_anexo_vigencia
+      FROM contratos c JOIN personal p ON c.persona_id=p.persona_id LEFT JOIN faenas fa ON p.faena_id=fa.faena_id JOIN empresas e ON c.empresa_id=e.empresa_id WHERE ${w.join(' AND ')} ORDER BY c.fecha_contrato DESC,c.contrato_id DESC`,v);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
+});
+// ── Renovación de contrato a plazo fijo (Andrés 2026-10-30): un anexo que prorroga el plazo o cambia la modalidad ──
+// Política de la empresa: primer contrato 30 días, una renovación de 30 días y luego término de faena o indefinido
+// (por ley, art. 159 N° 4, la segunda renovación lo transforma en indefinido). Crea el anexo (cláusula de duración y
+// vigencia), deja el contrato y la ficha del trabajador con la nueva modalidad/fecha y devuelve el anexo para imprimirlo.
+function fechaLargaEs(iso){ const m=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre']; const s=String(iso||'').slice(0,10).split('-'); return s.length===3?(+s[2])+' de '+m[+s[1]-1]+' de '+s[0]:String(iso||''); }
+app.post('/api/contratos/:id/renovar', auth, async(req,res)=>{
+  const client=await pool.connect();
+  try{
+    const b=req.body||{}; const id=parseInt(req.params.id);
+    const modalidad=['plazo_fijo','obra_servicio','indefinido'].includes(b.modalidad)?b.modalidad:null;
+    if(!modalidad)throw new Error('Indica la modalidad: renovar a plazo fijo, término de faena o indefinido');
+    const fechaAnexo=/^\d{4}-\d{2}-\d{2}$/.test(b.fecha_anexo||'')?b.fecha_anexo:new Date().toISOString().slice(0,10);
+    const cr=await client.query('SELECT c.*,p.nombre_completo,p.cargo,p.faena_id,fa.nombre AS faena_nombre FROM contratos c JOIN personal p ON p.persona_id=c.persona_id LEFT JOIN faenas fa ON fa.faena_id=p.faena_id WHERE c.contrato_id=$1',[id]);
+    if(!cr.rows.length)return res.status(404).json({error:'Contrato no encontrado'});
+    const c=cr.rows[0];
+    const prev=parseInt((await client.query("SELECT COUNT(*) FROM contrato_anexos WHERE contrato_id=$1 AND tipo='renovacion'",[id])).rows[0].count)||0;
+    const fTerm=c.fecha_termino?calIso(c.fecha_termino):null, fOrig=calIso(c.fecha_contrato), L=fechaLargaEs;
+    let clausulas,tipo,nuevaTerm=null,obs;
+    if(modalidad==='plazo_fijo'){
+      nuevaTerm=b.nueva_fecha_termino; if(!/^\d{4}-\d{2}-\d{2}$/.test(nuevaTerm||''))throw new Error('Indica la nueva fecha de término');
+      if(fTerm&&nuevaTerm<=fTerm)throw new Error('La nueva fecha de término debe ser posterior a la actual ('+fTerm+')');
+      clausulas=[{numero:'DE DURACIÓN Y VIGENCIA',titulo:'',texto:'Las partes acuerdan prorrogar la vigencia del contrato de trabajo a plazo fijo celebrado con fecha '+L(fOrig)+(fTerm?', cuyo vencimiento estaba fijado para el '+L(fTerm):'')+', hasta el '+L(nuevaTerm)+', fecha en que terminará por vencimiento del plazo convenido, conforme al artículo 159 N° 4 del Código del Trabajo, salvo que las partes acuerden por escrito algo distinto. Las demás estipulaciones del contrato se mantienen plenamente vigentes.'}];
+      tipo='renovacion'; obs='Renovación N° '+(prev+1)+' del contrato a plazo fijo: vigencia hasta '+nuevaTerm;
+    }else if(modalidad==='obra_servicio'){
+      const faena=String(b.faena_texto||c.faena_nombre||'').trim(); if(!faena)throw new Error('Indica la faena u obra');
+      clausulas=[{numero:'DE DURACIÓN Y VIGENCIA',titulo:'',texto:'Las partes acuerdan que, a contar del '+L(fechaAnexo)+', el contrato de trabajo celebrado con fecha '+L(fOrig)+' pasa a tener el carácter de contrato por obra o faena, extendiéndose su vigencia hasta la conclusión de los trabajos o servicios que le dieron origen en la faena '+faena+', momento en que terminará conforme al artículo 159 N° 5 del Código del Trabajo. Las demás estipulaciones del contrato se mantienen plenamente vigentes.'}];
+      tipo='cambio_modalidad'; obs='Cambio de contrato a plazo fijo a por obra o faena: '+faena;
+    }else{
+      clausulas=[{numero:'DE DURACIÓN Y VIGENCIA',titulo:'',texto:'Las partes acuerdan que, a contar del '+L(fechaAnexo)+', el contrato de trabajo celebrado con fecha '+L(fOrig)+' tiene el carácter de indefinido, dejando sin efecto el plazo de vigencia pactado originalmente. Las demás estipulaciones del contrato se mantienen plenamente vigentes.'}];
+      tipo='cambio_modalidad'; obs='Cambio de contrato a plazo fijo a indefinido';
+    }
+    if(b.observaciones)obs+=' · '+String(b.observaciones).slice(0,300);
+    await client.query('BEGIN');
+    const a=await client.query(`INSERT INTO contrato_anexos(persona_id,empresa_id,contrato_id,fecha_anexo,fecha_contrato_original,funcion_original,lugar_firma,clausulas,observaciones,usuario,tipo,modalidad,vigencia_hasta)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13) RETURNING anexo_id`,
+      [c.persona_id,c.empresa_id,id,fechaAnexo,c.fecha_contrato,c.cargo,b.lugar_firma||'Nacimiento',JSON.stringify(clausulas),obs,req.user.email,tipo,modalidad,nuevaTerm]);
+    await client.query('UPDATE contratos SET tipo_contrato=$1,fecha_termino=$2 WHERE contrato_id=$3',[modalidad,nuevaTerm,id]);
+    await client.query('UPDATE personal SET tipo_contrato=$1,fecha_termino=$2 WHERE persona_id=$3',[({plazo_fijo:'A Plazo',obra_servicio:'Por Obra',indefinido:'Indefinido'})[modalidad],nuevaTerm,c.persona_id]);
+    await client.query('COMMIT');
+    res.status(201).json({ok:true,anexo_id:a.rows[0].anexo_id,modalidad,vigencia_hasta:nuevaTerm,renovaciones:modalidad==='plazo_fijo'?prev+1:prev,
+      aviso:(modalidad==='plazo_fijo'&&prev>=1)?'Por ley (art. 159 N° 4 del Código del Trabajo) la segunda renovación de un plazo fijo transforma el contrato en indefinido.':null});
+  }catch(e){try{await client.query('ROLLBACK');}catch(_){} res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 app.get('/api/contratos/:id', auth, async(req,res)=>{
   try{
@@ -12637,6 +12684,10 @@ async function setupAnexos(q){
   )`);
   // Migración: si la columna ya existía como VARCHAR(255), ampliar
   try{await q('ALTER TABLE contrato_anexos ALTER COLUMN funcion_original TYPE TEXT');}catch(e){}
+  // Renovación / cambio de modalidad de contratos a plazo fijo (2026-10-30)
+  try{await q('ALTER TABLE contrato_anexos ADD COLUMN IF NOT EXISTS tipo VARCHAR(30)');}catch(e){}
+  try{await q('ALTER TABLE contrato_anexos ADD COLUMN IF NOT EXISTS modalidad VARCHAR(20)');}catch(e){}
+  try{await q('ALTER TABLE contrato_anexos ADD COLUMN IF NOT EXISTS vigencia_hasta DATE');}catch(e){}
 }
 setupAnexos(pool.query.bind(pool)).catch(function(e){console.log('[WARN] anexos:',e.message);});
 
@@ -15275,6 +15326,10 @@ async function finLiqEnsure(){
     volumen_m3 NUMERIC(14,3) DEFAULT 0,
     monto NUMERIC(14,2) NOT NULL DEFAULT 0
   )`);
+  // 2026-10-30: detalle por rodal del Excel de CMPC (VMA pagado, tarifa y factores). Las líneas viejas quedan con NULL.
+  for(const col of ['rodal VARCHAR(30)','vma NUMERIC(8,4)','tarifa_base NUMERIC(12,2)','tarifa_final NUMERIC(12,2)',"factores JSONB DEFAULT '{}'",'linea VARCHAR(10)','contrato VARCHAR(30)','equipo_real VARCHAR(30)','especie VARCHAR(10)']){
+    try{await pool.query('ALTER TABLE fin_liquidacion_lineas ADD COLUMN IF NOT EXISTS '+col);}catch(e){}
+  }
   _finLiqOk=true;
 }
 
@@ -15291,6 +15346,9 @@ app.get('/api/fin/liquidaciones', auth, async(req,res)=>{
         COALESCE(SUM(d.monto) FILTER (WHERE d.tipo<>'PRODUCCION'),0) AS total_pe,
         COALESCE(SUM(d.monto),0) AS total_neto,
         COALESCE(SUM(d.volumen_m3) FILTER (WHERE d.tipo='PRODUCCION'),0) AS volumen_m3,
+        CASE WHEN COALESCE(SUM(d.volumen_m3) FILTER (WHERE d.tipo='PRODUCCION' AND d.vma>0),0)>0
+             THEN SUM(d.vma*d.volumen_m3) FILTER (WHERE d.tipo='PRODUCCION' AND d.vma>0)/SUM(d.volumen_m3) FILTER (WHERE d.tipo='PRODUCCION' AND d.vma>0) END AS vma_pagado,
+        COALESCE(SUM(d.volumen_m3) FILTER (WHERE d.tipo='PRODUCCION' AND d.vma>0),0) AS m3_con_vma,
         COUNT(d.linea_id) AS n_lineas
       FROM fin_liquidaciones l
       LEFT JOIN empresas e ON l.empresa_id=e.empresa_id
@@ -15312,7 +15370,7 @@ app.get('/api/fin/liquidaciones/grafico/anual', auth, async(req,res)=>{
     if(req.query.empresa_id&&!isNaN(parseInt(req.query.empresa_id))){vals.push(parseInt(req.query.empresa_id));wEmp=' AND l.empresa_id=$2';}
     const r=await pool.query(`
       SELECT l.periodo, d.faena_id, COALESCE(f.nombre,'Sin faena asignada') AS faena_nombre,
-             SUM(d.volumen_m3) AS m3
+             SUM(d.volumen_m3) AS m3, SUM(d.vma*d.volumen_m3) FILTER (WHERE d.vma>0) AS vma_m3, SUM(d.volumen_m3) FILTER (WHERE d.vma>0) AS m3_con_vma
       FROM fin_liquidacion_lineas d
       JOIN fin_liquidaciones l ON d.liq_id=l.liq_id
       LEFT JOIN faenas f ON d.faena_id=f.faena_id
@@ -15356,10 +15414,10 @@ app.post('/api/fin/liquidaciones', auth, async(req,res)=>{
     var liqId=ins.rows[0].liq_id;
     for(var i=0;i<lineas.length;i++){
       var l=lineas[i];
-      await client.query(`INSERT INTO fin_liquidacion_lineas(liq_id,equipo_contrato,fundo_codigo,fundo_nombre,faena_id,tipo,concepto,volumen_m3,monto)
-        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+      await client.query(`INSERT INTO fin_liquidacion_lineas(liq_id,equipo_contrato,fundo_codigo,fundo_nombre,faena_id,tipo,concepto,volumen_m3,monto,rodal,vma,tarifa_base,tarifa_final,factores,linea,contrato,equipo_real,especie)
+        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,$17,$18)`,
         [liqId,String(l.equipo_contrato||'').trim()||null,String(l.fundo_codigo||'').trim()||null,l.fundo_nombre||null,l.faena_id||null,
-         l.tipo==='PE'?'PE':'PRODUCCION',l.concepto||null,parseFloat(l.volumen_m3)||0,parseFloat(l.monto)||0]);
+         l.tipo==='PE'?'PE':'PRODUCCION',l.concepto||null,parseFloat(l.volumen_m3)||0,parseFloat(l.monto)||0,String(l.rodal||'').trim()||null,l.vma!==''&&l.vma!=null&&!isNaN(parseFloat(l.vma))?parseFloat(l.vma):null,l.tarifa_base!==''&&l.tarifa_base!=null&&!isNaN(parseFloat(l.tarifa_base))?parseFloat(l.tarifa_base):null,l.tarifa_final!==''&&l.tarifa_final!=null&&!isNaN(parseFloat(l.tarifa_final))?parseFloat(l.tarifa_final):null,JSON.stringify(l.factores&&typeof l.factores==='object'?l.factores:{}),String(l.linea||'').trim()||null,String(l.contrato||'').trim()||null,String(l.equipo_real||'').trim()||null,String(l.especie||'').trim()||null]);
     }
     await client.query('COMMIT');
     res.status(201).json({ok:true,liq_id:liqId,lineas:lineas.length});
@@ -15386,10 +15444,10 @@ app.put('/api/fin/liquidaciones/:id', auth, async(req,res)=>{
       await client.query('DELETE FROM fin_liquidacion_lineas WHERE liq_id=$1',[req.params.id]);
       for(var i=0;i<lineas.length;i++){
         var l=lineas[i];
-        await client.query(`INSERT INTO fin_liquidacion_lineas(liq_id,equipo_contrato,fundo_codigo,fundo_nombre,faena_id,tipo,concepto,volumen_m3,monto)
-          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        await client.query(`INSERT INTO fin_liquidacion_lineas(liq_id,equipo_contrato,fundo_codigo,fundo_nombre,faena_id,tipo,concepto,volumen_m3,monto,rodal,vma,tarifa_base,tarifa_final,factores,linea,contrato,equipo_real,especie)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,$17,$18)`,
           [req.params.id,String(l.equipo_contrato||'').trim()||null,String(l.fundo_codigo||'').trim()||null,l.fundo_nombre||null,l.faena_id||null,
-           l.tipo==='PE'?'PE':'PRODUCCION',l.concepto||null,parseFloat(l.volumen_m3)||0,parseFloat(l.monto)||0]);
+           l.tipo==='PE'?'PE':'PRODUCCION',l.concepto||null,parseFloat(l.volumen_m3)||0,parseFloat(l.monto)||0,String(l.rodal||'').trim()||null,l.vma!==''&&l.vma!=null&&!isNaN(parseFloat(l.vma))?parseFloat(l.vma):null,l.tarifa_base!==''&&l.tarifa_base!=null&&!isNaN(parseFloat(l.tarifa_base))?parseFloat(l.tarifa_base):null,l.tarifa_final!==''&&l.tarifa_final!=null&&!isNaN(parseFloat(l.tarifa_final))?parseFloat(l.tarifa_final):null,JSON.stringify(l.factores&&typeof l.factores==='object'?l.factores:{}),String(l.linea||'').trim()||null,String(l.contrato||'').trim()||null,String(l.equipo_real||'').trim()||null,String(l.especie||'').trim()||null]);
       }
     }
     await client.query('COMMIT');
