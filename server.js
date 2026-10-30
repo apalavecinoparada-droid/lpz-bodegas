@@ -12529,15 +12529,28 @@ app.get('/api/contratos', auth, async(req,res)=>{
     if(persona_id){v.push(persona_id);w.push(`c.persona_id=$${v.length}`);}
     const r=await pool.query(`SELECT c.*,p.nombre_completo,p.rut AS persona_rut,p.cargo,p.faena_id,fa.nombre AS faena_nombre,e.razon_social AS empresa_nombre,
       (SELECT COUNT(*) FROM contrato_anexos a WHERE a.contrato_id=c.contrato_id AND a.tipo='renovacion') AS renovaciones,
-      (SELECT MAX(a.fecha_anexo) FROM contrato_anexos a WHERE a.contrato_id=c.contrato_id AND a.tipo IN ('renovacion','cambio_modalidad')) AS ultimo_anexo_vigencia
-      FROM contratos c JOIN personal p ON c.persona_id=p.persona_id LEFT JOIN faenas fa ON p.faena_id=fa.faena_id JOIN empresas e ON c.empresa_id=e.empresa_id WHERE ${w.join(' AND ')} ORDER BY c.fecha_contrato DESC,c.contrato_id DESC`,v);
-    res.json(r.rows);
+      (SELECT MAX(a.fecha_anexo) FROM contrato_anexos a WHERE a.contrato_id=c.contrato_id AND a.tipo IN ('renovacion','cambio_modalidad')) AS ultimo_anexo_vigencia,
+      p.activo AS persona_activa,
+      cp.contrato_id AS posterior_id,cp.fecha_contrato AS posterior_fecha,cp.tipo_contrato AS posterior_tipo,cp.es_actualizacion AS posterior_actualizacion,
+      (SELECT MAX(f.fecha_termino) FROM finiquitos f WHERE f.persona_id=c.persona_id AND f.fecha_termino>=c.fecha_inicio) AS finiquito_fecha
+      FROM contratos c JOIN personal p ON c.persona_id=p.persona_id
+      LEFT JOIN LATERAL (SELECT c2.contrato_id,c2.fecha_contrato,c2.tipo_contrato,c2.es_actualizacion FROM contratos c2 WHERE c2.persona_id=c.persona_id AND (c2.fecha_contrato>c.fecha_contrato OR (c2.fecha_contrato=c.fecha_contrato AND c2.contrato_id>c.contrato_id)) ORDER BY c2.fecha_contrato,c2.contrato_id LIMIT 1) cp ON true LEFT JOIN faenas fa ON p.faena_id=fa.faena_id JOIN empresas e ON c.empresa_id=e.empresa_id WHERE ${w.join(' AND ')} ORDER BY c.fecha_contrato DESC,c.contrato_id DESC`,v);
+    res.json(r.rows.map(x=>Object.assign(x,{renovable:contratoRenovable(x).ok,no_renovable_motivo:contratoRenovable(x).motivo})));
   }catch(e){res.status(500).json({error:e.message});}
 });
 // ── Renovación de contrato a plazo fijo (Andrés 2026-10-30): un anexo que prorroga el plazo o cambia la modalidad ──
 // Política de la empresa: primer contrato 30 días, una renovación de 30 días y luego término de faena o indefinido
 // (por ley, art. 159 N° 4, la segunda renovación lo transforma en indefinido). Crea el anexo (cláusula de duración y
 // vigencia), deja el contrato y la ficha del trabajador con la nueva modalidad/fecha y devuelve el anexo para imprimirlo.
+// Solo se renueva el contrato vigente: a plazo fijo, sin otro contrato posterior del mismo trabajador (ya lo
+// reemplazó), sin finiquito posterior y con el trabajador activo. Devuelve {ok, motivo}.
+function contratoRenovable(c){
+  if(c.tipo_contrato!=='plazo_fijo')return {ok:false,motivo:'No es a plazo fijo'};
+  if(c.posterior_id)return {ok:false,motivo:(c.posterior_actualizacion?'Actualizado por':'Reemplazado por')+' contrato del '+calIso(c.posterior_fecha)+(c.posterior_tipo?' ('+({plazo_fijo:'plazo fijo',obra_servicio:'obra/faena',indefinido:'indefinido'}[c.posterior_tipo]||c.posterior_tipo)+')':'')};
+  if(c.finiquito_fecha)return {ok:false,motivo:'Finiquitado el '+calIso(c.finiquito_fecha)};
+  if(c.persona_activa===false)return {ok:false,motivo:'Trabajador inactivo'};
+  return {ok:true,motivo:''};
+}
 function fechaLargaEs(iso){ const m=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre']; const s=String(iso||'').slice(0,10).split('-'); return s.length===3?(+s[2])+' de '+m[+s[1]-1]+' de '+s[0]:String(iso||''); }
 app.post('/api/contratos/:id/renovar', auth, async(req,res)=>{
   const client=await pool.connect();
@@ -12546,9 +12559,14 @@ app.post('/api/contratos/:id/renovar', auth, async(req,res)=>{
     const modalidad=['plazo_fijo','obra_servicio','indefinido'].includes(b.modalidad)?b.modalidad:null;
     if(!modalidad)throw new Error('Indica la modalidad: renovar a plazo fijo, término de faena o indefinido');
     const fechaAnexo=/^\d{4}-\d{2}-\d{2}$/.test(b.fecha_anexo||'')?b.fecha_anexo:new Date().toISOString().slice(0,10);
-    const cr=await client.query('SELECT c.*,p.nombre_completo,p.cargo,p.faena_id,fa.nombre AS faena_nombre FROM contratos c JOIN personal p ON p.persona_id=c.persona_id LEFT JOIN faenas fa ON fa.faena_id=p.faena_id WHERE c.contrato_id=$1',[id]);
+    const cr=await client.query(`SELECT c.*,p.nombre_completo,p.cargo,p.faena_id,p.activo AS persona_activa,fa.nombre AS faena_nombre,
+      (SELECT c2.contrato_id FROM contratos c2 WHERE c2.persona_id=c.persona_id AND (c2.fecha_contrato>c.fecha_contrato OR (c2.fecha_contrato=c.fecha_contrato AND c2.contrato_id>c.contrato_id)) ORDER BY c2.fecha_contrato,c2.contrato_id LIMIT 1) AS posterior_id,
+      (SELECT c2.fecha_contrato FROM contratos c2 WHERE c2.persona_id=c.persona_id AND (c2.fecha_contrato>c.fecha_contrato OR (c2.fecha_contrato=c.fecha_contrato AND c2.contrato_id>c.contrato_id)) ORDER BY c2.fecha_contrato,c2.contrato_id LIMIT 1) AS posterior_fecha,
+      (SELECT MAX(f.fecha_termino) FROM finiquitos f WHERE f.persona_id=c.persona_id AND f.fecha_termino>=c.fecha_inicio) AS finiquito_fecha
+      FROM contratos c JOIN personal p ON p.persona_id=c.persona_id LEFT JOIN faenas fa ON fa.faena_id=p.faena_id WHERE c.contrato_id=$1`,[id]);
     if(!cr.rows.length)return res.status(404).json({error:'Contrato no encontrado'});
     const c=cr.rows[0];
+    const rv=contratoRenovable(c); if(!rv.ok&&!(b.forzar===true))throw new Error('Este contrato no es el vigente del trabajador: '+rv.motivo+'. Renueva el contrato más reciente.');
     const prev=parseInt((await client.query("SELECT COUNT(*) FROM contrato_anexos WHERE contrato_id=$1 AND tipo='renovacion'",[id])).rows[0].count)||0;
     const fTerm=c.fecha_termino?calIso(c.fecha_termino):null, fOrig=calIso(c.fecha_contrato), L=fechaLargaEs;
     let clausulas,tipo,nuevaTerm=null,obs;
