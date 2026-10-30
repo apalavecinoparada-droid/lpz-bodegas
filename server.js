@@ -12559,7 +12559,7 @@ app.post('/api/contratos/:id/renovar', auth, async(req,res)=>{
     const modalidad=['plazo_fijo','obra_servicio','indefinido'].includes(b.modalidad)?b.modalidad:null;
     if(!modalidad)throw new Error('Indica la modalidad: renovar a plazo fijo, término de faena o indefinido');
     const fechaAnexo=/^\d{4}-\d{2}-\d{2}$/.test(b.fecha_anexo||'')?b.fecha_anexo:new Date().toISOString().slice(0,10);
-    const cr=await client.query(`SELECT c.*,p.nombre_completo,p.cargo,p.faena_id,p.activo AS persona_activa,fa.nombre AS faena_nombre,
+    const cr=await client.query(`SELECT c.*,p.nombre_completo,p.cargo,p.faena_id,p.activo AS persona_activa,p.tipo_contrato AS ficha_tipo,p.fecha_termino AS ficha_termino,fa.nombre AS faena_nombre,
       (SELECT c2.contrato_id FROM contratos c2 WHERE c2.persona_id=c.persona_id AND (c2.fecha_contrato>c.fecha_contrato OR (c2.fecha_contrato=c.fecha_contrato AND c2.contrato_id>c.contrato_id)) ORDER BY c2.fecha_contrato,c2.contrato_id LIMIT 1) AS posterior_id,
       (SELECT c2.fecha_contrato FROM contratos c2 WHERE c2.persona_id=c.persona_id AND (c2.fecha_contrato>c.fecha_contrato OR (c2.fecha_contrato=c.fecha_contrato AND c2.contrato_id>c.contrato_id)) ORDER BY c2.fecha_contrato,c2.contrato_id LIMIT 1) AS posterior_fecha,
       (SELECT MAX(f.fecha_termino) FROM finiquitos f WHERE f.persona_id=c.persona_id AND f.fecha_termino>=c.fecha_inicio) AS finiquito_fecha
@@ -12585,9 +12585,11 @@ app.post('/api/contratos/:id/renovar', auth, async(req,res)=>{
     }
     if(b.observaciones)obs+=' · '+String(b.observaciones).slice(0,300);
     await client.query('BEGIN');
-    const a=await client.query(`INSERT INTO contrato_anexos(persona_id,empresa_id,contrato_id,fecha_anexo,fecha_contrato_original,funcion_original,lugar_firma,clausulas,observaciones,usuario,tipo,modalidad,vigencia_hasta)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13) RETURNING anexo_id`,
-      [c.persona_id,c.empresa_id,id,fechaAnexo,c.fecha_contrato,c.cargo,b.lugar_firma||'Nacimiento',JSON.stringify(clausulas),obs,req.user.email,tipo,modalidad,nuevaTerm]);
+    // Estado previo del contrato y de la ficha: si el anexo se borra, se vuelve a este estado (ver anexoEliminar)
+    const previo={tipo_contrato:c.tipo_contrato,fecha_termino:fTerm,ficha_tipo:c.ficha_tipo||null,ficha_termino:c.ficha_termino?calIso(c.ficha_termino):null};
+    const a=await client.query(`INSERT INTO contrato_anexos(persona_id,empresa_id,contrato_id,fecha_anexo,fecha_contrato_original,funcion_original,lugar_firma,clausulas,observaciones,usuario,tipo,modalidad,vigencia_hasta,estado_previo)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14::jsonb) RETURNING anexo_id`,
+      [c.persona_id,c.empresa_id,id,fechaAnexo,c.fecha_contrato,c.cargo,b.lugar_firma||'Nacimiento',JSON.stringify(clausulas),obs,req.user.email,tipo,modalidad,nuevaTerm,JSON.stringify(previo)]);
     await client.query('UPDATE contratos SET tipo_contrato=$1,fecha_termino=$2 WHERE contrato_id=$3',[modalidad,nuevaTerm,id]);
     await client.query('UPDATE personal SET tipo_contrato=$1,fecha_termino=$2 WHERE persona_id=$3',[({plazo_fijo:'A Plazo',obra_servicio:'Por Obra',indefinido:'Indefinido'})[modalidad],nuevaTerm,c.persona_id]);
     await client.query('COMMIT');
@@ -12706,6 +12708,7 @@ async function setupAnexos(q){
   try{await q('ALTER TABLE contrato_anexos ADD COLUMN IF NOT EXISTS tipo VARCHAR(30)');}catch(e){}
   try{await q('ALTER TABLE contrato_anexos ADD COLUMN IF NOT EXISTS modalidad VARCHAR(20)');}catch(e){}
   try{await q('ALTER TABLE contrato_anexos ADD COLUMN IF NOT EXISTS vigencia_hasta DATE');}catch(e){}
+  try{await q('ALTER TABLE contrato_anexos ADD COLUMN IF NOT EXISTS estado_previo JSONB');}catch(e){}
 }
 setupAnexos(pool.query.bind(pool)).catch(function(e){console.log('[WARN] anexos:',e.message);});
 
@@ -12783,17 +12786,43 @@ app.post('/api/anexos', auth, async(req,res)=>{
   finally{client.release();}
 });
 // Eliminar anexo
+// Borra un anexo. Si es de renovación o cambio de modalidad (generado por /renovar), devuelve el contrato y la
+// ficha al estado guardado en estado_previo; solo se permite borrar el más reciente de ese contrato para que la
+// cadena de estados quede consistente. Devuelve {anexo_id, revertido, contrato_id, tipo_contrato, fecha_termino}.
+async function anexoEliminar(client,id){
+  const r=await client.query('SELECT * FROM contrato_anexos WHERE anexo_id=$1',[id]);
+  if(!r.rows.length)throw new Error('Anexo '+id+' no encontrado');
+  const a=r.rows[0]; let out={anexo_id:a.anexo_id,revertido:false};
+  if(['renovacion','cambio_modalidad'].includes(a.tipo)&&a.estado_previo&&a.contrato_id){
+    const mas=await client.query(`SELECT anexo_id,fecha_anexo FROM contrato_anexos WHERE contrato_id=$1 AND tipo IN ('renovacion','cambio_modalidad') AND anexo_id<>$2
+      AND (fecha_anexo>$3 OR (fecha_anexo=$3 AND anexo_id>$2)) ORDER BY fecha_anexo DESC,anexo_id DESC LIMIT 1`,[a.contrato_id,a.anexo_id,a.fecha_anexo]);
+    if(mas.rows.length)throw new Error('Este contrato tiene una renovación posterior (anexo del '+calIso(mas.rows[0].fecha_anexo)+'); elimina primero la más reciente.');
+    const p=a.estado_previo;
+    await client.query('UPDATE contratos SET tipo_contrato=$1,fecha_termino=$2 WHERE contrato_id=$3',[p.tipo_contrato||'plazo_fijo',p.fecha_termino||null,a.contrato_id]);
+    await client.query('UPDATE personal SET tipo_contrato=$1,fecha_termino=$2 WHERE persona_id=$3',[p.ficha_tipo||({plazo_fijo:'A Plazo',obra_servicio:'Por Obra',indefinido:'Indefinido'})[p.tipo_contrato]||'A Plazo',p.ficha_termino||p.fecha_termino||null,a.persona_id]);
+    out={anexo_id:a.anexo_id,revertido:true,contrato_id:a.contrato_id,tipo_contrato:p.tipo_contrato,fecha_termino:p.fecha_termino||null};
+  }
+  await client.query('DELETE FROM contrato_anexos WHERE anexo_id=$1',[id]);
+  return out;
+}
 app.delete('/api/anexos/:id', auth, async(req,res)=>{
-  try{await pool.query('DELETE FROM contrato_anexos WHERE anexo_id=$1',[req.params.id]);res.json({ok:true});}
-  catch(e){res.status(400).json({error:e.message});}
+  const client=await pool.connect();
+  try{await client.query('BEGIN'); const out=await anexoEliminar(client,parseInt(req.params.id)); await client.query('COMMIT'); res.json(Object.assign({ok:true},out));}
+  catch(e){try{await client.query('ROLLBACK');}catch(_){} res.status(400).json({error:e.message});}
+  finally{client.release();}
 });
 // Eliminación masiva de anexos
 app.post('/api/anexos/eliminar-masivo', auth, async(req,res)=>{
   try{
-    const ids=req.body.ids;
-    if(!Array.isArray(ids)||!ids.length)throw new Error('Debe indicar IDs a eliminar');
-    const r=await pool.query('DELETE FROM contrato_anexos WHERE anexo_id=ANY($1::int[]) RETURNING anexo_id',[ids]);
-    res.json({ok:true,eliminados:r.rows.length});
+    const ids=(req.body.ids||[]).map(x=>parseInt(x)).filter(Boolean);
+    if(!ids.length)throw new Error('Debe indicar IDs a eliminar');
+    // Del más reciente al más antiguo, para que cada reversión encuentre su estado previo
+    const orden=await pool.query('SELECT anexo_id FROM contrato_anexos WHERE anexo_id=ANY($1::int[]) ORDER BY fecha_anexo DESC,anexo_id DESC',[ids]);
+    const client=await pool.connect(); let revertidos=0,eliminados=0;
+    try{await client.query('BEGIN'); for(const row of orden.rows){const o=await anexoEliminar(client,row.anexo_id); eliminados++; if(o.revertido)revertidos++;} await client.query('COMMIT');}
+    catch(e){try{await client.query('ROLLBACK');}catch(_){} throw e;}
+    finally{client.release();}
+    res.json({ok:true,eliminados,revertidos});
   }catch(e){res.status(400).json({error:e.message});}
 });
 
