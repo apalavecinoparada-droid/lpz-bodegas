@@ -5729,12 +5729,19 @@ app.get('/api/mant/vencimientos', auth, async(req,res)=>{
         else estado='vigente';
       }
 
+      // Fecha del último servicio: la de la OT cerrada si es la referencia vigente, si no la de la semilla (Cargar Último Cambio)
+      const hrsOt=parseFloat(row.ult_hrs_ot)||0, hrsSem=parseFloat(row.semilla_hrs)||0, kmOt=parseFloat(row.ult_km_ot)||0, kmSem=parseFloat(row.semilla_km)||0;
+      const usaOt=row.ult_fecha_ot&&((hrsOt>0&&hrsOt>=hrsSem)||(hrsOt===0&&hrsSem===0&&kmOt>0&&kmOt>=kmSem)||(!row.semilla_fecha));
+      const ultimo_fecha=usaOt?row.ult_fecha_ot:(row.semilla_fecha||row.ult_fecha_ot||null);
+      const ultimo_fuente=ultimo_fecha?(usaOt?'ot':'semilla'):null;
+      const dias_desde_servicio=ultimo_fecha?Math.floor((Date.now()-new Date(calIso(ultimo_fecha)+'T12:00:00Z').getTime())/86400000):null;
       return Object.assign({},row,{
         proxHrs:proxHrs!==null?Number(proxHrs.toFixed(1)):null,
         proxKm:proxKm!==null?Number(proxKm.toFixed(0)):null,
         diff:diff!==null?Number(diff.toFixed(1)):null,
         estado_vencimiento:estado,
-        criterio
+        criterio,
+        ultimo_fecha:ultimo_fecha?calIso(ultimo_fecha):null, ultimo_fuente, dias_desde_servicio
       });
     });
 
