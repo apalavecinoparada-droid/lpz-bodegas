@@ -14235,6 +14235,8 @@ function MantVencimientos(p){
       {header:'Intervalo',value:function(r){return r.intervalo_horas?parseFloat(r.intervalo_horas)+' h':(r.intervalo_km?r.intervalo_km+' km':'');}},
       {header:'Horómetro actual',value:function(r){return r.horometro_actual;}},
       {header:'Último servicio',value:function(r){return r.ultimo_hrs;}},
+      {header:'Fecha último servicio',value:function(r){return r.ultimo_fecha?fmtD(r.ultimo_fecha):'';}},
+      {header:'Días desde servicio',value:function(r){return r.dias_desde_servicio==null?'':r.dias_desde_servicio;}},
       {header:'Próximo servicio',value:function(r){return r.proxHrs||r.proxKm;}},
       {header:'Diferencia',value:function(r){return r.diff;}},
       {header:'Estado',value:function(r){return r.estado_vencimiento;}},
@@ -14331,8 +14333,10 @@ function MantVencimientos(p){
         }},
         {lbl:'Último Servicio',r:true,render:function(r){
           var ult=parseFloat(r.ultimo_hrs)||0;
-          if(ult===0) return h('span',{style:{color:'#94A3B8',fontSize:10,fontStyle:'italic'}},'sin registro');
-          return h('span',{className:'mono'},fmtN(ult));
+          if(ult===0&&!r.ultimo_fecha) return h('span',{style:{color:'#94A3B8',fontSize:10,fontStyle:'italic'}},'sin registro');
+          return h('div',null,ult>0?h('span',{className:'mono'},fmtN(ult)):h('span',{style:{color:'#94A3B8',fontSize:10}},'—'),
+            r.ultimo_fecha&&h('div',{style:{fontSize:10,color:'#475569',whiteSpace:'nowrap'},title:(r.ultimo_fuente==='ot'?'Fecha de término de la última OT cerrada':'Fecha cargada en Último Cambio (semilla)')+(r.dias_desde_servicio!=null?' · hace '+r.dias_desde_servicio+' día(s)':'')},
+              '📅 '+fmtD(r.ultimo_fecha),r.dias_desde_servicio!=null&&h('span',{style:{color:r.dias_desde_servicio>180?'#DC2626':'#94A3B8',marginLeft:4}},'('+r.dias_desde_servicio+' d)')));
         }},
         {lbl:'Próximo',r:true,render:function(r){return r.proxHrs?h('strong',{className:'mono',style:{color:r.estado_vencimiento==='vencida'?'#DC2626':r.estado_vencimiento==='proxima'?'#F59E0B':'#1E40AF'}},fmtN(r.proxHrs)+' h'):(r.proxKm?h('strong',{className:'mono'},fmtN(r.proxKm)+' km'):'—');}},
         {lbl:'Diferencia',r:true,render:function(r){
@@ -20112,6 +20116,8 @@ function Personal(p){
   const[filtCargo,setFiltCargo]=useState('');
   const[filtContrato,setFiltContrato]=useState('');
   const[filtTurno,setFiltTurno]=useState('');
+  const[filtFecha,setFiltFecha]=useState(''); // ing_mes | ing_mes_ant | ing_30 | ing_anio | ter_mes | ter_30 | ter_venc | ing_rango
+  const[filtDesde,setFiltDesde]=useState('');const[filtHasta,setFiltHasta]=useState('');
   const[haberesPersona,setHaberesPersona]=useState(null); // trabajador en edición de haberes
   const[haberesForm,setHaberesForm]=useState(null);
   const[haberesLoading,setHaberesLoading]=useState(false);
@@ -20220,6 +20226,28 @@ function Personal(p){
   }
   var inp={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
   var lblS={fontSize:11,fontWeight:600,display:'block',marginBottom:3};
+  // Filtro por fecha de ingreso / término. Fechas en texto ISO (yyyy-mm-dd) para comparar sin problemas de zona horaria.
+  var hoyIso=new Date().toLocaleDateString('sv-SE',{timeZone:'America/Santiago'});
+  var mesIso=hoyIso.slice(0,7);
+  var mesAntIso=(function(){var d=new Date(hoyIso.slice(0,4),parseInt(hoyIso.slice(5,7),10)-2,1);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');})();
+  var FILTROS_FECHA=[
+    {v:'ing_mes',l:'Ingreso: mes en curso'},{v:'ing_mes_ant',l:'Ingreso: mes anterior'},{v:'ing_30',l:'Ingreso: últimos 30 días'},{v:'ing_anio',l:'Ingreso: año en curso'},{v:'ing_rango',l:'Ingreso: entre fechas…'},
+    {v:'ter_mes',l:'Término: este mes'},{v:'ter_30',l:'Término: próximos 30 días'},{v:'ter_venc',l:'Término: ya vencido'}
+  ];
+  function filtroFechaOk(x){
+    var fi=x.fecha_ingreso?String(x.fecha_ingreso).slice(0,10):'', ft=x.fecha_termino?String(x.fecha_termino).slice(0,10):'';
+    switch(filtFecha){
+      case 'ing_mes': return fi.slice(0,7)===mesIso;
+      case 'ing_mes_ant': return fi.slice(0,7)===mesAntIso;
+      case 'ing_30': return !!fi&&fi>=calAdd(hoyIso,-30)&&fi<=hoyIso;
+      case 'ing_anio': return fi.slice(0,4)===hoyIso.slice(0,4);
+      case 'ing_rango': return !!fi&&(!filtDesde||fi>=filtDesde)&&(!filtHasta||fi<=filtHasta);
+      case 'ter_mes': return ft.slice(0,7)===mesIso;
+      case 'ter_30': return !!ft&&ft>=hoyIso&&ft<=calAdd(hoyIso,30);
+      case 'ter_venc': return !!ft&&ft<hoyIso;
+      default: return true;
+    }
+  }
   var rows=personas.filter(function(x){
     if(filtEmpresa&&String(x.empresa_id)!==String(filtEmpresa)) return false;
     if(filtFaena&&String(x.faena_id)!==String(filtFaena)) return false;
@@ -20230,6 +20258,7 @@ function Personal(p){
     if(filtTurno==='AB'&&x.turno!=='AB') return false;
     if(filtTurno==='P'&&x.turno!=='P') return false;
     if(filtTurno==='normal'&&(x.turno==='A'||x.turno==='B'||x.turno==='AB'||x.turno==='P')) return false;
+    if(filtFecha&&!filtroFechaOk(x)) return false;
     // Filtro por estado
     if(filtEstado==='activos'&&!x.activo) return false;
     if(filtEstado==='inactivos'&&x.activo) return false;
@@ -20377,8 +20406,15 @@ function Personal(p){
           h('option',{value:'P'},'Ciclo propio 7x7 (desfasado)'),
           h('option',{value:'normal'},'Jornada normal (sin turno)')
         ),
+        h('select',{value:filtFecha,onChange:function(e){setFiltFecha(e.target.value);},title:'Filtrar por fecha de ingreso o de término de contrato',style:{padding:'5px 8px',border:'1px solid '+(filtFecha?'#1E3A2D':'#CBD5E1'),borderRadius:5,fontSize:11,fontWeight:filtFecha?600:400,background:filtFecha?'#F0FDF4':'#fff'}},
+          h('option',{value:''},'📅 Todas las fechas'),
+          FILTROS_FECHA.map(function(o){return h('option',{key:o.v,value:o.v},o.l);})
+        ),
+        filtFecha==='ing_rango'&&h('span',{style:{display:'inline-flex',gap:4,alignItems:'center',fontSize:11}},
+          h('input',{type:'date',value:filtDesde,onChange:function(e){setFiltDesde(e.target.value);},style:{padding:'4px 6px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}}),'a',
+          h('input',{type:'date',value:filtHasta,onChange:function(e){setFiltHasta(e.target.value);},style:{padding:'4px 6px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11}})),
         h('input',{type:'text',placeholder:'Buscar nombre, apellido, RUT, cargo...',value:buscar,onChange:function(e){setBuscar(e.target.value);},style:{padding:'5px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,width:230}}),
-        (filtEmpresa||filtFaena||filtCargo||filtContrato||filtTurno||buscar)&&h('button',{onClick:function(){setFiltEmpresa('');setFiltFaena('');setFiltCargo('');setFiltContrato('');setFiltTurno('');setBuscar('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
+        (filtEmpresa||filtFaena||filtCargo||filtContrato||filtTurno||filtFecha||buscar)&&h('button',{onClick:function(){setFiltEmpresa('');setFiltFaena('');setFiltCargo('');setFiltContrato('');setFiltTurno('');setFiltFecha('');setFiltDesde('');setFiltHasta('');setBuscar('');},style:{padding:'5px 10px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11,background:'#FEF2F2',color:'#991B1B',cursor:'pointer',fontWeight:600}},'✕ Limpiar'),
         h('span',{style:{fontSize:11,color:'#64748B'}},rows.length+'/'+personas.length+' registros')
       ),
       h('div',{style:{display:'flex',gap:6}},
