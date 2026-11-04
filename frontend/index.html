@@ -3898,10 +3898,23 @@ function TerrenoParteDiarioView(p){
       .then(function(r){setData(r);}).catch(function(e){setErr(e.message);setData(null);}).finally(function(){setLoading(false);});
   }
   useEffect(cargar,[p.tok,fecha,faena,empresa]);
-  var EST={ok:{l:'✔ Bien',c:'#166534',bg:'#DCFCE7'},observaciones:{l:'⚠ Con observaciones',c:'#92400E',bg:'#FEF3C7'},error:{l:'✖ Corregir',c:'#991B1B',bg:'#FEE2E2'},sin_informar:{l:'⛔ Sin informar',c:'#991B1B',bg:'#FEE2E2'}};
+  var EST={ok:{l:'✔ Bien',c:'#166534',bg:'#DCFCE7'},observaciones:{l:'⚠ Con observaciones',c:'#92400E',bg:'#FEF3C7'},error:{l:'✖ Corregir',c:'#991B1B',bg:'#FEE2E2'},sin_informar:{l:'⛔ Sin informar',c:'#991B1B',bg:'#FEE2E2'},fuera:{l:'🔧 Fuera de faena',c:'#1E40AF',bg:'#DBEAFE'}};
+  var MOTIVOS=[{v:'taller',l:'En taller (sin OT todavía)'},{v:'detenida',l:'Detenida / sin operador'},{v:'traslado',l:'En traslado'},{v:'otro',l:'Otro'}];
+  // Marcar una máquina fuera de faena (taller sin OT, detenida, traslado) desde la fila "sin informar"; y cerrar el estado cuando vuelve
+  function marcarFuera(m){
+    var motivo=prompt('¿Por qué '+m.codigo+' no tiene registro?\n1 = En taller (sin OT todavía)\n2 = Detenida / sin operador\n3 = En traslado\n4 = Otro\n\nEscribe el número:','1');
+    if(motivo==null)return; var mv=({'1':'taller','2':'detenida','3':'traslado','4':'otro'})[String(motivo).trim()]||'taller';
+    var obs=prompt('Observación (opcional, ej: "en taller Nacimiento, esperando repuesto"):','')||'';
+    api('/terreno/equipo-estados','POST',{equipo_id:m.equipo_id,desde:fecha,motivo:mv,observacion:obs},p.tok).then(cargar).catch(function(e){alert(e.message);});
+  }
+  function cerrarFuera(m){
+    if(!m.fuera||m.fuera.tipo!=='marcador'){alert('Esta máquina figura en taller por una OT abierta ('+(m.fuera&&m.fuera.ot)+'): se cierra desde Mantención, al cerrar la OT.');return;}
+    if(!confirm('¿'+m.codigo+' volvió a faena el '+fmtD(fecha)+'? Desde ese día se le volverá a exigir el registro.'))return;
+    api('/terreno/equipo-estados/'+m.fuera.id,'PUT',{hasta:fecha},p.tok).then(cargar).catch(function(e){alert(e.message);});
+  }
   var n1=function(v,d){return v==null?'—':new Intl.NumberFormat('es-CL',{maximumFractionDigits:d==null?1:d}).format(v);};
   var tot=data&&data.totales||{};
-  var grupos=(data&&data.faenas||[]).map(function(g){return Object.assign({},g,{maquinas:g.maquinas.filter(function(m){return !soloProblemas||m.estado!=='ok';})});}).filter(function(g){return g.maquinas.length;});
+  var grupos=(data&&data.faenas||[]).map(function(g){return Object.assign({},g,{maquinas:g.maquinas.filter(function(m){return !soloProblemas||(m.estado!=='ok'&&m.estado!=='fuera');})});}).filter(function(g){return g.maquinas.length;});
   function tobTxt(r){return (r.tob||[]).map(function(x){return x.causa+' '+n1(x.horas)+' h ('+x.clasificacion+')'+(x.observacion?': '+x.observacion:'');}).join(' · ');}
   function exportar(){
     var filas=[];(data&&data.faenas||[]).forEach(function(g){g.maquinas.forEach(function(m){
@@ -3924,7 +3937,7 @@ function TerrenoParteDiarioView(p){
     grupos.forEach(function(g){
       html+='<h2>'+esc(g.faena_nombre)+(g.empresa_nombre?' · '+esc(g.empresa_nombre):'')+' — '+g.maquinas.length+' máquina(s)</h2><table><tr><th>Equipo</th><th>Estado</th><th>Jorn.</th><th>Operador</th><th class="r">Horóm.</th><th class="r">Trab.</th><th class="r">Perd.</th><th>TOB</th><th class="r">L terr.</th><th class="r">L est.</th><th class="r">Motor telem.</th><th class="r">Árb.</th><th class="r">m³</th><th>Qué corregir</th></tr>';
       g.maquinas.forEach(function(m){
-        var cls=m.estado==='ok'?'ok':(m.estado==='observaciones'?'obs':'err'); var qc=m.observaciones.map(function(o){return esc(o.m);}).join('<br>');
+        var cls=m.estado==='ok'?'ok':(m.estado==='observaciones'?'obs':(m.estado==='fuera'?'':'err')); var qc=m.observaciones.map(function(o){return esc(o.m);}).join('<br>');
         if(!m.registros.length){html+='<tr><td><b>'+esc(m.codigo)+'</b><br>'+esc(m.nombre)+'</td><td class="'+cls+'">'+EST[m.estado].l+'</td><td colspan="11"></td><td class="'+cls+'">'+qc+'</td></tr>';return;}
         m.registros.forEach(function(r,i){
           html+='<tr>'+(i===0?'<td rowspan="'+m.registros.length+'"><b>'+esc(m.codigo)+'</b><br>'+esc(m.nombre)+'</td><td rowspan="'+m.registros.length+'" class="'+cls+'">'+EST[m.estado].l+'</td>':'')+
@@ -3952,7 +3965,7 @@ function TerrenoParteDiarioView(p){
       h('span',{style:{marginLeft:'auto',display:'flex',gap:6}},h(Btn,{v:'g',sm:true,onClick:exportar,disabled:!data},null,'📊 Excel'),h(Btn,{v:'a',sm:true,onClick:imprimir,disabled:!data},null,'🖨 Imprimir / PDF'),h(Btn,{sm:true,onClick:cargar},null,'🔄'))),
     err&&h('div',{className:'card',style:{background:'#FEE2E2',color:'#991B1B',padding:10}},err),
     h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:8,marginBottom:10}},
-      kpi('MÁQUINAS',tot.maquinas,'#334155'),kpi('INFORMADAS',tot.informadas,'#166534'),kpi('SIN INFORMAR',tot.sin_informar,'#DC2626'),kpi('CON OBSERVACIONES',tot.con_observaciones,'#F59E0B',function(){setSoloProblemas(!soloProblemas);},soloProblemas),
+      kpi('MÁQUINAS',tot.maquinas,'#334155'),kpi('INFORMADAS',tot.informadas,'#166534'),kpi('SIN INFORMAR',tot.sin_informar,'#DC2626'),kpi('EN TALLER / FUERA',tot.fuera,'#1E40AF'),kpi('CON OBSERVACIONES',tot.con_observaciones,'#F59E0B',function(){setSoloProblemas(!soloProblemas);},soloProblemas),
       kpi('HRS TRABAJADAS',tot.horas_trabajadas!=null?n1(tot.horas_trabajadas):null,'#1E40AF'),kpi('HRS PERDIDAS',tot.horas_perdidas!=null?n1(tot.horas_perdidas):null,'#B45309'),
       kpi('LITROS TERRENO / ESTANQUE',tot.litros_terreno!=null?n1(tot.litros_terreno,0)+' / '+n1(tot.litros_estanque,0):null,'#0F766E'),kpi('m³ · ÁRBOLES',tot.m3!=null?n1(tot.m3)+' · '+n1(tot.arboles,0):null,'#6D28D9')),
     data&&data.alcance&&h('div',{style:{fontSize:11,color:'#1E40AF',background:'#EFF6FF',padding:'6px 10px',borderRadius:6,marginBottom:8}},'Ves solo tu faena.'),
@@ -3974,7 +3987,11 @@ function TerrenoParteDiarioView(p){
             var celTel=h('td',{style:tdR,rowSpan:Math.max(1,m.registros.length),title:m.telemetria?m.telemetria.marca+': motor '+n1(m.telemetria.horas_motor)+' h · producción '+n1(m.telemetria.horas_produccion)+' h · ralentí '+n1(m.telemetria.horas_inactivo)+' h · '+n1(m.telemetria.litros,0)+' L':'sin telemetría asignada'},
               m.telemetria?h('div',null,n1(m.telemetria.horas_motor)+' h',m.telemetria.litros!=null&&h('div',{style:{fontSize:10,color:'#64748B'}},n1(m.telemetria.litros,0)+' L')):'—');
             var celQc=h('td',{style:Object.assign({},tdS,{maxWidth:280}),rowSpan:Math.max(1,m.registros.length)},qc);
-            if(!m.registros.length) return h('tr',{key:key,style:{background:'#FFF7F7'}},celEq,celEst,h('td',{style:tdS,colSpan:6},h('span',{style:{color:'#94A3B8',fontStyle:'italic'}},'sin registro')),celComb,celTel,h('td',{style:tdS,colSpan:2}),celQc);
+            if(!m.registros.length) return h('tr',{key:key,style:{background:m.estado==='fuera'?'#F5F8FF':'#FFF7F7'}},celEq,celEst,h('td',{style:tdS,colSpan:6},
+              h('span',{style:{color:'#94A3B8',fontStyle:'italic'}},m.estado==='fuera'?(m.fuera&&m.fuera.texto):'sin registro'),
+              m.estado==='sin_informar'&&h('button',{onClick:function(){marcarFuera(m);},title:'La máquina no está en faena (taller sin OT, detenida, traslado): no exigir registro desde este día',style:{marginLeft:8,padding:'2px 8px',fontSize:10,border:'1px solid #93C5FD',borderRadius:4,background:'#EFF6FF',color:'#1E40AF',cursor:'pointer'}},'🔧 Marcar en taller / fuera de faena'),
+              m.estado==='fuera'&&m.fuera&&m.fuera.tipo==='marcador'&&h('button',{onClick:function(){cerrarFuera(m);},style:{marginLeft:8,padding:'2px 8px',fontSize:10,border:'1px solid #86EFAC',borderRadius:4,background:'#F0FDF4',color:'#166534',cursor:'pointer'}},'↩ Volvió a faena')),
+              celComb,celTel,h('td',{style:tdS,colSpan:2}),celQc);
             return m.registros.map(function(r,i){
               return h('tr',{key:key+'_'+r.registro_id,style:{background:m.estado==='ok'?'#fff':(m.estado==='observaciones'?'#FFFDF5':'#FFF7F7')}},
                 i===0&&celEq,i===0&&celEst,
@@ -4272,6 +4289,7 @@ function TerrenoView(p){
     var _eqSelTope=allEquipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
     if(!esVehiculoEq(_eqSelTope)&&parseFloat(form.horometro_final)-parseFloat(form.horometro_inicial)>24){setMsg('Error: Las horas trabajadas de un día no pueden superar 24. La diferencia de horómetros ingresada es '+(parseFloat(form.horometro_final)-parseFloat(form.horometro_inicial)).toFixed(1)+' horas — revise los horómetros');return;}
     if(!esVehiculoEq(_eqSelTope)&&esFaenaLpoo(form.faena_id)&&(form.arboles_producidos===''||form.arboles_producidos==null)){setMsg('Error: La cantidad de árboles es obligatoria para registros de maquinaria de Leonidas Poo');return;}
+    if(!esVehiculoEq(_eqSelTope)&&parseFloat(form.horometro_final)-parseFloat(form.horometro_inicial)<=0&&hp>10){setMsg('Error: Sin movimiento de horómetro, las horas perdidas no pueden superar 10 (ingresaste '+hp.toFixed(1)+'). Si la máquina trabajó, corrige el horómetro final');return;}
     if(hp>0&&tobDesc){setMsg('Error: La suma del desglose TOB ('+sumTob.toFixed(2)+') no coincide con horas perdidas ('+hp.toFixed(2)+')');return;}
     var tobSinClas=(form.tob_detalle||[]).filter(function(l){return (l.tob_cat_id||parseFloat(l.horas)>0)&&l.clasificacion!=='E'&&l.clasificacion!=='F';});
     if(tobSinClas.length){setMsg('Error: Selecciona la clasificaci\u00f3n (E = Empresa o F = Mandante) en cada tiempo perdido; falta en '+tobSinClas.length+' l\u00ednea(s)');return;}
@@ -27897,6 +27915,7 @@ function MobileTerreno(p){
     var _eqSelTope=equipos.find(function(e){return String(e.equipo_id)===String(form.equipo_id);});
     if(!esVehiculoEq(_eqSelTope)&&hf-hi>24){setMsg('Las horas trabajadas de un día no pueden superar 24 ('+(hf-hi).toFixed(1)+' h ingresadas) — revisa los horómetros');return;}
     if(!esVehiculoEq(_eqSelTope)&&esFaenaLpooM(form.faena_id)&&(form.arboles_producidos===''||form.arboles_producidos==null)){setMsg('La cantidad de árboles es obligatoria para registros de maquinaria de Leonidas Poo');return;}
+    if(!esVehiculoEq(_eqSelTope)&&hf-hi<=0&&hPerd>10){setMsg('Sin movimiento de horómetro, las horas perdidas no pueden superar 10 (ingresaste '+hPerd.toFixed(1)+'). Si la máquina trabajó, corrige el horómetro final');return;}
     if(hPerd>0){
       var linVal=tobLineas.filter(function(l){return l.tob_cat_id&&parseFloat(l.horas)>0;});
       if(linVal.length===0){setMsg('Debe desglosar las horas perdidas en tiempos obvios');return;}
