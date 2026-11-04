@@ -10256,7 +10256,7 @@ app.get('/api/prod/oee/datasets', auth, async(req,res)=>{
   try{
     await pool.query(`CREATE TABLE IF NOT EXISTS prod_oee_datasets (clave VARCHAR(40) PRIMARY KEY, valor JSONB DEFAULT '{}'::jsonb, actualizado_en TIMESTAMP DEFAULT NOW())`);
     const r=await pool.query('SELECT clave, valor FROM prod_oee_datasets');
-    const out={best_daily:{},prod_rodal:{},oferta_rodal:[],faja_daily:{},informe_hrs:[],oper_data:[],grafx:{},diesel:[],ofsnap:{},causas_hperd:{},diesel_detalle:{},vma_mix:{},vma_dia:{},vma_rod:{},bht_dias:[],prod_faena_mes:{},hperd_unif:{},wa_det:[],oper_data_bd:[],fmn_dias:[],bodega:null,liq:[],ofcamb:[]};
+    const out={best_daily:{},prod_rodal:{},oferta_rodal:[],faja_daily:{},informe_hrs:[],oper_data:[],grafx:{},diesel:[],ofsnap:{},causas_hperd:{},diesel_detalle:{},vma_mix:{},vma_dia:{},vma_rod:{},bht_dias:[],prod_faena_mes:{},hperd_unif:{},wa_det:[],oper_data_bd:[],fmn_dias:[],bodega:null,liq:[],ofcamb:[],est_disp:{}};
     r.rows.forEach(function(x){ out[x.clave]=x.valor; });
     res.json(out);
   }catch(e){res.status(500).json({error:e.message});}
@@ -10266,7 +10266,7 @@ app.post('/api/prod/oee/datasets', auth, async(req,res)=>{
   try{
     await client.query(`CREATE TABLE IF NOT EXISTS prod_oee_datasets (clave VARCHAR(40) PRIMARY KEY, valor JSONB DEFAULT '{}'::jsonb, actualizado_en TIMESTAMP DEFAULT NOW())`);
     const b=req.body||{};
-    const map={best_daily:b.best_daily, prod_rodal:b.prod_rodal, oferta_rodal:b.oferta_rodal, faja_daily:b.faja_daily, informe_hrs:b.informe_hrs, oper_data:b.oper_data, grafx:b.grafx, diesel:b.diesel, ofsnap:b.ofsnap, causas_hperd:b.causas_hperd, diesel_detalle:b.diesel_detalle, vma_mix:b.vma_mix, vma_dia:b.vma_dia, vma_rod:b.vma_rod, bht_dias:b.bht_dias, prod_faena_mes:b.prod_faena_mes, hperd_unif:b.hperd_unif, wa_det:b.wa_det, oper_data_bd:b.oper_data_bd, fmn_dias:b.fmn_dias, bodega:b.bodega, liq:b.liq, ofcamb:b.ofcamb};
+    const map={best_daily:b.best_daily, prod_rodal:b.prod_rodal, oferta_rodal:b.oferta_rodal, faja_daily:b.faja_daily, informe_hrs:b.informe_hrs, oper_data:b.oper_data, grafx:b.grafx, diesel:b.diesel, ofsnap:b.ofsnap, causas_hperd:b.causas_hperd, diesel_detalle:b.diesel_detalle, vma_mix:b.vma_mix, vma_dia:b.vma_dia, vma_rod:b.vma_rod, bht_dias:b.bht_dias, prod_faena_mes:b.prod_faena_mes, hperd_unif:b.hperd_unif, wa_det:b.wa_det, oper_data_bd:b.oper_data_bd, fmn_dias:b.fmn_dias, bodega:b.bodega, liq:b.liq, ofcamb:b.ofcamb, est_disp:b.est_disp};
     await client.query('BEGIN');
     let n=0, resumen={};
     for(const clave of Object.keys(map)){
@@ -10707,6 +10707,126 @@ app.get('/api/terreno/sin-registro', auth, async(req,res)=>{
       WHERE tr.registro_id IS NULL
       ORDER BY m.codigo, d.fecha`,vals);
     res.json({desde:desde,hasta:hasta,rows:r.rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ── PARTE DIARIO DE TERRENO (Andrés 2026-11-04): control de lo que terreno ingresó en UN día ──
+// Para la fecha pedida: todas las máquinas que se esperaban (activas, tipo maquinaria, con registro en la faena en los
+// 7 días anteriores o con registro/combustible ese día), lo que informaron (registro por jornada con TOB, operador,
+// producción, litros), lo que dice el estanque (distribuciones del día), lo que dice la telemetría (horas de motor y
+// litros medidos) y una lista de observaciones por máquina. Devuelve {fecha, faenas:[{faena, maquinas:[...]}], totales}.
+function pdNum(v){ const n=parseFloat(v); return isNaN(n)?null:n; }
+app.get('/api/terreno/parte-diario', auth, async(req,res)=>{
+  try{
+    const fecha=/^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha||'')?req.query.fecha:calIso(new Date(Date.now()-86400000));
+    const userFaena=await terrenoUserScope(pool,req.user.id);
+    const fFaena=userFaena||(req.query.faena_id&&!isNaN(parseInt(req.query.faena_id))?parseInt(req.query.faena_id):null);
+    const fEmp=req.query.empresa_id&&!isNaN(parseInt(req.query.empresa_id))?parseInt(req.query.empresa_id):null;
+    const v=[fecha]; const wE=["e.activo=true","COALESCE(e.tipo_cargo,'maquinaria')='maquinaria'"];
+    if(fEmp){v.push(fEmp);wE.push('e.empresa_id=$'+v.length);}
+    // 1) registros del día (una fila por jornada/operador) con TOB
+    const regs=await pool.query(`
+      SELECT r.registro_id,r.fecha,r.faena_id,r.equipo_id,r.jornada,r.horometro_inicial,r.horometro_final,r.horas_trabajadas,r.horas_perdidas,
+             r.litros_combustible,r.arboles_producidos,r.m3_producidos,r.observaciones,r.usuario,r.operador_id,op.nombre_completo AS operador_nombre,
+             fu.nombre AS fundo_nombre,rd.nombre AS rodal_nombre,es.codigo AS estanque_codigo,
+             to_char(r.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Santiago','DD-MM HH24:MI') AS ingresado_cl,
+             COALESCE((SELECT json_agg(json_build_object('causa',c.causa,'horas',d.horas,'clasificacion',COALESCE(NULLIF(TRIM(d.clasificacion),''),'E'),'observacion',d.observacion) ORDER BY d.detalle_id)
+                       FROM terreno_tob_detalle d JOIN terreno_tob_categorias c ON c.tob_cat_id=d.tob_cat_id WHERE d.registro_id=r.registro_id),'[]'::json) AS tob
+      FROM terreno_registros r
+      LEFT JOIN personal op ON op.persona_id=r.operador_id
+      LEFT JOIN fundos fu ON fu.fundo_id=r.fundo_id LEFT JOIN rodales rd ON rd.rodal_id=r.rodal_id
+      LEFT JOIN comb_estanques es ON es.estanque_id=r.estanque_id
+      WHERE r.fecha=$1 ${fFaena?'AND r.faena_id='+fFaena:''}
+      ORDER BY r.equipo_id,r.jornada,r.registro_id`,[fecha]);
+    // 2) máquinas esperadas: faena "habitual" = la del último registro en los 7 días anteriores (las máquinas rotan)
+    const esp=await pool.query(`
+      SELECT DISTINCT ON (e.equipo_id) e.equipo_id,e.codigo,e.nombre,e.empresa_id,e.proceso_productivo,e.faena_id AS faena_maestro,
+             r.faena_id AS faena_reciente,r.fecha AS ultima_fecha,r.horometro_final AS ultimo_horometro
+      FROM equipos e
+      LEFT JOIN terreno_registros r ON r.equipo_id=e.equipo_id AND r.fecha<$1::date AND r.fecha>=$1::date-7
+      WHERE ${wE.join(' AND ')}
+      ORDER BY e.equipo_id,r.fecha DESC,r.horometro_final DESC NULLS LAST`,v);
+    // 3) horómetro anterior real (último registro antes de la fecha, sin límite de días) para la continuidad
+    const prev=await pool.query(`SELECT DISTINCT ON (equipo_id) equipo_id,fecha,horometro_final FROM terreno_registros WHERE fecha<$1::date ORDER BY equipo_id,fecha DESC,horometro_final DESC`,[fecha]);
+    const prevMap={}; prev.rows.forEach(x=>{prevMap[x.equipo_id]=x;});
+    // 4) estanque: distribuciones del día por equipo
+    const comb=await pool.query(`SELECT cm.equipo_id,SUM(cm.litros)::numeric(12,2) AS litros,COUNT(*) AS cargas,MAX(cm.horometro) AS horometro_carga,
+             STRING_AGG(DISTINCT es.codigo,', ') AS estanques,MIN(cm.faena_id) AS faena_id
+      FROM comb_movimientos cm LEFT JOIN comb_estanques es ON es.estanque_id=cm.estanque_origen_id
+      WHERE cm.tipo_mov='DISTRIBUCION' AND cm.estado='ACTIVO' AND cm.fecha=$1 AND cm.equipo_id IS NOT NULL GROUP BY cm.equipo_id`,[fecha]);
+    const combMap={}; comb.rows.forEach(x=>{combMap[x.equipo_id]=x;});
+    // 5) telemetría del día (horas de motor medidas y litros) por equipo
+    const tele=await pool.query(`SELECT m.equipo_id,m.marca,SUM(d.horas_motor) AS horas_motor,SUM(d.horas_produccion) AS horas_produccion,SUM(d.horas_inactivo) AS horas_inactivo,SUM(d.combustible_l) AS litros
+      FROM telemetria_diaria d JOIN telemetria_maquinas m ON m.marca=d.marca AND m.serie=d.serie WHERE d.fecha=$1 AND m.equipo_id IS NOT NULL GROUP BY m.equipo_id,m.marca`,[fecha]);
+    const teleMap={}; tele.rows.forEach(x=>{teleMap[x.equipo_id]=x;});
+    const faenas=await pool.query('SELECT f.faena_id,f.nombre,f.empresa_id,emp.razon_social AS empresa_nombre FROM faenas f LEFT JOIN empresas emp ON emp.empresa_id=f.empresa_id');
+    const faMap={}; faenas.rows.forEach(f=>{faMap[f.faena_id]=f;});
+    // ── armar por máquina
+    const regsPorEq={}; regs.rows.forEach(r=>{(regsPorEq[r.equipo_id]=regsPorEq[r.equipo_id]||[]).push(r);});
+    const maqs=[];
+    const vistos=new Set();
+    const agregar=(e)=>{ if(vistos.has(e.equipo_id))return; vistos.add(e.equipo_id); maqs.push(e); };
+    esp.rows.forEach(e=>{ if(regsPorEq[e.equipo_id]||combMap[e.equipo_id]||e.faena_reciente) agregar(e); });
+    // máquinas con registro ese día aunque no estén en "esperadas" (p. ej. recién creadas o de otra empresa filtrada)
+    for(const eqId of Object.keys(regsPorEq)){ if(!vistos.has(parseInt(eqId))){ const r=await pool.query('SELECT equipo_id,codigo,nombre,empresa_id,proceso_productivo,faena_id AS faena_maestro FROM equipos WHERE equipo_id=$1',[eqId]); if(r.rows.length&&(!fEmp||r.rows[0].empresa_id===fEmp)) agregar(r.rows[0]); } }
+    const out=[];
+    for(const e of maqs){
+      const rs=regsPorEq[e.equipo_id]||[]; const c=combMap[e.equipo_id]||null; const t=teleMap[e.equipo_id]||null; const pv=prevMap[e.equipo_id]||null;
+      const faenaId=rs.length?rs[0].faena_id:(c&&c.faena_id)||e.faena_reciente||e.faena_maestro||null;
+      if(fFaena&&faenaId!==fFaena) continue;
+      const obs=[]; const nivel=(n)=>obs.push(n);
+      const hTrab=rs.reduce((a,r)=>a+(pdNum(r.horas_trabajadas)||0),0), hPerd=rs.reduce((a,r)=>a+(pdNum(r.horas_perdidas)||0),0);
+      const lTerr=rs.reduce((a,r)=>a+(pdNum(r.litros_combustible)||0),0), arb=rs.reduce((a,r)=>a+(pdNum(r.arboles_producidos)||0),0), m3=rs.reduce((a,r)=>a+(pdNum(r.m3_producidos)||0),0);
+      let estado='ok';
+      if(!rs.length){
+        estado='sin_informar';
+        nivel({t:'error',m:c?'Sin registro de terreno, pero cargó '+c.litros+' L en '+(c.estanques||'estanque'):'Sin registro de terreno ese día'+(e.ultima_fecha?' (último: '+calIso(e.ultima_fecha)+')':'')});
+      }else{
+        rs.forEach(r=>{
+          const tob=Array.isArray(r.tob)?r.tob:[]; const sumTob=tob.reduce((a,x)=>a+(pdNum(x.horas)||0),0);
+          const hp=pdNum(r.horas_perdidas)||0;
+          if(hp>0&&!tob.length) nivel({t:'error',m:r.jornada+': '+hp+' h perdidas sin desglose TOB'});
+          if(tob.length&&Math.abs(sumTob-hp)>0.05) nivel({t:'aviso',m:r.jornada+': el TOB suma '+sumTob.toFixed(1)+' h y las horas perdidas son '+hp.toFixed(1)});
+          tob.forEach(x=>{ if(/falla|otro|otra/i.test(x.causa||'')&&!(x.observacion||'').trim()) nivel({t:'aviso',m:r.jornada+': "'+x.causa+'" '+x.horas+' h sin decir qué pasó'}); });
+          if(!r.operador_id) nivel({t:'aviso',m:r.jornada+': sin operador'});
+          const ht=pdNum(r.horas_trabajadas)||0;
+          if(ht<=0) nivel({t:'aviso',m:r.jornada+': 0 horas trabajadas (horómetro sin avance)'});
+          if(ht+hp>14) nivel({t:'aviso',m:r.jornada+': '+(ht+hp).toFixed(1)+' h entre trabajadas y perdidas en una jornada'});
+          if(/volteo|proces/i.test(e.proceso_productivo||'')&&ht>0&&!(pdNum(r.arboles_producidos)>0)) nivel({t:'aviso',m:r.jornada+': máquina de '+e.proceso_productivo+' sin árboles'});
+        });
+        // continuidad del horómetro contra el registro anterior
+        const first=rs.slice().sort((a,b)=>pdNum(a.horometro_inicial)-pdNum(b.horometro_inicial))[0];
+        if(pv&&first&&pdNum(first.horometro_inicial)!=null&&Math.abs(pdNum(first.horometro_inicial)-pdNum(pv.horometro_final))>0.05)
+          nivel({t:'aviso',m:'Horómetro inicial '+first.horometro_inicial+' ≠ final anterior '+pv.horometro_final+' ('+calIso(pv.fecha)+')'});
+        // estanque vs terreno
+        if(c&&Math.abs((pdNum(c.litros)||0)-lTerr)>0.5) nivel({t:'aviso',m:'Litros: terreno '+lTerr.toFixed(0)+' vs estanque '+pdNum(c.litros).toFixed(0)});
+        if(!c&&lTerr>0) nivel({t:'info',m:'Terreno informa '+lTerr.toFixed(0)+' L y el estanque no registra carga ese día'});
+        // telemetría vs terreno
+        if(t&&pdNum(t.horas_motor)!=null){ const dif=hTrab-pdNum(t.horas_motor); if(Math.abs(dif)>1) nivel({t:'aviso',m:'Horas: terreno '+hTrab.toFixed(1)+' vs motor (telemetría) '+pdNum(t.horas_motor).toFixed(1)}); }
+        if(t&&pdNum(t.litros)>0&&lTerr>0&&Math.abs(pdNum(t.litros)-lTerr)>Math.max(20,lTerr*0.15)) nivel({t:'info',m:'Litros: terreno '+lTerr.toFixed(0)+' vs medidos '+pdNum(t.litros).toFixed(0)});
+        if(obs.some(o=>o.t==='error')) estado='error'; else if(obs.some(o=>o.t==='aviso')) estado='observaciones';
+      }
+      out.push({equipo_id:e.equipo_id,codigo:e.codigo,nombre:e.nombre,empresa_id:e.empresa_id,proceso:e.proceso_productivo||null,faena_id:faenaId,
+        faena_nombre:faenaId&&faMap[faenaId]?faMap[faenaId].nombre:null,estado,observaciones:obs,
+        registros:rs.map(r=>({registro_id:r.registro_id,jornada:r.jornada,operador:r.operador_nombre||null,horometro_inicial:pdNum(r.horometro_inicial),horometro_final:pdNum(r.horometro_final),
+          horas_trabajadas:pdNum(r.horas_trabajadas),horas_perdidas:pdNum(r.horas_perdidas),litros:pdNum(r.litros_combustible),estanque:r.estanque_codigo||null,arboles:pdNum(r.arboles_producidos),m3:pdNum(r.m3_producidos),
+          fundo:r.fundo_nombre||null,rodal:r.rodal_nombre||null,tob:r.tob||[],observaciones:r.observaciones||null,ingresado:r.ingresado_cl,usuario:r.usuario||null})),
+        horas_trabajadas:hTrab,horas_perdidas:hPerd,litros_terreno:lTerr,arboles:arb,m3:m3,
+        horometro_anterior:pv?pdNum(pv.horometro_final):null,fecha_anterior:pv?calIso(pv.fecha):null,
+        estanque:c?{litros:pdNum(c.litros),cargas:parseInt(c.cargas),estanques:c.estanques,horometro:pdNum(c.horometro_carga)}:null,
+        telemetria:t?{marca:t.marca,horas_motor:pdNum(t.horas_motor),horas_produccion:pdNum(t.horas_produccion),horas_inactivo:pdNum(t.horas_inactivo),litros:pdNum(t.litros)}:null});
+    }
+    // agrupar por faena
+    const grupos={};
+    out.forEach(m=>{ const k=m.faena_id||0; (grupos[k]=grupos[k]||{faena_id:m.faena_id,faena_nombre:m.faena_nombre||'Sin faena',empresa_nombre:m.faena_id&&faMap[m.faena_id]?faMap[m.faena_id].empresa_nombre:null,maquinas:[]}).maquinas.push(m); });
+    const lista=Object.values(grupos).sort((a,b)=>String(a.faena_nombre).localeCompare(String(b.faena_nombre)));
+    lista.forEach(g=>g.maquinas.sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo))));
+    const tot={maquinas:out.length,informadas:out.filter(m=>m.registros.length).length,sin_informar:out.filter(m=>m.estado==='sin_informar').length,
+      con_observaciones:out.filter(m=>m.estado==='observaciones'||m.estado==='error').length,ok:out.filter(m=>m.estado==='ok').length,
+      horas_trabajadas:Math.round(out.reduce((a,m)=>a+m.horas_trabajadas,0)*10)/10,horas_perdidas:Math.round(out.reduce((a,m)=>a+m.horas_perdidas,0)*10)/10,
+      litros_terreno:Math.round(out.reduce((a,m)=>a+m.litros_terreno,0)),litros_estanque:Math.round(out.reduce((a,m)=>a+(m.estanque?m.estanque.litros:0),0)),
+      arboles:out.reduce((a,m)=>a+m.arboles,0),m3:Math.round(out.reduce((a,m)=>a+m.m3,0)*10)/10,registros:regs.rows.length};
+    res.json({fecha,faenas:lista,totales:tot,alcance:userFaena?{faena_id:userFaena}:null});
   }catch(e){res.status(500).json({error:e.message});}
 });
 
@@ -15383,6 +15503,10 @@ async function finLiqEnsure(){
   // 2026-10-30: detalle por rodal del Excel de CMPC (VMA pagado, tarifa y factores). Las líneas viejas quedan con NULL.
   for(const col of ['rodal VARCHAR(30)','vma NUMERIC(8,4)','tarifa_base NUMERIC(12,2)','tarifa_final NUMERIC(12,2)',"factores JSONB DEFAULT '{}'",'linea VARCHAR(10)','contrato VARCHAR(30)','equipo_real VARCHAR(30)','especie VARCHAR(10)']){
     try{await pool.query('ALTER TABLE fin_liquidacion_lineas ADD COLUMN IF NOT EXISTS '+col);}catch(e){}
+  }
+  // 2026-11-04: las partidas especiales de CMPC traen conceptos de más de 200 caracteres (multas, ajustes) → sin tope
+  for(const col of ['concepto','fundo_nombre','linea','contrato','equipo_real','especie']){
+    try{await pool.query('ALTER TABLE fin_liquidacion_lineas ALTER COLUMN '+col+' TYPE TEXT');}catch(e){}
   }
   _finLiqOk=true;
 }
