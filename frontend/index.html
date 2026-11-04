@@ -19750,24 +19750,33 @@ function FinLiquidacionesView(p){
     var money=function(n){var v=Math.round(parseFloat(n)||0);return (v<0?'-$':'$')+new Intl.NumberFormat('es-CL').format(Math.abs(v));};
     dets=dets.slice().sort(function(a,b){return (a.periodo||'').localeCompare(b.periodo||'')||a.liq_id-b.liq_id;});
     // ── Agregaciones ──
-    var tot={vol:0,prod:0,pe:0,neto:0};
-    var porFaena={},porFundo={},pes=[];
+    var tot={vol:0,prod:0,pe:0,neto:0,vmaS:0,vmaV:0};
+    var porFaena={},porFundo={},porRodal={},pes=[];
+    var sinVma=0; // m³ de líneas sin VMA (liquidaciones importadas antes del 30-10-2026)
     var filasPeriodo=dets.map(function(d){
       var vol=0,prod=0,pe=0;
       (d.lineas||[]).forEach(function(x){
         var m=parseFloat(x.monto)||0,v=parseFloat(x.volumen_m3)||0;
         if(x.tipo==='PRODUCCION'){
           prod+=m;vol+=v;
+          var w=parseFloat(x.vma)||0; var tieneVma=w>0&&v>0;
+          if(tieneVma){tot.vmaS+=w*v;tot.vmaV+=v;}else if(v>0){sinVma+=v;}
           var kfa=(x.faena_nombre||'Sin faena asignada');
-          if(!porFaena[kfa])porFaena[kfa]={vol:0,prod:0,pe:0};
-          porFaena[kfa].vol+=v;porFaena[kfa].prod+=m;
+          if(!porFaena[kfa])porFaena[kfa]={vol:0,prod:0,pe:0,vmaS:0,vmaV:0};
+          porFaena[kfa].vol+=v;porFaena[kfa].prod+=m;if(tieneVma){porFaena[kfa].vmaS+=w*v;porFaena[kfa].vmaV+=v;}
           var kf=((x.fundo_codigo||'')+'|'+(x.fundo_nombre||x.fundo_codigo||'Sin fundo'));
-          if(!porFundo[kf])porFundo[kf]={cod:x.fundo_codigo||'',nom:x.fundo_nombre||x.fundo_codigo||'Sin fundo',vol:0,prod:0};
-          porFundo[kf].vol+=v;porFundo[kf].prod+=m;
+          if(!porFundo[kf])porFundo[kf]={cod:x.fundo_codigo||'',nom:x.fundo_nombre||x.fundo_codigo||'Sin fundo',vol:0,prod:0,vmaS:0,vmaV:0};
+          porFundo[kf].vol+=v;porFundo[kf].prod+=m;if(tieneVma){porFundo[kf].vmaS+=w*v;porFundo[kf].vmaV+=v;}
+          // VMA pagado por rodal (cada rodal tiene su VMA y su tarifa en la liquidación de CMPC)
+          var kr=(x.fundo_codigo||'')+'|'+(x.rodal||'');
+          if(!porRodal[kr])porRodal[kr]={cod:x.fundo_codigo||'',nom:x.fundo_nombre||x.fundo_codigo||'Sin fundo',rodal:x.rodal||'—',especie:x.especie||'',faena:kfa,vol:0,prod:0,vmaS:0,vmaV:0,tarS:0,tarV:0,periodos:{}};
+          var pr=porRodal[kr];pr.vol+=v;pr.prod+=m;pr.periodos[d.periodo]=1;
+          if(tieneVma){pr.vmaS+=w*v;pr.vmaV+=v;}
+          var tf=parseFloat(x.tarifa_final)||0;if(tf>0&&v>0){pr.tarS+=tf*v;pr.tarV+=v;}
         }else{
           pe+=m;
           var kfa2=(x.faena_nombre||'Sin faena asignada');
-          if(!porFaena[kfa2])porFaena[kfa2]={vol:0,prod:0,pe:0};
+          if(!porFaena[kfa2])porFaena[kfa2]={vol:0,prod:0,pe:0,vmaS:0,vmaV:0}; // (las PE vienen antes que PRODUCCION: el objeto nace aquí con los acumuladores de VMA)
           porFaena[kfa2].pe+=m;
           pes.push({periodo:d.periodo,equipo:x.equipo_contrato||'—',concepto:x.concepto||'Partida especial',monto:m});
         }
@@ -19775,8 +19784,12 @@ function FinLiquidacionesView(p){
       tot.vol+=vol;tot.prod+=prod;tot.pe+=pe;tot.neto+=prod+pe;
       return{periodo:d.periodo,empresa:d.empresa_nombre||'—',mandante:d.mandante||'—',ref:d.numero_ref||'—',vol:vol,prod:prod,pe:pe,neto:prod+pe};
     });
-    var faList=Object.keys(porFaena).map(function(k){var x=porFaena[k];return{faena:k,vol:x.vol,prod:x.prod,pe:x.pe,neto:x.prod+x.pe};}).sort(function(a,b){return b.prod-a.prod;});
+    var faList=Object.keys(porFaena).map(function(k){var x=porFaena[k];return{faena:k,vol:x.vol,prod:x.prod,pe:x.pe,neto:x.prod+x.pe,vmaS:x.vmaS||0,vmaV:x.vmaV||0};}).sort(function(a,b){return b.prod-a.prod;});
     var fuList=Object.keys(porFundo).map(function(k){return porFundo[k];}).sort(function(a,b){return b.prod-a.prod;});
+    var roList=Object.keys(porRodal).map(function(k){return porRodal[k];}).sort(function(a,b){return (a.nom||'').localeCompare(b.nom||'')||b.vol-a.vol;});
+    var vmaPond=function(o){return o.vmaV>0?o.vmaS/o.vmaV:null;};
+    var vmaTxt=function(o){var w=vmaPond(o);return w==null?'—':nf(w,2);};
+    var vmaMin=null,vmaMax=null;roList.forEach(function(r){var w=vmaPond(r);if(w==null)return;if(vmaMin==null||w<vmaMin)vmaMin=w;if(vmaMax==null||w>vmaMax)vmaMax=w;});
     pes.sort(function(a,b){return (a.periodo||'').localeCompare(b.periodo||'')||a.monto-b.monto;});
     var empSel=fEmpresa?(empresas.find(function(e){return String(e.empresa_id)===String(fEmpresa);})||{}).razon_social:null;
     var periodos=filasPeriodo.map(function(f){return f.periodo;});
@@ -19812,7 +19825,9 @@ function FinLiquidacionesView(p){
         kpi('PARTIDAS ESPECIALES',money(tot.pe),tot.pe<0?ROJO:VERDE)+
         kpi('INGRESO NETO',money(tot.neto))+
         kpi('PRECIO MEDIO',tot.vol>0?money(tot.neto/tot.vol)+'/m³':'—','#0F766E')+
+        kpi('VMA PAGADO',tot.vmaV>0?nf(tot.vmaS/tot.vmaV,2)+' m³/árbol':'—','#7C3AED')+
       '</tr></table>'+
+      (tot.vmaV>0?'<div style="font-size:9px;color:#6B7280;margin:-2px 0 4px;">VMA pagado = promedio ponderado por m³ de los VMA por rodal de la liquidación del mandante'+(vmaMin!=null&&vmaMax!=null&&roList.length>1?' · rodales entre '+nf(vmaMin,2)+' y '+nf(vmaMax,2)+' m³/árbol':'')+(sinVma>0?' · '+nf(sinVma,1)+' m³ sin VMA (liquidaciones importadas antes del detalle por rodal)':'')+'</div>':'')+
       // 1) Resumen por período
       seccion('1 · RESUMEN DEL MES POR LIQUIDACIÓN')+
       '<table><thead><tr><th style="'+thTxt+'">Período</th><th style="'+thTxt+'">Empresa</th><th style="'+thTxt+'">Mandante</th><th style="'+thTxt+'">N° Ref.</th><th style="'+thNum+'">m³</th><th style="'+thNum+'">Producción</th><th style="'+thNum+'">Part. Esp.</th><th style="'+thNum+'">Neto</th><th style="'+thNum+'">$/m³</th></tr></thead><tbody>'+
@@ -19821,17 +19836,25 @@ function FinLiquidacionesView(p){
       '</tbody></table>'+
       // 2) Producción por faena
       seccion('2 · PRODUCCIÓN POR FAENA')+
-      '<table><thead><tr><th style="'+thTxt+'">Faena</th><th style="'+thNum+'">m³</th><th style="'+thNum+'">Producción</th><th style="'+thNum+'">$/m³</th><th style="'+thNum+'">Part. Esp.</th><th style="'+thNum+'">Neto</th><th style="'+thNum+'">% del neto</th></tr></thead><tbody>'+
-      faList.map(function(x){return '<tr><td style="'+td+'font-weight:600;'+(x.faena==='Sin faena asignada'?'color:#B91C1C;':'')+'">'+esc(x.faena)+'</td><td style="'+tdN+'">'+nf(x.vol,1)+'</td><td style="'+tdN+'">'+money(x.prod)+'</td><td style="'+tdN+'">'+(x.vol>0?money(x.prod/x.vol):'—')+'</td><td style="'+tdN+(x.pe<0?'color:'+ROJO+';':'')+'">'+money(x.pe)+'</td><td style="'+tdN+'font-weight:700;">'+money(x.neto)+'</td><td style="'+tdN+'">'+(tot.neto?nf(x.neto/tot.neto*100,1)+'%':'—')+'</td></tr>';}).join('')+
-      '<tr><td style="'+td+'font-weight:800;background:#F3F4F6;">TOTAL</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+nf(tot.vol,1)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+money(tot.prod)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+(tot.vol>0?money(tot.prod/tot.vol):'—')+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;'+(tot.pe<0?'color:'+ROJO+';':'')+'">'+money(tot.pe)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+money(tot.neto)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">100%</td></tr>'+
+      '<table><thead><tr><th style="'+thTxt+'">Faena</th><th style="'+thNum+'">m³</th><th style="'+thNum+'">VMA pagado</th><th style="'+thNum+'">Producción</th><th style="'+thNum+'">$/m³</th><th style="'+thNum+'">Part. Esp.</th><th style="'+thNum+'">Neto</th><th style="'+thNum+'">% del neto</th></tr></thead><tbody>'+
+      faList.map(function(x){return '<tr><td style="'+td+'font-weight:600;'+(x.faena==='Sin faena asignada'?'color:#B91C1C;':'')+'">'+esc(x.faena)+'</td><td style="'+tdN+'">'+nf(x.vol,1)+'</td><td style="'+tdN+'color:#7C3AED;">'+vmaTxt(x)+'</td><td style="'+tdN+'">'+money(x.prod)+'</td><td style="'+tdN+'">'+(x.vol>0?money(x.prod/x.vol):'—')+'</td><td style="'+tdN+(x.pe<0?'color:'+ROJO+';':'')+'">'+money(x.pe)+'</td><td style="'+tdN+'font-weight:700;">'+money(x.neto)+'</td><td style="'+tdN+'">'+(tot.neto?nf(x.neto/tot.neto*100,1)+'%':'—')+'</td></tr>';}).join('')+
+      '<tr><td style="'+td+'font-weight:800;background:#F3F4F6;">TOTAL</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+nf(tot.vol,1)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;color:#7C3AED;">'+vmaTxt(tot)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+money(tot.prod)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+(tot.vol>0?money(tot.prod/tot.vol):'—')+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;'+(tot.pe<0?'color:'+ROJO+';':'')+'">'+money(tot.pe)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+money(tot.neto)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">100%</td></tr>'+
       '</tbody></table>'+
       // 3) Producción por fundo
       seccion('3 · PRODUCCIÓN POR FUNDO')+
-      '<table><thead><tr><th style="'+thTxt+'">Fundo</th><th style="'+thNum+'">m³</th><th style="'+thNum+'">Monto</th><th style="'+thNum+'">$/m³</th><th style="'+thNum+'">% del volumen</th></tr></thead><tbody>'+
-      fuList.map(function(x){return '<tr><td style="'+td+'">'+esc((x.cod?x.cod+' — ':'')+x.nom)+'</td><td style="'+tdN+'">'+nf(x.vol,1)+'</td><td style="'+tdN+'">'+money(x.prod)+'</td><td style="'+tdN+'">'+(x.vol>0?money(x.prod/x.vol):'—')+'</td><td style="'+tdN+'">'+(tot.vol?nf(x.vol/tot.vol*100,1)+'%':'—')+'</td></tr>';}).join('')+
+      '<table><thead><tr><th style="'+thTxt+'">Fundo</th><th style="'+thNum+'">m³</th><th style="'+thNum+'">VMA pagado</th><th style="'+thNum+'">Monto</th><th style="'+thNum+'">$/m³</th><th style="'+thNum+'">% del volumen</th></tr></thead><tbody>'+
+      fuList.map(function(x){return '<tr><td style="'+td+'">'+esc((x.cod?x.cod+' — ':'')+x.nom)+'</td><td style="'+tdN+'">'+nf(x.vol,1)+'</td><td style="'+tdN+'color:#7C3AED;">'+vmaTxt(x)+'</td><td style="'+tdN+'">'+money(x.prod)+'</td><td style="'+tdN+'">'+(x.vol>0?money(x.prod/x.vol):'—')+'</td><td style="'+tdN+'">'+(tot.vol?nf(x.vol/tot.vol*100,1)+'%':'—')+'</td></tr>';}).join('')+
       '</tbody></table>'+
-      // 4) Partidas especiales
-      seccion('4 · DETALLE DE PARTIDAS ESPECIALES (ajustes, premios y descuentos)')+
+      // 4) VMA pagado por rodal (detalle que trae la liquidación de CMPC desde el 30-10-2026)
+      seccion('4 · VMA PAGADO POR RODAL (según la liquidación del mandante)')+
+      (roList.some(function(r){return r.vmaV>0;})?('<table><thead><tr><th style="'+thTxt+'">Fundo</th><th style="'+thTxt+'">Rodal</th><th style="'+thTxt+'">Faena</th><th style="'+thNum+'">m³</th><th style="'+thNum+'">VMA m³/árbol</th><th style="'+thNum+'">Tarifa $/m³</th><th style="'+thNum+'">Monto</th><th style="'+thNum+'">% del volumen</th></tr></thead><tbody>'+
+        roList.map(function(r){var w=vmaPond(r);var tf=r.tarV>0?r.tarS/r.tarV:null;var bajo=w!=null&&tot.vmaV>0&&w<(tot.vmaS/tot.vmaV)*0.8;
+          return '<tr><td style="'+td+'">'+esc((r.cod?r.cod+' — ':'')+r.nom)+'</td><td style="'+td+'font-family:Consolas,monospace;">'+esc(r.rodal)+'</td><td style="'+td+'">'+esc(r.faena)+'</td><td style="'+tdN+'">'+nf(r.vol,1)+'</td><td style="'+tdN+'font-weight:700;color:'+(w==null?'#9CA3AF':(bajo?ROJO:'#7C3AED'))+';">'+(w==null?'sin dato':nf(w,2))+'</td><td style="'+tdN+'">'+(tf!=null?money(tf):'—')+'</td><td style="'+tdN+'">'+money(r.prod)+'</td><td style="'+tdN+'">'+(tot.vol?nf(r.vol/tot.vol*100,1)+'%':'—')+'</td></tr>';}).join('')+
+        '<tr><td colspan="3" style="'+td+'font-weight:800;background:#F3F4F6;">TOTAL · VMA ponderado</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+nf(tot.vol,1)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;color:#7C3AED;">'+vmaTxt(tot)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+(tot.vol>0?money(tot.prod/tot.vol):'—')+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">'+money(tot.prod)+'</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;">100%</td></tr></tbody></table>'+
+        '<div style="font-size:8px;color:#9CA3AF;margin-top:3px;">En rojo: rodales con VMA pagado más de 20 % bajo el ponderado del período. Tarifa = tarifa final por m³ ponderada por volumen.</div>')
+        :'<div style="font-size:10px;color:#6B7280;">Estas liquidaciones no traen el detalle por rodal (fueron importadas antes del 30-10-2026). Vuelve a importarlas desde el Excel de CMPC para ver el VMA pagado.</div>')+
+      // 5) Partidas especiales
+      seccion('5 · DETALLE DE PARTIDAS ESPECIALES (ajustes, premios y descuentos)')+
       (pes.length?('<table><thead><tr><th style="'+thTxt+'">Período</th><th style="'+thTxt+'">Equipo</th><th style="'+thTxt+'">Concepto</th><th style="'+thNum+'">Monto</th></tr></thead><tbody>'+
         pes.map(function(x){return '<tr><td style="'+td+'">'+esc(x.periodo)+'</td><td style="'+td+'">'+esc(x.equipo)+'</td><td style="'+td+'">'+esc(x.concepto)+'</td><td style="'+tdN+(x.monto<0?'color:'+ROJO+';font-weight:600;':'color:'+VERDE+';')+'">'+money(x.monto)+'</td></tr>';}).join('')+
         '<tr><td colspan="3" style="'+td+'font-weight:800;background:#F3F4F6;">TOTAL PARTIDAS ESPECIALES</td><td style="'+tdN+'font-weight:800;background:#F3F4F6;'+(tot.pe<0?'color:'+ROJO+';':'')+'">'+money(tot.pe)+'</td></tr></tbody></table>')
