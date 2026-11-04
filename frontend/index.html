@@ -3898,7 +3898,7 @@ function TerrenoParteDiarioView(p){
       .then(function(r){setData(r);}).catch(function(e){setErr(e.message);setData(null);}).finally(function(){setLoading(false);});
   }
   useEffect(cargar,[p.tok,fecha,faena,empresa]);
-  var EST={ok:{l:'✔ Bien',c:'#166534',bg:'#DCFCE7'},observaciones:{l:'⚠ Con observaciones',c:'#92400E',bg:'#FEF3C7'},error:{l:'✖ Corregir',c:'#991B1B',bg:'#FEE2E2'},sin_informar:{l:'⛔ Sin informar',c:'#991B1B',bg:'#FEE2E2'},fuera:{l:'🔧 Fuera de faena',c:'#1E40AF',bg:'#DBEAFE'}};
+  var EST={ok:{l:'✔ Bien',c:'#166534',bg:'#DCFCE7'},observaciones:{l:'⚠ Con observaciones',c:'#92400E',bg:'#FEF3C7'},error:{l:'✖ Corregir',c:'#991B1B',bg:'#FEE2E2'},sin_informar:{l:'⛔ Sin informar',c:'#991B1B',bg:'#FEE2E2'},fuera:{l:'🔧 Fuera de faena',c:'#1E40AF',bg:'#DBEAFE'},inactiva:{l:'💤 Sin actividad reciente',c:'#475569',bg:'#F1F5F9'}};
   var MOTIVOS=[{v:'taller',l:'En taller (sin OT todavía)'},{v:'detenida',l:'Detenida / sin operador'},{v:'traslado',l:'En traslado'},{v:'otro',l:'Otro'}];
   // Marcar una máquina fuera de faena (taller sin OT, detenida, traslado) desde la fila "sin informar"; y cerrar el estado cuando vuelve
   function marcarFuera(m){
@@ -3914,7 +3914,7 @@ function TerrenoParteDiarioView(p){
   }
   var n1=function(v,d){return v==null?'—':new Intl.NumberFormat('es-CL',{maximumFractionDigits:d==null?1:d}).format(v);};
   var tot=data&&data.totales||{};
-  var grupos=(data&&data.faenas||[]).map(function(g){return Object.assign({},g,{maquinas:g.maquinas.filter(function(m){return !soloProblemas||(m.estado!=='ok'&&m.estado!=='fuera');})});}).filter(function(g){return g.maquinas.length;});
+  var grupos=(data&&data.faenas||[]).map(function(g){return Object.assign({},g,{maquinas:g.maquinas.filter(function(m){return !soloProblemas||(m.estado!=='ok'&&m.estado!=='fuera'&&m.estado!=='inactiva');})});}).filter(function(g){return g.maquinas.length;});
   function tobTxt(r){return (r.tob||[]).map(function(x){return x.causa+' '+n1(x.horas)+' h ('+x.clasificacion+')'+(x.observacion?': '+x.observacion:'');}).join(' · ');}
   function exportar(){
     var filas=[];(data&&data.faenas||[]).forEach(function(g){g.maquinas.forEach(function(m){
@@ -3937,7 +3937,7 @@ function TerrenoParteDiarioView(p){
     grupos.forEach(function(g){
       html+='<h2>'+esc(g.faena_nombre)+(g.empresa_nombre?' · '+esc(g.empresa_nombre):'')+' — '+g.maquinas.length+' máquina(s)</h2><table><tr><th>Equipo</th><th>Estado</th><th>Jorn.</th><th>Operador</th><th class="r">Horóm.</th><th class="r">Trab.</th><th class="r">Perd.</th><th>TOB</th><th class="r">L terr.</th><th class="r">L est.</th><th class="r">Motor telem.</th><th class="r">Árb.</th><th class="r">m³</th><th>Qué corregir</th></tr>';
       g.maquinas.forEach(function(m){
-        var cls=m.estado==='ok'?'ok':(m.estado==='observaciones'?'obs':(m.estado==='fuera'?'':'err')); var qc=m.observaciones.map(function(o){return esc(o.m);}).join('<br>');
+        var cls=m.estado==='ok'?'ok':(m.estado==='observaciones'?'obs':((m.estado==='fuera'||m.estado==='inactiva')?'':'err')); var qc=m.observaciones.map(function(o){return esc(o.m);}).join('<br>');
         if(!m.registros.length){html+='<tr><td><b>'+esc(m.codigo)+'</b><br>'+esc(m.nombre)+'</td><td class="'+cls+'">'+EST[m.estado].l+'</td><td colspan="11"></td><td class="'+cls+'">'+qc+'</td></tr>';return;}
         m.registros.forEach(function(r,i){
           html+='<tr>'+(i===0?'<td rowspan="'+m.registros.length+'"><b>'+esc(m.codigo)+'</b><br>'+esc(m.nombre)+'</td><td rowspan="'+m.registros.length+'" class="'+cls+'">'+EST[m.estado].l+'</td>':'')+
@@ -3965,7 +3965,7 @@ function TerrenoParteDiarioView(p){
       h('span',{style:{marginLeft:'auto',display:'flex',gap:6}},h(Btn,{v:'g',sm:true,onClick:exportar,disabled:!data},null,'📊 Excel'),h(Btn,{v:'a',sm:true,onClick:imprimir,disabled:!data},null,'🖨 Imprimir / PDF'),h(Btn,{sm:true,onClick:cargar},null,'🔄'))),
     err&&h('div',{className:'card',style:{background:'#FEE2E2',color:'#991B1B',padding:10}},err),
     h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:8,marginBottom:10}},
-      kpi('MÁQUINAS',tot.maquinas,'#334155'),kpi('INFORMADAS',tot.informadas,'#166534'),kpi('SIN INFORMAR',tot.sin_informar,'#DC2626'),kpi('EN TALLER / FUERA',tot.fuera,'#1E40AF'),kpi('CON OBSERVACIONES',tot.con_observaciones,'#F59E0B',function(){setSoloProblemas(!soloProblemas);},soloProblemas),
+      kpi('MÁQUINAS',tot.maquinas,'#334155'),kpi('INFORMADAS',tot.informadas,'#166534'),kpi('SIN INFORMAR',tot.sin_informar,'#DC2626'),kpi('EN TALLER / FUERA',tot.fuera,'#1E40AF'),kpi('SIN ACTIVIDAD RECIENTE',tot.inactivas,'#475569'),kpi('CON OBSERVACIONES',tot.con_observaciones,'#F59E0B',function(){setSoloProblemas(!soloProblemas);},soloProblemas),
       kpi('HRS TRABAJADAS',tot.horas_trabajadas!=null?n1(tot.horas_trabajadas):null,'#1E40AF'),kpi('HRS PERDIDAS',tot.horas_perdidas!=null?n1(tot.horas_perdidas):null,'#B45309'),
       kpi('LITROS TERRENO / ESTANQUE',tot.litros_terreno!=null?n1(tot.litros_terreno,0)+' / '+n1(tot.litros_estanque,0):null,'#0F766E'),kpi('m³ · ÁRBOLES',tot.m3!=null?n1(tot.m3)+' · '+n1(tot.arboles,0):null,'#6D28D9')),
     data&&data.alcance&&h('div',{style:{fontSize:11,color:'#1E40AF',background:'#EFF6FF',padding:'6px 10px',borderRadius:6,marginBottom:8}},'Ves solo tu faena.'),
@@ -3987,9 +3987,9 @@ function TerrenoParteDiarioView(p){
             var celTel=h('td',{style:tdR,rowSpan:Math.max(1,m.registros.length),title:m.telemetria?m.telemetria.marca+': motor '+n1(m.telemetria.horas_motor)+' h · producción '+n1(m.telemetria.horas_produccion)+' h · ralentí '+n1(m.telemetria.horas_inactivo)+' h · '+n1(m.telemetria.litros,0)+' L':'sin telemetría asignada'},
               m.telemetria?h('div',null,n1(m.telemetria.horas_motor)+' h',m.telemetria.litros!=null&&h('div',{style:{fontSize:10,color:'#64748B'}},n1(m.telemetria.litros,0)+' L')):'—');
             var celQc=h('td',{style:Object.assign({},tdS,{maxWidth:280}),rowSpan:Math.max(1,m.registros.length)},qc);
-            if(!m.registros.length) return h('tr',{key:key,style:{background:m.estado==='fuera'?'#F5F8FF':'#FFF7F7'}},celEq,celEst,h('td',{style:tdS,colSpan:6},
-              h('span',{style:{color:'#94A3B8',fontStyle:'italic'}},m.estado==='fuera'?(m.fuera&&m.fuera.texto):'sin registro'),
-              m.estado==='sin_informar'&&h('button',{onClick:function(){marcarFuera(m);},title:'La máquina no está en faena (taller sin OT, detenida, traslado): no exigir registro desde este día',style:{marginLeft:8,padding:'2px 8px',fontSize:10,border:'1px solid #93C5FD',borderRadius:4,background:'#EFF6FF',color:'#1E40AF',cursor:'pointer'}},'🔧 Marcar en taller / fuera de faena'),
+            if(!m.registros.length) return h('tr',{key:key,style:{background:m.estado==='fuera'?'#F5F8FF':(m.estado==='inactiva'?'#FAFAFA':'#FFF7F7')}},celEq,celEst,h('td',{style:tdS,colSpan:6},
+              h('span',{style:{color:'#94A3B8',fontStyle:'italic'}},m.estado==='fuera'?(m.fuera&&m.fuera.texto):(m.estado==='inactiva'?(m.observaciones[0]&&m.observaciones[0].m):'sin registro')),
+              (m.estado==='sin_informar'||m.estado==='inactiva')&&h('button',{onClick:function(){marcarFuera(m);},title:'La máquina no está en faena (taller sin OT, detenida, traslado): no exigir registro desde este día',style:{marginLeft:8,padding:'2px 8px',fontSize:10,border:'1px solid #93C5FD',borderRadius:4,background:'#EFF6FF',color:'#1E40AF',cursor:'pointer'}},'🔧 Marcar en taller / fuera de faena'),
               m.estado==='fuera'&&m.fuera&&m.fuera.tipo==='marcador'&&h('button',{onClick:function(){cerrarFuera(m);},style:{marginLeft:8,padding:'2px 8px',fontSize:10,border:'1px solid #86EFAC',borderRadius:4,background:'#F0FDF4',color:'#166534',cursor:'pointer'}},'↩ Volvió a faena')),
               celComb,celTel,h('td',{style:tdS,colSpan:2}),celQc);
             return m.registros.map(function(r,i){
