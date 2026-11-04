@@ -10838,6 +10838,9 @@ app.get('/api/terreno/parte-diario', auth, async(req,res)=>{
     const vistos=new Set();
     const agregar=(e)=>{ if(vistos.has(e.equipo_id))return; vistos.add(e.equipo_id); maqs.push(e); };
     esp.rows.forEach(e=>{ if(regsPorEq[e.equipo_id]||combMap[e.equipo_id]||e.faena_reciente) agregar(e); });
+    // Máquinas asignadas a una faena en el maestro pero sin registro en los 7 días anteriores (p. ej. Feller 05, parado
+    // desde julio): se muestran como 'inactiva' para que no desaparezcan del control, sin contarlas como sin informar.
+    esp.rows.forEach(e=>{ if(!vistos.has(e.equipo_id)&&e.faena_maestro&&(!fFaena||e.faena_maestro===fFaena)){ e.inactiva=true; agregar(e); } });
     // máquinas con registro ese día aunque no estén en "esperadas" (p. ej. recién creadas o de otra empresa filtrada)
     for(const eqId of Object.keys(regsPorEq)){ if(!vistos.has(parseInt(eqId))){ const r=await pool.query('SELECT equipo_id,codigo,nombre,empresa_id,proceso_productivo,faena_id AS faena_maestro FROM equipos WHERE equipo_id=$1',[eqId]); if(r.rows.length&&(!fEmp||r.rows[0].empresa_id===fEmp)) agregar(r.rows[0]); } }
     const out=[];
@@ -10850,7 +10853,11 @@ app.get('/api/terreno/parte-diario', auth, async(req,res)=>{
       const lTerr=rs.reduce((a,r)=>a+(pdNum(r.litros_combustible)||0),0), arb=rs.reduce((a,r)=>a+(pdNum(r.arboles_producidos)||0),0), m3=rs.reduce((a,r)=>a+(pdNum(r.m3_producidos)||0),0);
       let estado='ok';
       const fe=fuera[e.equipo_id]||null;
-      if(!rs.length&&fe){
+      if(!rs.length&&!fe&&e.inactiva){
+        estado='inactiva';
+        const dias=pv?Math.round((new Date(fecha+'T12:00:00Z')-new Date(calIso(pv.fecha)+'T12:00:00Z'))/86400000):null;
+        nivel({t:'info',m:'Asignada a esta faena en el maestro, sin registro de terreno'+(pv?' desde el '+calIso(pv.fecha)+' ('+dias+' días)':' (nunca ha informado)')+(c?'; hoy cargó '+c.litros+' L':'')});
+      }else if(!rs.length&&fe){
         estado='fuera';
         nivel({t:'info',m:fe.texto});
         if(c) nivel({t:'aviso',m:'Cargó '+c.litros+' L en '+(c.estanques||'estanque')+' estando '+(TEQ_MOTIVOS[fe.motivo]||fe.motivo).toLowerCase()});
@@ -10901,7 +10908,7 @@ app.get('/api/terreno/parte-diario', auth, async(req,res)=>{
     out.forEach(m=>{ const k=m.faena_id||0; (grupos[k]=grupos[k]||{faena_id:m.faena_id,faena_nombre:m.faena_nombre||'Sin faena',empresa_nombre:m.faena_id&&faMap[m.faena_id]?faMap[m.faena_id].empresa_nombre:null,maquinas:[]}).maquinas.push(m); });
     const lista=Object.values(grupos).sort((a,b)=>String(a.faena_nombre).localeCompare(String(b.faena_nombre)));
     lista.forEach(g=>g.maquinas.sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo))));
-    const tot={maquinas:out.length,informadas:out.filter(m=>m.registros.length).length,sin_informar:out.filter(m=>m.estado==='sin_informar').length,fuera:out.filter(m=>m.estado==='fuera').length,
+    const tot={maquinas:out.length,informadas:out.filter(m=>m.registros.length).length,sin_informar:out.filter(m=>m.estado==='sin_informar').length,fuera:out.filter(m=>m.estado==='fuera').length,inactivas:out.filter(m=>m.estado==='inactiva').length,
       con_observaciones:out.filter(m=>m.estado==='observaciones'||m.estado==='error').length,ok:out.filter(m=>m.estado==='ok').length,
       horas_trabajadas:Math.round(out.reduce((a,m)=>a+(m.horas_trabajadas<=24?m.horas_trabajadas:0),0)*10)/10,horas_perdidas:Math.round(out.reduce((a,m)=>a+m.horas_perdidas,0)*10)/10,
       litros_terreno:Math.round(out.reduce((a,m)=>a+m.litros_terreno,0)),litros_estanque:Math.round(out.reduce((a,m)=>a+(m.estanque?m.estanque.litros:0),0)),
