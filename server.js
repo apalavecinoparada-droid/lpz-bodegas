@@ -10004,6 +10004,9 @@ app.post('/api/terreno/registros', auth, async(req,res)=>{
     // Validate TOB sum = horas_perdidas
     const hp=parseFloat(horas_perdidas||0);
     if(hp>24)throw new Error('Las horas perdidas de un día no pueden superar 24 (ingresado: '+hp.toFixed(1)+')');
+    // Regla (Andrés 2026-11-04): si el horómetro no se movió, el registro es solo tiempo perdido y no puede pasar de 10 h
+    // (una jornada). Antes se aceptaban 11 h (jornada de Mec 3) o más. Vehículos (km) no entran en esta regla.
+    if(!val.esVeh&&(parseFloat(horometro_final)-parseFloat(horometro_inicial))<=0&&hp>10)throw new Error('Sin movimiento de horómetro, las horas perdidas no pueden superar 10 (ingresado: '+hp.toFixed(1)+'). Si la máquina trabajó, corrige el horómetro final');
     const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
     for(const dtx of detalle){ if((dtx.tob_cat_id||parseFloat(dtx.horas)>0)&&dtx.clasificacion!=='E'&&dtx.clasificacion!=='F') throw new Error('Cada tiempo perdido debe tener clasificación E (Empresa) o F (Mandante)'); }
     const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
@@ -10044,6 +10047,9 @@ app.put('/api/terreno/registros/:id', auth, async(req,res)=>{
     const val=await terrenoValidar(client,req.body,req.user.id,req.params.id);
     const hp=parseFloat(horas_perdidas||0);
     if(hp>24)throw new Error('Las horas perdidas de un día no pueden superar 24 (ingresado: '+hp.toFixed(1)+')');
+    // Regla (Andrés 2026-11-04): si el horómetro no se movió, el registro es solo tiempo perdido y no puede pasar de 10 h
+    // (una jornada). Antes se aceptaban 11 h (jornada de Mec 3) o más. Vehículos (km) no entran en esta regla.
+    if(!val.esVeh&&(parseFloat(horometro_final)-parseFloat(horometro_inicial))<=0&&hp>10)throw new Error('Sin movimiento de horómetro, las horas perdidas no pueden superar 10 (ingresado: '+hp.toFixed(1)+'). Si la máquina trabajó, corrige el horómetro final');
     const detalle=Array.isArray(tob_detalle)?tob_detalle:[];
     for(const dtx of detalle){ if((dtx.tob_cat_id||parseFloat(dtx.horas)>0)&&dtx.clasificacion!=='E'&&dtx.clasificacion!=='F') throw new Error('Cada tiempo perdido debe tener clasificación E (Empresa) o F (Mandante)'); }
     const sumTob=detalle.reduce(function(s,d){return s+(parseFloat(d.horas)||0);},0);
@@ -10706,8 +10712,74 @@ app.get('/api/terreno/sin-registro', auth, async(req,res)=>{
       LEFT JOIN faenas f ON m.faena_id=f.faena_id
       WHERE tr.registro_id IS NULL
       ORDER BY m.codigo, d.fecha`,vals);
-    res.json({desde:desde,hasta:hasta,rows:r.rows});
+    // Máquinas en taller (OT abierta o marcador), detenidas o en traslado no se exigen ese día
+    await teqEnsure();
+    const ex=await pool.query(`SELECT equipo_id,desde,hasta FROM terreno_equipo_estados WHERE desde<=$2::date AND (hasta IS NULL OR hasta>=$1::date)
+      UNION ALL SELECT equipo_id,fecha_apertura AS desde,fecha_termino::date AS hasta FROM mant_ot WHERE estado IN ('abierta','en_ejecucion','programada') AND fecha_apertura<=$2::date AND (fecha_termino IS NULL OR fecha_termino::date>=$1::date)`,[desde,hasta]);
+    const fuera=ex.rows.map(x=>({e:x.equipo_id,d:calIso(x.desde),h:x.hasta?calIso(x.hasta):null}));
+    const rows=r.rows.filter(x=>!fuera.some(f=>f.e===x.equipo_id&&f.d<=x.fecha&&(!f.h||f.h>=x.fecha)));
+    res.json({desde:desde,hasta:hasta,rows:rows,excluidos:r.rows.length-rows.length});
   }catch(e){res.status(500).json({error:e.message});}
+});
+
+// ── ESTADOS DE MÁQUINA FUERA DE FAENA (Andrés 2026-11-04): en taller sin OT todavía, detenida, en traslado ──
+// Marcador manual con rango de fechas (hasta NULL = sigue). El parte diario y la alerta de "sin registro" lo usan
+// para no exigir el registro de terreno y decir por qué no hay. Una OT abierta (mant_ot) cuenta igual, sin marcador.
+const TEQ_MOTIVOS={taller:'En taller',detenida:'Detenida',traslado:'En traslado',otro:'Otro'};
+let _teqOk=false;
+async function teqEnsure(){
+  if(_teqOk)return;
+  await pool.query(`CREATE TABLE IF NOT EXISTS terreno_equipo_estados (id SERIAL PRIMARY KEY, equipo_id INT NOT NULL REFERENCES equipos(equipo_id), desde DATE NOT NULL, hasta DATE,
+    motivo VARCHAR(20) NOT NULL DEFAULT 'taller', observacion VARCHAR(300), usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW(), cerrado_por VARCHAR(100), cerrado_en TIMESTAMP)`);
+  await pool.query('CREATE INDEX IF NOT EXISTS teq_equipo_desde ON terreno_equipo_estados(equipo_id,desde)');
+  _teqOk=true;
+}
+// Estados vigentes en una fecha: {equipo_id: {tipo:'marcador'|'ot', motivo, texto, desde, id}}
+async function teqVigentes(fecha){
+  await teqEnsure();
+  const out={};
+  const ot=await pool.query(`SELECT DISTINCT ON (equipo_id) equipo_id,numero_ot,estado,fecha_apertura,taller_tipo,taller_nombre FROM mant_ot
+    WHERE estado IN ('abierta','en_ejecucion','programada') AND fecha_apertura<=$1::date AND (fecha_termino IS NULL OR fecha_termino::date>=$1::date) ORDER BY equipo_id,fecha_apertura DESC`,[fecha]);
+  ot.rows.forEach(r=>{ out[r.equipo_id]={tipo:'ot',motivo:'taller',ot:r.numero_ot,desde:calIso(r.fecha_apertura),texto:'En taller: '+r.numero_ot+' ('+(r.estado==='en_ejecucion'?'en ejecución':r.estado)+' desde '+calIso(r.fecha_apertura)+(r.taller_nombre?', '+r.taller_nombre:'')+')'}; });
+  const m=await pool.query(`SELECT * FROM terreno_equipo_estados WHERE desde<=$1::date AND (hasta IS NULL OR hasta>=$1::date) ORDER BY desde DESC`,[fecha]);
+  m.rows.forEach(r=>{ if(!out[r.equipo_id]) out[r.equipo_id]={tipo:'marcador',id:r.id,motivo:r.motivo,desde:calIso(r.desde),hasta:r.hasta?calIso(r.hasta):null,observacion:r.observacion||'',usuario:r.usuario,
+    texto:(TEQ_MOTIVOS[r.motivo]||r.motivo)+' desde '+calIso(r.desde)+(r.motivo==='taller'?' (sin OT)':'')+(r.observacion?': '+r.observacion:'')}; });
+  return out;
+}
+app.get('/api/terreno/equipo-estados', auth, async(req,res)=>{
+  try{
+    await teqEnsure();
+    const fecha=/^\d{4}-\d{2}-\d{2}$/.test(req.query.fecha||'')?req.query.fecha:null;
+    const r=fecha?await pool.query(`SELECT t.*,e.codigo,e.nombre FROM terreno_equipo_estados t JOIN equipos e ON e.equipo_id=t.equipo_id WHERE t.desde<=$1::date AND (t.hasta IS NULL OR t.hasta>=$1::date) ORDER BY e.codigo`,[fecha])
+                 :await pool.query(`SELECT t.*,e.codigo,e.nombre FROM terreno_equipo_estados t JOIN equipos e ON e.equipo_id=t.equipo_id ${req.query.todos?'':'WHERE t.hasta IS NULL'} ORDER BY t.hasta NULLS FIRST,t.desde DESC LIMIT 500`);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/terreno/equipo-estados', auth, async(req,res)=>{
+  try{
+    await teqEnsure();
+    const b=req.body||{}; const eq=parseInt(b.equipo_id); const motivo=TEQ_MOTIVOS[b.motivo]?b.motivo:'taller';
+    const desde=/^\d{4}-\d{2}-\d{2}$/.test(b.desde||'')?b.desde:calIso(new Date());
+    if(!eq)throw new Error('Falta el equipo');
+    const ab=await pool.query('SELECT id,desde FROM terreno_equipo_estados WHERE equipo_id=$1 AND hasta IS NULL',[eq]);
+    if(ab.rows.length)throw new Error('El equipo ya tiene un estado abierto desde '+calIso(ab.rows[0].desde)+'; ciérralo antes de abrir otro');
+    const r=await pool.query('INSERT INTO terreno_equipo_estados(equipo_id,desde,motivo,observacion,usuario) VALUES($1,$2,$3,$4,$5) RETURNING *',[eq,desde,motivo,String(b.observacion||'').slice(0,300)||null,req.user.email]);
+    res.status(201).json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.put('/api/terreno/equipo-estados/:id', auth, async(req,res)=>{
+  try{
+    await teqEnsure();
+    const b=req.body||{}; const hasta=/^\d{4}-\d{2}-\d{2}$/.test(b.hasta||'')?b.hasta:(b.hasta===null?null:calIso(new Date()));
+    const r=await pool.query('UPDATE terreno_equipo_estados SET hasta=$1,observacion=COALESCE($2,observacion),motivo=COALESCE($3,motivo),cerrado_por=CASE WHEN $1::date IS NULL THEN NULL ELSE $4 END,cerrado_en=CASE WHEN $1::date IS NULL THEN NULL ELSE NOW() END WHERE id=$5 RETURNING *',
+      [hasta,b.observacion!=null?String(b.observacion).slice(0,300):null,TEQ_MOTIVOS[b.motivo]?b.motivo:null,req.user.email,parseInt(req.params.id)]);
+    if(!r.rows.length)return res.status(404).json({error:'No existe'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
+app.delete('/api/terreno/equipo-estados/:id', auth, async(req,res)=>{
+  try{ await teqEnsure(); await pool.query('DELETE FROM terreno_equipo_estados WHERE id=$1',[parseInt(req.params.id)]); res.json({ok:true}); }
+  catch(e){res.status(400).json({error:e.message});}
 });
 
 // ── PARTE DIARIO DE TERRENO (Andrés 2026-11-04): control de lo que terreno ingresó en UN día ──
@@ -10759,6 +10831,7 @@ app.get('/api/terreno/parte-diario', auth, async(req,res)=>{
     const tele=await pool.query(`SELECT m.equipo_id,m.marca,SUM(d.horas_motor) AS horas_motor,SUM(d.horas_produccion) AS horas_produccion,SUM(d.horas_inactivo) AS horas_inactivo,SUM(d.combustible_l) AS litros
       FROM telemetria_diaria d JOIN telemetria_maquinas m ON m.marca=d.marca AND m.serie=d.serie WHERE d.fecha=$1 AND m.equipo_id IS NOT NULL GROUP BY m.equipo_id,m.marca`,[fecha]);
     const teleMap={}; tele.rows.forEach(x=>{teleMap[x.equipo_id]=x;});
+    const fuera=await teqVigentes(fecha);   // en taller (OT abierta o marcador), detenida, en traslado
     const faenas=await pool.query('SELECT f.faena_id,f.nombre,f.empresa_id,emp.razon_social AS empresa_nombre FROM faenas f LEFT JOIN empresas emp ON emp.empresa_id=f.empresa_id');
     const faMap={}; faenas.rows.forEach(f=>{faMap[f.faena_id]=f;});
     // ── armar por máquina
@@ -10778,10 +10851,16 @@ app.get('/api/terreno/parte-diario', auth, async(req,res)=>{
       const hTrab=rs.reduce((a,r)=>a+(pdNum(r.horas_trabajadas)||0),0), hPerd=rs.reduce((a,r)=>a+(pdNum(r.horas_perdidas)||0),0);
       const lTerr=rs.reduce((a,r)=>a+(pdNum(r.litros_combustible)||0),0), arb=rs.reduce((a,r)=>a+(pdNum(r.arboles_producidos)||0),0), m3=rs.reduce((a,r)=>a+(pdNum(r.m3_producidos)||0),0);
       let estado='ok';
-      if(!rs.length){
+      const fe=fuera[e.equipo_id]||null;
+      if(!rs.length&&fe){
+        estado='fuera';
+        nivel({t:'info',m:fe.texto});
+        if(c) nivel({t:'aviso',m:'Cargó '+c.litros+' L en '+(c.estanques||'estanque')+' estando '+(TEQ_MOTIVOS[fe.motivo]||fe.motivo).toLowerCase()});
+      }else if(!rs.length){
         estado='sin_informar';
         nivel({t:'error',m:c?'Sin registro de terreno, pero cargó '+c.litros+' L en '+(c.estanques||'estanque'):'Sin registro de terreno ese día'+(e.ultima_fecha?' (último: '+calIso(e.ultima_fecha)+')':'')});
       }else{
+        if(fe) nivel({t:'info',m:'Tiene registro aunque figura "'+fe.texto+'": si volvió a faena, cierra el estado'});
         rs.forEach(r=>{
           const tob=Array.isArray(r.tob)?r.tob:[]; const sumTob=tob.reduce((a,x)=>a+(pdNum(x.horas)||0),0);
           const hp=pdNum(r.horas_perdidas)||0;
@@ -10791,7 +10870,8 @@ app.get('/api/terreno/parte-diario', auth, async(req,res)=>{
           if(!r.operador_id) nivel({t:'aviso',m:r.jornada+': sin operador'});
           const ht=pdNum(r.horas_trabajadas)||0;
           if(ht<=0) nivel({t:'aviso',m:r.jornada+': 0 horas trabajadas (horómetro sin avance)'});
-          if(ht+hp>14) nivel({t:'aviso',m:r.jornada+': '+(ht+hp).toFixed(1)+' h entre trabajadas y perdidas en una jornada'});
+          if(ht+hp>24) nivel({t:'error',m:r.jornada+': '+(ht+hp).toFixed(1)+' h en una jornada: el horómetro parece ser kilometraje o está mal digitado (no se suma a los totales)'});
+          else if(ht+hp>14) nivel({t:'aviso',m:r.jornada+': '+(ht+hp).toFixed(1)+' h entre trabajadas y perdidas en una jornada'});
           if(/volteo|proces/i.test(e.proceso_productivo||'')&&ht>0&&!(pdNum(r.arboles_producidos)>0)) nivel({t:'aviso',m:r.jornada+': máquina de '+e.proceso_productivo+' sin árboles'});
         });
         // continuidad del horómetro contra el registro anterior
@@ -10802,12 +10882,14 @@ app.get('/api/terreno/parte-diario', auth, async(req,res)=>{
         if(c&&Math.abs((pdNum(c.litros)||0)-lTerr)>0.5) nivel({t:'aviso',m:'Litros: terreno '+lTerr.toFixed(0)+' vs estanque '+pdNum(c.litros).toFixed(0)});
         if(!c&&lTerr>0) nivel({t:'info',m:'Terreno informa '+lTerr.toFixed(0)+' L y el estanque no registra carga ese día'});
         // telemetría vs terreno
-        if(t&&pdNum(t.horas_motor)!=null){ const dif=hTrab-pdNum(t.horas_motor); if(Math.abs(dif)>1) nivel({t:'aviso',m:'Horas: terreno '+hTrab.toFixed(1)+' vs motor (telemetría) '+pdNum(t.horas_motor).toFixed(1)}); }
+        // solo si la telemetría trae horas ese día (una máquina sin reportar, p. ej. Feller 06 desde agosto, no sirve de contraste)
+        if(t&&pdNum(t.horas_motor)>0){ const dif=hTrab-pdNum(t.horas_motor); if(Math.abs(dif)>1) nivel({t:'aviso',m:'Horas: terreno '+hTrab.toFixed(1)+' vs motor (telemetría) '+pdNum(t.horas_motor).toFixed(1)}); }
+        if(t&&pdNum(t.horas_motor)===0&&hTrab>0) nivel({t:'info',m:'La telemetría no reporta horas ese día (máquina sin comunicar)'});
         if(t&&pdNum(t.litros)>0&&lTerr>0&&Math.abs(pdNum(t.litros)-lTerr)>Math.max(20,lTerr*0.15)) nivel({t:'info',m:'Litros: terreno '+lTerr.toFixed(0)+' vs medidos '+pdNum(t.litros).toFixed(0)});
         if(obs.some(o=>o.t==='error')) estado='error'; else if(obs.some(o=>o.t==='aviso')) estado='observaciones';
       }
       out.push({equipo_id:e.equipo_id,codigo:e.codigo,nombre:e.nombre,empresa_id:e.empresa_id,proceso:e.proceso_productivo||null,faena_id:faenaId,
-        faena_nombre:faenaId&&faMap[faenaId]?faMap[faenaId].nombre:null,estado,observaciones:obs,
+        faena_nombre:faenaId&&faMap[faenaId]?faMap[faenaId].nombre:null,estado,observaciones:obs,fuera:fe,
         registros:rs.map(r=>({registro_id:r.registro_id,jornada:r.jornada,operador:r.operador_nombre||null,horometro_inicial:pdNum(r.horometro_inicial),horometro_final:pdNum(r.horometro_final),
           horas_trabajadas:pdNum(r.horas_trabajadas),horas_perdidas:pdNum(r.horas_perdidas),litros:pdNum(r.litros_combustible),estanque:r.estanque_codigo||null,arboles:pdNum(r.arboles_producidos),m3:pdNum(r.m3_producidos),
           fundo:r.fundo_nombre||null,rodal:r.rodal_nombre||null,tob:r.tob||[],observaciones:r.observaciones||null,ingresado:r.ingresado_cl,usuario:r.usuario||null})),
@@ -10821,9 +10903,9 @@ app.get('/api/terreno/parte-diario', auth, async(req,res)=>{
     out.forEach(m=>{ const k=m.faena_id||0; (grupos[k]=grupos[k]||{faena_id:m.faena_id,faena_nombre:m.faena_nombre||'Sin faena',empresa_nombre:m.faena_id&&faMap[m.faena_id]?faMap[m.faena_id].empresa_nombre:null,maquinas:[]}).maquinas.push(m); });
     const lista=Object.values(grupos).sort((a,b)=>String(a.faena_nombre).localeCompare(String(b.faena_nombre)));
     lista.forEach(g=>g.maquinas.sort((a,b)=>String(a.codigo).localeCompare(String(b.codigo))));
-    const tot={maquinas:out.length,informadas:out.filter(m=>m.registros.length).length,sin_informar:out.filter(m=>m.estado==='sin_informar').length,
+    const tot={maquinas:out.length,informadas:out.filter(m=>m.registros.length).length,sin_informar:out.filter(m=>m.estado==='sin_informar').length,fuera:out.filter(m=>m.estado==='fuera').length,
       con_observaciones:out.filter(m=>m.estado==='observaciones'||m.estado==='error').length,ok:out.filter(m=>m.estado==='ok').length,
-      horas_trabajadas:Math.round(out.reduce((a,m)=>a+m.horas_trabajadas,0)*10)/10,horas_perdidas:Math.round(out.reduce((a,m)=>a+m.horas_perdidas,0)*10)/10,
+      horas_trabajadas:Math.round(out.reduce((a,m)=>a+(m.horas_trabajadas<=24?m.horas_trabajadas:0),0)*10)/10,horas_perdidas:Math.round(out.reduce((a,m)=>a+m.horas_perdidas,0)*10)/10,
       litros_terreno:Math.round(out.reduce((a,m)=>a+m.litros_terreno,0)),litros_estanque:Math.round(out.reduce((a,m)=>a+(m.estanque?m.estanque.litros:0),0)),
       arboles:out.reduce((a,m)=>a+m.arboles,0),m3:Math.round(out.reduce((a,m)=>a+m.m3,0)*10)/10,registros:regs.rows.length};
     res.json({fecha,faenas:lista,totales:tot,alcance:userFaena?{faena_id:userFaena}:null});
