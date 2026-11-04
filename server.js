@@ -10712,10 +10712,9 @@ app.get('/api/terreno/sin-registro', auth, async(req,res)=>{
       LEFT JOIN faenas f ON m.faena_id=f.faena_id
       WHERE tr.registro_id IS NULL
       ORDER BY m.codigo, d.fecha`,vals);
-    // Máquinas en taller (OT abierta o marcador), detenidas o en traslado no se exigen ese día
+    // Máquinas marcadas en taller / detenidas / en traslado no se exigen ese día (solo el marcador manual, no las OT)
     await teqEnsure();
-    const ex=await pool.query(`SELECT equipo_id,desde,hasta FROM terreno_equipo_estados WHERE desde<=$2::date AND (hasta IS NULL OR hasta>=$1::date)
-      UNION ALL SELECT equipo_id,fecha_apertura AS desde,fecha_termino::date AS hasta FROM mant_ot WHERE estado IN ('abierta','en_ejecucion','programada') AND fecha_apertura<=$2::date AND (fecha_termino IS NULL OR fecha_termino::date>=$1::date)`,[desde,hasta]);
+    const ex=await pool.query(`SELECT equipo_id,desde,hasta FROM terreno_equipo_estados WHERE desde<=$2::date AND (hasta IS NULL OR hasta>=$1::date)`,[desde,hasta]);
     const fuera=ex.rows.map(x=>({e:x.equipo_id,d:calIso(x.desde),h:x.hasta?calIso(x.hasta):null}));
     const rows=r.rows.filter(x=>!fuera.some(f=>f.e===x.equipo_id&&f.d<=x.fecha&&(!f.h||f.h>=x.fecha)));
     res.json({desde:desde,hasta:hasta,rows:rows,excluidos:r.rows.length-rows.length});
@@ -10724,7 +10723,8 @@ app.get('/api/terreno/sin-registro', auth, async(req,res)=>{
 
 // ── ESTADOS DE MÁQUINA FUERA DE FAENA (Andrés 2026-11-04): en taller sin OT todavía, detenida, en traslado ──
 // Marcador manual con rango de fechas (hasta NULL = sigue). El parte diario y la alerta de "sin registro" lo usan
-// para no exigir el registro de terreno y decir por qué no hay. Una OT abierta (mant_ot) cuenta igual, sin marcador.
+// para no exigir el registro de terreno y decir por qué no hay. Las OT de mantención NO se consideran: suelen quedar
+// abiertas después de que la máquina volvió a faena (Andrés 2026-11-04).
 const TEQ_MOTIVOS={taller:'En taller',detenida:'Detenida',traslado:'En traslado',otro:'Otro'};
 let _teqOk=false;
 async function teqEnsure(){
@@ -10738,11 +10738,9 @@ async function teqEnsure(){
 async function teqVigentes(fecha){
   await teqEnsure();
   const out={};
-  const ot=await pool.query(`SELECT DISTINCT ON (equipo_id) equipo_id,numero_ot,estado,fecha_apertura,taller_tipo,taller_nombre FROM mant_ot
-    WHERE estado IN ('abierta','en_ejecucion','programada') AND fecha_apertura<=$1::date AND (fecha_termino IS NULL OR fecha_termino::date>=$1::date) ORDER BY equipo_id,fecha_apertura DESC`,[fecha]);
-  ot.rows.forEach(r=>{ out[r.equipo_id]={tipo:'ot',motivo:'taller',ot:r.numero_ot,desde:calIso(r.fecha_apertura),texto:'En taller: '+r.numero_ot+' ('+(r.estado==='en_ejecucion'?'en ejecución':r.estado)+' desde '+calIso(r.fecha_apertura)+(r.taller_nombre?', '+r.taller_nombre:'')+')'}; });
+  // Andrés 2026-11-04: NO se usan las OT de mantención (quedan abiertas aunque la máquina ya volvió a faena); solo el marcador manual
   const m=await pool.query(`SELECT * FROM terreno_equipo_estados WHERE desde<=$1::date AND (hasta IS NULL OR hasta>=$1::date) ORDER BY desde DESC`,[fecha]);
-  m.rows.forEach(r=>{ if(!out[r.equipo_id]) out[r.equipo_id]={tipo:'marcador',id:r.id,motivo:r.motivo,desde:calIso(r.desde),hasta:r.hasta?calIso(r.hasta):null,observacion:r.observacion||'',usuario:r.usuario,
+  m.rows.forEach(r=>{ out[r.equipo_id]={tipo:'marcador',id:r.id,motivo:r.motivo,desde:calIso(r.desde),hasta:r.hasta?calIso(r.hasta):null,observacion:r.observacion||'',usuario:r.usuario,
     texto:(TEQ_MOTIVOS[r.motivo]||r.motivo)+' desde '+calIso(r.desde)+(r.motivo==='taller'?' (sin OT)':'')+(r.observacion?': '+r.observacion:'')}; });
   return out;
 }
@@ -10831,7 +10829,7 @@ app.get('/api/terreno/parte-diario', auth, async(req,res)=>{
     const tele=await pool.query(`SELECT m.equipo_id,m.marca,SUM(d.horas_motor) AS horas_motor,SUM(d.horas_produccion) AS horas_produccion,SUM(d.horas_inactivo) AS horas_inactivo,SUM(d.combustible_l) AS litros
       FROM telemetria_diaria d JOIN telemetria_maquinas m ON m.marca=d.marca AND m.serie=d.serie WHERE d.fecha=$1 AND m.equipo_id IS NOT NULL GROUP BY m.equipo_id,m.marca`,[fecha]);
     const teleMap={}; tele.rows.forEach(x=>{teleMap[x.equipo_id]=x;});
-    const fuera=await teqVigentes(fecha);   // en taller (OT abierta o marcador), detenida, en traslado
+    const fuera=await teqVigentes(fecha);   // marcador manual: en taller, detenida, en traslado
     const faenas=await pool.query('SELECT f.faena_id,f.nombre,f.empresa_id,emp.razon_social AS empresa_nombre FROM faenas f LEFT JOIN empresas emp ON emp.empresa_id=f.empresa_id');
     const faMap={}; faenas.rows.forEach(f=>{faMap[f.faena_id]=f;});
     // ── armar por máquina
