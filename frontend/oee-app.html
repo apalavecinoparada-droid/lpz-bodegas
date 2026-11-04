@@ -266,6 +266,10 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
       <button onclick="rsAbrir()" title="Manejo de residuos peligrosos: faena, traslado, bodega transitoria y SIDREP"
         style="margin-left:8px;align-self:center;background:#fff;border:2px solid #7a5a00;color:#7a5a00;border-radius:8px;padding:8px 16px;font-weight:800;font-size:12px;cursor:pointer;">
         &#9763; Residuos Peligrosos<br><span style="font-weight:400;font-size:10px;">faena &middot; bodega &middot; SIDREP</span></button>
+      <!-- Semaforo de informes por faena (03-11-2026) -->
+      <button onclick="sfAbrir()" title="Qué informes faltan por faena y qué días: Formin, planilla de horas, cartolas, WhatsApp y combustible"
+        style="margin-left:8px;align-self:center;background:#fff;border:2px solid #1a6b3a;color:#1a6b3a;border-radius:8px;padding:8px 16px;font-weight:800;font-size:12px;cursor:pointer;">
+        &#128678; Semáforo de informes<br><span style="font-weight:400;font-size:10px;">qué falta y qué días</span></button>
     </div>
 
     <div class="nav-tabs">
@@ -669,6 +673,12 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
         <div class="sc"><div class="sc-label">TOC per&iacute;odo</div><div class="sc-val" style="color:#e67e22;font-weight:700;" id="kpi2-toc">&#8212;</div><div class="sc-sub">hrs perdidas ocultas</div></div>
         <div class="sc"><div class="sc-label">Mayor causa (Top 1)</div><div class="sc-val" style="font-size:11px;padding-top:4px;font-weight:700;" id="kpi2-causaTop">&#8212;</div><div class="sc-sub" id="kpi2-causaTop-hrs">&#8212;</div></div>
         <div class="sc"><div class="sc-label">% TOB/HrsOp</div><div class="sc-val" id="kpi2-ptob">&#8212;</div><div class="sc-sub">tiempo perdido obvio</div></div>
+        <!-- Bitácora de uso de maquinaria por equipo (04-11-2026) -->
+        <button class="sc" onclick="btAbrir()" title="Bitácora del mes de cada equipo: horómetro, horas, fallas, operadores, combustible"
+          style="cursor:pointer;border:2px solid #1f4e78;background:#f3f8fd;text-align:left;">
+          <div class="sc-label" style="color:#1f4e78;">Bitácora por equipo</div>
+          <div class="sc-val" style="font-size:16px;color:#1f4e78;padding-top:2px;">&#128210; Ver bitácora</div>
+          <div class="sc-sub">día a día: horómetro, fallas, operador</div></button>
       </div>
       <div style="display:grid;grid-template-columns:1fr 360px;gap:10px;margin-bottom:10px;">
         <div class="card">
@@ -9451,6 +9461,11 @@ function loadExcel(input) {
               // Turno A/B y Jornada Día/Noche, para "Producción por Turno" (30-09-2026).
               // Turno2 es la columna ya resuelta (los "A+B" quedan en uno); si no, Turno.
               var htTurno2 = htIdx['turno2'], htTurno = htIdx['turno'], htJorn = htIdx['jornada'];
+              // Bitácora por equipo (04-11-2026): horómetro, descripción del TOB, litros y observaciones
+              var htHmI = htIdx['horómetro inicial']; if (htHmI === undefined) htHmI = htIdx['horometro inicial'];
+              var htHmF = htIdx['horómetro final'];   if (htHmF === undefined) htHmF = htIdx['horometro final'];
+              var htTobTx = htIdx['descripción tiempo perdido (tob)']; if (htTobTx === undefined) htTobTx = htIdx['descripcion tiempo perdido (tob)'];
+              var htLts = htIdx['litros'], htObs = htIdx['observaciones'];
               console.log('[BHT] cols: fecha='+htFec+' oper='+htOper+' equipo='+htEq+' proceso='+htProc
                         + ' vma='+htVma+' arb='+htArb+' m3='+htM3);
               if (htFec !== undefined && htOper !== undefined && htArb !== undefined && htM3 !== undefined) {
@@ -9492,7 +9507,12 @@ function loadExcel(input) {
                     fundo: htFundo !== undefined ? gxClean(rb2[htFundo]) : '',
                     rodal: htRodal !== undefined ? gxClean(rb2[htRodal]) : '',
                     turno: bhtTurnoLetra(htTurno2 !== undefined ? rb2[htTurno2] : null, htTurno !== undefined ? rb2[htTurno] : null),
-                    jornada: htJorn !== undefined ? (gxClean(rb2[htJorn]) || '') : ''
+                    jornada: htJorn !== undefined ? (gxClean(rb2[htJorn]) || '') : '',
+                    hmIni: htHmI !== undefined ? (parseFloat(rb2[htHmI]) || null) : null,
+                    hmFin: htHmF !== undefined ? (parseFloat(rb2[htHmF]) || null) : null,
+                    tobTxt: htTobTx !== undefined ? gxClean(rb2[htTobTx]) : '',
+                    lts: htLts !== undefined ? (parseFloat(rb2[htLts]) || 0) : 0,
+                    obs: htObs !== undefined ? gxClean(rb2[htObs]) : ''
                   });
                 }
                 BHT_DIAS = sinFaenasFuera(bhtDias);
@@ -11383,6 +11403,87 @@ function estSeguimiento(fa, ym){
   });
   return S;
 }
+/* ---- Disponibilidad por maquina (30-10-2026, pedido de Gustavo) ----
+   Disponible: un turno = EST_DISP_TURNO h/mes (306, como la estructura de costos).
+   La maquina PRINCIPAL de cada proceso (la con mas horas trabajadas en el mes) tiene siempre
+   1 turno = 306 h. Las otras (segunda maquina, respaldo) se planifican por turnos y quedan
+   "por confirmar" hasta que alguien elige sus turnos. Se guarda en localStorage 'EST_DISP'
+   (clave faena|mes|equipo). Trabajadas = BaseHorasTrab; perdidas = las mismas del cuadro de
+   arriba (BaseHorasPerdUnif repartida, sin clima ni cargo Formin). Sin registro = disponible
+   a la fecha - trabajadas - perdidas: horas pagadas que nadie anoto. */
+var EST_DISP_TURNO = 306;
+var EST_DISP_NOCHE = 7 * EST_PARAM.diasStd;   // turno de noche: 7 h por noche (Gustavo 30-10-2026) = 210 h/mes
+function estDispHoras(t){ return t <= 1 ? EST_DISP_TURNO * t : EST_DISP_TURNO + EST_DISP_NOCHE * (t - 1); }
+function estDispLeer(){ try { return JSON.parse(localStorage.getItem('EST_DISP') || '{}'); } catch(e){ return {}; } }
+function estDispGuardar(k, v){
+  var g = estDispLeer();
+  if (v === '' || v == null) delete g[k]; else g[k] = +v;
+  try { localStorage.setItem('EST_DISP', JSON.stringify(g)); } catch(e){}
+  estRender();
+}
+function estDispHtml(fa, ym, S, fmt, pct, th, td){
+  var dUlt = S.diaUlt || 0, fr = dUlt ? dUlt / S.diasMes : 0;
+  var trab = {}, guard = estDispLeer();
+  (window.BHT_DIAS || []).forEach(function(r){
+    if (!r || r.faena !== fa || !r.fecha || r.fecha.substring(0, 7) !== ym || !(r.hrs > 0)) return;
+    if (r.tipo && r.tipo !== 'maquinaria') return;
+    if (+r.fecha.substring(8, 10) > dUlt) return;
+    var eq = estEq(r.equipo); if (!eq) return;
+    trab[eq] = (trab[eq] || 0) + r.hrs;
+  });
+  var porProc = {};
+  var agrega = function(eq){ var p = estProc(eq); (porProc[p] = porProc[p] || {})[eq] = 1; };
+  Object.keys(trab).forEach(agrega);
+  Object.keys(S.proc).forEach(function(p){ Object.keys(S.proc[p].maq || {}).forEach(agrega); });
+  var cap = function(e){ return e.toLowerCase().replace(/(^|\s)(\w)/g, function(a, b, c){ return b + c.toUpperCase(); }); };
+  var procs = EST_ORD.filter(function(p){ return porProc[p]; });
+  if (!procs.length) return '';
+  var h = '<div style="font-size:12px;font-weight:700;color:#174ea6;margin:16px 0 4px;">Disponibilidad por máquina · ' + fa + ' · ' + estMesTxt(ym) +
+    ' <span style="font-weight:400;color:#888;font-size:10.5px;">· turno día = ' + EST_DISP_TURNO + ' h/mes · turno noche = 7 h por noche (' + EST_DISP_NOCHE + ' h/mes) · si el proceso tiene una sola máquina, 1 turno fijo; ' +
+    'si tiene varias, elige los turnos con operador de cada una (en amarillo: por confirmar)</span></div>' +
+    '<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;"><thead><tr>' +
+    th('Proceso', 'left') + th('Máquina', 'left') + th('Turnos con operador') + th('Disponible mes') + th('Disponible a la fecha') +
+    th('Trabajadas') + th('Perdidas') + th('Sin registro') + th('% trabajado') + th('% perdido') + '</tr></thead><tbody>';
+  var TT = {dm: 0, df: 0, t: 0, p: 0, s: 0};
+  procs.forEach(function(p){
+    var eqs = Object.keys(porProc[p]).sort(function(a, b){ return (trab[b] || 0) - (trab[a] || 0); });
+    var P = {dm: 0, df: 0, t: 0, p: 0, s: 0};
+    eqs.forEach(function(eq, i){
+      // proceso con UNA sola maquina: 1 turno fijo (306 h). Con varias, todas se planifican:
+      // la principal parte en 1 turno ya confirmado, las demas quedan "por confirmar".
+      var principal = eqs.length === 1, k = fa + '|' + ym + '|' + eq;
+      var conf = guard[k] != null || (i === 0 && !principal), turnos = principal ? 1 : (guard[k] != null ? guard[k] : 1);
+      var dm = estDispHoras(turnos), df = dm * fr;
+      var t = trab[eq] || 0, pe = ((S.proc[p] || {}).maq || {})[eq] ? S.proc[p].maq[eq].real : 0;
+      var sr = df - t - pe;
+      var sel = principal
+        ? '<span style="font-weight:700;">1 · única del proceso</span>'
+        : '<select onchange="estDispGuardar(\'' + k.replace(/'/g, "\\'") + '\',this.value)" style="font-size:11px;padding:1px 3px;' + (conf ? '' : 'background:#fff2cc;') + '">' +
+          [['', 'por confirmar'], ['0', '0 · sin operador'], ['0.5', '½ turno'], ['1', '1 turno (día)'], ['2', '2 turnos (día + noche 7 h)']].map(function(o){
+            var on = guard[k] != null ? String(guard[k]) === o[0] : (conf ? o[0] === '1' : o[0] === '');
+            return '<option value="' + o[0] + '"' + (on ? ' selected' : '') + '>' + o[1] + '</option>';
+          }).join('') + '</select>' + (conf ? '' : ' <span style="font-size:9.5px;color:#b9770e;" title="Mientras no se confirme se calcula con 1 turno">(1 turno)</span>');
+      var pt = df ? t / df : NaN, pp = df ? pe / df : NaN;
+      h += '<tr>' + td(i === 0 ? p : '', 'text-align:left;font-weight:700;') + td(cap(eq) + (EST_FUERA[eq] ? ' <span style="color:#999;font-size:9.5px;">(respaldo)</span>' : ''), 'text-align:left;') +
+        td(sel) + td(fmt(dm, 0)) + td(fmt(df)) + td(fmt(t), 'font-weight:700;color:#1a7f37;') + td(fmt(pe), 'font-weight:700;color:#c0392b;') +
+        td(sr >= 0 ? fmt(sr) : '<span title="Trabajadas + perdidas pasan lo disponible: probablemente tiene más turnos que los planificados" style="color:#b9770e;">' + fmt(sr) + ' ⚠</span>',
+           sr >= 0 && df && sr / df > 0.15 ? 'color:#b9770e;font-weight:700;' : 'color:#666;') +
+        td(pct(pt)) + td(pct(pp)) + '</tr>';
+      P.dm += dm; P.df += df; P.t += t; P.p += pe; P.s += sr;
+    });
+    if (eqs.length > 1)
+      h += '<tr style="background:#eef3fb;font-weight:700;">' + td('') + td('Total ' + p, 'text-align:left;') + td('') + td(fmt(P.dm, 0)) + td(fmt(P.df)) +
+        td(fmt(P.t)) + td(fmt(P.p)) + td(fmt(P.s)) + td(pct(P.df ? P.t / P.df : NaN)) + td(pct(P.df ? P.p / P.df : NaN)) + '</tr>';
+    Object.keys(TT).forEach(function(x){ TT[x] += P[x]; });
+  });
+  h += '<tr style="background:#d6e6fa;font-weight:800;">' + td('TOTAL ' + fa, 'text-align:left;') + td('') + td('') + td(fmt(TT.dm, 0)) + td(fmt(TT.df)) +
+    td(fmt(TT.t)) + td(fmt(TT.p)) + td(fmt(TT.s)) + td(pct(TT.df ? TT.t / TT.df : NaN)) + td(pct(TT.df ? TT.p / TT.df : NaN)) + '</tr></tbody></table></div>' +
+    '<div style="font-size:9.5px;color:#888;margin-top:4px;line-height:1.5;">Disponible a la fecha = disponible del mes × (día ' + dUlt + ' ÷ ' + S.diasMes + '). ' +
+    'Trabajadas: BaseHorasTrab (web de la empresa). Perdidas: las mismas del cuadro "Por máquina" (sin clima ni cargo Formin). ' +
+    '<b>Sin registro</b> = disponible − trabajadas − perdidas: horas con operador que no quedaron anotadas ni como trabajo ni como detención; si pasa del 15% del disponible se marca en naranjo. ' +
+    'Si da negativo (⚠), la máquina trabajó más turnos de los planificados: revisa sus turnos.</div>';
+  return h;
+}
 function estSemaforo(pct){
   if (!(pct >= 0)) return {c: '#888', t: '—', bg: '#f2f2f2'};
   if (pct <= 1) return {c: '#1a7f37', t: 'Dentro', bg: '#e2efda'};
@@ -11512,6 +11613,7 @@ function estRender(){
     });
   });
   h += '</tbody></table></div>';
+  h += estDispHtml(fa, ym, S, fmt, pct, th, td);
   if (S.excl > 0.05)
     h += '<div style="font-size:10.5px;color:#666;margin-top:6px;">No cuentan en el mes (clima / incendio / paso de vehículos / cargo Formin): <b>' + fmt(S.excl) + ' h</b> — ' +
          Object.keys(S.exclDet).map(function(c){ return c.toLowerCase() + ' ' + fmt(S.exclDet[c]); }).join(' · ') + '</div>';
@@ -11546,10 +11648,19 @@ function estRender(){
   } catch(eC){ console.warn('[ESTD] grafico:', eC.message); }
 }
 
-var APP_BUILD = '26-10-2026 Residuos: FR719 mixto marcado con *';
+var APP_BUILD = '04-11-2026 Bitácora por equipo';
 console.log('%c[APP] build ' + APP_BUILD, 'background:#1a6b3a;color:#fff;padding:2px 6px;');
 try { var _sello = function(){ var e = document.getElementById('app-build-sello'); if (e) e.innerHTML = '&#128278; Versión: <b>' + APP_BUILD + '</b>'; };
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _sello); else _sello(); } catch(e) {}
+/* 26-10-2026 (Gustavo): la App del PC es solo el taller de pruebas; los datos oficiales se ingresan en la del servidor.
+   Abierta como archivo o desde localhost muestra una franja fija para no confundirlas. En el servidor no aparece. */
+try { var _franjaLocal = function(){
+        if (location.protocol !== 'file:' && !/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return;
+        var d = document.createElement('div'); d.id = 'app-local-franja';
+        d.style.cssText = 'position:sticky;top:0;z-index:99999;background:#c0392b;color:#fff;text-align:center;font:800 13px Arial,sans-serif;padding:5px 8px;letter-spacing:.5px;';
+        d.innerHTML = '&#9888; APP LOCAL – PRUEBAS &nbsp;·&nbsp; <span style="font-weight:400;">los datos oficiales se ingresan en la App del servidor</span>';
+        document.body.insertBefore(d, document.body.firstChild); };
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _franjaLocal); else _franjaLocal(); } catch(e) {}
 
 
 /* ============================================================================
@@ -14186,22 +14297,36 @@ function rsHtmlForms(){
   var L = RS.lotes.filter(function(l){ return l.traslado && l.corr; });
   var anios = {}; L.forEach(function(l){ anios[String(l.traslado.fecha || '').substring(0, 4)] = 1; });
   var lista = Object.keys(anios).filter(Boolean).sort().reverse();
-  if (!RS_FORMS_ANIO || lista.indexOf(RS_FORMS_ANIO) < 0) RS_FORMS_ANIO = lista.indexOf(rsHoy().substring(0, 4)) >= 0 ? rsHoy().substring(0, 4) : (lista[0] || rsHoy().substring(0, 4));
+  // 03-11-2026 (Gustavo: "no veo el 60, 61, 62, 63"): opción "Todos los años" y revisión de correlativos (faltantes y repetidos)
+  if (!RS_FORMS_ANIO || (RS_FORMS_ANIO !== 'todos' && lista.indexOf(RS_FORMS_ANIO) < 0)) RS_FORMS_ANIO = lista.indexOf(rsHoy().substring(0, 4)) >= 0 ? rsHoy().substring(0, 4) : (lista[0] || rsHoy().substring(0, 4));
+  var enAnio = function(l){ return RS_FORMS_ANIO === 'todos' || String(l.traslado.fecha).substring(0, 4) === RS_FORMS_ANIO; };
   var retF = {}; RS.retiros.forEach(function(r){ retF[r.id] = r; });
-  var F = L.filter(function(l){ return String(l.traslado.fecha).substring(0, 4) === RS_FORMS_ANIO; })
+  var F = L.filter(enAnio)
     .filter(function(l){ return !RS_FORMS_EMP || (l.traslado.empresa || rsEmpresaDe(l.faena)) === RS_FORMS_EMP; })
     .filter(function(l){ return !RS_FORMS_EST || rsEstadoFR(l)[0] === RS_FORMS_EST; })
-    .sort(function(a, b){ return (b.corr - a.corr) || (a.traslado.fecha < b.traslado.fecha ? 1 : -1); });
+    .sort(function(a, b){ var ya = String(a.traslado.fecha).substring(0, 4), yb = String(b.traslado.fecha).substring(0, 4);
+      return (yb < ya ? -1 : yb > ya ? 1 : 0) || (b.corr - a.corr) || (a.traslado.fecha < b.traslado.fecha ? 1 : -1); });
   var opt = function(v, t, sel){ return '<option value="' + rsE(v) + '"' + (v === sel ? ' selected' : '') + '>' + rsE(t) + '</option>'; };
-  var cuenta = {}; L.filter(function(l){ return String(l.traslado.fecha).substring(0, 4) === RS_FORMS_ANIO; }).forEach(function(l){ var e = rsEstadoFR(l)[0]; cuenta[e] = (cuenta[e] || 0) + 1; });
+  var cuenta = {}; L.filter(enAnio).forEach(function(l){ var e = rsEstadoFR(l)[0]; cuenta[e] = (cuenta[e] || 0) + 1; });
+  // correlativos por año: el N° es único para la bodega (Lpoo + Emprecon), así que se revisa sin filtrar empresa ni estado
+  var revCorr = (RS_FORMS_ANIO === 'todos' ? lista : [RS_FORMS_ANIO]).map(function(a){
+    var c = {}; L.filter(function(l){ return String(l.traslado.fecha).substring(0, 4) === a; }).forEach(function(l){ c[l.corr] = (c[l.corr] || 0) + 1; });
+    var ns = Object.keys(c).map(Number).sort(function(x, y){ return x - y; }); if (!ns.length) return '';
+    var falt = []; for (var n = ns[0]; n <= ns[ns.length - 1]; n++) if (!c[n]) falt.push(n);
+    var rep = ns.filter(function(n){ return c[n] > 1; });
+    return '<div style="margin-top:4px;"><b>' + a + ':</b> N° ' + ns[0] + ' al ' + ns[ns.length - 1] + ' · ' + ns.length + ' números usados' +
+      (falt.length ? ' · <span style="color:#c0392b;"><b>faltan ' + falt.length + ':</b> ' + falt.join(', ') + '</span>' : ' · <span style="color:#1a6b3a;">sin saltos</span>') +
+      (rep.length ? ' · <span style="color:#b7791f;"><b>repetidos:</b> ' + rep.join(', ') + '</span>' : '') + '</div>';
+  }).join('');
   var h = '<div class="rs-card"><div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">' +
-    '<b>Año:</b><select onchange="RS_FORMS_ANIO=this.value;rsRender();" style="padding:6px;border-radius:5px;">' + lista.map(function(a){ return opt(a, a, RS_FORMS_ANIO); }).join('') + '</select>' +
+    '<b>Año:</b><select onchange="RS_FORMS_ANIO=this.value;rsRender();" style="padding:6px;border-radius:5px;">' + opt('todos', 'Todos los años', RS_FORMS_ANIO) + lista.map(function(a){ return opt(a, a, RS_FORMS_ANIO); }).join('') + '</select>' +
     '<b>Empresa:</b><select onchange="RS_FORMS_EMP=this.value;rsRender();" style="padding:6px;border-radius:5px;">' + opt('', 'Todas', RS_FORMS_EMP) + RS_EMPRESAS.map(function(e){ return opt(e, e, RS_FORMS_EMP); }).join('') + '</select>' +
     '<b>Estado:</b><select onchange="RS_FORMS_EST=this.value;rsRender();" style="padding:6px;border-radius:5px;">' + opt('', 'Todos', RS_FORMS_EST) +
       ['Por recibir', 'En bodega', 'Parcial en bodega', 'Disposición final', 'Solo chatarra'].map(function(e){ return opt(e, e + (cuenta[e] ? ' (' + cuenta[e] + ')' : ''), RS_FORMS_EST); }).join('') + '</select>' +
     '<span class="rs-chip" style="background:#eef2f6;color:#333;margin-left:auto;">' + F.length + ' formularios</span></div>' +
     '<div style="font-size:11px;color:#666;margin-top:6px;">Haz clic en <b>FR719</b> para verlo o imprimirlo. &laquo;Disposición final&raquo; = todos sus residuos peligrosos ya salieron con folio SIDREP; ' +
-      '&laquo;Parcial&raquo; = una parte sigue en la bodega. Cadenas, espadas y cables van a la pila de chatarra y no cuentan para el estado.</div></div>';
+      '&laquo;Parcial&raquo; = una parte sigue en la bodega. Cadenas, espadas y cables van a la pila de chatarra y no cuentan para el estado.</div>' +
+    (revCorr ? '<div style="font-size:11.5px;margin-top:8px;padding:6px 8px;background:#f6f8fa;border-radius:6px;"><b>Revisión de correlativos FR719</b> (Lpoo y Emprecon comparten la numeración)' + revCorr + '</div>' : '') + '</div>';
   if (!F.length) return h + '<div class="rs-card" style="color:#888;">No hay formularios con estos filtros.</div>';
   h += '<div class="rs-card"><div style="overflow-x:auto;"><table class="rs-tb"><tr><th>N° FR719</th><th>Fecha</th><th>Empresa</th><th>Faena</th><th>Predio</th><th>Residuos</th><th>Kg | L</th><th>Estado</th><th>Salida final (folio SIDREP)</th><th></th></tr>' +
     F.map(function(l){ var t = l.traslado, e = rsEstadoFR(l);
@@ -14505,7 +14630,7 @@ function rsImprimir(lid, tipo){
   var w = window.open('', '_blank');
   if (!w){ alert('El navegador bloqueó la ventana de impresión. Permite ventanas emergentes para esta página.'); return; }
   w.document.write('<html><head><meta charset="utf-8"><title>' + (tipo === 'fr100958' ? 'FR100958' : tipo === 'ambos' ? 'FR100958 + FR719' : 'FR719') + ' N° ' + l.corr + '</title>' + css + '</head><body' + (tipo !== 'fr100958' ? ' style="margin:0 auto;"' : '') + '>' +
-    '<button onclick="window.print()" style="position:fixed;right:10px;top:10px;padding:6px 14px;z-index:9;">&#128424; Imprimir</button>' + h + '</body></html>');
+    '<button onclick="window.print()" style="position:fixed;right:10px;top:10px;padding:6px 14px;z-index:9;">&#128424; Imprimir</button>' + h + '<\/body><\/html>');
   w.document.close();
 }
 
@@ -22578,6 +22703,564 @@ function gestExportar(){
 <div id="br-reloj" style="display:none;position:fixed;right:26px;bottom:22px;
   background:rgba(20,108,67,.94);color:#fff;font-size:25px;font-weight:800;letter-spacing:.06em;
   padding:9px 21px;border-radius:8px;z-index:9999;box-shadow:0 6px 18px rgba(0,0,0,.22);"></div>
+
+<!-- BITACORA DE USO DE MAQUINARIA — 04-11-2026 (Gustavo: "con el máximo de detalle lo que trabajó cada equipo y sus fallas")
+     Una fila por día del mes, como la planilla en papel, cruzando todo lo que la App tiene de ese equipo:
+       Planilla de horas (BHT_DIAS: operador, turno, horómetro, horas, TOB, árboles, m³, litros, observación)
+       Detalle de horas perdidas de Terreno (CAUSAS_HPERD: cada causa con sus horas y su observación)
+       WhatsApp de la faena (WA_DET: lo que reportó el chat y quién) · Formin en los procesadores (FMN_DIAS)
+       Combustible cargado (DIESEL_DETALLE). Marca los saltos de horómetro y las horas que no cuadran. -->
+<div id="bt-modal" style="display:none;position:fixed;inset:0;z-index:2147483000;background:#eef2f6;overflow:auto;"></div>
+<style>
+.bt-wrap{max-width:1700px;margin:0 auto;padding:12px 16px 40px;font-size:12px;color:#1f2a24;}
+.bt-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:#1f4e78;color:#fff;padding:10px 14px;border-radius:8px;position:sticky;top:0;z-index:2;}
+.bt-bar select{padding:6px 8px;border-radius:5px;border:0;font-size:12.5px;}
+.bt-bar button{padding:7px 14px;border-radius:6px;border:0;font-weight:700;cursor:pointer;}
+.bt-card{background:#fff;border:1px solid #d9e1ea;border-radius:10px;padding:12px;margin-top:10px;}
+.bt-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;}
+.bt-kpi{border:1px solid #d9e1ea;border-left:5px solid #1f4e78;border-radius:8px;padding:7px 10px;background:#fff;}
+.bt-kpi b{display:block;font-size:18px;}
+.bt-tb{border-collapse:collapse;width:100%;font-size:11px;background:#fff;}
+.bt-tb th{background:#1f4e78 !important;color:#fff !important;padding:5px 4px;border:1px solid #c8d3df;font-weight:700;}
+.bt-tb th.bt-g{background:#2e6aa3 !important;}
+.bt-tb td{border:1px solid #d9e1ea;padding:4px 5px;vertical-align:top;}
+.bt-tb td.n{text-align:right;white-space:nowrap;}
+.bt-tb tr.bt-dom td{background:#fbf7ee;}
+.bt-tb tr.bt-sin td{color:#a0a8b0;}
+.bt-tb td.bt-falla{background:#fdecea;}
+.bt-tb td.bt-ojo{background:#fff3cd;}
+.bt-chip{display:inline-block;border-radius:4px;padding:0 4px;font-size:9.5px;font-weight:700;margin-right:3px;}
+.bt-src{color:#7a8794;font-size:9.5px;}
+@media print{ body > *:not(#bt-modal){display:none !important;} #bt-modal{position:static;overflow:visible;background:#fff;}
+  .bt-bar button,.bt-bar select,.bt-noprint{display:none !important;} .bt-bar{position:static;} .bt-tb{font-size:9px;} }
+</style>
+<script>
+var BT_SEL = {faena: '', equipo: '', ym: ''}, BT_MODO = 'bitacora';
+function btE(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function btN(x, d){ return (x == null || x === '' || isNaN(x)) ? '' : Number(x).toLocaleString('es-CL', {minimumFractionDigits: d || 0, maximumFractionDigits: d || 0}); }
+function btFa(s){ var m = String(s || '').match(/mec\s*(\d)/i); return m ? 'Mec ' + m[1] : ''; }
+/* Formin trae el CUPO de contrato, no la maquina (ver unificar_horas.py, 30-10-2026): cupo 1 de Mec 5 = Proc 08 si el
+   horometro pasa de 20.000, si no Proc 13; desde el 15-09 por defecto Proc 08. */
+function btCupo(fa, n, fecha, hm){
+  n = parseInt(n, 10);
+  var M = {'Mec 3': {3: 'Procesador 10', 4: 'Procesador 12'}, 'Mec 4': {3: 'Procesador 09', 4: 'Harvester 01'},
+           'Mec 5': {1: 'Procesador 13', 2: 'Procesador 14'}};
+  var e = (M[fa] || {})[n] || '';
+  if (fa === 'Mec 5' && n === 1){ if (fecha >= '2026-09-15') e = 'Procesador 08';
+    if (hm >= 20000) e = 'Procesador 08'; else if (hm >= 100) e = 'Procesador 13'; }
+  return e;
+}
+function btMeses(){
+  var s = {}; (window.BHT_DIAS || []).forEach(function(r){ if (r.fecha) s[r.fecha.substring(0, 7)] = 1; });
+  return Object.keys(s).sort().reverse();
+}
+function btEquipos(fa, ym){
+  var s = {};
+  (window.BHT_DIAS || []).forEach(function(r){ if (r.faena === fa && (r.fecha || '').substring(0, 7) === ym && (!r.tipo || r.tipo === 'maquinaria')) s[r.equipo] = r.proceso || ''; });
+  Object.keys(window.CAUSAS_HPERD || {}).forEach(function(k){ var p = k.split('|'); if (p[1] === fa && p[2] === ym && !(p[0] in s)) s[p[0]] = ''; });
+  var orden = ['Volteo', 'Madereo', 'Procesado', 'Clasificado', 'Carguío', 'Apoyo', ''];
+  return Object.keys(s).filter(Boolean).sort(function(a, b){ return (orden.indexOf(s[a]) - orden.indexOf(s[b])) || a.localeCompare(b, 'es', {numeric: true}); })
+    .map(function(e){ return {e: e, p: s[e]}; });
+}
+function btAbrir(){
+  var meses = btMeses();
+  if (!meses.length){ alert('Todavía no hay datos de la planilla de horas cargados.'); return; }
+  // los primeros 5 dias del mes abre en el mes anterior (el que esta completo)
+  if (!BT_SEL.ym || meses.indexOf(BT_SEL.ym) < 0) BT_SEL.ym = (new Date().getDate() <= 5 && meses[1]) ? meses[1] : meses[0];
+  if (!BT_SEL.faena) BT_SEL.faena = 'Mec 3';
+  var bm = document.getElementById('bt-modal');
+  if (bm.parentNode !== document.body) document.body.appendChild(bm);   // fuera de cualquier contenedor de la App
+  bm.style.display = '';
+  document.body.style.overflow = 'hidden';
+  btRender();
+}
+function btCerrar(){ document.getElementById('bt-modal').style.display = 'none'; document.body.style.overflow = ''; }
+function btCambio(k, v){ BT_SEL[k] = v; if (k !== 'equipo') BT_SEL.equipo = ''; if (k !== 'ym') BT_MODO = 'bitacora'; btRender(); }
+function btIr(fa, eq){ BT_SEL.faena = fa; BT_SEL.equipo = eq; BT_MODO = 'bitacora'; btRender(); document.getElementById('bt-modal').scrollTop = 0; }
+
+/* AUDITORIA DE INFORMES (04-11-2026, Gustavo: "qué máquinas no están siendo informadas y la calidad de la información").
+   Mes elegido, todas las faenas Mec, hasta ayer:
+   1) Cobertura: cada máquina activa de la faena (aparece en la planilla de horas este mes o el anterior) debe tener cada
+      DÍA CON OFERTA un registro en la planilla de horas o en el detalle de horas perdidas. No se cuenta el día en que la
+      máquina estuvo informada en otra faena (traslados). Si cargó combustible ese día y no tiene planilla, se destaca.
+   2) Calidad de cada registro: falla sin decir qué falló, "OTROS" sin explicar, horas perdidas sin causa, sin horómetro,
+      horómetro que no cuadra con las horas, salto de horómetro, operador sin nombre, volteo/procesado sin árboles,
+      turno con más de 24 h. */
+/* Gustavo 04-11-2026: la auditoria se enfoca en el ULTIMO DIA (ayer) para revisar dia a dia; el mes queda abajo. */
+var AU_DIA = '';
+function auIso(d){ return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function auMover(n){
+  var hoy = new Date(), ayer = auIso(new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() - 1));
+  var d = new Date((AU_DIA || ayer) + 'T12:00:00'); d.setDate(d.getDate() + n);
+  var f = n === 0 ? ayer : auIso(d); if (f > ayer) f = ayer;
+  AU_DIA = f; BT_SEL.ym = f.substring(0, 7); btRender();
+}
+function auHtml(ym, nomMes){
+  var hoy = new Date(), ayerIso = auIso(new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() - 1));
+  if (!AU_DIA || AU_DIA.substring(0, 7) !== ym) AU_DIA = ayerIso.substring(0, 7) === ym ? ayerIso : ym + '-' + String(new Date(+ym.substring(0, 4), +ym.substring(5, 7), 0).getDate()).padStart(2, '0');
+  if (AU_DIA > ayerIso) AU_DIA = ayerIso;
+  var y = +ym.substring(0, 4), mo = +ym.substring(5, 7), nDias = new Date(y, mo, 0).getDate();
+  var ymAnt = (mo === 1 ? (y - 1) + '-12' : y + '-' + String(mo - 1).padStart(2, '0'));
+  var FAS = ['Mec 3', 'Mec 4', 'Mec 5'], esFalla = function(c){ return /falla|averia|avería|pana/i.test(c || ''); };
+  var dias = []; for (var d = 1; d <= nDias; d++){ var f = ym + '-' + String(d).padStart(2, '0'); if (f <= ayerIso) dias.push(f); }
+  if (!dias.length) return '<div class="bt-card">El mes todavía no tiene días cerrados para auditar.</div>';
+  // indices
+  var B = {}, otraFa = {}, activos = {};
+  (window.BHT_DIAS || []).forEach(function(r){
+    var m7 = (r.fecha || '').substring(0, 7); if (r.tipo && r.tipo !== 'maquinaria') return;
+    if (m7 === ym || m7 === ymAnt){ activos[r.faena] = activos[r.faena] || {}; activos[r.faena][r.equipo] = r.proceso || activos[r.faena][r.equipo] || ''; }
+    if (m7 !== ym) return;
+    ((B[r.faena] = B[r.faena] || {})[r.equipo] = B[r.faena][r.equipo] || {})[r.fecha] = (B[r.faena][r.equipo][r.fecha] || []).concat([r]);
+    (otraFa[r.equipo + '|' + r.fecha] = otraFa[r.equipo + '|' + r.fecha] || {})[r.faena] = 1;
+  });
+  var C = {};
+  Object.keys(window.CAUSAS_HPERD || {}).forEach(function(k){ var p = k.split('|'); if (p[2] !== ym) return;
+    (activos[p[1]] = activos[p[1]] || {})[p[0]] = activos[p[1]][p[0]] || '';
+    CAUSAS_HPERD[k].forEach(function(c){ ((C[p[1] + '|' + p[0]] = C[p[1] + '|' + p[0]] || {})[c.fecha] = (C[p[1] + '|' + p[0]][c.fecha] || [])).push(c);
+      (otraFa[p[0] + '|' + c.fecha] = otraFa[p[0] + '|' + c.fecha] || {})[p[1]] = 1; }); });
+  var W = {}; (window.WA_DET || []).forEach(function(w){ if ((w.f || '').substring(0, 7) === ym) (W[btFa(w.faena) + '|' + w.equipo + '|' + w.f] = W[btFa(w.faena) + '|' + w.equipo + '|' + w.f] || []).push(w); });
+  var K = {}, ymN = y * 100 + mo;
+  Object.keys(window.DIESEL_DETALLE || {}).forEach(function(k){ var p = k.split('|'); if (parseInt(p[2], 10) !== ymN) return;
+    (DIESEL_DETALLE[k].fuel || []).forEach(function(x){ if (x.fecha) K[btFa(p[1]) + '|' + p[0] + '|' + x.fecha] = (K[btFa(p[1]) + '|' + p[0] + '|' + x.fecha] || 0) + (+x.litros || 0); }); });
+  // presencia de cada maquina en cada faena (todas las fechas): se le exige un dia solo si estuvo informada en esa faena
+  // dentro de los 7 dias anteriores (o ese mismo dia). Asi las maquinas que se fueron de la faena dejan de exigirse.
+  var PRES = {};
+  (window.BHT_DIAS || []).forEach(function(r){ if (!r.tipo || r.tipo === 'maquinaria') (PRES[r.faena + '|' + r.equipo] = PRES[r.faena + '|' + r.equipo] || {})[r.fecha] = 1; });
+  Object.keys(window.CAUSAS_HPERD || {}).forEach(function(k){ var p = k.split('|');
+    CAUSAS_HPERD[k].forEach(function(c){ if (c.fecha) (PRES[p[1] + '|' + p[0]] = PRES[p[1] + '|' + p[0]] || {})[c.fecha] = 1; }); });
+  var esperado = function(fa, eq, f){
+    var P = PRES[fa + '|' + eq] || {}; if (P[f]) return true;
+    var d = new Date(f + 'T12:00:00');
+    for (var i = 1; i <= 7; i++){ d.setDate(d.getDate() - 1); if (P[auIso(d)]) return true; }
+    return false;
+  };
+  Object.keys(activos).forEach(function(fa){ Object.keys(activos[fa]).forEach(function(eq){
+    if (!dias.some(function(f){ return esperado(fa, eq, f); })) delete activos[fa][eq]; }); });
+  var res = {}, tot = {esp: 0, inf: 0, reg: 0, malos: 0};
+  FAS.forEach(function(fa){
+    var bd = (window.BEST_DAILY || {})[fa] || {}, conOf = dias.filter(function(f){ return bd[f] && bd[f].vof > 0; });
+    if (!conOf.length) conOf = dias.slice();
+    var R = res[fa] = {eqs: [], prob: {}, esp: 0, inf: 0, reg: 0, malos: 0};
+    var lista = Object.keys(activos[fa] || {}).sort(function(a, b){ return a.localeCompare(b, 'es', {numeric: true}); });
+    lista.forEach(function(eq){
+      var Bq = (B[fa] || {})[eq] || {}, Cq = C[fa + '|' + eq] || {}, falt = [], comb = [], esp = 0, inf = 0, hmAnt = null, prob = [];
+      conOf.forEach(function(f){
+        var enOtra = otraFa[eq + '|' + f] && !otraFa[eq + '|' + f][fa];
+        var rows = Bq[f] || [], cau = Cq[f] || [];
+        if (enOtra && !rows.length && !cau.length) return;   // ese dia estuvo en otra faena
+        if (!esperado(fa, eq, f)) return;                     // no venia trabajando en esta faena
+        esp++;
+        if (rows.length || cau.length) inf++;
+        else { falt.push(f); if (K[fa + '|' + eq + '|' + f]) comb.push(f); }
+      });
+      // calidad, registro por registro (dias del mes hasta ayer)
+      dias.forEach(function(f){
+        var rows = (Bq[f] || []).slice().sort(function(a, b){ return (a.hmIni || 0) - (b.hmIni || 0); }), cau = Cq[f] || [], wa = W[fa + '|' + eq + '|' + f] || [];
+        var malo = false, add = function(t, txt){ prob.push({f: f, t: t, txt: txt}); malo = true; R.prob[t] = (R.prob[t] || 0) + 1; };
+        var hperd = 0;
+        rows.forEach(function(r){
+          R.reg++; tot.reg++; hperd += +r.hperd || 0;
+          var p0 = prob.length;
+          if (!(r.oper) || /sin nombre/i.test(r.oper)) add('Operador sin nombre', '');
+          if ('hmIni' in r){
+            if (!(r.hmIni > 0) || !(r.hmFin > 0)) add('Sin horómetro', r.oper || '');
+            else {
+              if (Math.abs((r.hmFin - r.hmIni) - (+r.hrs || 0)) > 1) add('Horómetro no cuadra con las horas', 'horómetro ' + btN(r.hmFin - r.hmIni, 1) + ' h vs ' + btN(r.hrs, 1) + ' h informadas');
+              if (hmAnt != null && Math.abs(r.hmIni - hmAnt) > 0.5) add('Salto de horómetro', 'parte en ' + btN(r.hmIni, 1) + ', el registro anterior terminó en ' + btN(hmAnt, 1));
+            }
+          }
+          if (r.hmFin > 0) hmAnt = r.hmFin;
+          if (/volteo|procesado/i.test(r.proceso || '') && (+r.hrs || 0) >= 2 && !(r.arb > 0)) add('Volteo/procesado sin árboles', btN(r.hrs, 1) + ' h trabajadas');
+          if ((+r.hrs || 0) + (+r.hperd || 0) > 24) add('Turno con más de 24 h', btN((+r.hrs || 0) + (+r.hperd || 0), 1) + ' h');
+          if (prob.length > p0){ R.malos++; tot.malos++; }
+        });
+        cau.forEach(function(c){
+          if (esFalla(c.causa) && !c.obs){
+            var waF = wa.filter(function(w){ return esFalla(w.causa) || /^r\s*77/i.test(w.motivo || ''); });
+            add(waF.length ? 'Falla sin detalle en planilla (sí en WhatsApp)' : 'Falla sin decir qué falló', btN(c.hrs, 1) + ' h');
+          }
+          if (/^otros?$/i.test(String(c.causa || '').trim()) && !c.obs) add('"OTROS" sin explicar', btN(c.hrs, 1) + ' h');
+        });
+        if (hperd > 0.25 && !cau.length && !wa.length) add('Horas perdidas sin causa', btN(hperd, 1) + ' h');
+      });
+      R.esp += esp; R.inf += inf; tot.esp += esp; tot.inf += inf;
+      // lo del dia que se esta revisando
+      var fD = AU_DIA, rD = (Bq[fD] || []).slice().sort(function(a, b){ return (a.hmIni || 0) - (b.hmIni || 0); }), cD = Cq[fD] || [];
+      var bdD = ((window.BEST_DAILY || {})[fa] || {})[fD], ofD = bdD ? bdD.vof > 0 : true;
+      var enOtraD = otraFa[eq + '|' + fD] && !otraFa[eq + '|' + fD][fa] ? Object.keys(otraFa[eq + '|' + fD]).join(', ') : '';
+      R.eqs[R.eqs.length] = {eq: eq, proc: activos[fa][eq], esp: esp, inf: inf, falt: falt, comb: comb, prob: prob,
+        dia: {rows: rD, cau: cD, wa: W[fa + '|' + eq + '|' + fD] || [], lts: K[fa + '|' + eq + '|' + fD] || 0, oferta: ofD, enOtra: enOtraD,
+              prob: prob.filter(function(p){ return p.f === fD; })}};
+    });
+  });
+  var pc = function(a, b){ return b ? a / b : null; };
+  var col = function(p){ return p == null ? '#888' : p >= 0.95 ? '#1a6b3a' : p >= 0.85 ? '#b7791f' : '#c0392b'; };
+  var fd = function(f){ return f.substring(8, 10); };
+  var h = '<div class="bt-card"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;"><b style="font-size:16px;color:#1f4e78;">&#128269; Auditoría de informes · ' + nomMes(ym) + '</b>' +
+    '<span class="bt-src">días con oferta hasta ayer (' + dias.length + ' días cerrados)</span>' +
+    '<button class="bt-noprint" style="margin-left:auto;padding:6px 12px;border-radius:6px;border:1px solid #1f4e78;background:#fff;color:#1f4e78;font-weight:700;cursor:pointer;" onclick="BT_MODO=\'bitacora\';btRender()">&#8592; Volver a la bitácora</button></div>' +
+    '<div class="bt-kpis" style="margin-top:10px;">' +
+    FAS.map(function(fa){ var R = res[fa], c = pc(R.inf, R.esp), q = R.reg ? 1 - R.malos / R.reg : null;
+      return '<div class="bt-kpi" style="border-left-color:' + col(Math.min(c == null ? 1 : c, q == null ? 1 : q)) + ';"><b>' + fa + '</b>' +
+        'Cobertura: <b style="display:inline;font-size:14px;color:' + col(c) + ';">' + (c == null ? '—' : btN(c * 100, 1) + '%') + '</b> (' + R.inf + ' de ' + R.esp + ' máquina-días)<br>' +
+        'Calidad: <b style="display:inline;font-size:14px;color:' + col(q) + ';">' + (q == null ? '—' : btN(q * 100, 1) + '%') + '</b> de registros sin observaciones</div>'; }).join('') +
+    '</div><div class="bt-src" style="margin-top:6px;">Cobertura = máquina-días informados ÷ esperados (cada máquina activa, cada día con oferta). Calidad = registros de la planilla sin ningún problema. ' +
+    'Verde ≥ 95% · amarillo ≥ 85% · rojo bajo 85%. Haz clic en una máquina para abrir su bitácora.</div></div>';
+  FAS.forEach(function(fa){
+    var R = res[fa], tp = Object.keys(R.prob).sort(function(a, b){ return R.prob[b] - R.prob[a]; });
+    h += '<div class="bt-card"><b style="font-size:14px;color:#1f4e78;">' + fa + '</b>' +
+      (tp.length ? ' <span class="bt-src">· problemas de calidad: ' + tp.map(function(t){ return btE(t) + ' <b>' + R.prob[t] + '</b>'; }).join(' · ') + '</span>' : ' <span style="color:#1a6b3a;">· sin problemas de calidad</span>') +
+      '<table class="bt-tb" style="margin-top:6px;"><tr><th>Máquina</th><th>Proceso</th><th>Días informados</th><th>Cobertura</th><th style="min-width:220px;">Días sin informar</th><th style="min-width:340px;">Calidad de lo informado</th></tr>' +
+      R.eqs.map(function(x){ var c = pc(x.inf, x.esp);
+        var grp = {}; x.prob.forEach(function(p){ (grp[p.t] = grp[p.t] || []).push(p); });
+        var cal = Object.keys(grp).map(function(t){ return '<div><b style="color:#b7791f;">' + btE(t) + '</b> (' + grp[t].length + '): ' +
+          grp[t].slice(0, 8).map(function(p){ return fd(p.f) + (p.txt ? ' <span class="bt-src">' + btE(p.txt) + '</span>' : ''); }).join(', ') + (grp[t].length > 8 ? '…' : '') + '</div>'; }).join('');
+        return '<tr style="cursor:pointer;" onclick="btIr(\'' + fa + '\',\'' + btE(x.eq).replace(/'/g, "\\'") + '\')" title="Abrir la bitácora de ' + btE(x.eq) + '">' +
+          '<td style="font-weight:700;color:#1f4e78;">' + btE(x.eq) + '</td><td>' + btE(x.proc) + '</td>' +
+          '<td class="n">' + x.inf + ' / ' + x.esp + '</td><td class="n" style="font-weight:800;color:' + col(c) + ';">' + (c == null ? '—' : btN(c * 100, 0) + '%') + '</td>' +
+          '<td' + (x.falt.length ? ' class="bt-falla"' : '') + '>' + (x.falt.length ? x.falt.map(function(f){ return (x.comb.indexOf(f) >= 0 ? '<b title="Cargó combustible ese día">' + fd(f) + '⛽</b>' : fd(f)); }).join(', ') : '<span style="color:#1a6b3a;">&#10003; completo</span>') + '</td>' +
+          '<td style="font-size:10.5px;">' + (cal || '<span style="color:#1a6b3a;">&#10003; sin observaciones</span>') + '</td></tr>'; }).join('') +
+      '</table></div>';
+  });
+  h += '<div class="bt-card bt-src" style="font-size:10.5px;">⛽ = ese día la máquina cargó combustible pero no tiene planilla (seguro trabajó). Un día en que la máquina aparece informada en otra faena no se le exige a esta. ' +
+    '"Falla sin detalle en planilla (sí en WhatsApp)": el qué falló está en el chat pero no se escribió en la planilla de Terreno. Las máquinas con paro total sin horas se cuentan como informadas si tienen el detalle de horas perdidas.</div>';
+  // ---- REVISION DEL DIA (por defecto ayer): maquina por maquina, todas las faenas ----
+  var dn = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'][new Date(AU_DIA + 'T12:00:00').getDay()];
+  var nOk = 0, nFalta = 0, nObs = 0;
+  var filasD = FAS.map(function(fa){
+    return res[fa].eqs.map(function(x){
+      var D = x.dia, est, colE;
+      var hrs = 0, hp = 0, hmI = null, hmF = null;
+      D.rows.forEach(function(r){ hrs += +r.hrs || 0; hp += +r.hperd || 0;
+        if (r.hmIni > 0) hmI = hmI == null ? r.hmIni : Math.min(hmI, r.hmIni); if (r.hmFin > 0) hmF = hmF == null ? r.hmFin : Math.max(hmF, r.hmFin); });
+      var cauH = D.cau.reduce(function(a, c){ return a + (+c.hrs || 0); }, 0);
+      if (D.rows.length || D.cau.length){ if (D.prob.length){ est = '&#9888; Con observaciones'; colE = '#b7791f'; nObs++; } else { est = '&#10003; Bien'; colE = '#1a6b3a'; nOk++; } }
+      else if (D.enOtra){ est = 'En ' + btE(D.enOtra); colE = '#7a8794'; }
+      else if (!esperado(fa, x.eq, AU_DIA)){ est = 'Sin actividad reciente en ' + fa; colE = '#7a8794'; }
+      else if (!D.oferta){ est = 'Sin oferta'; colE = '#7a8794'; }
+      else { est = '&#10007; SIN INFORMAR' + (D.lts ? ' <span title="Cargó combustible ese día">⛽ ' + btN(D.lts) + ' L</span>' : ''); colE = '#c0392b'; nFalta++; }
+      var causas = D.cau.map(function(c){ return (esFalla(c.causa) ? '<b style="color:#c0392b;">' : '') + btE(c.causa.charAt(0) + c.causa.slice(1).toLowerCase()) + (esFalla(c.causa) ? '</b>' : '') +
+        (c.obs ? ': ' + btE(c.obs) : (esFalla(c.causa) ? ' <span style="color:#c0392b;">(¿qué falló?)</span>' : '')) + ' (' + btN(c.hrs, 1) + ' h)'; }).join('<br>');
+      var waTx = D.wa.length ? '<span class="bt-chip" style="background:#dcf5e3;color:#1a6b3a;">WhatsApp</span>' + btE(D.wa.map(function(w){ return (w.motivo || w.causa) + (w.hrs ? ' (' + btN(w.hrs, 1) + ' h)' : ''); }).join(' · ')) : '';
+      return '<tr style="cursor:pointer;" onclick="btIr(\'' + fa + '\',\'' + btE(x.eq).replace(/'/g, "\\'") + '\')" title="Abrir la bitácora de ' + btE(x.eq) + '">' +
+        '<td>' + fa + '</td><td style="font-weight:700;color:#1f4e78;">' + btE(x.eq) + '<br><span class="bt-src">' + btE(x.proc) + '</span></td>' +
+        '<td style="font-weight:800;color:' + colE + ';white-space:nowrap;">' + est + '</td>' +
+        '<td>' + D.rows.map(function(r){ return '<span class="bt-chip" style="background:#e3edf7;color:#1f4e78;">' + btE((r.turno || '') + (r.jornada ? ' ' + r.jornada : '')) + '</span>' + btE(r.oper); }).join('<br>') + '</td>' +
+        '<td class="n">' + (hmI != null ? btN(hmI, 1) + ' → ' + btN(hmF, 1) : (D.rows.length ? '<span style="color:#c0392b;">sin horómetro</span>' : '')) + '</td>' +
+        '<td class="n" style="font-weight:700;">' + (D.rows.length ? btN(hrs, 1) : '') + '</td>' +
+        '<td class="n" style="color:#c0392b;font-weight:700;">' + ((hp || cauH) ? btN(Math.max(hp, cauH), 1) : '') + '</td>' +
+        '<td style="font-size:10.5px;">' + [causas, waTx].filter(Boolean).join('<br>') + '</td>' +
+        '<td style="font-size:10.5px;">' + D.prob.map(function(p){ return '<div><b style="color:#b7791f;">' + btE(p.t) + '</b>' + (p.txt ? ' <span class="bt-src">' + btE(p.txt) + '</span>' : '') + '</div>'; }).join('') + '</td></tr>';
+    }).join('');
+  }).join('');
+  var hDia = '<div class="bt-card" style="border:2px solid #1f4e78;"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+    '<button class="bt-noprint" style="padding:6px 12px;border-radius:6px;border:1px solid #1f4e78;background:#fff;color:#1f4e78;font-weight:800;cursor:pointer;" onclick="auMover(-1)">&#9664; Día anterior</button>' +
+    '<b style="font-size:17px;color:#1f4e78;">&#128269; Revisión del ' + dn + ' ' + AU_DIA.substring(8, 10) + '-' + AU_DIA.substring(5, 7) + '-' + AU_DIA.substring(0, 4) + (AU_DIA === ayerIso ? ' (ayer)' : '') + '</b>' +
+    '<button class="bt-noprint" style="padding:6px 12px;border-radius:6px;border:1px solid #1f4e78;background:#fff;color:#1f4e78;font-weight:800;cursor:pointer;' + (AU_DIA >= ayerIso ? 'opacity:.4;" disabled' : '"') + ' onclick="auMover(1)">Día siguiente &#9654;</button>' +
+    (AU_DIA !== ayerIso ? '<button class="bt-noprint" style="padding:6px 12px;border-radius:6px;border:0;background:#1f4e78;color:#fff;font-weight:700;cursor:pointer;" onclick="auMover(0)">Ir a ayer</button>' : '') +
+    '<span style="margin-left:auto;font-size:13px;"><b style="color:#1a6b3a;">' + nOk + ' bien</b> · <b style="color:#b7791f;">' + nObs + ' con observaciones</b> · <b style="color:#c0392b;">' + nFalta + ' sin informar</b></span></div>' +
+    '<table class="bt-tb" style="margin-top:8px;"><tr><th>Faena</th><th>Máquina</th><th>Estado</th><th>Operador (turno)</th><th>Horómetro</th><th>Hrs trab</th><th>Hrs perd</th><th style="min-width:260px;">Causas informadas</th><th style="min-width:220px;">Qué corregir</th></tr>' +
+    filasD + '</table><div class="bt-src" style="margin-top:6px;"><b>Ojo:</b> muestra lo que traía el Excel en su última carga (el bot lo baja a las 07:45); lo que la faena ingrese después aparece con la carga siguiente. Clic en una máquina para ver su bitácora del mes. "Sin oferta" = día no laboral según la oferta (feriado). "En Mec X" = ese día la máquina estuvo informada en otra faena.</div></div>' +
+    '<div class="bt-card" style="text-align:center;font-weight:800;color:#1f4e78;background:#e8f0f8;">&#9660; Resumen de ' + nomMes(ym) + ' &#9660;</div>';
+  return hDia + h;
+}
+function btDatos(fa, eq, ym){
+  var ymN = parseInt(ym.replace('-', ''), 10), D = {};
+  var dia = function(f){ return D[f] = D[f] || {bht: [], cau: [], wa: [], fmn: [], lts: 0}; };
+  (window.BHT_DIAS || []).forEach(function(r){ if (r.faena === fa && r.equipo === eq && (r.fecha || '').substring(0, 7) === ym) dia(r.fecha).bht.push(r); });
+  ((window.CAUSAS_HPERD || {})[eq + '|' + fa + '|' + ym] || []).forEach(function(c){ if (c.fecha) dia(c.fecha).cau.push(c); });
+  (window.WA_DET || []).forEach(function(w){ if (btFa(w.faena) === fa && w.equipo === eq && (w.f || '').substring(0, 7) === ym) dia(w.f).wa.push(w); });
+  if (/procesador|harvester/i.test(eq)) (window.FMN_DIAS || []).forEach(function(x){
+    if (btFa(x.faena) === fa && (x.fecha || '').substring(0, 7) === ym && btCupo(fa, x.equipo, x.fecha, x.hmIni) === eq) dia(x.fecha).fmn.push(x); });
+  Object.keys(window.DIESEL_DETALLE || {}).forEach(function(k){ var p = k.split('|');
+    if (p[0] === eq && btFa(p[1]) === fa && parseInt(p[2], 10) === ymN) (DIESEL_DETALLE[k].fuel || []).forEach(function(x){ if (x.fecha) dia(x.fecha).lts += +x.litros || 0; }); });
+  return D;
+}
+function btRender(){
+  var m = document.getElementById('bt-modal'), meses = btMeses();
+  var eqs = btEquipos(BT_SEL.faena, BT_SEL.ym);
+  if (!BT_SEL.equipo || !eqs.some(function(x){ return x.e === BT_SEL.equipo; })) BT_SEL.equipo = eqs.length ? eqs[0].e : '';
+  var nomMes = function(ym){ var n = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][+ym.substring(5, 7) - 1]; return n.charAt(0).toUpperCase() + n.slice(1) + ' ' + ym.substring(0, 4); };
+  var opt = function(v, t, s){ return '<option value="' + btE(v) + '"' + (v === s ? ' selected' : '') + '>' + btE(t) + '</option>'; };
+  var h = '<div class="bt-wrap"><div class="bt-bar"><b style="font-size:16px;">&#128210; BITÁCORA DE USO DE MAQUINARIA</b>' +
+    '<span>Faena</span><select onchange="btCambio(\'faena\',this.value)">' + ['Mec 3', 'Mec 4', 'Mec 5'].map(function(f){ return opt(f, f, BT_SEL.faena); }).join('') + '</select>' +
+    '<span>Máquina</span><select onchange="btCambio(\'equipo\',this.value)">' + eqs.map(function(x){ return opt(x.e, x.e + (x.p ? ' · ' + x.p : ''), BT_SEL.equipo); }).join('') + '</select>' +
+    '<span>Mes</span><select onchange="btCambio(\'ym\',this.value)">' + meses.map(function(y){ return opt(y, nomMes(y), BT_SEL.ym); }).join('') + '</select>' +
+    '<button style="margin-left:24px;background:#f1c40f;color:#3d2e00;" onclick="BT_MODO=\'audit\';btRender()" title="Todas las faenas: máquinas y días sin informar, y calidad de lo informado">&#128269; Auditoría de informes</button>' +
+    '<button style="margin-left:auto;background:#fff;color:#1f4e78;" onclick="window.print()">&#128424; Imprimir</button>' +
+    '<button style="background:#c0392b;color:#fff;" onclick="btCerrar()">&#10005; Cerrar</button></div>';
+  if (BT_MODO === 'audit'){ m.innerHTML = h + auHtml(BT_SEL.ym, nomMes) + '</div>'; return; }
+  if (!BT_SEL.equipo){ m.innerHTML = h + '<div class="bt-card">No hay registros de esta faena en ' + nomMes(BT_SEL.ym) + '.</div></div>'; return; }
+  var fa = BT_SEL.faena, eq = BT_SEL.equipo, ym = BT_SEL.ym, D = btDatos(fa, eq, ym);
+  // datos cargados antes del 04-11-2026 (cache o base del servidor) no traen el horometro de la planilla
+  var sinHm = (window.BHT_DIAS || []).length && !(window.BHT_DIAS || []).some(function(r){ return 'hmIni' in r; });
+  if (sinHm) h += '<div class="bt-card bt-noprint" style="border-left:5px solid #b7791f;background:#fff8e6;">&#9888; Los datos cargados no traen el <b>horómetro</b> de la planilla de horas ' +
+    '(se cargaron antes de esta versión). Vuelve a apretar <b>Cargar Excel</b> con el Best y aparecerá.</div>';
+  var nDias = new Date(+ym.substring(0, 4), +ym.substring(5, 7), 0).getDate();
+  var T = {trab: 0, perd: 0, falla: 0, otra: 0, arb: 0, m3: 0, lts: 0, dias: 0, diasFalla: 0, saltos: 0, descuadres: 0};
+  var fallas = {}, opers = {}, causas = {}, hmPrimero = null, hmUltimo = null, finAnt = null;
+  var esFalla = function(c){ return /falla|averia|avería|pana/i.test(c || ''); };
+  var filas = '';
+  for (var d = 1; d <= nDias; d++){
+    var f = ym + '-' + String(d).padStart(2, '0'), x = D[f] || {bht: [], cau: [], wa: [], fmn: [], lts: 0};
+    var dow = new Date(f + 'T12:00:00').getDay(), dn = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'][dow];
+    var B = x.bht.slice().sort(function(a, b){ return (a.hmIni || 0) - (b.hmIni || 0); });
+    var trab = 0, perdB = 0, arb = 0, m3 = 0, ltsB = 0, hmI = null, hmF = null, obs = [], tobTx = [];
+    B.forEach(function(r){ trab += +r.hrs || 0; perdB += +r.hperd || 0; arb += +r.arb || 0; m3 += +r.m3 || 0; ltsB += +r.lts || 0;
+      if (r.hmIni > 0) hmI = hmI == null ? r.hmIni : Math.min(hmI, r.hmIni);
+      if (r.hmFin > 0) hmF = hmF == null ? r.hmFin : Math.max(hmF, r.hmFin);
+      // la nota interna del reparto de m3 por cartola (14-10-2026) no es una observacion de la faena
+      var ob = String(r.obs || '').split(/;\s*/).filter(function(s){ return s && !/^m3 seg[uú]n cartola/i.test(s.trim()); }).join('; ');
+      if (ob && obs.indexOf(ob) < 0) obs.push(ob); if (r.tobTxt) tobTx.push(r.tobTxt);
+      var o = r.oper || '(sin nombre)'; opers[o] = opers[o] || {dias: {}, hrs: 0}; opers[o].dias[f] = 1; opers[o].hrs += +r.hrs || 0; });
+    var fuenteHm = 'planilla';
+    if (hmI == null && x.fmn.length){ x.fmn.forEach(function(r){ if (r.hmIni > 0) hmI = hmI == null ? r.hmIni : Math.min(hmI, r.hmIni); if (r.hmFin > 0) hmF = hmF == null ? r.hmFin : Math.max(hmF, r.hmFin); }); fuenteHm = 'Formin'; }
+    // causas de horas perdidas: el detalle de Terreno manda; si no hay, el WhatsApp
+    var fallaH = 0, fallaTx = [], otraH = 0, otraTx = [];
+    // si Terreno dice "FALLA EQUIPO" sin decir qué falló, se completa con lo que reportó el WhatsApp ese día
+    var waFalla = x.wa.filter(function(w){ return esFalla(w.causa) || /falla/i.test(w.tipo || '') || /^r\s*77/i.test(w.motivo || ''); })
+      .map(function(w){ return w.motivo || w.causa; }).filter(Boolean);
+    var waFallaUsado = false;
+    x.cau.forEach(function(c){
+      if (esFalla(c.causa) && !c.obs && waFalla.length){ c = Object.assign({}, c, {obs: waFalla.join('; ') + ' [WhatsApp]'}); waFallaUsado = true; }
+      var t = c.obs ? c.obs : c.causa;
+      if (esFalla(c.causa)){ fallaH += +c.hrs || 0; fallaTx.push(t + ' (' + btN(c.hrs, 1) + ' h)'); var k = (c.obs || c.causa).toLowerCase().trim(); fallas[k] = fallas[k] || {t: c.obs || c.causa, h: 0, d: {}}; fallas[k].h += +c.hrs || 0; fallas[k].d[f] = 1; }
+      else { otraH += +c.hrs || 0; otraTx.push(c.causa.charAt(0) + c.causa.slice(1).toLowerCase() + (c.obs ? ': ' + c.obs : '') + ' (' + btN(c.hrs, 1) + ' h)'); causas[c.causa] = (causas[c.causa] || 0) + (+c.hrs || 0); } });
+    var waTx = [];
+    x.wa.forEach(function(w){
+      var t = (w.motivo || w.causa) + (w.hrs ? ' (' + btN(w.hrs, 1) + ' h)' : '');
+      if (!x.cau.length){
+        if (esFalla(w.causa) || /falla/i.test(w.tipo || '')){ fallaH += +w.hrs || 0; fallaTx.push(t); var k = (w.motivo || w.causa).toLowerCase().trim(); fallas[k] = fallas[k] || {t: w.motivo || w.causa, h: 0, d: {}}; fallas[k].h += +w.hrs || 0; fallas[k].d[f] = 1; }
+        else { otraH += +w.hrs || 0; otraTx.push(t); causas[w.causa] = (causas[w.causa] || 0) + (+w.hrs || 0); }
+      } else if (!(waFallaUsado && waFalla.indexOf(w.motivo || w.causa) >= 0)) waTx.push(t + (w.quien ? ' — ' + w.quien : ''));
+    });
+    if (!x.cau.length && !x.wa.length && perdB > 0 && tobTx.length){ otraH += perdB; otraTx.push(tobTx.join('; ')); }
+    var perd = Math.max(perdB, fallaH + otraH);
+    var hayAlgo = B.length || x.cau.length || x.wa.length || x.fmn.length || x.lts;
+    // controles: salto de horometro respecto al dia anterior y horas informadas vs horometro
+    var finPrev = finAnt;
+    var salto = (hmI != null && finAnt != null && Math.abs(hmI - finAnt) > 0.5) ? hmI - finAnt : null;
+    var difHm = (hmI != null && hmF != null) ? hmF - hmI : null;
+    var descuadre = difHm != null && Math.abs(difHm - trab) > 1;
+    if (salto != null) T.saltos++; if (descuadre) T.descuadres++;
+    if (hmI != null && hmPrimero == null) hmPrimero = hmI; if (hmF != null){ hmUltimo = hmF; finAnt = hmF; }
+    T.trab += trab; T.perd += perd; T.falla += fallaH; T.otra += otraH; T.arb += arb; T.m3 += m3;
+    var lts = x.lts || ltsB; T.lts += lts; if (trab > 0) T.dias++; if (fallaH > 0) T.diasFalla++;
+    // Formin (procesadores): arboles, TOB y velocidad del dia
+    var fmTx = x.fmn.length ? x.fmn.map(function(r){ return 'Formin: ' + btN(r.arb) + ' árb · TOB ' + btN(r.tob, 1) + ' h' + (r.vReal ? ' · ' + btN(r.vReal, 0) + ' árb/h' : '') + (r.oper ? ' · ' + r.oper : ''); }).join('<br>') : '';
+    var operTx = B.map(function(r){ return '<span class="bt-chip" style="background:#e3edf7;color:#1f4e78;">' + btE((r.turno || '') + (r.jornada ? ' ' + r.jornada : '')) + '</span>' + btE(r.oper) + ' <span class="bt-src">' + btN(r.hrs, 1) + ' h</span>'; }).join('<br>');
+    filas += '<tr class="' + (dow === 0 ? 'bt-dom ' : '') + (hayAlgo ? '' : 'bt-sin') + '">' +
+      '<td style="text-align:center;font-weight:800;">' + d + '<br><span class="bt-src">' + dn + '</span></td>' +
+      '<td class="n' + (salto != null ? ' bt-ojo" title="Salto de horómetro: el día anterior terminó en ' + btN(finPrev, 1) : '') + '">' + btN(hmI, 1) + (salto != null ? '<br><span class="bt-src" style="color:#b7791f;">salto ' + (salto > 0 ? '+' : '') + btN(salto, 1) + '</span>' : '') + (hmI != null && fuenteHm === 'Formin' ? '<br><span class="bt-src">Formin</span>' : '') + '</td>' +
+      '<td class="n">' + btN(hmF, 1) + '</td>' +
+      '<td class="n' + (descuadre ? ' bt-ojo" title="El horómetro marca ' + btN(difHm, 1) + ' h y la planilla informa ' + btN(trab, 1) + ' h' : '') + '" style="font-weight:700;">' + (trab ? btN(trab, 1) : '') + (descuadre ? '<br><span class="bt-src" style="color:#b7791f;">horóm. ' + btN(difHm, 1) + '</span>' : '') + '</td>' +
+      '<td class="n" style="font-weight:700;color:#c0392b;">' + (perd ? btN(perd, 1) : '') + '</td>' +
+      '<td class="n' + (fallaH ? ' bt-falla' : '') + '">' + (fallaH ? btN(fallaH, 1) : '') + '</td>' +
+      '<td class="' + (fallaH ? 'bt-falla' : '') + '">' + btE(fallaTx.join(' · ')) + '</td>' +
+      '<td class="n">' + (otraH ? btN(otraH, 1) : '') + '</td>' +
+      '<td>' + btE(otraTx.join(' · ')) + '</td>' +
+      '<td>' + operTx + '</td>' +
+      '<td class="n">' + (arb ? btN(arb) : '') + '</td>' +
+      '<td class="n">' + (m3 ? btN(m3, 1) : '') + '</td>' +
+      '<td class="n">' + (lts ? btN(lts) : '') + '</td>' +
+      '<td style="font-size:10.5px;">' + [obs.length ? btE(obs.join('; ')) : '', waTx.length ? '<span class="bt-chip" style="background:#dcf5e3;color:#1a6b3a;">WhatsApp</span>' + btE(waTx.join(' · ')) : '', fmTx].filter(Boolean).join('<br>') + '</td></tr>';
+  }
+  var disp = (T.trab + T.falla) > 0 ? T.trab / (T.trab + T.falla) : null;
+  var uso = (T.trab + T.perd) > 0 ? T.trab / (T.trab + T.perd) : null;
+  var proc = (eqs.filter(function(x){ return x.e === eq; })[0] || {}).p || '';
+  h += '<div class="bt-card"><div style="display:flex;gap:20px;flex-wrap:wrap;font-size:13px;margin-bottom:10px;">' +
+    '<div><b>MES Y AÑO:</b> ' + nomMes(ym) + '</div><div><b>Máquina:</b> ' + btE(eq) + (proc ? ' (' + btE(proc) + ')' : '') + '</div><div><b>Faena:</b> ' + fa + '</div>' +
+    (hmPrimero != null ? '<div><b>Horómetro del mes:</b> ' + btN(hmPrimero, 1) + ' → ' + btN(hmUltimo, 1) + ' = ' + btN(hmUltimo - hmPrimero, 1) + ' h</div>' : '') + '</div>' +
+    '<div class="bt-kpis">' +
+    '<div class="bt-kpi"><b>' + T.dias + ' / ' + nDias + '</b>días con horas trabajadas</div>' +
+    '<div class="bt-kpi"><b>' + btN(T.trab, 1) + ' h</b>horas trabajadas</div>' +
+    '<div class="bt-kpi" style="border-left-color:#c0392b;"><b>' + btN(T.perd, 1) + ' h</b>horas perdidas</div>' +
+    '<div class="bt-kpi" style="border-left-color:#c0392b;"><b>' + btN(T.falla, 1) + ' h</b>en falla de equipo (' + T.diasFalla + ' días)</div>' +
+    '<div class="bt-kpi" style="border-left-color:#1a6b3a;"><b>' + (disp != null ? btN(disp * 100, 1) + '%' : '—') + '</b>disponibilidad mecánica (trab ÷ trab+falla)</div>' +
+    '<div class="bt-kpi"><b>' + (uso != null ? btN(uso * 100, 1) + '%' : '—') + '</b>utilización (trab ÷ trab+perdidas)</div>' +
+    '<div class="bt-kpi" style="border-left-color:#7a5a00;"><b>' + btN(T.lts) + ' L</b>combustible' + (T.trab ? ' · ' + btN(T.lts / T.trab, 1) + ' L/h' : '') + '</div>' +
+    (T.arb || T.m3 ? '<div class="bt-kpi" style="border-left-color:#7a5a00;"><b>' + btN(T.arb) + ' árb</b>' + btN(T.m3, 1) + ' m³</div>' : '') +
+    (hmPrimero != null ? '<div class="bt-kpi" style="border-left-color:' + (Math.abs((hmUltimo - hmPrimero) - T.trab) > 5 ? '#b7791f' : '#1a6b3a') + ';"><b>' + btN((hmUltimo - hmPrimero) - T.trab, 1) + ' h</b>horómetro menos horas informadas</div>' : '') +
+    (T.saltos || T.descuadres ? '<div class="bt-kpi" style="border-left-color:#b7791f;"><b>' + T.saltos + ' · ' + T.descuadres + '</b>saltos de horómetro · días que no cuadran</div>' : '') +
+    '</div></div>';
+  // fallas del mes y quien opero
+  // los reportes del chat sin horas son trabajos/reparaciones informadas, no horas de falla: van aparte
+  var flTodo = Object.keys(fallas).map(function(k){ return fallas[k]; });
+  var fl = flTodo.filter(function(x){ return x.h > 0; }).sort(function(a, b){ return b.h - a.h; });
+  var trabSinH = flTodo.filter(function(x){ return !(x.h > 0); });
+  var op = Object.keys(opers).sort(function(a, b){ return opers[b].hrs - opers[a].hrs; });
+  var oc = Object.keys(causas).sort(function(a, b){ return causas[b] - causas[a]; });
+  h += '<div class="bt-noprint" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px;">' +
+    '<div class="bt-card"><b style="color:#c0392b;">&#128295; Fallas del mes</b>' + (fl.length ? '<table class="bt-tb" style="margin-top:6px;"><tr><th>Qué falló</th><th>Días</th><th>Horas</th></tr>' +
+      fl.slice(0, 12).map(function(x){ return '<tr><td>' + btE(x.t) + '</td><td class="n">' + Object.keys(x.d).length + '</td><td class="n">' + btN(x.h, 1) + '</td></tr>'; }).join('') + '</table>' : '<div style="color:#1a6b3a;margin-top:6px;">Sin fallas con horas registradas.</div>') +
+      (trabSinH.length ? '<div style="margin-top:8px;font-weight:700;color:#555;">Trabajos y reparaciones informados sin horas (WhatsApp)</div><ul style="margin:4px 0 0;padding-left:18px;color:#444;">' +
+        trabSinH.map(function(x){ return '<li>' + btE(x.t) + ' <span class="bt-src">(' + Object.keys(x.d).sort().map(function(f){ return f.substring(8, 10); }).join(', ') + ')</span></li>'; }).join('') + '</ul>' : '') + '</div>' +
+    '<div class="bt-card"><b style="color:#1f4e78;">&#9201; Otras causas</b>' + (oc.length ? '<table class="bt-tb" style="margin-top:6px;"><tr><th>Causa</th><th>Horas</th></tr>' +
+      oc.slice(0, 12).map(function(c){ return '<tr><td>' + btE(c) + '</td><td class="n">' + btN(causas[c], 1) + '</td></tr>'; }).join('') + '</table>' : '<div style="margin-top:6px;color:#666;">Sin otras causas.</div>') + '</div>' +
+    '<div class="bt-card"><b style="color:#1a6b3a;">&#128119; Operadores</b>' + (op.length ? '<table class="bt-tb" style="margin-top:6px;"><tr><th>Operador</th><th>Días</th><th>Horas</th></tr>' +
+      op.map(function(o){ return '<tr><td>' + btE(o) + '</td><td class="n">' + Object.keys(opers[o].dias).length + '</td><td class="n">' + btN(opers[o].hrs, 1) + '</td></tr>'; }).join('') + '</table>' : '<div style="margin-top:6px;color:#666;">Sin operadores en la planilla.</div>') + '</div></div>';
+  h += '<div class="bt-card" style="overflow-x:auto;"><table class="bt-tb"><tr>' +
+    '<th rowspan="2">DÍA</th><th colspan="2" class="bt-g">HORÓMETRO</th><th rowspan="2">Hrs<br>Trab</th><th rowspan="2">Hrs<br>Perdidas</th>' +
+    '<th colspan="2" class="bt-g">FALLA EQUIPO</th><th colspan="2" class="bt-g">OTRA CAUSA</th><th rowspan="2">Operador (turno)</th>' +
+    '<th rowspan="2">Árboles</th><th rowspan="2">m³</th><th rowspan="2">Comb.<br>L</th><th rowspan="2" style="min-width:220px;">Observación adicional</th></tr>' +
+    '<tr><th class="bt-g">Inicial</th><th class="bt-g">Final</th><th class="bt-g">Hrs</th><th class="bt-g" style="min-width:180px;">Qué falló</th><th class="bt-g">Hrs</th><th class="bt-g" style="min-width:180px;">Qué fue</th></tr>' +
+    filas +
+    '<tr style="font-weight:800;background:#eef3f8;"><td>TOTAL</td><td></td><td></td><td class="n">' + btN(T.trab, 1) + '</td><td class="n" style="color:#c0392b;">' + btN(T.perd, 1) + '</td>' +
+    '<td class="n">' + btN(T.falla, 1) + '</td><td></td><td class="n">' + btN(T.otra, 1) + '</td><td></td><td></td><td class="n">' + btN(T.arb) + '</td><td class="n">' + btN(T.m3, 1) + '</td><td class="n">' + btN(T.lts) + '</td><td></td></tr></table>' +
+    '<div class="bt-src" style="margin-top:6px;font-size:10.5px;">Fuentes: planilla de horas de Terreno (operador, horómetro, horas, árboles, m³, observación) · detalle de horas perdidas de Terreno (causa y qué falló; si falta, el WhatsApp de la faena) · ' +
+    'WhatsApp (lo que reportó el chat y quién) · Formin en procesadores · combustible cargado. Amarillo = salto de horómetro respecto al día anterior, o horas informadas que no cuadran con el horómetro (más de 1 h).</div></div></div>';
+  m.innerHTML = h;
+}
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && document.getElementById('bt-modal').style.display !== 'none') btCerrar(); });
+</script>
+
+<!-- SEMAFORO DE INFORMES POR FAENA — 03-11-2026 (Gustavo: "que me diga qué días están faltando")
+     Lee lo que la App ya tiene cargado (sirve igual en la local y en la del servidor):
+       Formin (Productividad M3) = FMN_DIAS · Planilla de horas = BHT_DIAS · Cartolas = BEST_DAILY[f][d].m3 / FAJA_DAILY
+       WhatsApp = WA_DET · Combustible = DIESEL_DETALLE[*].fuel[].fecha
+     Regla: un día FALTA solo si la faena trabajó ese día (lo dice Formin, la planilla o una cartola) y el informe
+     no tiene nada. Así un domingo o un feriado sin faena no aparece como pendiente. Ayer y hoy están "en plazo". -->
+<style>
+.sf-wrap{font-size:12px;color:#1f2a24;}
+.sf-card{background:#fff;border:1px solid #dfe6e1;border-radius:10px;padding:12px;margin-bottom:10px;}
+.sf-card h3{margin:0 0 8px;font-size:14px;color:#14532d;}
+.sf-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;}
+.sf-kpi{border:1px solid #dfe6e1;border-left:6px solid #1a6b3a;border-radius:8px;padding:8px 10px;background:#fff;}
+.sf-kpi b{display:block;font-size:15px;}
+.sf-tb{border-collapse:collapse;font-size:11px;}
+.sf-tb th,.sf-tb td{border:1px solid #e3e8e5;padding:3px 4px;text-align:center;white-space:nowrap;}
+.sf-tb th{background:#f3f6f4 !important;color:#1f2a24 !important;font-weight:700;}
+.sf-tb td.sf-src{text-align:left;font-weight:700;background:#fafcfb;position:sticky;left:0;}
+.sf-c{display:inline-block;width:18px;height:18px;line-height:18px;border-radius:4px;font-weight:800;font-size:11px;}
+.sf-ok{background:#d9f2e1;color:#1a6b3a;} .sf-falta{background:#c0392b;color:#fff;} .sf-aviso{background:#f6d58e;color:#7a5200;}
+.sf-plazo{background:#dbeafe;color:#1e40af;} .sf-nt{background:#f1f3f2;color:#b5bcb8;}
+.sf-dom{background:#fbf7ee;}
+.sf-lista{margin:4px 0 0;padding-left:18px;}
+.sf-lista li{margin:3px 0;}
+</style>
+<script>
+var SF_FAENAS = ['Mec 3', 'Mec 4', 'Mec 5', 'Faja'];
+/* obl: si falta en un dia trabajado es ROJO; si no, es AVISO (amarillo): la cartola no sale todos los dias
+   (sin despacho no hay cartola), WhatsApp trae solo las detenciones y el combustible no se carga todos los dias. */
+var SF_FUENTES = [
+  {k: 'F', n: 'Formin (Productividad M3)', obl: true,  faja: false},
+  {k: 'P', n: 'Planilla de horas (Terreno)', obl: true,  faja: false},
+  {k: 'C', n: 'Cartolas (producción Mininco)', obl: false, faja: true, plazoIniMes: 3},   // Gustavo 03-11-2026: el atraso de la cartola se justifica solo los 3 primeros días del mes
+  {k: 'W', n: 'WhatsApp de la faena', obl: false, faja: false},
+  {k: 'K', n: 'Combustible y horas trabajadas', obl: false, faja: true}
+];
+var SF_DIAS = 31, SF_DSEM = ['dom','lun','mar','mié','jue','vie','sáb'], SF_ABIERTA = -1;
+function sfVer(i){
+  SF_ABIERTA = (SF_ABIERTA === i) ? -1 : i;
+  SF_FAENAS.forEach(function(f, j){ var e = document.getElementById('sf-det-' + j); if (e) e.style.display = (j === SF_ABIERTA) ? '' : 'none'; });
+  var e = document.getElementById('sf-det-' + i); if (e && SF_ABIERTA === i) e.scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+function sfFa(s){ s = String(s || ''); var m = s.match(/mec\s*(\d)/i); return m ? 'Mec ' + m[1] : (/faja/i.test(s) ? 'Faja' : ''); }
+function sfIso(d){ return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function sfFmt(iso){ return iso.substring(8, 10) + '-' + iso.substring(5, 7); }
+function sfDow(iso){ return new Date(iso + 'T12:00:00').getDay(); }
+function sfDatos(){
+  var S = {}; SF_FAENAS.forEach(function(f){ S[f] = {F: {}, P: {}, C: {}, W: {}, K: {}}; });
+  var pon = function(f, k, d){ f = sfFa(f); if (S[f] && d && d.length >= 10) S[f][k][d.substring(0, 10)] = 1; };
+  (window.FMN_DIAS || []).forEach(function(r){ pon(r.faena, 'F', r.fecha); });
+  (window.BHT_DIAS || []).forEach(function(r){ pon(r.faena, 'P', r.fecha); });
+  var bd = window.BEST_DAILY || {};
+  Object.keys(bd).forEach(function(f){ Object.keys(bd[f] || {}).forEach(function(d){ if ((bd[f][d] && bd[f][d].m3) > 0) pon(f, 'C', d); }); });
+  var fj = window.FAJA_DAILY || {}; Object.keys(fj).forEach(function(d){ if (fj[d] > 0) pon('Faja', 'C', d); });
+  (window.WA_DET || []).forEach(function(r){ pon(r.faena, 'W', r.f); });
+  var dd = window.DIESEL_DETALLE || {};
+  Object.keys(dd).forEach(function(key){ var fa = key.split('|')[1]; ((dd[key] || {}).fuel || []).forEach(function(x){ pon(fa, 'K', x.fecha); }); });
+  return S;
+}
+function sfAbrir(){
+  var p = document.getElementById('panel-semaf');
+  if (!p){
+    var ref = document.getElementById('panel-resid');
+    p = document.createElement('div'); p.id = 'panel-semaf'; p.className = 'panel'; p.style.display = 'none';
+    ref.parentNode.insertBefore(p, ref.nextSibling);
+  }
+  document.querySelectorAll('.panel').forEach(function(x){ x.classList.remove('active'); x.style.display = 'none'; });
+  document.querySelectorAll('.nav-tab').forEach(function(t){ t.classList.remove('active'); });
+  p.style.display = ''; p.classList.add('active');
+  sfRender(); window.scrollTo({top: 0, behavior: 'smooth'});
+}
+function sfRender(){
+  var p = document.getElementById('panel-semaf'); if (!p) return;
+  var S = sfDatos(), hoy = new Date(), dias = [];
+  for (var i = SF_DIAS - 1; i >= 0; i--){ var d = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() - i); dias.push(sfIso(d)); }
+  var hoyI = sfIso(hoy), ayer = dias[dias.length - 2];
+  var hayDatos = SF_FAENAS.some(function(f){ return Object.keys(S[f].F).length || Object.keys(S[f].P).length || Object.keys(S[f].C).length; });
+  var h = '<div class="sf-wrap"><div class="sf-card" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">' +
+    '<h2 style="margin:0;font-size:18px;color:#14532d;">&#128678; Semáforo de informes por faena</h2>' +
+    '<span style="color:#666;">Últimos ' + SF_DIAS + ' días: ' + sfFmt(dias[0]) + ' al ' + sfFmt(hoyI) + '</span>' +
+    '<span style="margin-left:auto;font-size:11px;">' +
+    '<span class="sf-c sf-ok">&#10003;</span> llegó &nbsp; <span class="sf-c sf-falta">&#10007;</span> falta (día con oferta) &nbsp;' +
+    '<span class="sf-c sf-aviso">!</span> sin registro ese día &nbsp; <span class="sf-c sf-plazo">&middot;</span> en plazo (hoy; cartolas: 3 días solo al inicio del mes) &nbsp;<span class="sf-c sf-nt"></span> sin oferta (no se trabaja)</span></div>';
+  if (!hayDatos) { p.innerHTML = h + '<div class="sf-card" style="color:#888;">Todavía no hay datos cargados. Carga el Excel o espera a que la App termine de leer la base.</div></div>'; return; }
+  var resumen = [], detalle = '';
+  SF_FAENAS.forEach(function(f){
+    var D = S[f], fuentes = SF_FUENTES.filter(function(x){ return f !== 'Faja' || x.faja; });
+    // Dias de trabajo = dias con OFERTA (Gustavo 03-11-2026): la oferta ya descuenta los feriados irrenunciables
+    // (1-5, 18-9, 19-9, 25-12, 1-1). Solo si la faena no tiene oferta (Faja) se deduce de los informes que llegaron.
+    var B = (window.BEST_DAILY || {})[f] || {}, trabajo = {};
+    var conOferta = dias.some(function(d){ return B[d] && B[d].vof > 0; });
+    if (conOferta) dias.forEach(function(d){ if (B[d] && B[d].vof > 0) trabajo[d] = 1; });
+    else {
+      dias.forEach(function(d){ if (D.F[d] || D.P[d] || D.C[d] || (f === 'Faja' && D.K[d])) trabajo[d] = 1; });
+      // atraso: si venia trabajando (3 o mas de los 7 dias antes de su ultimo dato), los dias siguientes hasta ayer tambien cuentan
+      var ultT = Object.keys(trabajo).sort().pop();
+      if (ultT){ var act = dias.filter(function(d){ return d < ultT && d >= dias[Math.max(0, dias.indexOf(ultT) - 7)] && trabajo[d]; }).length;
+        if (act >= 3) dias.forEach(function(d){ if (d > ultT && d < hoyI) trabajo[d] = 1; }); }
+    }
+    var estado = function(x, d){
+      if (D[x.k][d]) return 'ok';
+      // Gustavo 03-11-2026: solo la cartola tiene plazo (3 dias, y solo al inicio del mes); lo demas debe estar al dia
+      if (d >= ((x.plazoIniMes && hoy.getDate() <= x.plazoIniMes) ? dias[dias.length - 1 - x.plazoIniMes] : hoyI)) return 'plazo';
+      if (!trabajo[d]) return 'nt';
+      return x.obl ? 'falta' : 'aviso';
+    };
+    var faltas = {}, rojo = 0, amar = 0;
+    fuentes.forEach(function(x){ faltas[x.k] = dias.filter(function(d){ var e = estado(x, d); return e === 'falta' || e === 'aviso'; });
+      if (x.obl) rojo += faltas[x.k].length; else amar += faltas[x.k].length; });
+    var col = rojo >= 2 ? '#c0392b' : rojo === 1 ? '#e67e22' : amar ? '#d4a017' : '#1a6b3a';
+    // clic en el semaforo de la faena = abre su detalle (Gustavo 03-11-2026)
+    var luz = rojo ? '#c0392b' : amar ? '#f1c40f' : '#27ae60', fi = SF_FAENAS.indexOf(f);
+    resumen.push('<div class="sf-kpi" style="border-left-color:' + col + ';cursor:pointer;" onclick="sfVer(' + fi + ')" title="Clic para ver qué falta en ' + f + '">' +
+      '<div style="display:flex;align-items:center;gap:8px;"><span style="width:22px;height:22px;border-radius:50%;background:' + luz + ';box-shadow:0 0 0 3px #eee;flex:none;"></span><b style="margin:0;">' + f + '</b>' +
+      '<span style="margin-left:auto;font-size:10.5px;color:#1f6feb;">' + (rojo || amar ? 'ver detalle &#9662;' : 'ver &#9662;') + '</span></div>' +
+      (f === 'Faja' ? '<span style="color:#666;">Sin Formin ni planilla de horas: se revisan cartolas y combustible</span>' :
+       rojo ? '<span style="color:#c0392b;font-weight:700;">' + rojo + ' día(s) con Formin o planilla faltante</span>' : '<span style="color:#1a6b3a;">Formin y planilla al día</span>') +
+      (amar ? '<br><span style="color:#7a5200;">' + amar + ' día(s) sin cartola, WhatsApp o combustible</span>' : '') + '</div>');
+    // calendario faena x dia
+    var cab = '<tr><th style="text-align:left;">' + f + '</th>' + dias.map(function(d){ var w = sfDow(d);
+      return '<th class="' + (w === 0 ? 'sf-dom' : '') + '" title="' + SF_DSEM[w] + ' ' + sfFmt(d) + '">' + d.substring(8, 10) + '<br><span style="font-weight:400;color:#888;">' + SF_DSEM[w].charAt(0) + '</span></th>'; }).join('') + '</tr>';
+    var filas = fuentes.map(function(x){
+      var ult = Object.keys(D[x.k]).sort().pop();
+      return '<tr><td class="sf-src">' + x.n + (ult ? '<br><span style="font-weight:400;color:#888;font-size:10px;">último dato: ' + sfFmt(ult) + '</span>' : '') + '</td>' +
+        dias.map(function(d){ var e = estado(x, d);
+          return '<td class="' + (sfDow(d) === 0 ? 'sf-dom' : '') + '"><span class="sf-c sf-' + e + '" title="' + x.n + ' · ' + SF_DSEM[sfDow(d)] + ' ' + sfFmt(d) + '">' +
+            (e === 'ok' ? '&#10003;' : e === 'falta' ? '&#10007;' : e === 'aviso' ? '!' : e === 'plazo' ? '&middot;' : '') + '</span></td>'; }).join('') + '</tr>';
+    }).join('');
+    // los dias que faltan, escritos, y si se repite el mismo dia de la semana
+    var items = fuentes.filter(function(x){ return faltas[x.k].length; }).map(function(x){
+      var L = faltas[x.k], cnt = {}; L.forEach(function(d){ var w = sfDow(d); cnt[w] = (cnt[w] || 0) + 1; });
+      var wMax = Object.keys(cnt).sort(function(a, b){ return cnt[b] - cnt[a]; })[0];
+      var rep = (L.length >= 3 && cnt[wMax] / L.length >= 0.5) ? ' <span style="color:#7a5200;">&#8635; se repite: ' + cnt[wMax] + ' de ' + L.length + ' son ' + SF_DSEM[wMax] + '</span>' : '';
+      return '<li><b style="color:' + (x.obl ? '#c0392b' : '#7a5200') + ';">' + x.n + '</b> — ' + L.length + ' día(s): ' +
+        L.map(function(d){ return SF_DSEM[sfDow(d)] + ' ' + sfFmt(d); }).join(', ') + rep + '</li>';
+    }).join('');
+    detalle += '<div class="sf-card" id="sf-det-' + fi + '" style="display:' + (SF_ABIERTA === fi ? '' : 'none') + ';"><h3>' + f + '</h3>' +
+      (items ? '<div style="font-weight:700;">Días que faltan:</div><ul class="sf-lista">' + items + '</ul>' : '<div style="color:#1a6b3a;font-weight:700;">&#10003; No falta nada en los últimos ' + SF_DIAS + ' días.</div>') +
+      '<div style="overflow-x:auto;margin-top:8px;"><table class="sf-tb">' + cab + filas + '</table></div></div>';
+  });
+  h += '<div class="sf-card"><div class="sf-kpis">' + resumen.join('') + '</div>' +
+    '<div style="font-size:11px;color:#666;margin-top:8px;">Un día cuenta como faltante solo si la faena tenía oferta ese día: la oferta ya descuenta los feriados irrenunciables ' +
+    '(1 de mayo, 18 y 19 de septiembre, 25 de diciembre, 1 de enero). Faja, que no tiene oferta, se juzga por los informes que llegaron. ' +
+    'Rojo = Formin o planilla de horas, que deben llegar todos los días. Amarillo = cartola, WhatsApp o combustible: puede ser normal que no haya ' +
+    '(sin despacho no hay cartola; el WhatsApp solo trae detenciones), pero conviene revisarlo. El atraso de la cartola se acepta solo los 3 primeros días de cada mes (cierre de Mininco); después ya no se justifica.</div></div>';
+  p.innerHTML = h + detalle + '</div>';
+}
+</script>
 <script>
 (function(){
   function postH(){ try{ var h=Math.max(document.body.scrollHeight,document.documentElement.scrollHeight,600); parent.postMessage({__oeeHeight:h},'*'); }catch(e){} }
@@ -22645,6 +23328,9 @@ function gestExportar(){
         var liqNuevo=false;
         if(ds.liq&&ds.liq.length){ try{ LIQ=ds.liq; liqNuevo=true; }catch(e){} }
         if(ds.ofcamb&&ds.ofcamb.length){ try{ OFERTA_CAMBIOS=ds.ofcamb; }catch(e){} }
+        // Build 04-11-2026: turnos por máquina de 'Disponibilidad por máquina' (EST_DISP). La App los guarda en localStorage;
+        // el ERP los reparte desde la base (clave est_disp) para que todos vean los mismos turnos.
+        if(ds.est_disp&&typeof ds.est_disp==='object'&&Object.keys(ds.est_disp).length){ try{ localStorage.setItem('EST_DISP',JSON.stringify(ds.est_disp)); if(typeof estRender==='function') estRender(); }catch(e){} }
         if(liqNuevo){ try{ if(typeof buildDashboard==='function'&&typeof RAW!=='undefined'&&RAW&&RAW.length) buildDashboard(); }catch(e){} }
         // Datasets v8c "brechas" (horas perdidas unificadas BaseHorasPerdUnif + detenciones WhatsApp)
         if(ds.hperd_unif&&Object.keys(ds.hperd_unif).length){ try{ HPERD_UNIF=ds.hperd_unif; }catch(e){} }
@@ -22660,6 +23346,17 @@ function gestExportar(){
       }catch(e){ console.warn('OEE datasets apply error',e); }
     }
   });
+  // ── Turnos de 'Disponibilidad por máquina' (EST_DISP) al servidor (build 04-11-2026): envuelve estDispGuardar, que el
+  // fuente resuelve como global al llamar; guarda en localStorage como siempre y manda el dataset est_disp al ERP.
+  (function(){
+    var orig=window.estDispGuardar;
+    if(typeof orig!=='function') return;
+    window.estDispGuardar=function(k,v){
+      var r=orig.apply(this,arguments);
+      try{ var g=(typeof estDispLeer==='function')?estDispLeer():JSON.parse(localStorage.getItem('EST_DISP')||'{}'); window.parent.postMessage({__oeeExcelDatasets:{est_disp:g}},'*'); }catch(e){}
+      return r;
+    };
+  })();
   // ── Residuos en el servidor (contrato ERP, 2026-10-27, receta de Gustavo etapa 1) ──
   // La App guarda Residuos en localStorage ('resid_v1') con rsLoad()/rsSave(). Dentro del ERP, además: el ERP manda el
   // registro de la base al cargar ({__oeeResiduos:{datos,version}}), y cada rsSave() se lo devuelve ({__oeeResiduosSave})

@@ -3880,6 +3880,121 @@ function OEEView(p){
 // ══════════════════════════════════════════════════════════════════
 // INFORME DE TIEMPOS por proceso — faena → proceso → máquina
 // ══════════════════════════════════════════════════════════════════
+
+// ══ PARTE DIARIO DE TERRENO (Andrés 2026-11-04): un día, todas las máquinas, qué informaron y qué corregir ══
+function TerrenoParteDiarioView(p){
+  var hoy=new Date().toLocaleDateString('sv-SE',{timeZone:'America/Santiago'});
+  var userFaenaId=p.user&&!p.user.es_admin&&p.user.faena_id?String(p.user.faena_id):'';
+  var[fecha,setFecha]=useState(calAdd(hoy,-1));
+  var[faena,setFaena]=useState(userFaenaId);var[empresa,setEmpresa]=useState('');
+  var[soloProblemas,setSoloProblemas]=useState(false);
+  var[data,setData]=useState(null);var[loading,setLoading]=useState(false);var[err,setErr]=useState('');
+  var[abierto,setAbierto]=useState({});
+  var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
+  var faenas=(p.m.faenas||[]).filter(function(f){return f.activo&&(!empresa||String(f.empresa_id)===String(empresa));});
+  function cargar(){
+    setLoading(true);setErr('');
+    api('/terreno/parte-diario?fecha='+fecha+(faena?'&faena_id='+faena:'')+(empresa?'&empresa_id='+empresa:''),'GET',null,p.tok)
+      .then(function(r){setData(r);}).catch(function(e){setErr(e.message);setData(null);}).finally(function(){setLoading(false);});
+  }
+  useEffect(cargar,[p.tok,fecha,faena,empresa]);
+  var EST={ok:{l:'✔ Bien',c:'#166534',bg:'#DCFCE7'},observaciones:{l:'⚠ Con observaciones',c:'#92400E',bg:'#FEF3C7'},error:{l:'✖ Corregir',c:'#991B1B',bg:'#FEE2E2'},sin_informar:{l:'⛔ Sin informar',c:'#991B1B',bg:'#FEE2E2'}};
+  var n1=function(v,d){return v==null?'—':new Intl.NumberFormat('es-CL',{maximumFractionDigits:d==null?1:d}).format(v);};
+  var tot=data&&data.totales||{};
+  var grupos=(data&&data.faenas||[]).map(function(g){return Object.assign({},g,{maquinas:g.maquinas.filter(function(m){return !soloProblemas||m.estado!=='ok';})});}).filter(function(g){return g.maquinas.length;});
+  function tobTxt(r){return (r.tob||[]).map(function(x){return x.causa+' '+n1(x.horas)+' h ('+x.clasificacion+')'+(x.observacion?': '+x.observacion:'');}).join(' · ');}
+  function exportar(){
+    var filas=[];(data&&data.faenas||[]).forEach(function(g){g.maquinas.forEach(function(m){
+      if(!m.registros.length)filas.push({faena:g.faena_nombre,codigo:m.codigo,nombre:m.nombre,estado:EST[m.estado].l,obs:m.observaciones.map(function(o){return o.m;}).join(' | ')});
+      m.registros.forEach(function(r){filas.push({faena:g.faena_nombre,codigo:m.codigo,nombre:m.nombre,estado:EST[m.estado].l,jornada:r.jornada,operador:r.operador,hi:r.horometro_inicial,hf:r.horometro_final,ht:r.horas_trabajadas,hp:r.horas_perdidas,tob:tobTxt(r),litros:r.litros,
+        estanque:m.estanque?m.estanque.litros:null,tele_h:m.telemetria?m.telemetria.horas_motor:null,tele_l:m.telemetria?m.telemetria.litros:null,arboles:r.arboles,m3:r.m3,fundo:r.fundo,rodal:r.rodal,observ:r.observaciones,ingresado:r.ingresado+' '+(r.usuario||''),obs:m.observaciones.map(function(o){return o.m;}).join(' | ')});});
+    });});
+    exportXLSX(filas,[{header:'Faena',value:function(r){return r.faena;}},{header:'Equipo',value:function(r){return r.codigo;}},{header:'Nombre',value:function(r){return r.nombre;}},{header:'Estado',value:function(r){return r.estado;}},
+      {header:'Jornada',value:function(r){return r.jornada||'';}},{header:'Operador',value:function(r){return r.operador||'';}},{header:'Horóm. inicial',value:function(r){return r.hi;}},{header:'Horóm. final',value:function(r){return r.hf;}},
+      {header:'Hrs trabajadas',value:function(r){return r.ht;}},{header:'Hrs perdidas',value:function(r){return r.hp;}},{header:'TOB',value:function(r){return r.tob||'';}},{header:'Litros terreno',value:function(r){return r.litros;}},
+      {header:'Litros estanque',value:function(r){return r.estanque;}},{header:'Hrs motor telemetría',value:function(r){return r.tele_h;}},{header:'Litros telemetría',value:function(r){return r.tele_l;}},{header:'Árboles',value:function(r){return r.arboles;}},
+      {header:'m³',value:function(r){return r.m3;}},{header:'Fundo',value:function(r){return r.fundo||'';}},{header:'Rodal',value:function(r){return r.rodal||'';}},{header:'Observación terreno',value:function(r){return r.observ||'';}},
+      {header:'Ingresado',value:function(r){return r.ingresado||'';}},{header:'Qué corregir',value:function(r){return r.obs||'';}}],'parte_diario_'+fecha);
+  }
+  function imprimir(){
+    var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;');};
+    var html='<!DOCTYPE html><html><head><meta charset="utf-8"><title>Parte diario</title><style>body{font-family:Arial;font-size:10px;margin:14px}h1{font-size:15px;margin:0}h2{font-size:12px;background:#E9F1EC;padding:4px 6px;margin:12px 0 4px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #CBD5E1;padding:3px 4px;text-align:left;vertical-align:top}th{background:#F1F5F9}.r{text-align:right}.ok{color:#166534}.obs{color:#92400E}.err{color:#991B1B;font-weight:700}.kpi{display:flex;gap:14px;margin:8px 0;font-size:11px}@media print{h2{-webkit-print-color-adjust:exact}}</style></head><body>'+
+      '<h1>Parte diario de terreno — '+fmtD(fecha)+'</h1><div style="color:#64748B">Empresas Poo · control de lo ingresado por terreno · impreso '+new Date().toLocaleString('es-CL')+'</div>'+
+      '<div class="kpi"><b>Máquinas:</b> '+(tot.maquinas||0)+' · <b>Informadas:</b> '+(tot.informadas||0)+' · <b>Sin informar:</b> '+(tot.sin_informar||0)+' · <b>Con observaciones:</b> '+(tot.con_observaciones||0)+' · <b>Hrs trabajadas:</b> '+n1(tot.horas_trabajadas)+' · <b>Hrs perdidas:</b> '+n1(tot.horas_perdidas)+' · <b>Litros terreno / estanque:</b> '+n1(tot.litros_terreno,0)+' / '+n1(tot.litros_estanque,0)+' · <b>m³:</b> '+n1(tot.m3)+'</div>';
+    grupos.forEach(function(g){
+      html+='<h2>'+esc(g.faena_nombre)+(g.empresa_nombre?' · '+esc(g.empresa_nombre):'')+' — '+g.maquinas.length+' máquina(s)</h2><table><tr><th>Equipo</th><th>Estado</th><th>Jorn.</th><th>Operador</th><th class="r">Horóm.</th><th class="r">Trab.</th><th class="r">Perd.</th><th>TOB</th><th class="r">L terr.</th><th class="r">L est.</th><th class="r">Motor telem.</th><th class="r">Árb.</th><th class="r">m³</th><th>Qué corregir</th></tr>';
+      g.maquinas.forEach(function(m){
+        var cls=m.estado==='ok'?'ok':(m.estado==='observaciones'?'obs':'err'); var qc=m.observaciones.map(function(o){return esc(o.m);}).join('<br>');
+        if(!m.registros.length){html+='<tr><td><b>'+esc(m.codigo)+'</b><br>'+esc(m.nombre)+'</td><td class="'+cls+'">'+EST[m.estado].l+'</td><td colspan="11"></td><td class="'+cls+'">'+qc+'</td></tr>';return;}
+        m.registros.forEach(function(r,i){
+          html+='<tr>'+(i===0?'<td rowspan="'+m.registros.length+'"><b>'+esc(m.codigo)+'</b><br>'+esc(m.nombre)+'</td><td rowspan="'+m.registros.length+'" class="'+cls+'">'+EST[m.estado].l+'</td>':'')+
+            '<td>'+esc(r.jornada)+'</td><td>'+esc(r.operador||'—')+'</td><td class="r">'+n1(r.horometro_inicial)+' → '+n1(r.horometro_final)+'</td><td class="r">'+n1(r.horas_trabajadas)+'</td><td class="r">'+n1(r.horas_perdidas)+'</td><td>'+esc(tobTxt(r))+'</td><td class="r">'+n1(r.litros,0)+'</td>'+
+            (i===0?'<td rowspan="'+m.registros.length+'" class="r">'+(m.estanque?n1(m.estanque.litros,0):'—')+'</td><td rowspan="'+m.registros.length+'" class="r">'+(m.telemetria?n1(m.telemetria.horas_motor)+' h':'—')+'</td>':'')+
+            '<td class="r">'+n1(r.arboles,0)+'</td><td class="r">'+n1(r.m3)+'</td>'+(i===0?'<td rowspan="'+m.registros.length+'" class="'+cls+'">'+qc+'</td>':'')+'</tr>';
+        });
+      });
+      html+='</table>';
+    });
+    imprimirHTMLViaIframe(html+'</body></html>','Parte diario '+fecha);
+  }
+  var kpi=function(l,v,c,onClick,on){return h('div',{className:'card',onClick:onClick,style:{padding:'10px 12px',textAlign:'center',borderLeft:'4px solid '+c,cursor:onClick?'pointer':'default',background:on?'#F0FDF4':'#fff'}},h('div',{style:{fontSize:22,fontWeight:700,color:c}},v==null?'—':v),h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},l));};
+  var selS={padding:'6px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12};
+  return h('div',null,
+    h('div',{className:'tb',style:{flexWrap:'wrap',gap:8}},
+      h(Btn,{v:'g',sm:true,onClick:function(){setFecha(calAdd(fecha,-1));},title:'Día anterior'},null,'◀'),
+      h('input',{type:'date',value:fecha,max:hoy,onChange:function(e){if(e.target.value)setFecha(e.target.value);},style:Object.assign({},selS,{fontWeight:700})}),
+      h(Btn,{v:'g',sm:true,onClick:function(){if(fecha<hoy)setFecha(calAdd(fecha,1));},title:'Día siguiente'},null,'▶'),
+      h(Btn,{v:'g',sm:true,onClick:function(){setFecha(calAdd(hoy,-1));}},null,'Ayer'),
+      h(Btn,{v:'g',sm:true,onClick:function(){setFecha(hoy);}},null,'Hoy'),
+      !userFaenaId&&h('select',{value:empresa,onChange:function(e){setEmpresa(e.target.value);setFaena('');},style:selS},h('option',{value:''},'Todas las empresas'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})),
+      !userFaenaId&&h('select',{value:faena,onChange:function(e){setFaena(e.target.value);},style:selS},h('option',{value:''},'Todas las faenas'),faenas.map(function(f){return h('option',{key:f.faena_id,value:f.faena_id},f.nombre);})),
+      h('label',{style:{fontSize:12,display:'flex',alignItems:'center',gap:4,cursor:'pointer'}},h('input',{type:'checkbox',checked:soloProblemas,onChange:function(e){setSoloProblemas(e.target.checked);}}),'Solo con problemas'),
+      h('span',{style:{marginLeft:'auto',display:'flex',gap:6}},h(Btn,{v:'g',sm:true,onClick:exportar,disabled:!data},null,'📊 Excel'),h(Btn,{v:'a',sm:true,onClick:imprimir,disabled:!data},null,'🖨 Imprimir / PDF'),h(Btn,{sm:true,onClick:cargar},null,'🔄'))),
+    err&&h('div',{className:'card',style:{background:'#FEE2E2',color:'#991B1B',padding:10}},err),
+    h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(120px,1fr))',gap:8,marginBottom:10}},
+      kpi('MÁQUINAS',tot.maquinas,'#334155'),kpi('INFORMADAS',tot.informadas,'#166534'),kpi('SIN INFORMAR',tot.sin_informar,'#DC2626'),kpi('CON OBSERVACIONES',tot.con_observaciones,'#F59E0B',function(){setSoloProblemas(!soloProblemas);},soloProblemas),
+      kpi('HRS TRABAJADAS',tot.horas_trabajadas!=null?n1(tot.horas_trabajadas):null,'#1E40AF'),kpi('HRS PERDIDAS',tot.horas_perdidas!=null?n1(tot.horas_perdidas):null,'#B45309'),
+      kpi('LITROS TERRENO / ESTANQUE',tot.litros_terreno!=null?n1(tot.litros_terreno,0)+' / '+n1(tot.litros_estanque,0):null,'#0F766E'),kpi('m³ · ÁRBOLES',tot.m3!=null?n1(tot.m3)+' · '+n1(tot.arboles,0):null,'#6D28D9')),
+    data&&data.alcance&&h('div',{style:{fontSize:11,color:'#1E40AF',background:'#EFF6FF',padding:'6px 10px',borderRadius:6,marginBottom:8}},'Ves solo tu faena.'),
+    loading&&h('div',{className:'spin'},'Cargando parte diario...'),
+    !loading&&data&&!grupos.length&&h('div',{className:'card',style:{padding:16,color:'#64748B'}},soloProblemas?'Sin máquinas con problemas ese día.':'Sin máquinas esperadas ni registros para '+fmtD(fecha)+'.'),
+    !loading&&grupos.map(function(g){
+      return h('div',{key:g.faena_id||'0',className:'card',style:{marginBottom:10,padding:0,overflow:'hidden'}},
+        h('div',{style:{background:'#1E3A2D',color:'#D4C5A9',padding:'6px 12px',fontSize:12,fontWeight:700,display:'flex',justifyContent:'space-between'}},h('span',null,'🌲 '+g.faena_nombre+(g.empresa_nombre?' · '+g.empresa_nombre:'')),
+          h('span',{style:{fontWeight:400}},g.maquinas.filter(function(m){return m.registros.length;}).length+'/'+g.maquinas.length+' informadas')),
+        h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+          h('thead',null,h('tr',{style:{background:'#F8FAFC'}},['Equipo','Estado','Jornada','Operador','Horómetro','Trab.','Perd.','TOB','L terreno','L estanque','Telemetría','Árb.','m³','Qué corregir'].map(function(c,i){return h('th',{key:i,style:{padding:'6px 6px',textAlign:i>=4&&i<=6||i>=8&&i<=12?'right':'left',fontSize:10,color:'#475569',borderBottom:'1px solid #E2E8F0'}},c);}))),
+          h('tbody',null,g.maquinas.map(function(m){
+            var es=EST[m.estado]||EST.ok; var key=m.equipo_id; var open=!!abierto[key];
+            var qc=h('div',null,m.observaciones.map(function(o,i){return h('div',{key:i,style:{color:o.t==='error'?'#991B1B':o.t==='aviso'?'#92400E':'#475569',fontWeight:o.t==='error'?700:400}},(o.t==='error'?'✖ ':o.t==='aviso'?'⚠ ':'ℹ ')+o.m);}));
+            var tdS={padding:'5px 6px',borderBottom:'1px solid #F1F5F9',verticalAlign:'top'}; var tdR=Object.assign({},tdS,{textAlign:'right',fontFamily:'monospace'});
+            var celEq=h('td',{style:tdS,rowSpan:Math.max(1,m.registros.length)},h('div',{style:{fontWeight:700}},m.codigo),h('div',{style:{fontSize:10,color:'#64748B'}},m.nombre),m.horometro_anterior!=null&&h('div',{style:{fontSize:9,color:'#94A3B8'}},'ant. '+n1(m.horometro_anterior)+' ('+fmtD(m.fecha_anterior)+')'));
+            var celEst=h('td',{style:tdS,rowSpan:Math.max(1,m.registros.length)},h('span',{style:{padding:'2px 7px',borderRadius:10,background:es.bg,color:es.c,fontSize:10,fontWeight:700,whiteSpace:'nowrap'}},es.l));
+            var celComb=h('td',{style:tdR,rowSpan:Math.max(1,m.registros.length),title:m.estanque?m.estanque.cargas+' carga(s) · '+(m.estanque.estanques||'')+(m.estanque.horometro?' · horóm. '+m.estanque.horometro:''):'sin carga de estanque'},m.estanque?n1(m.estanque.litros,0):'—');
+            var celTel=h('td',{style:tdR,rowSpan:Math.max(1,m.registros.length),title:m.telemetria?m.telemetria.marca+': motor '+n1(m.telemetria.horas_motor)+' h · producción '+n1(m.telemetria.horas_produccion)+' h · ralentí '+n1(m.telemetria.horas_inactivo)+' h · '+n1(m.telemetria.litros,0)+' L':'sin telemetría asignada'},
+              m.telemetria?h('div',null,n1(m.telemetria.horas_motor)+' h',m.telemetria.litros!=null&&h('div',{style:{fontSize:10,color:'#64748B'}},n1(m.telemetria.litros,0)+' L')):'—');
+            var celQc=h('td',{style:Object.assign({},tdS,{maxWidth:280}),rowSpan:Math.max(1,m.registros.length)},qc);
+            if(!m.registros.length) return h('tr',{key:key,style:{background:'#FFF7F7'}},celEq,celEst,h('td',{style:tdS,colSpan:6},h('span',{style:{color:'#94A3B8',fontStyle:'italic'}},'sin registro')),celComb,celTel,h('td',{style:tdS,colSpan:2}),celQc);
+            return m.registros.map(function(r,i){
+              return h('tr',{key:key+'_'+r.registro_id,style:{background:m.estado==='ok'?'#fff':(m.estado==='observaciones'?'#FFFDF5':'#FFF7F7')}},
+                i===0&&celEq,i===0&&celEst,
+                h('td',{style:tdS},r.jornada,h('div',{style:{fontSize:9,color:'#94A3B8'}},r.ingresado||'')),
+                h('td',{style:tdS},r.operador||h('span',{style:{color:'#B45309'}},'sin operador')),
+                h('td',{style:tdR},n1(r.horometro_inicial)+' → '+n1(r.horometro_final)),
+                h('td',{style:tdR},n1(r.horas_trabajadas)),
+                h('td',{style:Object.assign({},tdR,{color:(r.horas_perdidas||0)>0?'#B45309':'#64748B'})},n1(r.horas_perdidas)),
+                h('td',{style:Object.assign({},tdS,{maxWidth:220,cursor:(r.tob||[]).length?'pointer':'default'}),onClick:function(){var o=Object.assign({},abierto);o[key]=!o[key];setAbierto(o);}},
+                  (r.tob||[]).length?(open?h('div',null,(r.tob||[]).map(function(x,j){return h('div',{key:j,style:{fontSize:10}},h('b',null,x.causa),' '+n1(x.horas)+' h ',h('span',{style:{color:'#64748B'}},'('+x.clasificacion+')'),x.observacion?h('div',{style:{color:'#475569',fontStyle:'italic'}},x.observacion):null);})):h('span',{style:{fontSize:10,color:'#1E40AF'}},(r.tob||[]).length+' causa(s) ▸')):h('span',{style:{color:'#CBD5E1'}},'—'),
+                  r.observaciones&&h('div',{style:{fontSize:10,color:'#475569',fontStyle:'italic',marginTop:2}},'“'+r.observaciones+'”')),
+                h('td',{style:tdR},n1(r.litros,0),r.estanque&&h('div',{style:{fontSize:9,color:'#94A3B8'}},r.estanque)),
+                i===0&&celComb,i===0&&celTel,
+                h('td',{style:tdR},n1(r.arboles,0)),
+                h('td',{style:tdR},n1(r.m3),r.rodal&&h('div',{style:{fontSize:9,color:'#94A3B8'}},r.rodal)),
+                i===0&&celQc);
+            });
+          }))));
+    }));
+}
 function TerrenoTiemposView(p){
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   function ym(d){return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2);}
@@ -29146,7 +29261,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={inicio:'Inicio — Avisos y pendientes',dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','calendario':'Calendario — Tareas y recordatorios','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','prod-oee':'Productividad — OEE Cosecha','telemetria':'Productividad — Telemetría de máquinas','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','comb-iec':'Combustibles — Impuesto específico del diésel (F29)','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','oc-repuestos':'Duración de Repuestos — vida útil y garantía contra el uso real','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={inicio:'Inicio — Avisos y pendientes',dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','calendario':'Calendario — Tareas y recordatorios','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','terreno-parte':'Terreno — Parte diario (control de lo ingresado)','prod-oee':'Productividad — OEE Cosecha','telemetria':'Productividad — Telemetría de máquinas','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','comb-iec':'Combustibles — Impuesto específico del diésel (F29)','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','oc-repuestos':'Duración de Repuestos — vida útil y garantía contra el uso real','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -29801,7 +29916,7 @@ function App(){
     'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-auditoria':'inventario','inv-reportes':'inventario',
     'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion','mant-planes':'mantencion','mant-vencimientos':'mantencion','mant-docs':'mantencion','mant-programacion':'mantencion','mant-avisos':'mantencion',
     'rendiciones':'rendiciones',
-    'terreno':'terreno','terreno-tiempos':'terreno','terreno-equipos':'terreno','terreno-faena':'terreno','terreno-reportes':'terreno',
+    'terreno':'terreno','terreno-parte':'terreno','terreno-tiempos':'terreno','terreno-equipos':'terreno','terreno-faena':'terreno','terreno-reportes':'terreno',
     'prod-oee':'productividad','telemetria':'productividad',
     'ia-chat':'ia',
     'solicitudes':'solicitudes',
@@ -29998,7 +30113,7 @@ function App(){
         ),
         canSee('mantencion')&&h('div',{className:'sb-sep'}),
         canSee('terreno')&&grpHdr('terr','TERRENO'),
-        canSee('terreno')&&grp.terr&&h('div',null,navI('terreno','🌲','Registros Diarios',true),navI('terreno-tiempos','⏱','Tiempos por Proceso',true)),
+        canSee('terreno')&&grp.terr&&h('div',null,navI('terreno','🌲','Registros Diarios',true),navI('terreno-parte','📋','Parte Diario',true),navI('terreno-tiempos','⏱','Tiempos por Proceso',true)),
         canSee('terreno')&&h('div',{className:'sb-sep'}),
         canSee('productividad')&&grpHdr('prod','PRODUCTIVIDAD'),
         canSee('productividad')&&grp.prod&&h('div',null,navI('prod-oee','📈','OEE Cosecha',true),navI('telemetria','📡','Telemetría máquinas',true)),
@@ -30134,6 +30249,7 @@ function App(){
           view==='calendario'&&h(CalendarioView,{tok,m,user,setView}),
           view==='terreno'&&h(TerrenoView,{tok,m,user}),
           view==='terreno-tiempos'&&h(TerrenoTiemposView,{tok,m,user}),
+          view==='terreno-parte'&&h(TerrenoParteDiarioView,{tok,m,user}),
           view==='prod-oee'&&h(OEEView,{tok,m,user}),
           view==='telemetria'&&h(TelemetriaView,{tok,m,user}),
           view==='ia-chat'&&h(IAChatView,{tok,m,user}),
