@@ -26269,6 +26269,127 @@ function MobileOC(p){
 }
 
 // ── Formulario de traslado móvil (simplificado, campos grandes) ──
+
+// ══ OT DE MANTENCIÓN DESDE EL CELULAR (mecánico en terreno, sin señal) — Andrés 2026-11-05 ══
+// La OT se guarda en IndexedDB del teléfono (fotos incluidas) y se sube sola cuando hay señal: el servidor asigna el
+// número al recibirla y no repite un uid ya recibido (mant_sync). Las fotos se comprimen a 1280 px antes de guardar.
+var OT_DB='lpz_ot_movil',OT_STORE='cola';
+function otDb(){return new Promise(function(res,rej){var r=indexedDB.open(OT_DB,1);r.onupgradeneeded=function(){r.result.createObjectStore(OT_STORE,{keyPath:'uid'});};r.onsuccess=function(){res(r.result);};r.onerror=function(){rej(r.error||new Error('IndexedDB'));};});}
+function otColaTodas(){return otDb().then(function(db){return new Promise(function(res,rej){var t=db.transaction(OT_STORE,'readonly').objectStore(OT_STORE).getAll();t.onsuccess=function(){res((t.result||[]).sort(function(a,b){return (a.en||'').localeCompare(b.en||'');}));};t.onerror=function(){rej(t.error);};});});}
+function otColaPut(x){return otDb().then(function(db){return new Promise(function(res,rej){var t=db.transaction(OT_STORE,'readwrite');t.objectStore(OT_STORE).put(x);t.oncomplete=function(){res(x);};t.onerror=function(){rej(t.error);};});});}
+function otColaDel(uid){return otDb().then(function(db){return new Promise(function(res,rej){var t=db.transaction(OT_STORE,'readwrite');t.objectStore(OT_STORE).delete(uid);t.oncomplete=function(){res();};t.onerror=function(){rej(t.error);};});});}
+function otComprimirFoto(file,max,calidad){return new Promise(function(res,rej){var url=URL.createObjectURL(file);var img=new Image();img.onload=function(){try{var w=img.width,hh=img.height,esc=Math.min(1,max/Math.max(w,hh));var c=document.createElement('canvas');c.width=Math.round(w*esc);c.height=Math.round(hh*esc);c.getContext('2d').drawImage(img,0,0,c.width,c.height);var d=c.toDataURL('image/jpeg',calidad);URL.revokeObjectURL(url);res(d);}catch(e){rej(e);}};img.onerror=function(){URL.revokeObjectURL(url);rej(new Error('No se pudo leer la foto'));};img.src=url;});}
+var _otSync=false;
+function otSincronizar(tok){
+  if(_otSync||!navigator.onLine||!tok)return Promise.resolve({enviadas:0});
+  _otSync=true;var enviadas=0;
+  return otColaTodas().then(function(todas){
+    var pend=todas.filter(function(x){return x.estado_cola==='pendiente';});
+    function uno(i){
+      if(i>=pend.length)return Promise.resolve();
+      var x=pend[i];
+      return api('/mant/ot/movil','POST',{uid:x.uid,en:x.en,equipo_id:x.equipo_id,faena_id:x.faena_id,tipo_mantencion:x.tipo_mantencion,horometro_servicio:x.horometro_servicio,estado:x.estado,prioridad:x.prioridad,
+          sintoma_reportado:x.sintoma_reportado,trabajo_realizado:x.trabajo_realizado,repuestos_texto:x.repuestos_texto,observaciones:x.observaciones,fotos:(x.fotos||[]).map(function(f){return {nombre:f.nombre,data:f.data};})},tok)
+        .then(function(r){enviadas++;return otColaPut(Object.assign({},x,{estado_cola:'subida',numero_ot:r.numero_ot,ot_id:r.ot_id,subida_en:ahoraLocal(),error:null,fotos:(x.fotos||[]).map(function(f){return {nombre:f.nombre,data:null,miniatura:f.miniatura||null,kb:f.kb};})}));})
+        .then(function(){return uno(i+1);})
+        .catch(function(e){
+          if(esSinSenal(e))return;   // sigue sin señal: queda en la cola
+          if(/401|token|sesi/i.test(e.message||''))return otColaPut(Object.assign({},x,{error:'Vuelve a iniciar sesión en la App para subirla'}));
+          return otColaPut(Object.assign({},x,{estado_cola:'rechazada',error:e.message})).then(function(){return uno(i+1);});
+        });
+    }
+    return uno(0);
+  }).then(function(){_otSync=false;try{window.dispatchEvent(new Event('ot-cola'));}catch(e){}return {enviadas:enviadas};})
+    .catch(function(){_otSync=false;return {enviadas:enviadas};});
+}
+// la cola de OT se empuja sola mientras la App esté abierta (cada 20 s y al volver la señal)
+(function(){function empujar(){var t=localStorage.getItem('lpz_token');if(t&&navigator.onLine&&window.indexedDB)otSincronizar(t).catch(function(){});}try{window.addEventListener('online',empujar);setInterval(empujar,20000);}catch(e){}})();
+function MobileMantOT(p){
+  var user=p.user||{};
+  var userFaena=user.faena_id?String(user.faena_id):'';
+  var equipos=(p.m.equipos||[]).filter(function(e){return e.activo&&(e.tipo_cargo||'maquinaria')==='maquinaria'&&(!user.empresa_id||user.es_admin||String(e.empresa_id)===String(user.empresa_id));});
+  var faenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
+  var fN=function(id){var f=faenas.find(function(x){return String(x.faena_id)===String(id);});return f?f.nombre:'Común / sin faena';};
+  var grupos={};equipos.forEach(function(e){var k=e.faena_id?String(e.faena_id):'0';(grupos[k]=grupos[k]||[]).push(e);});
+  var ordenF=Object.keys(grupos).sort(function(a,b){if(a===userFaena)return -1;if(b===userFaena)return 1;return fN(a).localeCompare(fN(b));});
+  var vacio={equipo_id:'',tipo_mantencion:'correctiva',estado:'cerrada',prioridad:'normal',horometro_servicio:'',sintoma_reportado:'',trabajo_realizado:'',repuestos_texto:'',observaciones:'',fotos:[]};
+  var[f,setF]=useState(vacio);var[cola,setCola]=useState([]);var[online,setOnline]=useState(navigator.onLine);var[msg,setMsg]=useState('');var[guardando,setGuardando]=useState(false);var[pantalla,setPantalla]=useState('form');
+  var up=function(k,v){setF(function(x){var n=Object.assign({},x);n[k]=v;return n;});};
+  function recargar(){otColaTodas().then(function(t){setCola(t.slice().reverse());}).catch(function(e){setMsg('Este navegador no permite guardar sin señal ('+e.message+')');});}
+  useEffect(function(){
+    recargar();
+    function on(){setOnline(true);otSincronizar(p.tok).then(recargar);}function off(){setOnline(false);}
+    window.addEventListener('online',on);window.addEventListener('offline',off);window.addEventListener('ot-cola',recargar);
+    otSincronizar(p.tok).then(recargar);
+    return function(){window.removeEventListener('online',on);window.removeEventListener('offline',off);window.removeEventListener('ot-cola',recargar);};
+  },[p.tok]);
+  function agregarFotos(ev){
+    var files=Array.from(ev.target.files||[]);ev.target.value='';
+    if(!files.length)return;
+    if((f.fotos||[]).length+files.length>8){setMsg('Máximo 8 fotos por OT');return;}
+    setMsg('Preparando foto(s)…');
+    Promise.all(files.map(function(file){return otComprimirFoto(file,1280,0.72).then(function(d){return otComprimirFoto(file,160,0.6).then(function(mini){return {nombre:'foto-'+Date.now()+'-'+Math.random().toString(36).slice(2,6)+'.jpg',data:d,miniatura:mini,kb:Math.round(d.length*0.75/1024)};});});}))
+      .then(function(nuevas){setF(function(x){return Object.assign({},x,{fotos:(x.fotos||[]).concat(nuevas)});});setMsg('');})
+      .catch(function(e){setMsg('No se pudo agregar la foto: '+e.message);});
+  }
+  function guardar(){
+    if(!f.equipo_id){setMsg('Elige la máquina');return;}
+    if(!String(f.sintoma_reportado||'').trim()&&!String(f.trabajo_realizado||'').trim()){setMsg('Escribe o dicta la falla o el trabajo realizado');return;}
+    var eq=equipos.find(function(e){return String(e.equipo_id)===String(f.equipo_id);});
+    var item=Object.assign({},f,{uid:nuevoUid(),en:ahoraLocal(),equipo_codigo:eq?eq.codigo:'',faena_id:eq&&eq.faena_id?eq.faena_id:(userFaena||null),estado_cola:'pendiente',mecanico:user.nombre||user.email||''});
+    setGuardando(true);setMsg('');
+    otColaPut(item).then(function(){setF(vacio);setPantalla('cola');recargar();return otSincronizar(p.tok);}).then(function(){recargar();})
+      .catch(function(e){setMsg('No se pudo guardar en el celular: '+e.message);}).finally(function(){setGuardando(false);});
+  }
+  function borrar(x){if(!confirm(x.estado_cola==='subida'?'¿Quitar esta OT de la lista del celular? En el sistema sigue guardada.':'¿Borrar esta OT que aún no se ha subido? Se pierde.'))return;otColaDel(x.uid).then(recargar);}
+  function reintentar(x){otColaPut(Object.assign({},x,{estado_cola:'pendiente',error:null})).then(function(){return otSincronizar(p.tok);}).then(recargar);}
+  var inp={width:'100%',padding:'12px',border:'1px solid #CBD5E1',borderRadius:8,fontSize:16,boxSizing:'border-box',background:'#fff'};
+  var lbl={fontSize:12,fontWeight:700,color:'#475569',display:'block',margin:'10px 0 4px'};
+  var pend=cola.filter(function(x){return x.estado_cola==='pendiente';}).length;
+  function campoTexto(k,label,placeholder,filas){return h('div',null,h('label',{style:lbl},label),h('div',{style:{display:'flex',gap:8,alignItems:'flex-start'}},h('textarea',{value:f[k],onChange:function(e){up(k,e.target.value);},rows:filas||3,placeholder:placeholder,style:Object.assign({},inp,{resize:'vertical'})}),vozSoportada()&&h(MicBtn,{alTexto:function(t){up(k,(f[k]?f[k]+' ':'')+t);}})));}
+  var ESTC={pendiente:{l:online?'⏳ Por subir (reintenta sola cada 20 s)':'📴 Guardada, se sube con señal',c:'#92400E',bg:'#FEF3C7'},subida:{l:'✔ Subida al sistema',c:'#166534',bg:'#DCFCE7'},rechazada:{l:'✖ Rechazada',c:'#991B1B',bg:'#FEE2E2'}};
+  var btnTab=function(on){return {flex:1,padding:10,borderRadius:8,border:'1px solid #CBD5E1',background:on?'#1E3A2D':'#fff',color:on?'#D4C5A9':'#334155',fontWeight:700,fontSize:14};};
+  return h('div',{className:'mob-wrap',style:{background:'#F1F4F9',minHeight:'100vh'}},
+    h('div',{className:'mob-topbar'},h('button',{onClick:p.onBack},'←'),h('h3',null,'🔧 OT en terreno')),
+    h('div',{style:{padding:'8px 8px 60px'}},
+      h('div',{style:{display:'flex',gap:6,marginBottom:8}},
+        h('button',{onClick:function(){setPantalla('form');},style:btnTab(pantalla==='form')},'+ Nueva OT'),
+        h('button',{onClick:function(){setPantalla('cola');recargar();},style:btnTab(pantalla==='cola')},'Mis OT'+(pend?' ('+pend+' por subir)':''))),
+      h('div',{style:{fontSize:11,padding:'6px 10px',borderRadius:6,marginBottom:8,background:online?'#DCFCE7':'#FEF3C7',color:online?'#166534':'#92400E'}},online?'● Con señal: la OT se sube al guardar':'📴 Sin señal: la OT queda guardada en el celular y se sube sola cuando vuelva la señal'+(pend?' ('+pend+' esperando)':'')),
+      msg&&h('div',{style:{fontSize:12,padding:'8px 10px',borderRadius:6,marginBottom:8,background:/Preparando/.test(msg)?'#EFF6FF':'#FEE2E2',color:/Preparando/.test(msg)?'#1E40AF':'#991B1B'}},msg),
+      pantalla==='form'&&h('div',{className:'card',style:{padding:12}},
+        h('label',{style:lbl},'Máquina *'),
+        h('select',{value:f.equipo_id,onChange:function(e){up('equipo_id',e.target.value);},style:inp},h('option',{value:''},'— Elige la máquina —'),
+          ordenF.map(function(k){return h('optgroup',{key:k,label:fN(k)},grupos[k].slice().sort(function(a,b){return String(a.codigo).localeCompare(String(b.codigo));}).map(function(e){return h('option',{key:e.equipo_id,value:e.equipo_id},e.codigo+' — '+e.nombre);}));})),
+        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}},
+          h('div',null,h('label',{style:lbl},'Tipo'),h('select',{value:f.tipo_mantencion,onChange:function(e){up('tipo_mantencion',e.target.value);},style:inp},h('option',{value:'correctiva'},'Correctiva (falla)'),h('option',{value:'preventiva'},'Preventiva'),h('option',{value:'programada'},'Programada'))),
+          h('div',null,h('label',{style:lbl},'Estado'),h('select',{value:f.estado,onChange:function(e){up('estado',e.target.value);},style:inp},h('option',{value:'cerrada'},'Terminada'),h('option',{value:'en_ejecucion'},'En trabajo'),h('option',{value:'abierta'},'Pendiente')))),
+        h('label',{style:lbl},'Horómetro'),
+        h('div',{style:{display:'flex',gap:8}},h('input',{type:'number',inputMode:'decimal',value:f.horometro_servicio,onChange:function(e){up('horometro_servicio',e.target.value);},placeholder:'Horas de la máquina',style:inp}),vozSoportada()&&h(MicBtn,{modo:'num',alTexto:function(t){up('horometro_servicio',t);}})),
+        campoTexto('sintoma_reportado','Falla o motivo *','¿Qué pasó? Ej: se cortó manguera hidráulica del cabezal',3),
+        campoTexto('trabajo_realizado','Trabajo realizado','¿Qué se hizo?',3),
+        campoTexto('repuestos_texto','Repuestos y materiales usados','Ej: 2 mangueras 1/2", 20 L hidráulico',2),
+        h('label',{style:lbl},'Fotos ('+(f.fotos||[]).length+'/8)'),
+        h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}},
+          h('label',{style:{padding:'12px 14px',borderRadius:8,background:'#1E3A2D',color:'#D4C5A9',fontWeight:700,fontSize:14,cursor:'pointer'}},'📷 Tomar foto',h('input',{type:'file',accept:'image/*',capture:'environment',onChange:agregarFotos,style:{display:'none'}})),
+          h('label',{style:{padding:'12px 14px',borderRadius:8,background:'#fff',border:'1px solid #CBD5E1',color:'#334155',fontWeight:700,fontSize:14,cursor:'pointer'}},'🖼 Galería',h('input',{type:'file',accept:'image/*',multiple:true,onChange:agregarFotos,style:{display:'none'}}))),
+        (f.fotos||[]).length>0&&h('div',{style:{display:'flex',gap:8,flexWrap:'wrap',marginTop:8}},(f.fotos||[]).map(function(x,i){return h('div',{key:i,style:{position:'relative'}},h('img',{src:x.miniatura||x.data,style:{width:80,height:80,objectFit:'cover',borderRadius:6,border:'1px solid #CBD5E1'}}),h('button',{onClick:function(){setF(function(y){return Object.assign({},y,{fotos:y.fotos.filter(function(_,j){return j!==i;})});});},style:{position:'absolute',top:-6,right:-6,width:22,height:22,borderRadius:11,border:'none',background:'#DC2626',color:'#fff',fontSize:12}},'✕'),h('div',{style:{fontSize:9,color:'#94A3B8',textAlign:'center'}},x.kb+' KB'));})),
+        h('div',{style:{fontSize:11,color:'#64748B',marginTop:8}},vozSoportada()?(online?'💡 El botón 🎙 dicta con señal. Sin señal, toca el campo y usa el micrófono 🎤 del teclado del celular.':'💡 Sin señal el botón 🎙 no funciona: toca el campo y usa el micrófono 🎤 del teclado del celular.'):'💡 Para dictar, toca el campo y usa el micrófono 🎤 del teclado del celular.'),
+        h('button',{onClick:guardar,disabled:guardando,style:{width:'100%',marginTop:14,padding:16,borderRadius:10,border:'none',background:'#1E3A2D',color:'#D4C5A9',fontSize:17,fontWeight:800}},guardando?'Guardando…':(online?'💾 Guardar y subir OT':'💾 Guardar OT (se sube con señal)'))),
+      pantalla==='cola'&&h('div',null,
+        !cola.length&&h('div',{className:'card',style:{padding:14,color:'#64748B'}},'Aún no has creado OT desde este celular.'),
+        cola.map(function(x){var es=ESTC[x.estado_cola]||ESTC.pendiente;return h('div',{key:x.uid,className:'card',style:{padding:10,marginBottom:8,borderLeft:'4px solid '+es.c}},
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}},h('div',{style:{fontWeight:800,fontSize:14}},x.numero_ot||('OT local · '+(x.en||'').slice(5,16))),h('span',{style:{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:10,background:es.bg,color:es.c,whiteSpace:'nowrap'}},es.l)),
+          h('div',{style:{fontSize:12,color:'#334155',marginTop:4}},h('b',null,x.equipo_codigo),' · ',x.tipo_mantencion,' · ',({cerrada:'terminada',en_ejecucion:'en trabajo',abierta:'pendiente'})[x.estado]||x.estado,x.horometro_servicio?' · '+x.horometro_servicio+' h':'',' · ',(x.en||'').slice(0,16)),
+          x.sintoma_reportado&&h('div',{style:{fontSize:12,marginTop:3}},'Falla: ',x.sintoma_reportado),
+          x.trabajo_realizado&&h('div',{style:{fontSize:12,marginTop:2}},'Trabajo: ',x.trabajo_realizado),
+          (x.fotos||[]).length>0&&h('div',{style:{display:'flex',gap:4,marginTop:6}},(x.fotos||[]).map(function(ft,i){return ft.miniatura?h('img',{key:i,src:ft.miniatura,style:{width:48,height:48,objectFit:'cover',borderRadius:4}}):h('span',{key:i,style:{fontSize:11,color:'#64748B'}},'📷');})),
+          x.error&&h('div',{style:{fontSize:11,color:'#991B1B',marginTop:4}},x.error),
+          h('div',{style:{display:'flex',gap:6,marginTop:8}},
+            x.estado_cola==='rechazada'&&h('button',{onClick:function(){reintentar(x);},style:{padding:'6px 10px',borderRadius:6,border:'1px solid #CBD5E1',background:'#fff',fontSize:12}},'↻ Reintentar'),
+            x.estado_cola==='pendiente'&&online&&h('button',{onClick:function(){otSincronizar(p.tok).then(recargar);},style:{padding:'6px 10px',borderRadius:6,border:'1px solid #CBD5E1',background:'#fff',fontSize:12}},'⬆ Subir ahora'),
+            h('button',{onClick:function(){borrar(x);},style:{padding:'6px 10px',borderRadius:6,border:'1px solid #FCA5A5',background:'#FEF2F2',color:'#991B1B',fontSize:12}},'🗑')));}))));
+}
 function MobileTransporte(p){
   var empresas=(p.m.empresas||[]).filter(function(e){return e.activo;});
   var faenas=p.m.faenas||[];
@@ -30048,8 +30169,9 @@ function App(){
     // Mantención en móvil: muestra submenú con todas las opciones disponibles
     if(mobileView==='mantencion'){
       var mantOps=[
+        {id:'mant-ot-movil',icon:'🔧',label:'OT en terreno',sub:'Mecánico: con fotos y voz; sin señal se guarda y sube sola',mobile:true},
         {id:'mant-avisos',icon:'⚠',label:'Avisos de Falla',sub:'Reportar y revisar fallas',mobile:true},
-        {id:'mant-ot',icon:'🔧',label:'Órdenes de Trabajo',sub:'Crear y gestionar OT',desktop:true},
+        {id:'mant-ot',icon:'🗂',label:'Órdenes de Trabajo (escritorio)',sub:'Gestión completa de OT y costos',desktop:true},
         {id:'mant-programacion',icon:'📅',label:'Programación',sub:'Calendario y asignación de mano de obra',desktop:true},
         {id:'mant-plan',icon:'📋',label:'Plan Maestro',sub:'Mantenciones por equipo',desktop:true},
         {id:'mant-lecturas',icon:'⏱',label:'Lecturas',sub:'Registrar horómetro/km',desktop:true},
@@ -30060,7 +30182,7 @@ function App(){
         h('div',{className:'mob-topbar'},h('button',{onClick:mobileBack},'←'),h('h3',null,'Mantención')),
         h('div',{style:{padding:8,paddingBottom:40}},
           h('div',{style:{background:'#FEF3C7',border:'1px solid #FCD34D',borderRadius:6,padding:10,fontSize:11,color:'#92400E',marginBottom:10}},
-            '💡 Avisos de Falla está optimizado para móvil. Las demás opciones se abrirán en vista escritorio adaptada al teléfono.'
+            '💡 OT en terreno y Avisos de Falla están hechos para el celular. Las demás opciones se abren en vista escritorio adaptada al teléfono.'
           ),
           h('div',{className:'mob-grid'},
             mantOps.map(function(op){
@@ -30083,6 +30205,7 @@ function App(){
       );
     }
     // Módulo específico en mobile con topbar de vuelta
+    if(mobileView==='mant-ot-movil')return h(MobileMantOT,{tok:tok,m:m,user:user,onBack:mobileBack});
     if(mobileView==='trans-traslados')return h(MobileTransporte,{tok:tok,m:m,user:user,onBack:mobileBack});
     if(mobileView==='telemetria')return h(MobileTelemetria,{tok:tok,m:m,user:user,onBack:mobileBack});
     if(mobileView==='solicitudes')return h(MobileSolicitudes,{tok:tok,m:m,user:user,onBack:mobileBack});
