@@ -6662,7 +6662,8 @@ app.get('/api/mant/ot', auth, async(req,res)=>{
     if(estado){vals.push(estado);where.push(`o.estado=$${vals.length}`);}
     if(desde){vals.push(desde);where.push(`o.fecha_apertura>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`o.fecha_apertura<=$${vals.length}`);}
-    const r=await pool.query(`SELECT o.*,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,eq.horas_productivas_dia,eq.horometro_actual,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY o.creado_en DESC`,vals);
+    await mantMovilEnsure();
+    const r=await pool.query(`SELECT o.*,(SELECT COUNT(*) FROM mant_ot_fotos ff WHERE ff.ot_id=o.ot_id)::int AS fotos,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,eq.horas_productivas_dia,eq.horometro_actual,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY o.creado_en DESC`,vals);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -6680,6 +6681,18 @@ async function mantNumeroOT(q){
   return 'OT-'+yr+'-'+String(r.rows[0].ultimo).padStart(4,'0');
 }
 // Creación de tablas serializada con una promesa compartida: varios envíos simultáneos esperan la misma creación.
+// Inserta las fotos que vienen como data URL (jpeg/png ≤1,5 MB); `miniatura` opcional (≤40 KB) para listar sin bajar la imagen.
+async function mantFotosInsertar(q,otId,fotos,usuario){
+  let nf=0;
+  for(const f of (fotos||[])){
+    const m=/^data:(image\/[a-z]+);base64,(.+)$/i.exec(String(f&&f.data||'')); if(!m)continue;
+    const buf=Buffer.from(m[2],'base64'); if(!buf.length||buf.length>1500000)continue;
+    const mm=/^data:image\/[a-z]+;base64,(.+)$/i.exec(String(f&&f.miniatura||'')); let mini=mm?Buffer.from(mm[1],'base64'):null; if(mini&&mini.length>40000)mini=null;
+    const nombre=String(f.nombre||('foto-'+(nf+1)+'.jpg')).replace(/[^\w.\-]+/g,'_').slice(0,100);
+    await q.query('INSERT INTO mant_ot_fotos(ot_id,nombre,mime,datos,miniatura,tamano,usuario) VALUES($1,$2,$3,$4,$5,$6,$7)',[otId,nombre,m[1].toLowerCase(),buf,mini,buf.length,usuario]); nf++;
+  }
+  return nf;
+}
 let _mantMovilP=null;
 function mantMovilEnsure(){
   if(_mantMovilP)return _mantMovilP;
@@ -6692,6 +6705,7 @@ async function mantMovilCrear(){
   await pool.query(`CREATE TABLE IF NOT EXISTS mant_ot_fotos (id SERIAL PRIMARY KEY, ot_id INT NOT NULL REFERENCES mant_ot(ot_id) ON DELETE CASCADE, nombre VARCHAR(120), mime VARCHAR(40) DEFAULT 'image/jpeg',
     datos BYTEA, tamano INT, dropbox_path TEXT, url TEXT, estado VARCHAR(12) DEFAULT 'pendiente', error TEXT, intentos INT DEFAULT 0, subida_en TIMESTAMP, creado_en TIMESTAMP DEFAULT NOW(), usuario VARCHAR(100))`);
   await pool.query('CREATE INDEX IF NOT EXISTS mant_ot_fotos_ot ON mant_ot_fotos(ot_id)');
+  try{await pool.query('ALTER TABLE mant_ot_fotos ADD COLUMN IF NOT EXISTS miniatura BYTEA');}catch(e){}
   try{await pool.query('ALTER TABLE mant_ot ADD COLUMN IF NOT EXISTS repuestos_texto TEXT');}catch(e){}
 }
 // al arrancar, dejar las tablas listas (y no en la primera OT)
@@ -6770,13 +6784,7 @@ app.post('/api/mant/ot/movil', auth, async(req,res)=>{
       VALUES($1,$2,$3,$4,$5,'movil',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'interno',$18) RETURNING ot_id,numero_ot`,
       [num,e.empresa_id||null,eqId,faenaId,tipo,fecha,en,estado==='cerrada'?(en||new Date()):null,horo,estado,b.prioridad==='alta'?'alta':'normal',
        String(b.sintoma_reportado||'').slice(0,4000)||null,String(b.trabajo_realizado||'').slice(0,4000)||null,String(b.repuestos_texto||'').slice(0,2000)||null,String(b.observaciones||'').slice(0,2000)||null,quien,quien,req.user.email]);
-    const ot=r.rows[0]; let nf=0;
-    for(const f of fotos){
-      const m=/^data:(image\/[a-z]+);base64,(.+)$/i.exec(String(f&&f.data||'')); if(!m)continue;
-      const buf=Buffer.from(m[2],'base64'); if(!buf.length||buf.length>1500000)continue;
-      const nombre=String(f.nombre||('foto-'+(nf+1)+'.jpg')).replace(/[^\w.\-]+/g,'_').slice(0,100);
-      await client.query('INSERT INTO mant_ot_fotos(ot_id,nombre,mime,datos,tamano,usuario) VALUES($1,$2,$3,$4,$5,$6)',[ot.ot_id,nombre,m[1].toLowerCase(),buf,buf.length,req.user.email]); nf++;
-    }
+    const ot=r.rows[0]; const nf=await mantFotosInsertar(client,ot.ot_id,fotos,req.user.email);
     if(horo!=null) await client.query('UPDATE equipos SET horometro_actual=GREATEST(COALESCE(horometro_actual,0),$1) WHERE equipo_id=$2',[horo,eqId]);
     const resp={ok:true,ot_id:ot.ot_id,numero_ot:ot.numero_ot,fotos:nf,estado,equipo:e.codigo};
     if(uid) await client.query('INSERT INTO mant_sync(uid,respuesta) VALUES($1,$2) ON CONFLICT DO NOTHING',[uid,JSON.stringify(resp)]);
@@ -6786,25 +6794,88 @@ app.post('/api/mant/ot/movil', auth, async(req,res)=>{
   }catch(e){try{await client.query('ROLLBACK');}catch(_){} res.status(400).json({error:e.message});}
   finally{try{client.release();}catch(_){}}
 });
-// Mis OT recientes (las que creé desde el celular u otras), para la lista del teléfono
+// Lista de OT para el celular: por omisión las mías; ?todas=1 todas las de la empresa (cualquier origen); ?q= busca por
+// N° OT, máquina o falla; ?ot_id= trae una sola. Siempre con el conteo de fotos.
 app.get('/api/mant/ot/movil/mias', auth, async(req,res)=>{
   try{
     await mantMovilEnsure();
-    const dias=Math.min(90,parseInt(req.query.dias)||30);
-    const r=await pool.query(`SELECT o.ot_id,o.numero_ot,o.estado,o.fecha_apertura,o.tipo_mantencion,o.horometro_servicio,o.sintoma_reportado,o.trabajo_realizado,e.codigo AS equipo_codigo,
-        (SELECT COUNT(*) FROM mant_ot_fotos f WHERE f.ot_id=o.ot_id) AS fotos,(SELECT COUNT(*) FROM mant_ot_fotos f WHERE f.ot_id=o.ot_id AND f.estado='ok') AS fotos_dropbox
-      FROM mant_ot o JOIN equipos e ON e.equipo_id=o.equipo_id WHERE o.usuario=$1 AND o.fecha_apertura>=CURRENT_DATE-$2::int ORDER BY o.ot_id DESC LIMIT 100`,[req.user.email,dias]);
+    const dias=Math.min(365,parseInt(req.query.dias)||30);
+    const w=['1=1'],v=[];
+    if(req.query.ot_id){ v.push(parseInt(req.query.ot_id)); w.push('o.ot_id=$'+v.length); }
+    else{
+      v.push(dias); w.push('o.fecha_apertura>=CURRENT_DATE-$'+v.length+'::int');
+      if(req.query.todas!=='1'){ v.push(req.user.email); w.push('o.usuario=$'+v.length); }
+      if(req.query.equipo_id){ v.push(parseInt(req.query.equipo_id)); w.push('o.equipo_id=$'+v.length); }
+      if(req.query.estado){ v.push(String(req.query.estado)); w.push('o.estado=$'+v.length); }
+      if(req.query.q){ v.push('%'+String(req.query.q).trim()+'%'); w.push('(o.numero_ot ILIKE $'+v.length+' OR e.codigo ILIKE $'+v.length+' OR e.nombre ILIKE $'+v.length+' OR o.sintoma_reportado ILIKE $'+v.length+')'); }
+    }
+    const r=await pool.query(`SELECT o.ot_id,o.numero_ot,o.estado,o.origen,o.fecha_apertura,o.fecha_termino,o.tipo_mantencion,o.prioridad,o.horometro_servicio,o.sintoma_reportado,o.diagnostico,o.trabajo_realizado,o.repuestos_texto,o.observaciones,
+        o.mecanico_asignado,o.responsable,o.usuario,o.equipo_id,e.codigo AS equipo_codigo,e.nombre AS equipo_nombre,f.nombre AS faena_nombre,
+        (SELECT COUNT(*) FROM mant_ot_fotos ff WHERE ff.ot_id=o.ot_id)::int AS fotos,(SELECT COUNT(*) FROM mant_ot_fotos ff WHERE ff.ot_id=o.ot_id AND ff.estado='ok')::int AS fotos_dropbox
+      FROM mant_ot o JOIN equipos e ON e.equipo_id=o.equipo_id LEFT JOIN faenas f ON f.faena_id=o.faena_id WHERE ${w.join(' AND ')} ORDER BY o.ot_id DESC LIMIT 200`,v);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
+});
+// Edición parcial desde el celular: solo cambia los campos que vienen (el PUT de escritorio exige todos los campos)
+app.patch('/api/mant/ot/:id/movil', auth, async(req,res)=>{
+  try{
+    await mantMovilEnsure();
+    const id=parseInt(req.params.id); const b=req.body||{};
+    const cur=await pool.query('SELECT ot_id,equipo_id,estado,fecha_inicio,fecha_termino FROM mant_ot WHERE ot_id=$1',[id]); if(!cur.rows.length) throw new Error('La OT no existe');
+    const o=cur.rows[0]; const sets=[],vals=[]; const put=(col,val)=>{vals.push(val);sets.push(col+'=$'+vals.length);};
+    if(b.estado!==undefined){
+      if(!['abierta','en_ejecucion','cerrada'].includes(b.estado)) throw new Error('Estado inválido');
+      put('estado',b.estado);
+      if(b.estado==='en_ejecucion'&&!o.fecha_inicio) put('fecha_inicio',new Date());
+      if(b.estado==='cerrada'&&!o.fecha_termino) put('fecha_termino',new Date());
+    }
+    for(const k of ['sintoma_reportado','diagnostico','trabajo_realizado','repuestos_texto','observaciones']) if(b[k]!==undefined) put(k,String(b[k]||'').slice(0,4000)||null);
+    let horo=null;
+    if(b.horometro_servicio!==undefined&&b.horometro_servicio!==''&&b.horometro_servicio!=null){ horo=parseFloat(b.horometro_servicio); if(isNaN(horo)) throw new Error('Horómetro inválido'); put('horometro_servicio',horo); }
+    if(!sets.length) throw new Error('Nada que actualizar');
+    vals.push(id);
+    const r=await pool.query('UPDATE mant_ot SET '+sets.join(',')+' WHERE ot_id=$'+vals.length+' RETURNING ot_id,numero_ot,estado,horometro_servicio,sintoma_reportado,diagnostico,trabajo_realizado,repuestos_texto,observaciones,fecha_inicio,fecha_termino',vals);
+    if(horo!=null) await pool.query('UPDATE equipos SET horometro_actual=GREATEST(COALESCE(horometro_actual,0),$1) WHERE equipo_id=$2',[horo,o.equipo_id]);
+    if(b.estado==='cerrada') await pool.query("UPDATE equipos SET estado_operativo='operativo' WHERE equipo_id=$1 AND estado_operativo='detenido'",[o.equipo_id]);
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
 });
 // Fotos de una OT: enlace de Dropbox cuando ya se subió; mientras está pendiente, con ?datos=1 viene la imagen en base64
 app.get('/api/mant/ot/:id/fotos', auth, async(req,res)=>{
   try{
     await mantMovilEnsure();
     const conDatos=req.query.datos==='1';
-    const r=await pool.query(`SELECT id,ot_id,nombre,mime,tamano,estado,url,dropbox_path,error,creado_en,subida_en,usuario${conDatos?",CASE WHEN datos IS NULL THEN NULL ELSE encode(datos,'base64') END AS b64":''} FROM mant_ot_fotos WHERE ot_id=$1 ORDER BY id`,[parseInt(req.params.id)]);
-    res.json(r.rows.map(x=>{ const o=Object.assign({},x); if(conDatos&&x.b64){o.data='data:'+(x.mime||'image/jpeg')+';base64,'+x.b64;} delete o.b64; return o; }));
+    const r=await pool.query(`SELECT id,ot_id,nombre,mime,tamano,estado,url,dropbox_path,error,creado_en,subida_en,usuario,CASE WHEN miniatura IS NULL THEN NULL ELSE encode(miniatura,'base64') END AS mb64${conDatos?",CASE WHEN datos IS NULL THEN NULL ELSE encode(datos,'base64') END AS b64":''} FROM mant_ot_fotos WHERE ot_id=$1 ORDER BY id`,[parseInt(req.params.id)]);
+    res.json(r.rows.map(x=>{ const o=Object.assign({},x); if(conDatos&&x.b64){o.data='data:'+(x.mime||'image/jpeg')+';base64,'+x.b64;} if(x.mb64){o.mini='data:image/jpeg;base64,'+x.mb64;} delete o.b64; delete o.mb64; return o; }));
   }catch(e){res.status(500).json({error:e.message});}
+});
+// Una foto completa (para verla en pantalla mientras no esté en Dropbox; si ya está, viene el enlace)
+app.get('/api/mant/ot/fotos/:id', auth, async(req,res)=>{
+  try{
+    await mantMovilEnsure();
+    const r=await pool.query("SELECT id,ot_id,nombre,mime,estado,url,CASE WHEN datos IS NULL THEN NULL ELSE encode(datos,'base64') END AS b64 FROM mant_ot_fotos WHERE id=$1",[parseInt(req.params.id)]);
+    if(!r.rows.length) return res.status(404).json({error:'Foto no encontrada'});
+    const x=r.rows[0]; res.json({id:x.id,ot_id:x.ot_id,nombre:x.nombre,estado:x.estado,url:x.url,data:x.b64?('data:'+(x.mime||'image/jpeg')+';base64,'+x.b64):null});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+// Adjuntar fotos a cualquier OT existente (escritorio o celular). `uid` lo manda la cola sin señal: si llega dos veces no duplica.
+app.post('/api/mant/ot/:id/fotos', auth, async(req,res)=>{
+  try{
+    await mantMovilEnsure();
+    const otId=parseInt(req.params.id); const b=req.body||{};
+    const uid=b.uid?('fotos:'+String(b.uid).slice(0,60)):null;
+    if(uid){ const ya=await pool.query('SELECT respuesta FROM mant_sync WHERE uid=$1',[uid]); if(ya.rows.length) return res.json(Object.assign({},ya.rows[0].respuesta,{repetido:true})); }
+    const ot=await pool.query('SELECT ot_id,numero_ot FROM mant_ot WHERE ot_id=$1',[otId]); if(!ot.rows.length) throw new Error('La OT no existe');
+    const fotos=Array.isArray(b.fotos)?b.fotos:[]; if(!fotos.length) throw new Error('No vienen fotos');
+    const n=(await pool.query('SELECT COUNT(*)::int AS n FROM mant_ot_fotos WHERE ot_id=$1',[otId])).rows[0].n;
+    if(n+fotos.length>30) throw new Error('Máximo 30 fotos por OT (tiene '+n+')');
+    const nf=await mantFotosInsertar(pool,otId,fotos,req.user.email);
+    if(!nf) throw new Error('Ninguna foto válida (jpeg/png, máximo 1,5 MB cada una)');
+    const resp={ok:true,ot_id:otId,numero_ot:ot.rows[0].numero_ot,fotos:nf,total:n+nf};
+    if(uid) await pool.query('INSERT INTO mant_sync(uid,respuesta) VALUES($1,$2) ON CONFLICT DO NOTHING',[uid,JSON.stringify(resp)]);
+    if(dropboxConfigurado()) setTimeout(()=>mantFotosSubirPendientes(),500);
+    res.status(201).json(resp);
+  }catch(e){res.status(400).json({error:e.message});}
 });
 app.delete('/api/mant/ot/fotos/:id', auth, async(req,res)=>{
   try{ await mantMovilEnsure(); await pool.query('DELETE FROM mant_ot_fotos WHERE id=$1',[parseInt(req.params.id)]); res.json({ok:true}); }
@@ -7068,6 +7139,7 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
     const r=await pool.query(`UPDATE mant_ot SET estado=$1,fecha_inicio=$2,fecha_termino=$3,horometro_servicio=$4,kilometraje_servicio=$5,diagnostico=$6,causa=$7,trabajo_realizado=$8,observaciones=$9,responsable=$10,mecanico_asignado=$11,taller_tipo=$12,taller_nombre=$13,tiempo_detenido_hrs=$14,costo_repuestos=0,costo_lubricantes=0,costo_mano_obra_interna=$15,costo_mano_obra_externa=$16,costo_servicios=0,costo_traslado=$17,costo_otros=$18,costo_total=$19,prioridad=$20,sistema=$21,vehiculo_traslado=$22,distancia_km=$23,costo_combustible_traslado=$24,actualizado_en=NOW() WHERE ot_id=$25 RETURNING *`,
       [estado,fInicio,fTermino,horometro_servicio||null,kilometraje_servicio||null,diagnostico||null,causa||null,trabajo_realizado||null,observaciones||null,responsable||null,mecanico_asignado||null,taller_tipo||'interno',taller_nombre||null,hrsDetenido,moInt,moExt,tras,otros,total,prioridad||'normal',sistema||null,vehiculo_traslado||null,parseFloat(distancia_km)||0,parseFloat(costo_combustible_traslado)||0,req.params.id]);
     const ot=r.rows[0];
+    if(req.body.repuestos_texto!==undefined){ try{ await mantMovilEnsure(); await pool.query('UPDATE mant_ot SET repuestos_texto=$1 WHERE ot_id=$2',[String(req.body.repuestos_texto||'').slice(0,4000)||null,req.params.id]); }catch(e){console.log('[WARN] repuestos_texto:',e.message);} }
     // Mano de obra externa: el valor del formulario es la parte MANUAL; el total (manual + tareas externas) lo fija recalcOTCosts
     try{ await pool.query('UPDATE mant_ot SET costo_mo_externa_manual=$1 WHERE ot_id=$2',[parseFloat(costo_mano_obra_externa)||0,req.params.id]); await recalcOTCosts(req.params.id); }catch(e){console.log('[WARN] mo externa manual:',e.message);}
     // Si se cierra: actualizar horómetro/km del equipo + recalcular programación
