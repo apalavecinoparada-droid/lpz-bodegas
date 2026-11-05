@@ -26408,6 +26408,7 @@ function MobileMantOT(p){
   var ordenF=Object.keys(grupos).sort(function(a,b){if(a===userFaena)return -1;if(b===userFaena)return 1;return fN(a).localeCompare(fN(b));});
   var vacio={equipo_id:'',tipo_mantencion:'correctiva',estado:'cerrada',prioridad:'normal',horometro_servicio:'',sintoma_reportado:'',trabajo_realizado:'',repuestos_texto:'',observaciones:'',fotos:[]};
   var[lista,setLista]=useState([]);var[q,setQ]=useState('');var[sel,setSel]=useState(null);var[cargando,setCargando]=useState(false);
+  useAtras(!!sel,function(){setSel(null);});   // atrás del celular: cierra el detalle de la OT, no la App
   function cargarLista(txt){ if(!navigator.onLine){setMsg('📴 Sin señal: la lista de OT del sistema necesita señal (tus OT locales están en "Mis OT")');return;} setCargando(true); api('/mant/ot/movil/mias?todas=1&dias=120'+(txt?'&q='+encodeURIComponent(txt):''),'GET',null,p.tok).then(function(r){setLista(Array.isArray(r)?r:[]);setMsg('');}).catch(function(e){setMsg(e.message);}).finally(function(){setCargando(false);}); }
   function abrirOT(id){ if(!navigator.onLine){setMsg('📴 Sin señal: para abrir una OT del sistema hace falta señal');return;} api('/mant/ot/movil/mias?ot_id='+id,'GET',null,p.tok).then(function(r){if(r&&r[0])setSel(r[0]);else setMsg('No se encontró la OT');}).catch(function(e){setMsg(e.message);}); }
   var[f,setF]=useState(vacio);var[cola,setCola]=useState([]);var[online,setOnline]=useState(navigator.onLine);var[msg,setMsg]=useState('');var[guardando,setGuardando]=useState(false);var[pantalla,setPantalla]=useState('form');
@@ -27069,6 +27070,34 @@ var COLA_TRANS='trans_cola_v1',RECHAZOS_TRANS='trans_rechazos_v1';
 function colaLeer(k){try{return JSON.parse(localStorage.getItem(k||COLA_TRANS)||'[]');}catch(e){return [];}}
 function colaGuardar(c,k){try{localStorage.setItem(k||COLA_TRANS,JSON.stringify(c));}catch(e){}try{window.dispatchEvent(new Event('trans-cola'));}catch(e){}}
 function ahoraLocal(){var d=new Date(),z=function(n){return String(n).padStart(2,'0');};return d.getFullYear()+'-'+z(d.getMonth()+1)+'-'+z(d.getDate())+' '+z(d.getHours())+':'+z(d.getMinutes())+':'+z(d.getSeconds());}
+// ── Botón físico "atrás" (Android / PWA) ─────────────────────────────────────────────────────────────
+// La App es una sola página: sin esto, "atrás" cierra la App. useAtras(activo,onBack): mientras `activo` sea true la
+// pantalla tiene una entrada en el historial (pushState con profundidad lpz); al pulsar atrás, popstate ejecuta onBack de la
+// pantalla más profunda. Si la pantalla se cierra desde la UI (botón ←), su entrada se retira con history.go(-n) y ese
+// popstate se ignora. Profundidad = history.state.lpz, así no depende de tiempos de React.
+var _lpzAtras={pila:[],ignorar:0,retirar:0,prog:false};
+function _lpzAtrasFlush(){ _lpzAtras.prog=false; if(_lpzAtras.retirar>0){ var n=_lpzAtras.retirar; _lpzAtras.retirar=0; _lpzAtras.ignorar++; try{history.go(-n);}catch(e){_lpzAtras.ignorar--;} } }
+function useAtras(activo,onBack){
+  var ref=useRef(onBack); ref.current=onBack;
+  useEffect(function(){
+    if(!activo||!window.history||!window.history.pushState)return;
+    var depth=(((history.state&&history.state.lpz)||0)-_lpzAtras.retirar)+1;
+    var ent={depth:depth,fn:function(){ref.current();}};
+    _lpzAtras.pila.push(ent);
+    try{history.pushState({lpz:depth},'');}catch(e){}
+    return function(){
+      var i=_lpzAtras.pila.indexOf(ent); if(i>=0)_lpzAtras.pila.splice(i,1);
+      var cur=((history.state&&history.state.lpz)||0)-_lpzAtras.retirar;
+      if(cur>=depth){ _lpzAtras.retirar++; if(!_lpzAtras.prog){_lpzAtras.prog=true;Promise.resolve().then(_lpzAtrasFlush);} }   // cerrada desde la UI: retirar su entrada
+    };
+  },[activo]);
+}
+try{window.addEventListener('popstate',function(){
+  if(_lpzAtras.ignorar>0){_lpzAtras.ignorar--;return;}
+  var d=(history.state&&history.state.lpz)||0;
+  var top=_lpzAtras.pila.filter(function(e){return e.depth>d;}).sort(function(a,b){return b.depth-a.depth;})[0];
+  if(top){ try{ReactDOM.flushSync(function(){top.fn();});}catch(e){try{top.fn();}catch(_){}} }
+});}catch(e){}
 function nuevoUid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,8);}
 function esSinSenal(e){return !navigator.onLine||!!(e&&(e.name==='TypeError'||/failed to fetch|networkerror|load failed|sin señal|error 50[234]/i.test(e.message||'')));}
 function cacheLeer(k){try{return JSON.parse(localStorage.getItem(k)||'null');}catch(e){return null;}}
@@ -30158,6 +30187,9 @@ function App(){
   const[isMobile]=useState(window.innerWidth<=768);
   const[mobileMode,setMobileMode]=useState(window.innerWidth<=768);
   const[mobileView,setMobileView]=useState('home');
+  // Botón físico "atrás" (Android/PWA): vuelve al menú móvil en vez de cerrar la App; desde una vista escritorio abierta en el celular, vuelve al menú móvil
+  useAtras(mobileMode&&mobileView!=='home',function(){setMobileView('home');});
+  useAtras(isMobile&&!mobileMode,function(){setMobileMode(true);setMobileView('home');});
   // Liberar scroll del body en modo móvil
   useEffect(function(){
     if(mobileMode){
