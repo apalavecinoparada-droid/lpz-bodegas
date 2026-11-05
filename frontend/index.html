@@ -19759,6 +19759,28 @@ function FinLiquidacionesView(p){
   },[p.tok,grafAnio,fEmpresa]);
   var[genInforme,setGenInforme]=useState(false);
   var[mesInforme,setMesInforme]=useState(''); // el informe es POR MES: se selecciona el período
+  // ── Vista del período en pantalla (Andrés 2026-11-05): lo mismo que el PDF de gerencia, sin salir del sistema ──
+  var[vista,setVista]=useState(null);   // {titulo,sub,dets,A,tab,q,orden,abiertos}
+  function abrirVista(dets,titulo){
+    var A=agregarLiq(dets);
+    var emps={},mands={},refs=[];A.dets.forEach(function(d){if(d.empresa_nombre)emps[d.empresa_nombre]=1;if(d.mandante)mands[d.mandante]=1;if(d.numero_ref)refs.push(d.numero_ref);});
+    var sub=Object.keys(emps).join(' + ')+(Object.keys(mands).length?' · '+Object.keys(mands).join(', '):'')+(refs.length?' · Ref. '+refs.join(', '):'');
+    var nG={};A.roList.forEach(function(r){nG[r.cod+'|'+r.nom]=1;});
+    setVista({titulo:titulo,sub:sub,dets:A.dets,A:A,tab:'resumen',q:'',orden:{k:'nom',d:1},abiertos:Object.keys(nG).length<=3?nG:{}});
+    setDet(null);try{window.scrollTo({top:0,behavior:'smooth'});}catch(e){}
+  }
+  function vistaMes(){
+    if(!mesInforme){alert('Seleccione el mes');return;}
+    var delMes=lista.filter(function(l){return l.periodo===mesInforme;});
+    if(!delMes.length){alert('No hay liquidaciones del período '+mesInforme+' con el filtro actual');return;}
+    setGenInforme(true);
+    Promise.all(delMes.map(function(l){return api('/fin/liquidaciones/'+l.liq_id,'GET',null,p.tok);}))
+      .then(function(dets){abrirVista(dets,'Período '+mesInforme);})
+      .catch(function(e){alert('Error: '+e.message);}).finally(function(){setGenInforme(false);});
+  }
+  function vistaLiq(l){
+    api('/fin/liquidaciones/'+l.liq_id,'GET',null,p.tok).then(function(d){abrirVista([d],'Liquidación '+l.periodo);}).catch(function(e){alert(e.message);});
+  }
   function informeGerencia(){
     if(!mesInforme){alert('Seleccione el mes del informe');return;}
     var delMes=lista.filter(function(l){return l.periodo===mesInforme;});
@@ -19769,9 +19791,8 @@ function FinLiquidacionesView(p){
       .catch(function(e){alert('Error al generar informe: '+e.message);})
       .finally(function(){setGenInforme(false);});
   }
-  function construirInformeGerencia(dets){
-    var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
-    var money=function(n){var v=Math.round(parseFloat(n)||0);return (v<0?'-$':'$')+new Intl.NumberFormat('es-CL').format(Math.abs(v));};
+  // Agregaciones de un conjunto de liquidaciones (las usan el PDF de gerencia y la vista en pantalla)
+  function agregarLiq(dets){
     dets=dets.slice().sort(function(a,b){return (a.periodo||'').localeCompare(b.periodo||'')||a.liq_id-b.liq_id;});
     // ── Agregaciones ──
     var tot={vol:0,prod:0,pe:0,neto:0,vmaS:0,vmaV:0};
@@ -19815,6 +19836,12 @@ function FinLiquidacionesView(p){
     var vmaTxt=function(o){var w=vmaPond(o);return w==null?'—':nf(w,2);};
     var vmaMin=null,vmaMax=null;roList.forEach(function(r){var w=vmaPond(r);if(w==null)return;if(vmaMin==null||w<vmaMin)vmaMin=w;if(vmaMax==null||w>vmaMax)vmaMax=w;});
     pes.sort(function(a,b){return (a.periodo||'').localeCompare(b.periodo||'')||a.monto-b.monto;});
+    return {dets:dets,tot:tot,filasPeriodo:filasPeriodo,faList:faList,fuList:fuList,roList:roList,pes:pes,sinVma:sinVma,vmaMin:vmaMin,vmaMax:vmaMax,vmaPond:vmaPond,vmaTxt:vmaTxt};
+  }
+  function construirInformeGerencia(dets){
+    var esc=function(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');};
+    var money=function(n){var v=Math.round(parseFloat(n)||0);return (v<0?'-$':'$')+new Intl.NumberFormat('es-CL').format(Math.abs(v));};
+    var A=agregarLiq(dets);dets=A.dets;var tot=A.tot,filasPeriodo=A.filasPeriodo,faList=A.faList,fuList=A.fuList,roList=A.roList,pes=A.pes,sinVma=A.sinVma,vmaMin=A.vmaMin,vmaMax=A.vmaMax,vmaPond=A.vmaPond,vmaTxt=A.vmaTxt;
     var empSel=fEmpresa?(empresas.find(function(e){return String(e.empresa_id)===String(fEmpresa);})||{}).razon_social:null;
     var periodos=filasPeriodo.map(function(f){return f.periodo;});
     var rangoTxt=periodos.length?(periodos[0]===periodos[periodos.length-1]?('Período '+periodos[0]):('Períodos '+periodos[0]+' a '+periodos[periodos.length-1])):'';
@@ -19985,6 +20012,120 @@ function FinLiquidacionesView(p){
     h('div',{style:{fontSize:10,color:'#64748B',fontWeight:600}},lbl),
     h('div',{style:{fontSize:18,fontWeight:700,color:color}},val),
     sub&&h('div',{style:{fontSize:10,color:'#94A3B8'}},sub));};
+  function renderVista(){
+    var A=vista.A,tot=A.tot,G='#1E3A2D',VERDE='#16A34A',ROJO='#DC2626',MOR='#7C3AED',TEAL='#0F766E';
+    var upV=function(k,v){setVista(function(x){var n=Object.assign({},x);n[k]=v;return n;});};
+    var money=function(n){var v=Math.round(parseFloat(n)||0);return (v<0?'-$':'$')+new Intl.NumberFormat('es-CL').format(Math.abs(v));};
+    var vmaTot=tot.vmaV>0?tot.vmaS/tot.vmaV:null;
+    var nLineas=vista.dets.reduce(function(s,d){return s+(d.lineas||[]).length;},0);
+    var q=(vista.q||'').toLowerCase().trim(); var hit=function(){for(var i=0;i<arguments.length;i++){if(String(arguments[i]==null?'':arguments[i]).toLowerCase().indexOf(q)>=0)return true;}return false;};
+    var th=function(t,r,k){return h('th',{key:t,onClick:k?function(){upV('orden',{k:k,d:vista.orden.k===k?-vista.orden.d:1});}:null,title:k?'Ordenar':'',style:{padding:'7px 8px',fontSize:10,letterSpacing:.4,textTransform:'uppercase',textAlign:r?'right':'left',background:G,color:'#fff',position:'sticky',top:0,cursor:k?'pointer':'default',whiteSpace:'nowrap'}},t,k&&vista.orden.k===k?(vista.orden.d>0?' ▲':' ▼'):'');};
+    var td=function(v,o){o=o||{};return h('td',{style:Object.assign({padding:'5px 8px',fontSize:11,borderBottom:'1px solid #E5E7EB',textAlign:o.r?'right':'left',fontFamily:o.r?'Consolas,monospace':'inherit',fontWeight:o.b?700:400,color:o.c||'#1E293B',whiteSpace:o.wrap?'normal':'nowrap'},o.st||{}),title:o.t||''},v);};
+    var tdTot=function(v,r){return h('td',{style:{padding:'6px 8px',fontSize:11,fontWeight:800,background:'#F3F4F6',textAlign:r?'right':'left',fontFamily:r?'Consolas,monospace':'inherit',borderTop:'2px solid '+G}},v);};
+    var barra=function(pct,color){return h('div',{style:{display:'flex',alignItems:'center',gap:6}},h('div',{style:{flex:1,height:7,background:'#E2E8F0',borderRadius:4,overflow:'hidden',minWidth:50}},h('div',{style:{width:Math.max(0,Math.min(100,pct))+'%',height:'100%',background:color}})),h('span',{style:{fontSize:10,fontFamily:'Consolas,monospace',minWidth:42,textAlign:'right'}},nf(pct,1)+'%'));};
+    var tabla=function(head,body,foot){return h('div',{style:{overflow:'auto',maxHeight:520,border:'1px solid #E5E7EB',borderRadius:6}},h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},h('thead',null,h('tr',null,head)),h('tbody',null,body),foot&&h('tfoot',null,foot)));};
+    var seccion=function(t,extra){return h('div',{style:{display:'flex',alignItems:'center',gap:10,fontSize:12,fontWeight:700,color:G,margin:'14px 0 6px',borderBottom:'2px solid '+G,paddingBottom:3}},t,extra);};
+    var tabs=[['resumen','📊 Resumen'],['rodales','🌲 Rodales y VMA ('+A.roList.length+')'],['pe','⚖ Partidas especiales ('+A.pes.length+')'],['lineas','📋 Detalle de líneas ('+nLineas+')']];
+    // ── pestañas ──
+    var cuerpo=null;
+    if(vista.tab==='resumen'){
+      cuerpo=h('div',null,
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',gap:8}},
+          kpiCard('LIQUIDACIONES',vista.dets.length,G),
+          kpiCard('VOLUMEN PRODUCIDO',nf(tot.vol,1)+' m³',TEAL),
+          kpiCard('PRODUCCIÓN',money(tot.prod),VERDE),
+          kpiCard('PARTIDAS ESPECIALES',money(tot.pe),tot.pe<0?ROJO:VERDE),
+          kpiCard('INGRESO NETO',money(tot.neto),G,'IVA '+money(tot.neto*0.19)+' · total '+money(tot.neto*1.19)),
+          kpiCard('PRECIO MEDIO',tot.vol>0?money(tot.neto/tot.vol)+'/m³':'—',TEAL,tot.vol>0?'producción '+money(tot.prod/tot.vol)+'/m³':null),
+          kpiCard('VMA PAGADO',vmaTot!=null?nf(vmaTot,2)+' m³/árbol':'—',MOR,vmaTot!=null?('ponderado por m³'+(A.vmaMin!=null&&A.roList.length>1?' · rodales '+nf(A.vmaMin,2)+' a '+nf(A.vmaMax,2):'')):'sin VMA por rodal')),
+        A.sinVma>0&&h('div',{style:{fontSize:11,color:'#92400E',background:'#FEF3C7',padding:'6px 10px',borderRadius:6,marginTop:8}},'⚠ '+nf(A.sinVma,1)+' m³ sin VMA: liquidaciones importadas antes del detalle por rodal. Reimpórtalas desde el Excel de CMPC para ver el VMA pagado.'),
+        h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(460px,1fr))',gap:14}},
+          h('div',null,seccion('PRODUCCIÓN POR FAENA'),
+            tabla([th('Faena'),th('m³',1),th('VMA',1),th('Producción',1),th('$/m³',1),th('Part. esp.',1),th('Neto',1),th('% del neto')],
+              A.faList.map(function(x){return h('tr',{key:x.faena},td(x.faena,{b:1,c:x.faena==='Sin faena asignada'?ROJO:G}),td(nf(x.vol,1),{r:1}),td(A.vmaTxt(x),{r:1,c:MOR}),td(money(x.prod),{r:1}),td(x.vol>0?money(x.prod/x.vol):'—',{r:1}),td(money(x.pe),{r:1,c:x.pe<0?ROJO:'#1E293B'}),td(money(x.neto),{r:1,b:1}),h('td',{style:{padding:'5px 8px',borderBottom:'1px solid #E5E7EB',minWidth:120}},barra(tot.neto?x.neto/tot.neto*100:0,TEAL)));}),
+              h('tr',null,tdTot('TOTAL'),tdTot(nf(tot.vol,1),1),tdTot(A.vmaTxt(tot),1),tdTot(money(tot.prod),1),tdTot(tot.vol>0?money(tot.prod/tot.vol):'—',1),tdTot(money(tot.pe),1),tdTot(money(tot.neto),1),tdTot('100%')))),
+          h('div',null,seccion('PRODUCCIÓN POR FUNDO'),
+            tabla([th('Fundo'),th('m³',1),th('VMA',1),th('Monto',1),th('$/m³',1),th('% del volumen')],
+              A.fuList.map(function(x){return h('tr',{key:x.cod+x.nom},td((x.cod?x.cod+' — ':'')+x.nom,{b:1,wrap:1}),td(nf(x.vol,1),{r:1}),td(A.vmaTxt(x),{r:1,c:MOR}),td(money(x.prod),{r:1}),td(x.vol>0?money(x.prod/x.vol):'—',{r:1}),h('td',{style:{padding:'5px 8px',borderBottom:'1px solid #E5E7EB',minWidth:120}},barra(tot.vol?x.vol/tot.vol*100:0,VERDE)));}),
+              h('tr',null,tdTot('TOTAL'),tdTot(nf(tot.vol,1),1),tdTot(A.vmaTxt(tot),1),tdTot(money(tot.prod),1),tdTot(tot.vol>0?money(tot.prod/tot.vol):'—',1),tdTot('100%'))))),
+        vista.dets.length>1&&h('div',null,seccion('RESUMEN POR LIQUIDACIÓN'),
+          tabla([th('Período'),th('Empresa'),th('Mandante'),th('N° Ref.'),th('m³',1),th('Producción',1),th('Part. esp.',1),th('Neto',1),th('$/m³',1)],
+            A.filasPeriodo.map(function(f,i){return h('tr',{key:i},td(f.periodo,{b:1,c:G}),td(f.empresa),td(f.mandante),td(f.ref),td(nf(f.vol,1),{r:1}),td(money(f.prod),{r:1}),td(money(f.pe),{r:1,c:f.pe<0?ROJO:'#1E293B'}),td(money(f.neto),{r:1,b:1}),td(f.vol>0?money(f.neto/f.vol):'—',{r:1}));}),
+            h('tr',null,h('td',{colSpan:4,style:{padding:'6px 8px',fontWeight:800,background:'#F3F4F6',borderTop:'2px solid '+G}},'TOTAL'),tdTot(nf(tot.vol,1),1),tdTot(money(tot.prod),1),tdTot(money(tot.pe),1),tdTot(money(tot.neto),1),tdTot(tot.vol>0?money(tot.neto/tot.vol):'—',1)))));
+    }else if(vista.tab==='rodales'){
+      var ro=A.roList.filter(function(r){return !q||hit(r.cod,r.nom,r.rodal,r.faena,r.especie);}).map(function(r){return Object.assign({},r,{vma:A.vmaPond(r),tar:r.tarV>0?r.tarS/r.tarV:null,pm3:r.vol>0?r.prod/r.vol:null});});
+      var ok=vista.orden.k,od=vista.orden.d; ro.sort(function(a,b){var x=a[ok],y=b[ok];if(x==null&&y==null)return 0;if(x==null)return 1;if(y==null)return -1;return (typeof x==='number'?x-y:String(x).localeCompare(String(y)))*od||(a.nom||'').localeCompare(b.nom||'');});
+      var rv=ro.reduce(function(s,r){return s+r.vol;},0);
+      cuerpo=h('div',null,
+        h('div',{style:{display:'flex',gap:8,alignItems:'center',margin:'8px 0'}},
+          h('input',{value:vista.q,onChange:function(e){upV('q',e.target.value);},placeholder:'Buscar fundo, rodal, faena o especie…',style:Object.assign({},inpS,{maxWidth:320})}),
+          h('span',{style:{fontSize:11,color:'#64748B'}},ro.length+' rodal(es) · '+nf(rv,1)+' m³'+(q?' (filtrado)':'')),
+          h('span',{style:{marginLeft:'auto',fontSize:10,color:'#94A3B8'}},'En rojo: VMA más de 20 % bajo el ponderado del período ('+(vmaTot!=null?nf(vmaTot,2):'—')+'). Clic en un encabezado para ordenar.')),
+        !A.roList.some(function(r){return r.vmaV>0;})&&h('div',{style:{fontSize:11,color:'#92400E',background:'#FEF3C7',padding:'6px 10px',borderRadius:6,marginBottom:8}},'Estas liquidaciones no traen el detalle por rodal (importadas antes del 30-10-2026). Reimpórtalas desde el Excel de CMPC.'),
+        tabla([th('Fundo',0,'nom'),th('Rodal',0,'rodal'),th('Especie',0,'especie'),th('Faena',0,'faena'),th('m³',1,'vol'),th('VMA m³/árbol',1,'vma'),th('Tarifa $/m³',1,'tar'),th('Monto',1,'prod'),th('$/m³',1,'pm3'),th('% del volumen')],
+          ro.map(function(r,i){var bajo=r.vma!=null&&vmaTot!=null&&r.vma<vmaTot*0.8;return h('tr',{key:i,style:{background:bajo?'#FEF2F2':'transparent'}},td((r.cod?r.cod+' — ':'')+r.nom,{wrap:1}),td(r.rodal,{st:{fontFamily:'Consolas,monospace'}}),td(r.especie||'—'),td(r.faena,{c:TEAL}),td(nf(r.vol,1),{r:1}),td(r.vma==null?'sin dato':nf(r.vma,2),{r:1,b:1,c:r.vma==null?'#9CA3AF':(bajo?ROJO:MOR)}),td(r.tar!=null?money(r.tar):'—',{r:1}),td(money(r.prod),{r:1}),td(r.pm3!=null?money(r.pm3):'—',{r:1}),h('td',{style:{padding:'5px 8px',borderBottom:'1px solid #E5E7EB',minWidth:110}},barra(tot.vol?r.vol/tot.vol*100:0,MOR)));}),
+          h('tr',null,h('td',{colSpan:4,style:{padding:'6px 8px',fontWeight:800,background:'#F3F4F6',borderTop:'2px solid '+G}},'TOTAL · VMA ponderado'),tdTot(nf(tot.vol,1),1),tdTot(A.vmaTxt(tot),1),tdTot(tot.vol>0?money(tot.prod/tot.vol):'—',1),tdTot(money(tot.prod),1),tdTot(tot.vol>0?money(tot.prod/tot.vol):'—',1),tdTot('100%'))));
+    }else if(vista.tab==='pe'){
+      var pes=A.pes.filter(function(x){return !q||hit(x.periodo,x.equipo,x.concepto);});
+      cuerpo=h('div',null,
+        h('div',{style:{display:'flex',gap:8,alignItems:'center',margin:'8px 0'}},h('input',{value:vista.q,onChange:function(e){upV('q',e.target.value);},placeholder:'Buscar equipo o concepto…',style:Object.assign({},inpS,{maxWidth:320})}),h('span',{style:{fontSize:11,color:'#64748B'}},pes.length+' partida(s)')),
+        !A.pes.length?h('div',{style:{padding:14,color:'#94A3B8',fontSize:12}},'Sin partidas especiales en este período.'):
+        tabla([th('Período'),th('Equipo'),th('Concepto'),th('Monto',1)],
+          pes.map(function(x,i){return h('tr',{key:i},td(x.periodo),td(x.equipo),td(x.concepto,{wrap:1}),td(money(x.monto),{r:1,b:x.monto<0,c:x.monto<0?ROJO:VERDE}));}),
+          h('tr',null,h('td',{colSpan:3,style:{padding:'6px 8px',fontWeight:800,background:'#F3F4F6',borderTop:'2px solid '+G}},'TOTAL PARTIDAS ESPECIALES'),tdTot(money(tot.pe),1))));
+    }else{
+      // detalle de líneas agrupado por fundo (colapsable), con búsqueda
+      var grupos={},orden=[];
+      vista.dets.forEach(function(d){(d.lineas||[]).forEach(function(x){
+        if(q&&!hit(x.equipo_contrato,x.fundo_codigo,x.fundo_nombre,x.rodal,x.faena_nombre,x.concepto,x.especie,d.periodo))return;
+        var k=x.tipo==='PE'?'PE|Partidas especiales':((x.fundo_codigo||'')+'|'+(x.fundo_nombre||x.fundo_codigo||'Sin fundo'));
+        if(!grupos[k]){grupos[k]={k:k,nom:k.split('|')[1],cod:x.tipo==='PE'?'':(x.fundo_codigo||''),pe:x.tipo==='PE',vol:0,monto:0,n:0,lineas:[]};orden.push(k);}
+        var g=grupos[k];var xv=parseFloat(x.volumen_m3)||0,xm=parseFloat(x.monto)||0;g.vol+=xv;g.monto+=xm;g.n++;g.lineas.push(Object.assign({periodo:d.periodo},x));
+      });});
+      orden.sort(function(a,b){if(grupos[a].pe!==grupos[b].pe)return grupos[a].pe?1:-1;return grupos[b].monto-grupos[a].monto;});
+      var todosAb=orden.every(function(k){return vista.abiertos[k];});
+      cuerpo=h('div',null,
+        h('div',{style:{display:'flex',gap:8,alignItems:'center',margin:'8px 0',flexWrap:'wrap'}},
+          h('input',{value:vista.q,onChange:function(e){upV('q',e.target.value);},placeholder:'Buscar equipo, fundo, rodal, faena o concepto…',style:Object.assign({},inpS,{maxWidth:340})}),
+          h('span',{style:{fontSize:11,color:'#64748B'}},orden.length+' grupo(s) · '+orden.reduce(function(s,k){return s+grupos[k].n;},0)+' línea(s)'),
+          h(Btn,{v:'gray',sm:true,onClick:function(){var o={};if(!todosAb)orden.forEach(function(k){o[k]=1;});upV('abiertos',o);}},todosAb?'Contraer todo':'Expandir todo')),
+        orden.map(function(k){var g=grupos[k];var ab=!!vista.abiertos[k];return h('div',{key:k,style:{border:'1px solid #E5E7EB',borderRadius:6,marginBottom:6,overflow:'hidden'}},
+          h('div',{onClick:function(){var o=Object.assign({},vista.abiertos);if(ab)delete o[k];else o[k]=1;upV('abiertos',o);},style:{display:'flex',alignItems:'center',gap:10,padding:'7px 10px',background:g.pe?'#FEF3C7':'#F8FAFC',cursor:'pointer',fontSize:12}},
+            h('span',{style:{width:14,color:'#64748B'}},ab?'▾':'▸'),
+            h('span',{style:{fontWeight:700,color:g.pe?'#92400E':G,flex:1}},(g.cod?g.cod+' — ':'')+g.nom),
+            h('span',{style:{fontSize:11,color:'#64748B'}},g.n+' línea(s)'),
+            !g.pe&&h('span',{style:{fontFamily:'Consolas,monospace',minWidth:90,textAlign:'right'}},nf(g.vol,1)+' m³'),
+            h('span',{style:{fontFamily:'Consolas,monospace',fontWeight:700,minWidth:110,textAlign:'right',color:g.monto<0?ROJO:'#1E293B'}},money(g.monto)),
+            !g.pe&&h('span',{style:{fontFamily:'Consolas,monospace',minWidth:80,textAlign:'right',color:'#64748B'}},g.vol>0?money(g.monto/g.vol)+'/m³':'')),
+          ab&&h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
+            h('thead',null,h('tr',{style:{background:'#F1F5F9',color:'#475569'}},['Período','Tipo','Equipo','Rodal','Especie','Faena','Concepto','VMA','Tarifa $/m³','m³','Monto','$/m³'].map(function(c,j){return h('th',{key:j,style:{padding:'4px 8px',textAlign:j>=7?'right':'left',fontSize:9}},c);}))),
+            h('tbody',null,g.lineas.map(function(x,i){var xv=parseFloat(x.volumen_m3)||0,xm=parseFloat(x.monto)||0;return h('tr',{key:i},
+              td(x.periodo,{c:'#64748B'}),
+              h('td',{style:{padding:'4px 8px',borderBottom:'1px solid #E5E7EB'}},x.tipo==='PE'?h('span',{style:{padding:'1px 7px',background:'#FEF3C7',color:'#92400E',borderRadius:8,fontSize:9,fontWeight:700}},'PE'):h('span',{style:{padding:'1px 7px',background:'#DCFCE7',color:'#15803D',borderRadius:8,fontSize:9,fontWeight:700}},'PROD')),
+              td(x.equipo_contrato||'—'),td(x.rodal||'—',{st:{fontFamily:'Consolas,monospace'}}),td(x.especie||'—'),td(x.faena_nombre||'—',{c:TEAL}),td(x.concepto||'—',{wrap:1,c:'#64748B'}),
+              td(x.vma!=null&&x.vma!==''?nf(x.vma,2):'—',{r:1,c:MOR,b:1}),
+              td(x.tarifa_final!=null&&x.tarifa_final!==''?nf(x.tarifa_final,0):'—',{r:1,t:x.factores&&Object.keys(x.factores).length?('Base '+nf(x.tarifa_base,0)+' · factores: '+Object.keys(x.factores).map(function(kk){return kk+' '+x.factores[kk];}).join(', ')):''}),
+              td(nf(xv,1),{r:1}),td(money(xm),{r:1,b:1,c:xm<0?ROJO:'#1E293B'}),td((x.tipo!=='PE'&&xv>0)?money(xm/xv):'—',{r:1,c:'#94A3B8'}));}))));}));
+    }
+    var exRodales=function(){exportXLSX(A.roList.map(function(r){return Object.assign({},r,{vma:A.vmaPond(r),tar:r.tarV>0?r.tarS/r.tarV:null});}),[
+      {header:'Fundo código',value:function(r){return r.cod;}},{header:'Fundo',value:function(r){return r.nom;}},{header:'Rodal',value:function(r){return r.rodal;}},{header:'Especie',value:function(r){return r.especie;}},{header:'Faena',value:function(r){return r.faena;}},
+      {header:'m3',value:function(r){return Math.round(r.vol*100)/100;}},{header:'VMA m3/arbol',value:function(r){return r.vma==null?'':Math.round(r.vma*100)/100;}},{header:'Tarifa $/m3',value:function(r){return r.tar==null?'':Math.round(r.tar);}},{header:'Monto',value:function(r){return Math.round(r.prod);}},{header:'$/m3',value:function(r){return r.vol>0?Math.round(r.prod/r.vol):'';}}],'Liquidacion_rodales_'+vista.titulo.replace(/[^\w-]+/g,'_'));};
+    var exLineas=function(){var rows=[];vista.dets.forEach(function(d){(d.lineas||[]).forEach(function(x){rows.push(Object.assign({periodo:d.periodo,empresa:d.empresa_nombre},x));});});exportXLSX(rows,[
+      {header:'Período',value:function(r){return r.periodo;}},{header:'Empresa',value:function(r){return r.empresa;}},{header:'Tipo',value:function(r){return r.tipo;}},{header:'Equipo',value:function(r){return r.equipo_contrato;}},{header:'Fundo código',value:function(r){return r.fundo_codigo;}},{header:'Fundo',value:function(r){return r.fundo_nombre;}},{header:'Rodal',value:function(r){return r.rodal;}},{header:'Especie',value:function(r){return r.especie;}},{header:'Faena',value:function(r){return r.faena_nombre;}},{header:'Concepto',value:function(r){return r.concepto;}},
+      {header:'VMA',value:function(r){return r.vma==null||r.vma===''?'':parseFloat(r.vma);}},{header:'Tarifa base',value:function(r){return r.tarifa_base==null||r.tarifa_base===''?'':parseFloat(r.tarifa_base);}},{header:'Tarifa final',value:function(r){return r.tarifa_final==null||r.tarifa_final===''?'':parseFloat(r.tarifa_final);}},{header:'m3',value:function(r){return parseFloat(r.volumen_m3)||0;}},{header:'Monto',value:function(r){return Math.round(parseFloat(r.monto)||0);}}],'Liquidacion_lineas_'+vista.titulo.replace(/[^\w-]+/g,'_'));};
+    return h('div',{className:'card',style:{padding:'12px 14px',marginBottom:10,borderTop:'4px solid '+G}},
+      h('div',{style:{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:8}},
+        h('button',{onClick:function(){setVista(null);},style:{padding:'5px 12px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12,background:'#fff'}},'← Volver a la lista'),
+        h('div',null,h('div',{style:{fontWeight:800,fontSize:15,color:G}},'📊 '+vista.titulo),h('div',{style:{fontSize:11,color:'#64748B'}},vista.sub)),
+        h('div',{style:{marginLeft:'auto',display:'flex',gap:6,flexWrap:'wrap'}},
+          h(Btn,{v:'teal',sm:true,onClick:function(){construirInformeGerencia(vista.dets);}},'📄 PDF Gerencia'),
+          h(Btn,{v:'g',sm:true,onClick:exRodales},'⬇ Excel rodales'),
+          h(Btn,{v:'g',sm:true,onClick:exLineas},'⬇ Excel líneas'))),
+      h('div',{style:{display:'flex',gap:4,borderBottom:'1px solid #E2E8F0',marginBottom:8,flexWrap:'wrap'}},
+        tabs.map(function(t){var on=vista.tab===t[0];return h('button',{key:t[0],onClick:function(){setVista(function(x){return Object.assign({},x,{tab:t[0],q:''});});},style:{padding:'8px 14px',border:'none',borderBottom:on?'3px solid '+G:'3px solid transparent',background:'none',cursor:'pointer',fontSize:12,fontWeight:on?800:600,color:on?G:'#64748B'}},t[1]);})),
+      cuerpo);
+  }
+  if(vista) return renderVista();
   return h('div',null,
     // KPIs
     h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(150px,1fr))',gap:8,marginBottom:10}},
@@ -20043,6 +20184,7 @@ function FinLiquidacionesView(p){
         lista.length>0&&h('select',{value:mesInforme,onChange:function(e){setMesInforme(e.target.value);},style:Object.assign({},inpS,{fontWeight:mesInforme?600:400,background:mesInforme?'#F0FDFA':'#fff'})},
           h('option',{value:''},'Mes del informe...'),
           (function(){var ps={};lista.forEach(function(l){ps[l.periodo]=1;});return Object.keys(ps).sort().reverse();})().map(function(per){return h('option',{key:per,value:per},per);})),
+        lista.length>0&&h(Btn,{onClick:vistaMes,disabled:genInforme||!mesInforme,title:'Resumen por faena, fundo, rodal y partidas especiales, sin salir del sistema'},genInforme?'Cargando...':'📊 Ver período en pantalla'),
         lista.length>0&&h(Btn,{v:'teal',onClick:informeGerencia,disabled:genInforme||!mesInforme},genInforme?'Generando...':'📄 Informe PDF Gerencia'),
         h('label',{style:{padding:'7px 12px',background:'#EFF6FF',border:'1px solid #BFDBFE',borderRadius:5,fontSize:12,fontWeight:600,color:'#1E40AF',cursor:'pointer'}},
           '📥 Importar Excel del mandante',
@@ -20063,7 +20205,7 @@ function FinLiquidacionesView(p){
         h('tbody',null,lista.map(function(l){
           var vol=parseFloat(l.volumen_m3)||0,neto=parseFloat(l.total_neto)||0;
           var abierto=det&&det.liq_id===l.liq_id;
-          return [h('tr',{key:l.liq_id,onClick:function(){verDetalle(l);},style:{borderTop:'1px solid #E2E8F0',cursor:'pointer',background:abierto?'#F0FDF4':'transparent'}},
+          return [h('tr',{key:l.liq_id,onClick:function(){vistaLiq(l);},title:'Abrir la vista de esta liquidación',style:{borderTop:'1px solid #E2E8F0',cursor:'pointer',background:abierto?'#F0FDF4':'transparent'}},
             h('td',{style:{padding:8,fontWeight:700,color:'#1E3A2D'}},l.periodo),
             h('td',{style:{padding:8,fontSize:11}},l.empresa_nombre||'—'),
             h('td',{style:{padding:8,fontSize:11,color:'#64748B'}},l.mandante||'—'),
