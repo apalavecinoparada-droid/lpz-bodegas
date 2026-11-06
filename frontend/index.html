@@ -8346,6 +8346,9 @@ function OCGuiasView(p){
   var sumNeto=selOcs.reduce(function(s,r){return s+(parseFloat(r.neto)||0);},0);
   var sumTotal=selOcs.reduce(function(s,r){return s+(parseFloat(r.total)||0);},0);
   var sumLitros=selOcs.reduce(function(s,r){return s+(parseFloat(r.litros_comb)||0);},0);
+  var sumIva=selOcs.reduce(function(s,r){return s+(parseFloat(r.iva)||0);},0);
+  var ieDe=function(r){var f=parseFloat(r.imp_esp_fijo)||0,v=parseFloat(r.imp_esp_variable)||0;return (f!==0||v!==0)?f+v:(parseFloat(r.impuesto_adicional)||0);};
+  var sumIE=selOcs.reduce(function(s,r){return s+ieDe(r);},0);
 
   // Agrupar combustibles por CATEGORÍA (diesel/gasolina)
   var combPorCat={};
@@ -8365,6 +8368,13 @@ function OCGuiasView(p){
       if(l.tipo_nombre)combPorCat[cat].tipos_nombres[l.tipo_nombre]=true;
       else if(l.descripcion)combPorCat[cat].tipos_nombres[l.descripcion.substring(0,20)]=true;
     });
+    var ci=oc.comb_iec||{};
+    Object.keys(ci).forEach(function(cat){
+      if(!combPorCat[cat])combPorCat[cat]={categoria:cat,litros:0,precio_prov:0,count:0,sources:{stock:0,directo:0},tipos_nombres:{}};
+      combPorCat[cat].iec_fijo=(combPorCat[cat].iec_fijo||0)+(parseFloat(ci[cat].fijo)||0);
+      combPorCat[cat].iec_var=(combPorCat[cat].iec_var||0)+(parseFloat(ci[cat].variable)||0);
+      combPorCat[cat].con_tasa=combPorCat[cat].con_tasa||!!ci[cat].con_tasa;
+    });
   });
   var tiposComb=Object.values(combPorCat).map(function(t){
     return Object.assign({},t,{
@@ -8378,6 +8388,7 @@ function OCGuiasView(p){
 
   // Estado de ajustes por tipo
   var[ajustesComb,setAjustesComb]=useState({});
+  var[ajustesRef,setAjustesRef]=useState({});   // valores según las guías, para mandar ajustes solo si el usuario cambió algo
   function updAjuste(tipoId,key,val){
     setAjustesComb(function(a){var k=String(tipoId);return Object.assign({},a,{[k]:Object.assign({},a[k]||{},{[key]:val})});});
   }
@@ -8399,28 +8410,30 @@ function OCGuiasView(p){
     var empsSel=Array.from(new Set(selOcs.map(function(r){return String(r.empresa_id||'');})));
     if(empsSel.length>1){alert('Las guías seleccionadas son de empresas distintas. Una factura corresponde a una sola empresa: filtra por empresa y selecciona solo las de una.');return;}
     var emp=selOcs[0]?selOcs[0].empresa_id:'';
-    setForm({numero_factura:'',fecha_factura:new Date().toISOString().slice(0,10),neto:'',iva:'',ie_total:'',total:'',observaciones:'',empresa_id:String(emp||'')});
-    // Dejar ajustes vacíos — el usuario transcribe los totales de la factura
+    // Prellenado con la suma de las guías (Andrés 2026-11-06): el usuario solo corrige lo que difiera de la factura
+    setForm({numero_factura:'',fecha_factura:new Date().toISOString().slice(0,10),neto:String(Math.round(sumNeto)),iva:String(Math.round(sumIva)),ie_total:String(Math.round(sumIE)),total:String(Math.round(sumTotal)),observaciones:'',empresa_id:String(emp||'')});
     var init={};
     tiposComb.forEach(function(t){
-      init[String(t.tipo_id)]={total_neto:'',total_ie:''};
+      init[String(t.tipo_id)]={total_neto:String(Math.round(t.precio_prov)),ie_fijo:String(Math.round(t.iec_fijo||0)),ie_var:String(Math.round(t.iec_var||0))};
     });
-    setAjustesComb(init);
+    setAjustesComb(init);setAjustesRef(JSON.parse(JSON.stringify(init)));
     setShowForm(true);setMsg('');
   }
   function guardar(){
     if(!form.numero_factura){setMsg('Ingrese N° de factura');return;}
+    var difTotal=Math.round(parseFloat(form.total)||0)-Math.round(sumTotal);
+    if(Math.abs(difTotal)>10&&!confirm('El total de la factura difiere de la suma de las guías en '+(difTotal<0?'-':'')+CLP(Math.abs(difTotal))+'.\n¿Registrar la factura igual?'))return;
     var ajustes=tiposComb.map(function(t){
-      var aj=ajustesComb[String(t.tipo_id)]||{};
-      var totalN=parseFloat(aj.total_neto)||0;
-      var totalIE=parseFloat(aj.total_ie)||0;
-      var netoLt=t.litros>0?totalN/t.litros:0;
-      var ieLt=t.litros>0?totalIE/t.litros:0;
-      return{categoria:t.categoria,neto_lt:netoLt,ie_lt:ieLt};
-    }).filter(function(a){return a.neto_lt>0;});
+      var k=String(t.tipo_id),aj=ajustesComb[k]||{},ref=ajustesRef[k]||{};
+      var totalN=parseFloat(aj.total_neto)||0,fijo=parseFloat(aj.ie_fijo)||0,vari=parseFloat(aj.ie_var)||0;
+      var igual=Math.abs(totalN-(parseFloat(ref.total_neto)||0))<=1&&Math.abs(fijo-(parseFloat(ref.ie_fijo)||0))<=1&&Math.abs(vari-(parseFloat(ref.ie_var)||0))<=1;
+      if(igual||!(t.litros>0)||!(totalN>0))return null;   // sin cambios: las guías quedan tal como se cerraron (cada una con su semana MEPCO)
+      return{categoria:t.categoria,neto_lt:totalN/t.litros,ie_fijo_lt:fijo/t.litros,ie_var_lt:vari/t.litros,ie_lt:(fijo+vari)/t.litros};
+    }).filter(function(a){return !!a;});
     var body=Object.assign({},form,{proveedor_id:parseInt(selProv),oc_ids:selIds,combustible_ajustes:ajustes});
     api('/oc-guias/facturar','POST',body,p.tok).then(function(r){
       var msg2='Factura creada correctamente.';
+      if(ajustes.length)msg2+=' Las guías de '+ajustes.map(function(a){return a.categoria;}).join(' y ')+' se ajustaron a los valores de la factura.';
       if(r.recalculados>0)msg2+=' '+r.recalculados+' movimiento(s) de combustible recalculado(s).';
       alert(msg2);
       setShowForm(false);setSelIds([]);setAjustesComb({});loadPendientes(selProv);loadFacturas(selProv);loadProvsPend();
@@ -8577,7 +8590,7 @@ function OCGuiasView(p){
       )
     ),
     // Modal facturar
-    showForm&&h(Modal,{title:'Facturar guías seleccionadas',onClose:function(){setShowForm(false);}},
+    showForm&&h(Modal,{title:'Facturar guías seleccionadas',onClose:function(){setShowForm(false);},lg:true},
       h('div',{className:'mb'},
         msg&&h('div',{className:'al al-e',style:{marginBottom:8}},msg),
         h('div',{style:{background:'#F0FDF4',border:'1px solid #BBF7D0',borderRadius:6,padding:'10px 14px',marginBottom:12}},
@@ -8590,19 +8603,36 @@ function OCGuiasView(p){
           h('div',null,h('label',{style:lblS},'Fecha factura'),h('input',{type:'date',value:form.fecha_factura,onChange:function(e){setForm(function(f){return Object.assign({},f,{fecha_factura:e.target.value});});},style:inpS})),
           h('div',null,h('label',{style:lblS},'Empresa'),h('select',{value:form.empresa_id,onChange:function(e){setForm(function(f){return Object.assign({},f,{empresa_id:e.target.value});});},style:inpS},h('option',{value:''},'—'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})))
         ),
-        h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:10,marginBottom:10}},
-          h('div',null,h('label',{style:lblS},'Neto factura $'),h('input',{type:'number',value:form.neto,onChange:function(e){setForm(function(f){return Object.assign({},f,{neto:e.target.value});});},style:inpS,placeholder:'Base afecta neta'})),
-          h('div',null,h('label',{style:lblS},'IVA $'),h('input',{type:'number',value:form.iva,onChange:function(e){setForm(function(f){return Object.assign({},f,{iva:e.target.value});});},style:inpS})),
-          h('div',null,h('label',{style:lblS},'IE Total $'),h('input',{type:'number',value:form.ie_total,onChange:function(e){setForm(function(f){return Object.assign({},f,{ie_total:e.target.value});});},style:inpS})),
-          h('div',null,h('label',{style:lblS},'Total factura $'),h('input',{type:'number',value:form.total,onChange:function(e){setForm(function(f){return Object.assign({},f,{total:e.target.value});});},style:inpS}))
-        ),
+        (function(){
+          var filas=[['neto','Neto afecto',sumNeto],['ie_total','Impuesto específico (fijo + variable)',sumIE],['iva','IVA 19 %',sumIva],['total','Total factura',sumTotal]];
+          var cel=function(v,extra){return h('td',{style:Object.assign({padding:'5px 8px',fontSize:12,borderBottom:'1px solid #E2E8F0'},extra||{})},v);};
+          var cm=function(n){return (n<0?'-':'')+CLP(Math.abs(Math.round(n)));};
+          return h('div',{style:{marginBottom:10}},
+            h('div',{style:{fontSize:10,color:'#475569',marginBottom:4}},'Prellenado con la suma de las guías seleccionadas. Compara con la factura y corrige solo lo que difiera.'),
+            h('table',{style:{width:'100%',borderCollapse:'collapse'}},
+              h('thead',null,h('tr',null,
+                h('th',{style:{padding:'5px 8px',background:'#F1F5F9',textAlign:'left',fontSize:10,color:'#475569'}},'CONCEPTO'),
+                h('th',{style:{padding:'5px 8px',background:'#F1F5F9',textAlign:'right',fontSize:10,color:'#475569'}},'SEGÚN GUÍAS'),
+                h('th',{style:{padding:'5px 8px',background:'#F1F5F9',textAlign:'right',fontSize:10,color:'#15803D'}},'FACTURA $'),
+                h('th',{style:{padding:'5px 8px',background:'#F1F5F9',textAlign:'right',fontSize:10,color:'#475569'}},'DIFERENCIA'))),
+              h('tbody',null,filas.map(function(fl){
+                var k=fl[0],val=Math.round(parseFloat(form[k])||0),ref=Math.round(fl[2]),dif=val-ref,esTot=k==='total';
+                return h('tr',{key:k},
+                  cel(fl[1],{fontWeight:esTot?700:500}),
+                  cel(cm(ref),{textAlign:'right',fontFamily:'monospace',color:'#64748B'}),
+                  h('td',{style:{padding:'3px 4px',borderBottom:'1px solid #E2E8F0'}},h('input',{type:'number',step:'1',value:form[k],onChange:function(e){var v=e.target.value;setForm(function(f){var n=Object.assign({},f);n[k]=v;return n;});},style:{width:'100%',padding:'5px 8px',border:'1px solid '+(Math.abs(dif)>1?'#F59E0B':'#10B981'),borderRadius:4,fontSize:12,textAlign:'right',fontFamily:'monospace',background:Math.abs(dif)>1?'#FFFBEB':'#F0FDF4',boxSizing:'border-box',fontWeight:esTot?700:500}})),
+                  cel(Math.abs(dif)<=1?'✔':cm(dif),{textAlign:'right',fontFamily:'monospace',fontWeight:700,color:Math.abs(dif)<=1?'#15803D':'#B45309'}));
+              }))));
+        })(),
         // Recálculo combustible por tipo — inputs por TOTAL
         tieneComb&&h('div',{style:{background:'#FEF3C7',border:'2px solid #FDE68A',borderRadius:8,padding:'14px 16px',marginBottom:10}},
           h('div',{style:{fontSize:13,fontWeight:700,color:'#92400E',marginBottom:6}},'⛽ Recálculo de Combustible por Tipo'),
           h('div',{style:{fontSize:10,color:'#78350F',marginBottom:10,lineHeight:1.6}},
-            'Ingrese los ',h('strong',null,'totales de la factura'),' por tipo (neto total e IE total). El IE puede ser negativo si hay componente variable (subsidio). El sistema calcula el neto/lt ponderado.',
+            'Prellenado con lo que suman las guías por tipo (neto, impuesto específico fijo y variable MEPCO). ',
+            'Si la factura trae otros valores, escribe los ',h('strong',null,'totales de la factura'),' y el sistema ajusta las guías de ese tipo (precio neto/L y tasas IEC por litro) para que cuadren con el documento. ',
+            'Si no cambias nada, cada guía conserva los valores con que se cerró. El IE variable suele ser negativo.',
             h('br'),
-            h('strong',null,'Nota:'),' otros ítems no-combustibles (accesorios, lubricantes) no aparecen porque solo llevan IVA.'
+            h('strong',null,'Nota:'),' otros ítems no combustibles (accesorios, lubricantes) no aparecen porque solo llevan IVA.'
           ),
           h('table',{style:{width:'100%',borderCollapse:'collapse',fontSize:11}},
             h('thead',null,h('tr',null,
@@ -8610,7 +8640,8 @@ function OCGuiasView(p){
               h('th',{style:{padding:'6px 8px',background:'#FDE68A',textAlign:'right',color:'#78350F',fontSize:10}},'LITROS'),
               h('th',{style:{padding:'6px 8px',background:'#FDE68A',textAlign:'right',color:'#78350F',fontSize:10}},'PROV. ACTUAL'),
               h('th',{style:{padding:'6px 8px',background:'#FDE68A',textAlign:'center',color:'#15803D',fontSize:10}},'TOTAL NETO FACTURA *'),
-              h('th',{style:{padding:'6px 8px',background:'#FDE68A',textAlign:'center',color:'#DC2626',fontSize:10}},'TOTAL IE FACTURA (F+V)'),
+              h('th',{style:{padding:'6px 8px',background:'#FDE68A',textAlign:'center',color:'#B45309',fontSize:10}},'IE FIJO $'),
+              h('th',{style:{padding:'6px 8px',background:'#FDE68A',textAlign:'center',color:'#DC2626',fontSize:10}},'IE VARIABLE $'),
               h('th',{style:{padding:'6px 8px',background:'#FDE68A',textAlign:'right',color:'#78350F',fontSize:10}},'NETO / LT'),
               h('th',{style:{padding:'6px 8px',background:'#FDE68A',textAlign:'right',color:'#78350F',fontSize:10}},'IE / LT')
             )),
@@ -8618,7 +8649,8 @@ function OCGuiasView(p){
               var k=String(t.tipo_id);
               var aj=ajustesComb[k]||{};
               var totalNeto=parseFloat(aj.total_neto)||0;
-              var totalIE=parseFloat(aj.total_ie)||0;
+              var totalIE=(parseFloat(aj.ie_fijo)||0)+(parseFloat(aj.ie_var)||0);
+              var ref=ajustesRef[k]||{};var cambiado=Math.abs(totalNeto-(parseFloat(ref.total_neto)||0))>1||Math.abs((parseFloat(aj.ie_fijo)||0)-(parseFloat(ref.ie_fijo)||0))>1||Math.abs((parseFloat(aj.ie_var)||0)-(parseFloat(ref.ie_var)||0))>1;
               var netoLt=t.litros>0?totalNeto/t.litros:0;
               var ieLt=t.litros>0?totalIE/t.litros:0;
               var esDiesel=t.categoria==='diesel';
@@ -8634,9 +8666,10 @@ function OCGuiasView(p){
                 h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',fontWeight:600}},t.litros.toFixed(0)+' lts'),
                 h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',color:'#94A3B8',fontSize:10}},CLP(Math.round(t.precio_prov_prom))+'/lt'),
                 h('td',{style:{padding:'4px'}},h('input',{type:'number',step:'1',value:aj.total_neto||'',onChange:function(e){updAjuste(t.tipo_id,'total_neto',e.target.value);},style:{width:'100%',padding:'5px 8px',border:'1px solid #10B981',borderRadius:4,fontSize:12,textAlign:'right',fontFamily:'monospace',background:'#F0FDF4',boxSizing:'border-box',fontWeight:600},placeholder:'Neto total $'})),
-                h('td',{style:{padding:'4px'}},h('input',{type:'number',step:'1',value:aj.total_ie||'',onChange:function(e){updAjuste(t.tipo_id,'total_ie',e.target.value);},style:{width:'100%',padding:'5px 8px',border:'1px solid #EF4444',borderRadius:4,fontSize:12,textAlign:'right',fontFamily:'monospace',background:'#FEF2F2',boxSizing:'border-box'},placeholder:'IE total $ (puede ser negativo)'})),
+                h('td',{style:{padding:'4px'}},h('input',{type:'number',step:'1',value:aj.ie_fijo==null?'':aj.ie_fijo,onChange:function(e){updAjuste(t.tipo_id,'ie_fijo',e.target.value);},title:t.con_tasa===false?'La OC no trae tasa por línea: se repartió el impuesto del encabezado por litros':'',style:{width:'100%',padding:'5px 8px',border:'1px solid #F59E0B',borderRadius:4,fontSize:12,textAlign:'right',fontFamily:'monospace',background:'#FFFBEB',boxSizing:'border-box'},placeholder:'Fijo $'})),
+                h('td',{style:{padding:'4px'}},h('input',{type:'number',step:'1',value:aj.ie_var==null?'':aj.ie_var,onChange:function(e){updAjuste(t.tipo_id,'ie_var',e.target.value);},style:{width:'100%',padding:'5px 8px',border:'1px solid #EF4444',borderRadius:4,fontSize:12,textAlign:'right',fontFamily:'monospace',background:'#FEF2F2',boxSizing:'border-box'},placeholder:'Variable $ (negativo = subsidio)'})),
                 h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',color:netoLt>0?'#15803D':'#CBD5E1',fontWeight:700,fontSize:12}},netoLt>0?CLP(Math.round(netoLt)):'—'),
-                h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',color:ieLt!==0?(ieLt<0?'#DC2626':'#F59E0B'):'#CBD5E1',fontWeight:600}},ieLt!==0?(ieLt<0?'-':'')+CLP(Math.abs(Math.round(ieLt))):'—')
+                h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',color:ieLt!==0?(ieLt<0?'#DC2626':'#F59E0B'):'#CBD5E1',fontWeight:600}},ieLt!==0?(ieLt<0?'-':'')+CLP(Math.abs(Math.round(ieLt))):'—',cambiado&&h('div',{style:{fontSize:8,color:'#B45309',fontWeight:700}},'se ajustará'))
               );
             })),
             h('tfoot',null,h('tr',{style:{background:'#FDE68A',fontWeight:700}},
@@ -8644,12 +8677,24 @@ function OCGuiasView(p){
               h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',color:'#15803D'}},
                 CLP(Math.round(tiposComb.reduce(function(s,t){var aj=ajustesComb[String(t.tipo_id)]||{};return s+(parseFloat(aj.total_neto)||0);},0)))
               ),
+              h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',color:'#B45309'}},
+                (function(){var s=tiposComb.reduce(function(a,t){var aj=ajustesComb[String(t.tipo_id)]||{};return a+(parseFloat(aj.ie_fijo)||0);},0);return(s<0?'-':'')+CLP(Math.abs(Math.round(s)));})()
+              ),
               h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',color:'#DC2626'}},
-                (function(){var s=tiposComb.reduce(function(a,t){var aj=ajustesComb[String(t.tipo_id)]||{};return a+(parseFloat(aj.total_ie)||0);},0);return(s<0?'-':'')+CLP(Math.abs(Math.round(s)));})()
+                (function(){var s=tiposComb.reduce(function(a,t){var aj=ajustesComb[String(t.tipo_id)]||{};return a+(parseFloat(aj.ie_var)||0);},0);return(s<0?'-':'')+CLP(Math.abs(Math.round(s)));})()
               ),
               h('td',{colSpan:2})
             ))
-          )
+          ),
+          (function(){
+            var cNeto=tiposComb.reduce(function(a,t){var aj=ajustesComb[String(t.tipo_id)]||{};return a+(parseFloat(aj.total_neto)||0);},0);
+            var cIE=tiposComb.reduce(function(a,t){var aj=ajustesComb[String(t.tipo_id)]||{};return a+(parseFloat(aj.ie_fijo)||0)+(parseFloat(aj.ie_var)||0);},0);
+            var otros=Math.round(parseFloat(form.neto)||0)-Math.round(cNeto); var difIE=Math.round(parseFloat(form.ie_total)||0)-Math.round(cIE);
+            var cm=function(n){return (n<0?'-':'')+CLP(Math.abs(Math.round(n)));};
+            return h('div',{style:{fontSize:10,color:'#78350F',marginTop:6,display:'flex',gap:14,flexWrap:'wrap'}},
+              h('span',null,'Neto no combustible (otros ítems): ',h('strong',null,cm(otros))),
+              h('span',{style:{color:Math.abs(difIE)<=1?'#15803D':'#B91C1C'}},'IE por tipo vs IE de la factura: ',h('strong',null,Math.abs(difIE)<=1?'cuadra ✔':'diferencia '+cm(difIE))));
+          })()
         ),
         h('div',{style:{marginBottom:10}},h('label',{style:lblS},'Observaciones'),h('input',{value:form.observaciones,onChange:function(e){setForm(function(f){return Object.assign({},f,{observaciones:e.target.value});});},style:inpS,placeholder:'Notas opcionales...'}))
       ),

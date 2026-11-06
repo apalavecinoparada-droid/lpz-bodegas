@@ -12591,6 +12591,25 @@ app.get('/api/oc-guias/pendientes', auth, requireModulo('ordenes'), async(req,re
       }
       row.comb_lineas=comb_lineas;
       row.litros_comb=comb_lineas.reduce(function(s,l){return s+(parseFloat(l.litros)||0);},0);
+      // IEC (fijo y variable MEPCO) por categoría según las líneas de la OC; si la OC es antigua y no trae tasa por línea,
+      // reparte el impuesto del encabezado por litros. El front prellena con esto el cierre con factura.
+      const iecL=await pool.query(`SELECT d.cantidad,d.precio_unitario,d.iec_fijo_lt,d.iec_var_lt,d.descripcion,ct.nombre AS tipo_nombre,sc.nombre AS subcat_nombre
+        FROM ordenes_compra_detalle d LEFT JOIN comb_tipos ct ON ct.tipo_id=d.comb_tipo_id
+        LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,(SELECT p.subcategoria_id FROM productos p WHERE p.producto_id=d.producto_id))=sc.subcategoria_id
+        WHERE d.oc_id=$1`,[row.oc_id]);
+      var iec={},conTasa=false;
+      iecL.rows.forEach(function(d){
+        var cat=detectCat(d.tipo_nombre)||detectCat(d.subcat_nombre)||detectCat(d.descripcion); if(!cat)return;
+        var q=parseFloat(d.cantidad)||0; if(!iec[cat])iec[cat]={litros:0,neto:0,fijo:0,variable:0,con_tasa:false};
+        iec[cat].litros+=q; iec[cat].neto+=q*(parseFloat(d.precio_unitario)||0);
+        if(d.iec_fijo_lt!=null||d.iec_var_lt!=null){ iec[cat].fijo+=q*(parseFloat(d.iec_fijo_lt)||0); iec[cat].variable+=q*(parseFloat(d.iec_var_lt)||0); iec[cat].con_tasa=true; conTasa=true; }
+      });
+      if(!conTasa){
+        var fH=parseFloat(row.imp_esp_fijo)||0,vH=parseFloat(row.imp_esp_variable)||0; if(fH===0&&vH===0)fH=parseFloat(row.impuesto_adicional)||0;
+        var ltT=Object.keys(iec).reduce(function(s,k){return s+iec[k].litros;},0);
+        Object.keys(iec).forEach(function(k){var pr=ltT>0?iec[k].litros/ltT:0;iec[k].fijo=fH*pr;iec[k].variable=vH*pr;});
+      }
+      row.comb_iec=iec;
     }
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
@@ -12630,7 +12649,8 @@ app.post('/api/oc-guias/facturar', auth, requireModulo('ordenes'), async(req,res
     const ajustes={diesel:null,gasolina:null};
     if(Array.isArray(combustible_ajustes)){
       combustible_ajustes.forEach(function(a){
-        if(a.categoria&&a.neto_lt>0)ajustes[a.categoria]={neto_lt:parseFloat(a.neto_lt)||0,ie_lt:parseFloat(a.ie_lt)||0};
+        const numO=x=>(x===undefined||x===null||x===''||isNaN(parseFloat(x)))?null:parseFloat(x);
+        if(a.categoria&&a.neto_lt>0)ajustes[a.categoria]={neto_lt:parseFloat(a.neto_lt)||0,ie_lt:parseFloat(a.ie_lt)||0,ie_fijo_lt:numO(a.ie_fijo_lt),ie_var_lt:numO(a.ie_var_lt)};
       });
     }
     // Función helper: detectar categoría por string
@@ -12679,30 +12699,35 @@ app.post('/api/oc-guias/facturar', auth, requireModulo('ordenes'), async(req,res
       if(movs.rows.length>0){
         await client.query("UPDATE comb_movimientos SET numero_documento=$1,es_provisorio=false WHERE oc_referencia=$2 AND es_provisorio=true AND cierre_id IS NULL",[numero_factura,oc.numero_oc]);
       }
-      // 2) Procesar consumo directo: líneas de OC con keywords combustible (solo si no hay movimientos de stock)
-      if(movs.rows.length===0){
-        const detLines=await client.query(`SELECT * FROM ordenes_compra_detalle
-          WHERE oc_id=$1 AND (UPPER(COALESCE(descripcion,'')) LIKE '%DIESEL%' OR UPPER(COALESCE(descripcion,'')) LIKE '%GASOLINA%'
-            OR UPPER(COALESCE(descripcion,'')) LIKE '%PETR%' OR UPPER(COALESCE(descripcion,'')) LIKE '%BENCINA%' OR UPPER(COALESCE(descripcion,'')) LIKE '%NAFTA%')`,[oc.oc_id]);
-        let ocChanged=false;
-        for(const d of detLines.rows){
-          const cat=detectCat(d.descripcion);
-          const aj=cat?ajustes[cat]:null;
-          if(aj&&aj.neto_lt>0){
-            await client.query('UPDATE ordenes_compra_detalle SET precio_unitario=$1 WHERE detalle_id=$2',[aj.neto_lt,d.detalle_id]);
-            ocChanged=true;recalculados++;
-          }
+      // 2) Líneas de combustible de la OC (con o sin stock): precio neto/L y tasas IEC fijo/variable según la factura;
+      //    luego el encabezado se recalcula (neto, IVA, imp. específico fijo+variable, total) — Andrés 2026-11-06
+      const detLines=await client.query(`SELECT d.detalle_id,d.descripcion,ct.nombre AS tipo_nombre,sc.nombre AS subcat_nombre
+        FROM ordenes_compra_detalle d LEFT JOIN comb_tipos ct ON ct.tipo_id=d.comb_tipo_id
+        LEFT JOIN subcategorias sc ON COALESCE(d.subcategoria_id,(SELECT p.subcategoria_id FROM productos p WHERE p.producto_id=d.producto_id))=sc.subcategoria_id
+        WHERE d.oc_id=$1`,[oc.oc_id]);
+      let ocChanged=false;
+      for(const d of detLines.rows){
+        const cat=detectCat(d.tipo_nombre)||detectCat(d.subcat_nombre)||detectCat(d.descripcion);
+        const aj=cat?ajustes[cat]:null;
+        if(aj&&aj.neto_lt>0){
+          const sets=['precio_unitario=$1'],vals=[aj.neto_lt];
+          if(aj.ie_fijo_lt!=null){vals.push(aj.ie_fijo_lt);sets.push('iec_fijo_lt=$'+vals.length);}
+          if(aj.ie_var_lt!=null){vals.push(aj.ie_var_lt);sets.push('iec_var_lt=$'+vals.length);}
+          vals.push(d.detalle_id);
+          await client.query('UPDATE ordenes_compra_detalle SET '+sets.join(',')+' WHERE detalle_id=$'+vals.length,vals);
+          ocChanged=true; if(movs.rows.length===0)recalculados++;
         }
-        // Si cambió algún precio, recalcular totales de la OC
-        if(ocChanged){
-          const recalc=await client.query(`SELECT COALESCE(SUM(cantidad*precio_unitario),0) AS neto FROM ordenes_compra_detalle WHERE oc_id=$1`,[oc.oc_id]);
-          const newNeto=parseFloat(recalc.rows[0].neto)||0;
-          const newIVA=Math.round(newNeto*0.19);
-          const ocD=await client.query('SELECT impuesto_adicional FROM ordenes_compra WHERE oc_id=$1',[oc.oc_id]);
-          const imp=parseFloat((ocD.rows[0]||{}).impuesto_adicional)||0;
-          const newTotal=newNeto+newIVA+imp;
-          await client.query('UPDATE ordenes_compra SET neto=$1,iva=$2,total=$3,modificado_en=NOW() WHERE oc_id=$4',[newNeto,newIVA,newTotal,oc.oc_id]);
-        }
+      }
+      if(ocChanged){
+        const rc=await client.query(`SELECT COALESCE(SUM(cantidad*precio_unitario),0) AS neto,COALESCE(SUM(cantidad*COALESCE(iec_fijo_lt,0)),0) AS fijo,
+          COALESCE(SUM(cantidad*COALESCE(iec_var_lt,0)),0) AS variable,BOOL_OR(iec_fijo_lt IS NOT NULL OR iec_var_lt IS NOT NULL) AS con_tasa FROM ordenes_compra_detalle WHERE oc_id=$1`,[oc.oc_id]);
+        const x=rc.rows[0]; const newNeto=parseFloat(x.neto)||0; const newIVA=Math.round(newNeto*0.19);
+        let fijo,variable;
+        if(x.con_tasa){ fijo=parseFloat(x.fijo)||0; variable=parseFloat(x.variable)||0; }
+        else{ const ocD=await client.query('SELECT imp_esp_fijo,imp_esp_variable,impuesto_adicional FROM ordenes_compra WHERE oc_id=$1',[oc.oc_id]); const o=ocD.rows[0]||{};
+          fijo=parseFloat(o.imp_esp_fijo)||0; variable=parseFloat(o.imp_esp_variable)||0; if(fijo===0&&variable===0)fijo=parseFloat(o.impuesto_adicional)||0; }
+        fijo=Math.round(fijo); variable=Math.round(variable); const imp=fijo+variable;
+        await client.query('UPDATE ordenes_compra SET neto=$1,iva=$2,imp_esp_fijo=$3,imp_esp_variable=$4,impuesto_adicional=$5,total=$6,modificado_en=NOW() WHERE oc_id=$7',[newNeto,newIVA,fijo,variable,imp,newNeto+newIVA+imp,oc.oc_id]);
       }
     }
     await client.query('COMMIT');
