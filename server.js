@@ -8284,7 +8284,7 @@ app.get('/api/rend/entregas', auth, async(req,res)=>{
     if(persona_id){v.push(persona_id);w.push(`e.persona_id=$${v.length}`);}
     if(desde){v.push(desde);w.push(`e.fecha>=$${v.length}`);}
     if(hasta){v.push(hasta);w.push(`e.fecha<=$${v.length}`);}
-    const r=await pool.query(`SELECT e.*,p.nombre_completo,emp.razon_social AS empresa_nombre FROM rend_entregas e JOIN personal p ON e.persona_id=p.persona_id LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id WHERE ${w.join(' AND ')} ORDER BY e.fecha DESC,e.entrega_id DESC`,v);
+    const r=await pool.query(`SELECT e.*,p.nombre_completo,emp.razon_social AS empresa_nombre,u.nombre AS usuario_nombre FROM rend_entregas e JOIN personal p ON e.persona_id=p.persona_id LEFT JOIN empresas emp ON e.empresa_id=emp.empresa_id LEFT JOIN usuarios u ON LOWER(u.email)=LOWER(e.usuario) WHERE ${w.join(' AND ')} ORDER BY e.fecha DESC,e.entrega_id DESC`,v);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -8318,7 +8318,11 @@ app.get('/api/rend/gastos', auth, async(req,res)=>{
     if(desde){v.push(desde);w.push(`g.fecha_gasto>=$${v.length}`);}
     if(hasta){v.push(hasta);w.push(`g.fecha_gasto<=$${v.length}`);}
     if(estado){v.push(estado);w.push(`g.estado=$${v.length}`);}
-    const r=await pool.query(`SELECT g.*,p.nombre_completo,emp.razon_social AS empresa_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre,pv.nombre AS proveedor_nombre FROM rend_gastos g JOIN personal p ON g.persona_id=p.persona_id LEFT JOIN empresas emp ON g.empresa_id=emp.empresa_id LEFT JOIN faenas f ON g.faena_id=f.faena_id LEFT JOIN equipos eq ON g.equipo_id=eq.equipo_id LEFT JOIN proveedores pv ON g.proveedor_id=pv.proveedor_id WHERE ${w.join(' AND ')} ORDER BY g.fecha_gasto DESC,g.gasto_id DESC`,v);
+    const r=await pool.query(`SELECT g.*,p.nombre_completo,emp.razon_social AS empresa_nombre,f.nombre AS faena_nombre,eq.nombre AS equipo_nombre,pv.nombre AS proveedor_nombre,
+      u.nombre AS usuario_nombre,ua.nombre AS aprobado_por_nombre
+      FROM rend_gastos g JOIN personal p ON g.persona_id=p.persona_id LEFT JOIN empresas emp ON g.empresa_id=emp.empresa_id LEFT JOIN faenas f ON g.faena_id=f.faena_id LEFT JOIN equipos eq ON g.equipo_id=eq.equipo_id LEFT JOIN proveedores pv ON g.proveedor_id=pv.proveedor_id
+      LEFT JOIN usuarios u ON LOWER(u.email)=LOWER(g.usuario) LEFT JOIN usuarios ua ON LOWER(ua.email)=LOWER(g.aprobado_por)
+      WHERE ${w.join(' AND ')} ORDER BY g.fecha_gasto DESC,g.gasto_id DESC`,v);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
