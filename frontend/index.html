@@ -8467,7 +8467,7 @@ function OCGuiasView(p){
     if(empsSel.length>1){alert('Las guías seleccionadas son de empresas distintas. Una factura corresponde a una sola empresa: filtra por empresa y selecciona solo las de una.');return;}
     var emp=selOcs[0]?selOcs[0].empresa_id:'';
     // Prellenado con la suma de las guías (Andrés 2026-11-06): el usuario solo corrige lo que difiera de la factura
-    setForm({numero_factura:'',fecha_factura:new Date().toISOString().slice(0,10),neto_items:String(Math.round(sumNeto)),descuento:'0',cargo_transporte:'0',neto:String(Math.round(sumNeto)),iva:String(Math.round(sumIva)),ie_total:String(Math.round(sumIE)),total:String(Math.round(sumTotal)),observaciones:'',empresa_id:String(emp||'')});
+    setForm({numero_factura:'',fecha_factura:new Date().toISOString().slice(0,10),neto:String(Math.round(sumNeto)),iva:String(Math.round(sumIva)),ie_total:String(Math.round(sumIE)),total:String(Math.round(sumTotal)),observaciones:'',empresa_id:String(emp||'')});
     var init={};
     tiposComb.forEach(function(t){
       init[String(t.tipo_id)]={total_neto:String(Math.round(t.precio_prov)),ie_fijo:String(Math.round(t.iec_fijo||0)),ie_var:String(Math.round(t.iec_var||0))};
@@ -8475,26 +8475,10 @@ function OCGuiasView(p){
     setAjustesComb(init);setAjustesRef(JSON.parse(JSON.stringify(init)));
     setShowForm(true);setMsg('');
   }
-  // Descuento general y cargo por transporte (Andrés 2026-11-09): el proveedor los agrega a la factura, netos y sin IVA, además
-  // de las guías. Neto afecto = neto guías − descuento + transporte; al tocar cualquiera se recalculan IVA (19 %) y total,
-  // que igual siguen siendo editables por si la factura redondea distinto.
-  function setCampoFact(k,v){
-    setForm(function(f){
-      var n=Object.assign({},f);n[k]=v;
-      if(k==='neto_items'||k==='descuento'||k==='cargo_transporte'||k==='ie_total'){
-        var neto=Math.round(parseFloat(n.neto_items)||0)-Math.abs(Math.round(parseFloat(n.descuento)||0))+Math.round(parseFloat(n.cargo_transporte)||0);
-        n.neto=String(neto);n.iva=String(Math.round(neto*0.19));n.total=String(neto+Math.round(neto*0.19)+Math.round(parseFloat(n.ie_total)||0));
-      }
-      return n;
-    });
-  }
-  var descF=Math.abs(Math.round(parseFloat(form.descuento)||0)),transpF=Math.round(parseFloat(form.cargo_transporte)||0);
   function guardar(){
     if(!form.numero_factura){setMsg('Ingrese N° de factura');return;}
-    // lo que debería sumar la factura si solo difiere de las guías por el descuento y el transporte
-    var esperadoTotal=Math.round(sumTotal)+Math.round((transpF-descF)*1.19);
-    var difTotal=Math.round(parseFloat(form.total)||0)-esperadoTotal;
-    if(Math.abs(difTotal)>10&&!confirm('El total de la factura difiere de la suma de las guías'+((descF||transpF)?' (más transporte y menos descuento)':'')+' en '+(difTotal<0?'-':'')+CLP(Math.abs(difTotal))+'.\n¿Registrar la factura igual?'))return;
+    var difTotal=Math.round(parseFloat(form.total)||0)-Math.round(sumTotal);
+    if(Math.abs(difTotal)>10&&!confirm('El total de la factura difiere de la suma de las guías en '+(difTotal<0?'-':'')+CLP(Math.abs(difTotal))+'.\n¿Registrar la factura igual?'))return;
     var ajustes=tiposComb.map(function(t){
       var k=String(t.tipo_id),aj=ajustesComb[k]||{},ref=ajustesRef[k]||{};
       var totalN=parseFloat(aj.total_neto)||0,fijo=parseFloat(aj.ie_fijo)||0,vari=parseFloat(aj.ie_var)||0;
@@ -8642,7 +8626,6 @@ function OCGuiasView(p){
           h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'left'}},'Proveedor'),
           h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'center'}},'Guías'),
           h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Neto'),
-          h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Desc. / Transp.'),
           h('th',{style:{padding:'8px',background:'#F1F5F9',textAlign:'right'}},'Total'),
           h('th',{style:{padding:'8px',background:'#F1F5F9'}})
         )),
@@ -8656,10 +8639,6 @@ function OCGuiasView(p){
               h('div',{style:{fontSize:9,color:'#94A3B8',marginTop:2}},f.guias_str)
             ),
             h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace'}},CLP(Math.round(parseFloat(f.neto)||0))),
-            h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',fontSize:10}},
-              (parseFloat(f.descuento)||0)!==0&&h('div',{style:{color:'#B91C1C'}},'-'+CLP(Math.round(Math.abs(parseFloat(f.descuento))))),
-              (parseFloat(f.cargo_transporte)||0)!==0&&h('div',{style:{color:'#1D4ED8'}},'+'+CLP(Math.round(parseFloat(f.cargo_transporte)))),
-              !(parseFloat(f.descuento)||0)&&!(parseFloat(f.cargo_transporte)||0)&&h('span',{style:{color:'#CBD5E1'}},'—')),
             h('td',{style:{padding:'6px 8px',textAlign:'right',fontFamily:'monospace',fontWeight:600}},CLP(Math.round(parseFloat(f.total)||0))),
             h('td',{style:{padding:'6px 8px'}},h(Btn,{v:'r',sm:true,onClick:function(){eliminarFactura(f.factura_id);}},null,'🗑'))
           );
@@ -8681,8 +8660,7 @@ function OCGuiasView(p){
           h('div',null,h('label',{style:lblS},'Empresa'),h('select',{value:form.empresa_id,onChange:function(e){setForm(function(f){return Object.assign({},f,{empresa_id:e.target.value});});},style:inpS},h('option',{value:''},'—'),empresas.map(function(e){return h('option',{key:e.empresa_id,value:e.empresa_id},e.razon_social);})))
         ),
         (function(){
-          var netoEsperado=Math.round(sumNeto)-descF+transpF;
-          var filas=[['neto_items','Neto guías (productos)',sumNeto],['descuento','Descuento general (−, neto sin IVA)',0],['cargo_transporte','Cargo por transporte (+, neto sin IVA)',0],['neto','Neto afecto',netoEsperado],['ie_total','Impuesto específico (fijo + variable)',sumIE],['iva','IVA 19 %',Math.round(netoEsperado*0.19)],['total','Total factura',netoEsperado+Math.round(netoEsperado*0.19)+Math.round(sumIE)]];
+          var filas=[['neto','Neto afecto',sumNeto],['ie_total','Impuesto específico (fijo + variable)',sumIE],['iva','IVA 19 %',sumIva],['total','Total factura',sumTotal]];
           var cel=function(v,extra){return h('td',{style:Object.assign({padding:'5px 8px',fontSize:12,borderBottom:'1px solid #E2E8F0'},extra||{})},v);};
           var cm=function(n){return (n<0?'-':'')+CLP(Math.abs(Math.round(n)));};
           return h('div',{style:{marginBottom:10}},
@@ -8694,18 +8672,12 @@ function OCGuiasView(p){
                 h('th',{style:{padding:'5px 8px',background:'#F1F5F9',textAlign:'right',fontSize:10,color:'#15803D'}},'FACTURA $'),
                 h('th',{style:{padding:'5px 8px',background:'#F1F5F9',textAlign:'right',fontSize:10,color:'#475569'}},'DIFERENCIA'))),
               h('tbody',null,filas.map(function(fl){
-                var k=fl[0],esAjuste=k==='descuento'||k==='cargo_transporte',esNeto=k==='neto';
-                var val=k==='descuento'?descF:Math.round(parseFloat(form[k])||0),ref=Math.round(fl[2]),dif=val-ref,esTot=k==='total';
-                if(esNeto)return h('tr',{key:k,style:{background:'#F8FAFC'}},
-                  cel(fl[1],{fontWeight:700}),
-                  cel(cm(ref),{textAlign:'right',fontFamily:'monospace',color:'#64748B'}),
-                  cel(cm(val),{textAlign:'right',fontFamily:'monospace',fontWeight:700,color:'#1E3A2D'}),
-                  cel(Math.abs(dif)<=1?'✔':cm(dif),{textAlign:'right',fontFamily:'monospace',fontWeight:700,color:Math.abs(dif)<=1?'#15803D':'#B45309'}));
+                var k=fl[0],val=Math.round(parseFloat(form[k])||0),ref=Math.round(fl[2]),dif=val-ref,esTot=k==='total';
                 return h('tr',{key:k},
-                  cel(h('span',null,fl[1],esAjuste&&h('div',{style:{fontSize:9,color:'#94A3B8',fontWeight:400}},k==='descuento'?'Se resta del neto; escríbelo en positivo':'Se suma al neto')),{fontWeight:esTot?700:500,paddingLeft:esAjuste?18:8}),
-                  cel(esAjuste?'—':cm(ref),{textAlign:'right',fontFamily:'monospace',color:'#64748B'}),
-                  h('td',{style:{padding:'3px 4px',borderBottom:'1px solid #E2E8F0'}},h('input',{type:'number',step:'1',min:esAjuste?'0':undefined,value:form[k],onChange:function(e){setCampoFact(k,e.target.value);},style:{width:'100%',padding:'5px 8px',border:'1px solid '+(esAjuste?(val?'#3B82F6':'#CBD5E1'):(Math.abs(dif)>1?'#F59E0B':'#10B981')),borderRadius:4,fontSize:12,textAlign:'right',fontFamily:'monospace',background:esAjuste?(val?'#EFF6FF':'#fff'):(Math.abs(dif)>1?'#FFFBEB':'#F0FDF4'),boxSizing:'border-box',fontWeight:esTot?700:500},placeholder:esAjuste?'0':''})),
-                  cel(esAjuste?(val?(k==='descuento'?'-':'+')+CLP(val):'—'):(Math.abs(dif)<=1?'✔':cm(dif)),{textAlign:'right',fontFamily:'monospace',fontWeight:700,color:esAjuste?'#1D4ED8':(Math.abs(dif)<=1?'#15803D':'#B45309')}));
+                  cel(fl[1],{fontWeight:esTot?700:500}),
+                  cel(cm(ref),{textAlign:'right',fontFamily:'monospace',color:'#64748B'}),
+                  h('td',{style:{padding:'3px 4px',borderBottom:'1px solid #E2E8F0'}},h('input',{type:'number',step:'1',value:form[k],onChange:function(e){var v=e.target.value;setForm(function(f){var n=Object.assign({},f);n[k]=v;return n;});},style:{width:'100%',padding:'5px 8px',border:'1px solid '+(Math.abs(dif)>1?'#F59E0B':'#10B981'),borderRadius:4,fontSize:12,textAlign:'right',fontFamily:'monospace',background:Math.abs(dif)>1?'#FFFBEB':'#F0FDF4',boxSizing:'border-box',fontWeight:esTot?700:500}})),
+                  cel(Math.abs(dif)<=1?'✔':cm(dif),{textAlign:'right',fontFamily:'monospace',fontWeight:700,color:Math.abs(dif)<=1?'#15803D':'#B45309'}));
               }))));
         })(),
         // Recálculo combustible por tipo — inputs por TOTAL
@@ -8773,7 +8745,7 @@ function OCGuiasView(p){
           (function(){
             var cNeto=tiposComb.reduce(function(a,t){var aj=ajustesComb[String(t.tipo_id)]||{};return a+(parseFloat(aj.total_neto)||0);},0);
             var cIE=tiposComb.reduce(function(a,t){var aj=ajustesComb[String(t.tipo_id)]||{};return a+(parseFloat(aj.ie_fijo)||0)+(parseFloat(aj.ie_var)||0);},0);
-            var otros=Math.round(parseFloat(form.neto_items)||0)-Math.round(cNeto); var difIE=Math.round(parseFloat(form.ie_total)||0)-Math.round(cIE);
+            var otros=Math.round(parseFloat(form.neto)||0)-Math.round(cNeto); var difIE=Math.round(parseFloat(form.ie_total)||0)-Math.round(cIE);
             var cm=function(n){return (n<0?'-':'')+CLP(Math.abs(Math.round(n)));};
             return h('div',{style:{fontSize:10,color:'#78350F',marginTop:6,display:'flex',gap:14,flexWrap:'wrap'}},
               h('span',null,'Neto no combustible (otros ítems): ',h('strong',null,cm(otros))),
@@ -8817,10 +8789,8 @@ function FacturaDetalleModal(p){
           h('div',null,h('strong',null,'Proveedor: '),f.proveedor_nombre+(f.proveedor_rut?' ('+f.proveedor_rut+')':'')),
           h('div',null,h('strong',null,'Empresa: '),f.empresa_nombre||'—'),
           h('div',null,h('strong',null,'Neto: '),h('span',{style:{fontFamily:'monospace'}},'$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(f.neto)||0)))),
-          (parseFloat(f.descuento)||0)!==0&&h('div',null,h('strong',null,'Descuento general: '),h('span',{style:{fontFamily:'monospace',color:'#B91C1C'}},'-$'+new Intl.NumberFormat('es-CL').format(Math.round(Math.abs(parseFloat(f.descuento)))))),
-          (parseFloat(f.cargo_transporte)||0)!==0&&h('div',null,h('strong',null,'Cargo transporte: '),h('span',{style:{fontFamily:'monospace',color:'#1D4ED8'}},'+$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(f.cargo_transporte))))),
           h('div',null,h('strong',null,'IVA: '),h('span',{style:{fontFamily:'monospace'}},'$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(f.iva)||0)))),
-          (parseFloat(f.ie_total)||0)!==0&&h('div',null,h('strong',null,'IE: '),h('span',{style:{fontFamily:'monospace'}},'$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(f.ie_total)||0)))),
+          parseFloat(f.ie_total)>0&&h('div',null,h('strong',null,'IE: '),h('span',{style:{fontFamily:'monospace'}},'$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(f.ie_total)||0)))),
           h('div',null,h('strong',null,'Total: '),h('span',{style:{fontFamily:'monospace',fontWeight:700,color:'#15803D'}},'$'+new Intl.NumberFormat('es-CL').format(Math.round(parseFloat(f.total)||0)))),
           f.observaciones&&h('div',{style:{gridColumn:'1/-1'}},h('strong',null,'Observaciones: '),h('span',{style:{fontStyle:'italic'}},f.observaciones)),
           f.usuario&&h('div',{style:{gridColumn:'1/-1',color:'#64748B'}},h('strong',null,'Registrada por: '),f.usuario_nombre||f.usuario)
