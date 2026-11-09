@@ -304,6 +304,21 @@ function requireModulo(mod) {
   };
 }
 
+// Permiso fino de Mantención (Andrés 2026-11-09): el módulo 'mantencion-ot-propias' (cargo "mecánico de faena") crea OT
+// y ve/edita SOLO las que generó él (mant_ot.usuario = su email). Quien tiene 'mantencion' (o es admin, o no tiene
+// restricción de módulos) sigue viendo todo.
+function mantSoloPropias(req){
+  const u=req.user||{}; if(u.es_admin) return false;
+  const mods=u.modulos||[]; if(!mods.length) return false;
+  return mods.indexOf('mantencion')<0;
+}
+async function mantExigirPropia(req,otId){
+  if(!mantSoloPropias(req)) return;
+  const r=await pool.query('SELECT usuario FROM mant_ot WHERE ot_id=$1',[otId]);
+  if(!r.rows.length) throw new Error('La OT no existe');
+  if(String(r.rows[0].usuario||'').toLowerCase()!==String(req.user.email||'').toLowerCase()) throw new Error('Solo puedes ver y editar las OT que creaste tú');
+}
+
 async function audit(tabla, id, accion, antes, despues, usr, ip) {
   try { await pool.query('INSERT INTO auditoria(tabla_afectada,registro_id,accion,datos_anteriores,datos_nuevos,usuario,ip_origen) VALUES($1,$2,$3,$4,$5,$6,$7)',[tabla,id,accion,antes?JSON.stringify(antes):null,despues?JSON.stringify(despues):null,usr,ip||null]); } catch(e) { console.error('audit:',e.message); }
 }
@@ -6664,6 +6679,7 @@ app.get('/api/mant/ot', auth, async(req,res)=>{
     if(estado){vals.push(estado);where.push(`o.estado=$${vals.length}`);}
     if(desde){vals.push(desde);where.push(`o.fecha_apertura>=$${vals.length}`);}
     if(hasta){vals.push(hasta);where.push(`o.fecha_apertura<=$${vals.length}`);}
+    if(mantSoloPropias(req)){vals.push(req.user.email);where.push(`LOWER(o.usuario)=LOWER($${vals.length})`);}
     await mantMovilEnsure();
     const r=await pool.query(`SELECT o.*,(SELECT COUNT(*) FROM mant_ot_fotos ff WHERE ff.ot_id=o.ot_id)::int AS fotos,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,eq.horas_productivas_dia,eq.horometro_actual,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY o.creado_en DESC`,vals);
     res.json(r.rows);
@@ -6764,6 +6780,8 @@ console.log(dropboxConfigurado()?'[dropbox] configurado: carpeta '+(DBX.carpeta|
 app.post('/api/mant/ot/movil', auth, async(req,res)=>{
   const client=await pool.connect();
   try{
+    const modsU=(req.user&&req.user.modulos)||[];
+    if(!(req.user&&req.user.es_admin)&&modsU.length&&modsU.indexOf('mantencion')<0&&modsU.indexOf('mantencion-ot-propias')<0){ client.release(); return res.status(403).json({error:'Sin permiso para crear órdenes de trabajo'}); }
     await mantMovilEnsure();
     const b=req.body||{}; const uid=String(b.uid||'').slice(0,60)||null;
     if(uid){ const ya=await pool.query('SELECT respuesta FROM mant_sync WHERE uid=$1',[uid]); if(ya.rows.length){ client.release(); return res.json(Object.assign({},ya.rows[0].respuesta,{repetido:true})); } }
@@ -6803,10 +6821,10 @@ app.get('/api/mant/ot/movil/mias', auth, async(req,res)=>{
     await mantMovilEnsure();
     const dias=Math.min(365,parseInt(req.query.dias)||30);
     const w=['1=1'],v=[];
-    if(req.query.ot_id){ v.push(parseInt(req.query.ot_id)); w.push('o.ot_id=$'+v.length); }
+    if(req.query.ot_id){ v.push(parseInt(req.query.ot_id)); w.push('o.ot_id=$'+v.length); if(mantSoloPropias(req)){ v.push(req.user.email); w.push('LOWER(o.usuario)=LOWER($'+v.length+')'); } }
     else{
       v.push(dias); w.push('o.fecha_apertura>=CURRENT_DATE-$'+v.length+'::int');
-      if(req.query.todas!=='1'){ v.push(req.user.email); w.push('o.usuario=$'+v.length); }
+      if(req.query.todas!=='1'||mantSoloPropias(req)){ v.push(req.user.email); w.push('LOWER(o.usuario)=LOWER($'+v.length+')'); }
       if(req.query.equipo_id){ v.push(parseInt(req.query.equipo_id)); w.push('o.equipo_id=$'+v.length); }
       if(req.query.estado){ v.push(String(req.query.estado)); w.push('o.estado=$'+v.length); }
       if(req.query.q){ v.push('%'+String(req.query.q).trim()+'%'); w.push('(o.numero_ot ILIKE $'+v.length+' OR e.codigo ILIKE $'+v.length+' OR e.nombre ILIKE $'+v.length+' OR o.sintoma_reportado ILIKE $'+v.length+')'); }
@@ -6823,6 +6841,7 @@ app.patch('/api/mant/ot/:id/movil', auth, async(req,res)=>{
   try{
     await mantMovilEnsure();
     const id=parseInt(req.params.id); const b=req.body||{};
+    await mantExigirPropia(req,id);
     const cur=await pool.query('SELECT ot_id,equipo_id,estado,fecha_inicio,fecha_termino FROM mant_ot WHERE ot_id=$1',[id]); if(!cur.rows.length) throw new Error('La OT no existe');
     const o=cur.rows[0]; const sets=[],vals=[]; const put=(col,val)=>{vals.push(val);sets.push(col+'=$'+vals.length);};
     if(b.estado!==undefined){
@@ -6846,6 +6865,7 @@ app.patch('/api/mant/ot/:id/movil', auth, async(req,res)=>{
 app.get('/api/mant/ot/:id/fotos', auth, async(req,res)=>{
   try{
     await mantMovilEnsure();
+    await mantExigirPropia(req,parseInt(req.params.id));
     const conDatos=req.query.datos==='1';
     const r=await pool.query(`SELECT id,ot_id,nombre,mime,tamano,estado,url,dropbox_path,error,creado_en,subida_en,usuario,CASE WHEN miniatura IS NULL THEN NULL ELSE encode(miniatura,'base64') END AS mb64${conDatos?",CASE WHEN datos IS NULL THEN NULL ELSE encode(datos,'base64') END AS b64":''} FROM mant_ot_fotos WHERE ot_id=$1 ORDER BY id`,[parseInt(req.params.id)]);
     res.json(r.rows.map(x=>{ const o=Object.assign({},x); if(conDatos&&x.b64){o.data='data:'+(x.mime||'image/jpeg')+';base64,'+x.b64;} if(x.mb64){o.mini='data:image/jpeg;base64,'+x.mb64;} delete o.b64; delete o.mb64; return o; }));
@@ -6865,6 +6885,7 @@ app.post('/api/mant/ot/:id/fotos', auth, async(req,res)=>{
   try{
     await mantMovilEnsure();
     const otId=parseInt(req.params.id); const b=req.body||{};
+    await mantExigirPropia(req,otId);
     const uid=b.uid?('fotos:'+String(b.uid).slice(0,60)):null;
     if(uid){ const ya=await pool.query('SELECT respuesta FROM mant_sync WHERE uid=$1',[uid]); if(ya.rows.length) return res.json(Object.assign({},ya.rows[0].respuesta,{repetido:true})); }
     const ot=await pool.query('SELECT ot_id,numero_ot FROM mant_ot WHERE ot_id=$1',[otId]); if(!ot.rows.length) throw new Error('La OT no existe');

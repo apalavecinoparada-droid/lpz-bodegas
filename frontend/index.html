@@ -18133,6 +18133,7 @@ var MODULOS_SISTEMA=[
   {k:'inventario',l:'Inventario'},
   {k:'inventario-editar',l:'Editar Inventario',hint:'Permite editar y anular salidas/traspasos'},
   {k:'mantencion',l:'Mantención'},
+  {k:'mantencion-ot-propias',l:'Mantención: solo mis OT (mecánico de faena)',hint:'Crea órdenes de trabajo desde el celular o el PC y ve, edita y fotografía solo las que generó él mismo. Sin "Mantención" no ve el resto del módulo ni las OT de otros'},
   {k:'comite',l:'Comité de Gestión',hint:'Ver las actas donde figura como asistente y actualizar el estado de los acuerdos de los que es responsable'},{k:'comite-dirigir',l:'Comité: Registrar actas y ver todas',hint:'Crear y editar actas del comité, ver todas las actas y actualizar cualquier acuerdo. Quien DIRIGE la reunión es siempre Leonidas Poo Zenteno o un usuario administrador, sin importar este permiso'},
   {k:'calendario',l:'Calendario',hint:'Tareas, eventos y recordatorios (privadas, compartidas o de toda la empresa); ve además las fechas automáticas de los módulos a los que tenga acceso'},
   {k:'solicitudes',l:'Solicitudes'},{k:'solicitudes-todas',l:'Solicitudes: Ver todas',hint:'Además de las propias, ve las solicitudes de todos los usuarios (pestaña Todas), como un administrador'},
@@ -25889,6 +25890,7 @@ function MobileHome(p){
     {id:'comb-distribuciones',icon:'⛽',label:'Combustible',sub:'Distribución a equipos',mod:'combustibles'},
     {id:'inventario',icon:'📦',label:'Inventario',sub:'Stock y movimientos',mod:'inventario'},
     {id:'mantencion',icon:'🛠',label:'Mantención',sub:'Avisos, OT, programación',mod:'mantencion'},
+    {id:'mant-ot-movil',icon:'🔧',label:'Órdenes de Trabajo',sub:'Crear OT y ver las mías',mod:'mantencion-ot-propias',soloSin:'mantencion'},
     {id:'terreno',icon:'🌲',label:'Terreno',sub:'Registro diario horómetros',mod:'terreno'},
     {id:'trans-traslados',icon:'🚛',label:'Transporte',sub:'Viajes de cama baja por tramos',mod:'transporte'},
     {id:'solicitudes',icon:'📋',label:'Solicitudes',sub:'Nueva solicitud',mod:'solicitudes'},
@@ -25899,7 +25901,7 @@ function MobileHome(p){
     {id:'telemetria',icon:'📡',label:'Telemetría',sub:'Alertas de las máquinas por faena',mod:'productividad'}
   ];
   function canSee(mod){if(!p.user)return false;if(p.user.es_admin)return true;if(!p.user.modulos||p.user.modulos.length===0)return false;return p.user.modulos.indexOf(mod)>=0;}
-  var accesibles=ACCIONES.filter(function(a){return canSee(a.mod);});
+  var accesibles=ACCIONES.filter(function(a){return canSee(a.mod)&&!(a.soloSin&&canSee(a.soloSin));});
   return h('div',{className:'mob-home'},
     h('div',{className:'mob-header'},
       h('h2',null,'Empresas Poo'),
@@ -26643,6 +26645,8 @@ function MobileOTDetalle(p){
 }
 function MobileMantOT(p){
   var user=p.user||{};
+  // 'mantencion-ot-propias' sin 'mantencion' (mecánico de faena): la lista del sistema trae solo sus OT (el servidor también lo exige)
+  var soloPropias=!(user.es_admin||!(user.modulos||[]).length||(user.modulos||[]).indexOf('mantencion')>=0);
   var userFaena=user.faena_id?String(user.faena_id):'';
   var equipos=(p.m.equipos||[]).filter(function(e){return e.activo&&(e.tipo_cargo||'maquinaria')==='maquinaria'&&(!user.empresa_id||user.es_admin||String(e.empresa_id)===String(user.empresa_id));});
   var faenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
@@ -26652,7 +26656,7 @@ function MobileMantOT(p){
   var vacio={equipo_id:'',tipo_mantencion:'correctiva',estado:'cerrada',prioridad:'normal',horometro_servicio:'',sintoma_reportado:'',trabajo_realizado:'',repuestos_texto:'',observaciones:'',fotos:[]};
   var[lista,setLista]=useState([]);var[q,setQ]=useState('');var[sel,setSel]=useState(null);var[cargando,setCargando]=useState(false);
   useAtras(!!sel,function(){setSel(null);});   // atrás del celular: cierra el detalle de la OT, no la App
-  function cargarLista(txt){ if(!navigator.onLine){setMsg('📴 Sin señal: la lista de OT del sistema necesita señal (tus OT locales están en "Mis OT")');return;} setCargando(true); api('/mant/ot/movil/mias?todas=1&dias=120'+(txt?'&q='+encodeURIComponent(txt):''),'GET',null,p.tok).then(function(r){setLista(Array.isArray(r)?r:[]);setMsg('');}).catch(function(e){setMsg(e.message);}).finally(function(){setCargando(false);}); }
+  function cargarLista(txt){ if(!navigator.onLine){setMsg('📴 Sin señal: la lista de OT del sistema necesita señal (tus OT locales están en "Mis OT")');return;} setCargando(true); api('/mant/ot/movil/mias?'+(soloPropias?'':'todas=1&')+'dias=120'+(txt?'&q='+encodeURIComponent(txt):''),'GET',null,p.tok).then(function(r){setLista(Array.isArray(r)?r:[]);setMsg('');}).catch(function(e){setMsg(e.message);}).finally(function(){setCargando(false);}); }
   function abrirOT(id){ if(!navigator.onLine){setMsg('📴 Sin señal: para abrir una OT del sistema hace falta señal');return;} api('/mant/ot/movil/mias?ot_id='+id,'GET',null,p.tok).then(function(r){if(r&&r[0])setSel(r[0]);else setMsg('No se encontró la OT');}).catch(function(e){setMsg(e.message);}); }
   var[f,setF]=useState(vacio);var[cola,setCola]=useState([]);var[online,setOnline]=useState(navigator.onLine);var[msg,setMsg]=useState('');var[guardando,setGuardando]=useState(false);var[pantalla,setPantalla]=useState('form');
   var up=function(k,v){setF(function(x){var n=Object.assign({},x);n[k]=v;return n;});};
@@ -26698,8 +26702,8 @@ function MobileMantOT(p){
     h('div',{style:{padding:'8px 8px 60px'}},
       h('div',{style:{display:'flex',gap:6,marginBottom:8}},
         h('button',{onClick:function(){setPantalla('form');},style:btnTab(pantalla==='form')},'+ Nueva OT'),
-        h('button',{onClick:function(){setPantalla('cola');recargar();},style:btnTab(pantalla==='cola')},'Mis OT'+(pend?' ('+pend+')':'')),
-        h('button',{onClick:function(){setPantalla('todas');cargarLista(q);},style:btnTab(pantalla==='todas')},'Todas')),
+        h('button',{onClick:function(){setPantalla('cola');recargar();},style:btnTab(pantalla==='cola')},(soloPropias?'En este celular':'Mis OT')+(pend?' ('+pend+')':'')),
+        h('button',{onClick:function(){setPantalla('todas');cargarLista(q);},style:btnTab(pantalla==='todas')},soloPropias?'Mis OT':'Todas')),
       h('div',{style:{fontSize:11,padding:'6px 10px',borderRadius:6,marginBottom:8,background:online?'#DCFCE7':'#FEF3C7',color:online?'#166534':'#92400E'}},online?'● Con señal: la OT se sube al guardar':'📴 Sin señal: la OT queda guardada en el celular y se sube sola cuando vuelva la señal'+(pend?' ('+pend+' esperando)':'')),
       msg&&h('div',{style:{fontSize:12,padding:'8px 10px',borderRadius:6,marginBottom:8,background:/Preparando/.test(msg)?'#EFF6FF':'#FEE2E2',color:/Preparando/.test(msg)?'#1E40AF':'#991B1B'}},msg),
       pantalla==='form'&&h('div',{className:'card',style:{padding:12}},
@@ -29819,7 +29823,7 @@ function ImportDTERevision(p){
 }
 
 // ── APP ──
-const TITLES={inicio:'Inicio — Avisos y pendientes',dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','calendario':'Calendario — Tareas y recordatorios','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','terreno-parte':'Terreno — Parte diario (control de lo ingresado)','prod-oee':'Productividad — OEE Cosecha','telemetria':'Productividad — Telemetría de máquinas','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','comb-iec':'Combustibles — Impuesto específico del diésel (F29)','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','oc-repuestos':'Duración de Repuestos — vida útil y garantía contra el uso real','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
+const TITLES={'mant-ot-movil':'Mis Órdenes de Trabajo',inicio:'Inicio — Avisos y pendientes',dashboard:'Panel de control',panel:'Panel de Inventario',ingresos:'Ingresos de Bodega',salidas:'Salidas de Bodega',traspasos:'Traspasos entre Bodegas',stock:'Stock Actual',kardex:'Kardex por Producto',reportes:'Reportes y Analisis',ordenes:'Ordenes de Compra',empresas:'Empresas',bodegas:'Bodegas',productos:'Productos',categorias:'Categorias y Subcategorias',faenas:'Faenas',equipos:'Cargos / Centros de Costo',fundos:'Fundos y Rodales',modelos:'Modelos de Equipo',proveedores:'Proveedores',condpago:'Condiciones de Pago',tdocs:'Tipos de Documentos',motivos:'Motivos de Movimiento',usuarios:'Usuarios','personal':'Personal','rendiciones':'Rendiciones de Gasto','solicitudes':'Solicitudes','comite':'Comité de Gestión — Actas y acuerdos','calendario':'Calendario — Tareas y recordatorios','fin-cheques':'Finanzas — Registro de Cheques','fin-costos':'Finanzas — Estado de Resultados por Faena e Informe de Costos','fin-liquidaciones':'Finanzas — Liquidaciones de Producción','fin-honorarios':'Finanzas — Honorarios (BHE y BTE)','fin-eerr':'Finanzas — Estado de Resultados','fin-rcv':'Finanzas — Libro de Compras y Ventas','fin-resultado':'Finanzas — Resultado del Año','fin-f29':'Finanzas — Formulario 29','fin-imposiciones':'Finanzas — Imposiciones (Previred)','fin-remu':'Finanzas — Costo de Remuneraciones','fin-activos':'Activos Fijos y Depreciación','fin-diferidos':'Finanzas — Gastos Diferidos (pagos anticipados)','terreno':'Terreno — Registros Diarios','terreno-tiempos':'Terreno — Informe de Tiempos por Proceso','terreno-parte':'Terreno — Parte diario (control de lo ingresado)','prod-oee':'Productividad — OEE Cosecha','telemetria':'Productividad — Telemetría de máquinas','ia-chat':'Asistente IA','inv-auditoria':'Auditoría de Inventario','comb-auditoria':'Combustibles — Auditoría vs Terreno','comb-rendimientos':'Combustibles — Rendimientos','comb-iec':'Combustibles — Impuesto específico del diésel (F29)','mant-panel':'Panel Mantención','mant-avisos':'Avisos de Falla','mant-ot':'Órdenes de Trabajo','mant-planes':'Plan Maestro','mant-vencimientos':'Próximos Vencimientos','mant-docs':'Mantención — Revisión Técnica y Acreditaciones','mant-programacion':'Programación','mant-historial':'Historial Técnico','mant-sistemas':'Sistemas','mant-tareas-std':'Tareas Estándar','mant-prog':'Programación Mantención','vacaciones':'Control de Vacaciones','turnos-faena':'Turnos de Faena (7x7)','prevencion':'Prevención de Riesgos','trans-traslados':'Transporte — Traslados de Maquinaria','trans-tarifas':'Transporte — Tarifas de Valorización','trans-planificacion':'Transporte — Planificación','contratos':'Contratos de Trabajo','finiquitos':'Cálculo de Finiquitos','oc-guias':'Guías de Despacho','oc-repuestos':'Duración de Repuestos — vida útil y garantía contra el uso real','dte-recibidos':'DTE Recibidos — Bandeja de facturas','bandeja-dte-oc':'Bandeja DTE-OC — Vinculación de facturas con órdenes','compra-auditoria':'Auditoría de Compras — Cruce de información','oc-libro-productos':'Libro Mayor de Productos — Consumo por subcategoría y cargo','rem-parametros':'Remuneraciones — Parámetros Legales','rem-periodos':'Remuneraciones — Períodos','rem-movimientos':'Remuneraciones — Movimientos del Mes','rem-liquidaciones':'Remuneraciones — Liquidaciones','rem-prestamos':'Remuneraciones — Préstamos','rem-previred':'Remuneraciones — PreviRed','rem-prevision':'Remuneraciones — Configuración Previsional'};
 
 // ════════════════════════════════════════════════════════════════════════════
 // MÓDULO REMUNERACIONES — Componentes
@@ -30476,6 +30480,7 @@ function App(){
     'comb-panel':'combustibles','comb-ingresos':'combustibles','comb-traspasos':'combustibles','comb-distribuciones':'combustibles','comb-auditoria':'combustibles','comb-rendimientos':'combustibles','comb-iec':'combustibles','comb-reportes':'combustibles','comb-kardex':'combustibles',
     'panel':'inventario','ingresos':'inventario','salidas':'inventario','inv-traspasos':'inventario','stock':'inventario','kardex':'inventario','inv-auditoria':'inventario','inv-reportes':'inventario',
     'mant-panel':'mantencion','mant-ot':'mantencion','mant-pauta':'mantencion','mant-historial':'mantencion','mant-componentes':'mantencion','mant-planes':'mantencion','mant-vencimientos':'mantencion','mant-docs':'mantencion','mant-programacion':'mantencion','mant-avisos':'mantencion',
+    'mant-ot-movil':'mantencion-ot-propias',
     'rendiciones':'rendiciones',
     'terreno':'terreno','terreno-parte':'terreno','terreno-tiempos':'terreno','terreno-equipos':'terreno','terreno-faena':'terreno','terreno-reportes':'terreno',
     'prod-oee':'productividad','telemetria':'productividad',
@@ -30675,6 +30680,11 @@ function App(){
           navI('mant-prog','📊','Prog. Mano de Obra',true)
         ),
         canSee('mantencion')&&h('div',{className:'sb-sep'}),
+        !canSee('mantencion')&&canSee('mantencion-ot-propias')&&grpHdr('mant','MANTENCIÓN EQUIPOS'),
+        !canSee('mantencion')&&canSee('mantencion-ot-propias')&&grp.mant&&h('div',null,
+          navI('mant-ot-movil','🔧','Mis Órdenes de Trabajo',true)
+        ),
+        !canSee('mantencion')&&canSee('mantencion-ot-propias')&&h('div',{className:'sb-sep'}),
         canSee('terreno')&&grpHdr('terr','TERRENO'),
         canSee('terreno')&&grp.terr&&h('div',null,navI('terreno','🌲','Registros Diarios',true),navI('terreno-parte','📋','Parte Diario',true),navI('terreno-tiempos','⏱','Tiempos por Proceso',true)),
         canSee('terreno')&&h('div',{className:'sb-sep'}),
@@ -30778,6 +30788,7 @@ function App(){
           view==='mant-panel'&&h(MantPanel,{tok,m,onNav:setView}),
           view==='mant-avisos'&&h(MantAvisos,{tok,m}),
           view==='mant-ot'&&h(MantOT,{tok,m}),
+          view==='mant-ot-movil'&&h('div',{style:{maxWidth:560}},h(MobileMantOT,{tok,m,user,onBack:function(){setView('inicio');}})),
           view==='mant-planes'&&h(MantPlanes,{tok,m}),
           view==='mant-vencimientos'&&h(MantVencimientos,{tok,m,user}),
           view==='mant-docs'&&h(MantDocVencimientosView,{tok,m}),
