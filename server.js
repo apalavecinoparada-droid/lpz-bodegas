@@ -12512,6 +12512,9 @@ async function setupFacturaGuias(q){
     creado_en TIMESTAMP DEFAULT NOW()
   )`);
   await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS factura_guia_id INT REFERENCES oc_factura_guias(factura_id)');
+  // Descuento general y cargo por transporte de la factura (netos, sin IVA): neto = neto guías − descuento + transporte (Andrés 2026-11-09)
+  try{await q('ALTER TABLE oc_factura_guias ADD COLUMN IF NOT EXISTS descuento NUMERIC(14,2) DEFAULT 0');}catch(e){}
+  try{await q('ALTER TABLE oc_factura_guias ADD COLUMN IF NOT EXISTS cargo_transporte NUMERIC(14,2) DEFAULT 0');}catch(e){}
   // ── Activo fijo: marca y parámetros de depreciación en la OC ──
   try{await q('ALTER TABLE ordenes_compra ADD COLUMN IF NOT EXISTS es_activo_fijo BOOLEAN DEFAULT false')}catch(e){}
   // ── Gasto diferido: la OC se paga de una vez pero su costo se devenga por prorrateo diario dentro de una vigencia (seguros, patentes, arriendos anticipados) ──
@@ -12641,11 +12644,12 @@ app.post('/api/oc-guias/facturar', auth, requireModulo('ordenes'), async(req,res
   const client=await pool.connect();
   try{
     await client.query('BEGIN');
-    const{proveedor_id,empresa_id,numero_factura,fecha_factura,neto,iva,ie_total,total,observaciones,oc_ids,combustible_ajustes}=req.body;
+    const{proveedor_id,empresa_id,numero_factura,fecha_factura,neto,iva,ie_total,total,observaciones,oc_ids,combustible_ajustes,descuento,cargo_transporte}=req.body;
     if(!proveedor_id||!numero_factura)throw new Error('Proveedor y N° factura requeridos');
     if(!Array.isArray(oc_ids)||!oc_ids.length)throw new Error('Seleccione al menos una guía');
-    const fr=await client.query(`INSERT INTO oc_factura_guias(proveedor_id,empresa_id,numero_factura,fecha_factura,neto,iva,ie_total,total,observaciones,usuario) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING factura_id`,
-      [proveedor_id,empresa_id||null,numero_factura,fecha_factura||new Date().toISOString().slice(0,10),parseFloat(neto)||0,parseFloat(iva)||0,parseFloat(ie_total)||0,parseFloat(total)||0,observaciones||null,req.user.email]);
+    const descF=Math.abs(parseFloat(descuento)||0), transpF=parseFloat(cargo_transporte)||0;
+    const fr=await client.query(`INSERT INTO oc_factura_guias(proveedor_id,empresa_id,numero_factura,fecha_factura,neto,iva,ie_total,total,observaciones,usuario,descuento,cargo_transporte) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING factura_id`,
+      [proveedor_id,empresa_id||null,numero_factura,fecha_factura||new Date().toISOString().slice(0,10),parseFloat(neto)||0,parseFloat(iva)||0,parseFloat(ie_total)||0,parseFloat(total)||0,observaciones||null,req.user.email,descF,transpF]);
     const fid=fr.rows[0].factura_id;
     // Asociar OCs
     for(const ocId of oc_ids){
