@@ -3988,6 +3988,47 @@ app.get('/api/telemetria/alertas-terreno', auth, requireModulo('productividad'),
     res.json({dias,alcance:alc,maquinas:lista});
   }catch(e){res.status(500).json({error:e.message});}
 });
+// Alertas de TODA la flota en una sola lista (Andrés 2026-11-10): un renglón por máquina + alerta (código + clave del texto),
+// la más reciente primero, con su estado de gestión y el último envío por WhatsApp. Por omisión sin las resueltas ni las
+// falsas (?todas=1 las trae). Incluye máquinas sin equipo asignado para quien ve toda la flota; respeta telAlcance.
+app.get('/api/telemetria/alertas-flota', auth, requireModulo('productividad'), async(req,res)=>{
+  try{
+    const dias=Math.min(90,Math.max(1,parseInt(req.query.dias)||7)); const emp=parseInt(req.query.empresa_id)||null, fae=parseInt(req.query.faena_id)||null;
+    const marca=String(req.query.marca||'').toUpperCase().slice(0,20); const todas=req.query.todas==='1';
+    const w=['1=1'],v=[dias]; const alc=await telAlcance(req);
+    if(alc){ w.push('t.equipo_id IS NOT NULL'); if(alc.faena_id){v.push(alc.faena_id);w.push('e.faena_id=$'+v.length);} else {v.push(alc.empresa_id);w.push('e.empresa_id=$'+v.length);} }
+    else { if(emp){v.push(emp);w.push('e.empresa_id=$'+v.length);} if(fae){v.push(fae);w.push('e.faena_id=$'+v.length);} }
+    if(marca){v.push(marca);w.push('t.marca=$'+v.length);}
+    const r=await pool.query(`SELECT t.marca,t.serie,t.nombre_cliente,t.modelo,t.ultima_comunicacion,e.equipo_id,e.codigo AS equipo_codigo,e.nombre AS equipo_nombre,e.empresa_id,emp.razon_social AS empresa_nombre,e.faena_id,f.nombre AS faena_nombre,
+        a.codigo,a.severidad,a.componente,a.texto,a.fecha_hora
+      FROM telemetria_maquinas t LEFT JOIN equipos e ON e.equipo_id=t.equipo_id LEFT JOIN empresas emp ON emp.empresa_id=e.empresa_id LEFT JOIN faenas f ON f.faena_id=e.faena_id
+      JOIN telemetria_alertas a ON a.marca=t.marca AND a.serie=t.serie AND a.fecha_hora>=NOW()-($1||' days')::interval
+      WHERE ${w.join(' AND ')} ORDER BY a.fecha_hora DESC LIMIT 12000`,v);
+    const ges=await telGestionUltimas(); let mapa=null; try{mapa=await telTradMapa();}catch(e){}
+    const wa=await pool.query("SELECT DISTINCT ON (marca,serie,codigo,clave) marca,serie,codigo,clave,destinatario,usuario,fecha FROM telemetria_alertas_gestion WHERE accion='whatsapp' ORDER BY marca,serie,codigo,clave,fecha DESC");
+    const waMap=new Map(wa.rows.map(x=>[x.marca+'|'+x.serie+'|'+x.codigo+'|'+x.clave,x]));
+    const g={};
+    for(const x of r.rows){   // vienen de la más reciente a la más antigua: la primera fila de cada grupo es su última vez
+      const cl=telGrupoClave(x.marca,x.texto); const k=x.marca+'|'+x.serie+'|'+(x.codigo||'')+'|'+cl;
+      let e=g[k];
+      if(!e){ const gg=ges.get(k)||null; const w0=waMap.get(k)||null;
+        e=g[k]={k,marca:x.marca,serie:x.serie,nombre_cliente:x.nombre_cliente,modelo:x.modelo,equipo_id:x.equipo_id,equipo_codigo:x.equipo_codigo,equipo_nombre:x.equipo_nombre,
+          empresa_id:x.empresa_id,empresa_nombre:x.empresa_nombre||null,faena_id:x.faena_id,faena_nombre:x.faena_nombre||null,
+          codigo:x.codigo,clave:cl,severidad:x.severidad,componente:x.componente,texto:x.texto,veces:0,ultima:x.fecha_hora,primera:x.fecha_hora,
+          critica:TEL_CRITICAS.has(String(x.severidad||'').toLowerCase()),estado:telEstadoEfectivo(gg,x.fecha_hora),
+          gestion:gg?{estado:gg.estado,observacion:gg.observacion,usuario:gg.usuario,fecha:gg.fecha}:null,
+          whatsapp:w0?{destinatario:w0.destinatario,usuario:w0.usuario,fecha:w0.fecha}:null}; }
+      e.veces++; e.primera=x.fecha_hora;
+    }
+    let lista=Object.values(g);
+    if(!todas) lista=lista.filter(e=>e.estado!=='falsa'&&e.estado!=='resuelta');
+    if(mapa) lista.forEach(e=>{ const t=telTrad(e.marca,e.texto,mapa); if(t!==e.texto){e.texto_original=e.texto;e.texto=t;}
+      const mk=e.marca==='KOMATSU'&&e.texto_original&&e.texto_original.match(/ERRORCODE=[^(]*\(([\s\S]+)\),SMR=/);
+      const comp=mk?telTrad(e.marca,mk[1],mapa):(e.marca==='KOMATSU'?telTrad(e.marca,e.componente,mapa):e.componente); if(comp&&comp!==e.componente)e.componente=comp; });
+    lista.sort((a,b)=>new Date(b.ultima)-new Date(a.ultima));
+    res.json({dias,alcance:alc,avisos:lista.reduce((s,e)=>s+e.veces,0),maquinas:new Set(lista.map(e=>e.marca+'|'+e.serie)).size,alertas:lista});
+  }catch(e){res.status(500).json({error:e.message});}
+});
 app.post('/api/telemetria/traducir', auth, requireModulo('productividad'), async(req,res)=>{
   try{ res.json(await telTraducirPendientes(parseInt(req.query.limite)||120)); }catch(e){res.status(500).json({error:e.message});}
 });
