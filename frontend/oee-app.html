@@ -971,6 +971,12 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
 .hr4-total{font-size:22px;font-weight:700;color:#c0392b;text-align:center;margin:4px 0 2px;}
 .hr4-det{font-size:9px;color:#666;text-align:center;line-height:1.6;}
 </style>
+      <!-- 10-11-2026: la ficha tiene dos vistas (Gustavo): Costo Hora Máq. Detenida y Licitado vs Real -->
+      <div style="display:flex;gap:0;margin-bottom:10px;border:1px solid #1a6b3a;border-radius:6px;overflow:hidden;width:max-content;max-width:100%;">
+        <button id="ch-btn-costo" onclick="chVista('costo')" style="border:none;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;background:#1a6b3a;color:#fff;">&#9881; Costo Hora M&aacute;q. Detenida</button>
+        <button id="ch-btn-lvr" onclick="chVista('lvr')" style="border:none;padding:7px 14px;font-size:12px;font-weight:700;cursor:pointer;background:#fff;color:#1a6b3a;">&#9878; Licitado vs Real</button>
+      </div>
+      <div id="ch-vista-costo">
 
       <div style="background:#fff;border:1px solid #ccc;border-radius:5px;padding:8px 12px;display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px;">
         <div class="ch-fg"><label>Faena</label>
@@ -1098,6 +1104,8 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
           </div>
         </div>
       </div>
+    </div>
+    <div id="ch-vista-lvr" style="display:none;"></div>
     </div>
 
   </div>
@@ -1427,7 +1435,7 @@ tr.tr td{background:#1a6b3a;color:#fff;font-weight:700;}
   <!-- Filtros -->
   <div class="bd-filtros">
     <div><label>Faena</label>
-      <select id="best-faena" onchange="bestUpdate()">
+      <select id="best-faena" onchange="bestAutoSelectAndUpdate()">
         <option value="Mec 3" selected>Mec 3 — Poo P3</option>
         <option value="Mec 4">Mec 4 — Poo T2</option>
         <option value="Mec 5">Mec 5 — Poo P4</option>
@@ -5568,10 +5576,11 @@ function showPanel(id, btn) {
   claveAplicar(id);   // fichas con tarifas: piden la misma clave del Polinomio (30-09-2026)
   btn.classList.add('active');
   if(id==='dash') { setTimeout(buildDashboard, 50); }
+  if(id==='costo') { setTimeout(chVistaInicial, 60); }   // 10-11-2026: vista elegida (Costo Hora / Licitado vs Real)
   if(id==='best') { setTimeout(function(){
     var fechaEl = document.getElementById('best-fecha');
     if(!fechaEl.value) { var mon = bestGetMonday(); fechaEl.value = bestDateStr(mon); }
-    bestUpdate();
+    bestAutoSelectAndUpdate();
   }, 50); }
   if(id==='proddia') { setTimeout(buildProdDiaria, 50); }
   if(id==='tob') { setTimeout(function(){ try{ renderDetalleCausas(); }catch(e){ console.warn('[DC]', e.message); } }, 50); }
@@ -8810,6 +8819,8 @@ function loadExcel(input) {
         catch (eBod) { console.warn('[BODEGA] no se pudo leer: ' + eBod.message); }
         try { liqLeerDelLibro(wb); }
         catch (eLiq) { console.warn('[LIQ] no se pudo leer: ' + eLiq.message); }
+        try { cfLeerDelLibro(wb); }
+        catch (eCF) { console.warn('[COSTOS] no se pudo leer: ' + eCF.message); }
         try { ofCambiosLeer(wb); }
         catch (eOC) { console.warn('[OFERTA] no se pudo leer CambiosOferta: ' + eOC.message); }
         // Diagnóstico v11: ¿qué faenas hay en PROD_RODAL?
@@ -9991,6 +10002,7 @@ function loadExcel(input) {
         bodega: (typeof BODEGA!=='undefined'&&BODEGA?BODEGA:null),
         liq: (typeof LIQ!=='undefined'&&LIQ?LIQ:[]),
         ofcamb: (typeof OFERTA_CAMBIOS!=='undefined'&&OFERTA_CAMBIOS?OFERTA_CAMBIOS:[]),
+        costos_faena: (typeof COSTOS_FAENA!=='undefined'&&COSTOS_FAENA&&COSTOS_FAENA.length?COSTOS_FAENA:null),
         ofsnap: {snaps:(typeof OFERTA_SNAPSHOTS!=='undefined'&&OFERTA_SNAPSHOTS?OFERTA_SNAPSHOTS:[]), fechaAct:(typeof OFERTA_FECHA_ACT!=='undefined'?OFERTA_FECHA_ACT:'')}
       }}, '*'); }catch(e){}
       applyFilters();
@@ -11657,7 +11669,7 @@ function estRender(){
   } catch(eC){ console.warn('[ESTD] grafico:', eC.message); }
 }
 
-var APP_BUILD = '09-11-2026 Mapa de faenas';
+var APP_BUILD = '11-11-2026 Licitado vs Real: reparto Adm. y Taller 34/33/33';
 console.log('%c[APP] build ' + APP_BUILD, 'background:#1a6b3a;color:#fff;padding:2px 6px;');
 try { var _sello = function(){ var e = document.getElementById('app-build-sello'); if (e) e.innerHTML = '&#128278; Versión: <b>' + APP_BUILD + '</b>'; };
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _sello); else _sello(); } catch(e) {}
@@ -12583,23 +12595,28 @@ function bestDateStr(d) {
 }
 
 // Llama bestUpdate() navegando a la semana más reciente con datos si la semana actual está vacía
+// 10-11-2026: "con datos" = dia con TRABAJO real (horas o m3), no solo la fecha creada: BEST_DAILY trae dias hasta fin
+// de anio con la oferta en cero, y al cambiar de faena la semana quedaba donde estaba (ej. Mec 5 en mayo, antes de existir).
+function bestDiaConTrabajo(x){ return !!x && ((+x.hrs || 0) > 0 || (+x.m3 || 0) > 0); }
+function bestUltimoDiaConTrabajo(faena){
+  var fd = BEST_DAILY[faena] || {}, hoy = bestDateStr(new Date());
+  var ds = Object.keys(fd).filter(function(k){ return k <= hoy && bestDiaConTrabajo(fd[k]); }).sort();
+  return ds.length ? ds[ds.length - 1] : null;
+}
+function bestSemanaConTrabajo(faena, fechaVal){
+  var fd = BEST_DAILY[faena] || {}, lunes = bestGetMonday(fechaVal);
+  for (var i = 0; i < 7; i++){ var d = new Date(lunes.getTime()); d.setDate(d.getDate() + i); if (bestDiaConTrabajo(fd[bestDateStr(d)])) return true; }
+  return false;
+}
+function bestIrSemana(lunesStr){ document.getElementById('best-fecha').value = lunesStr; bestUpdate(); }
 function bestAutoSelectAndUpdate() {
   var faena = document.getElementById('best-faena').value;
-  var faenaData = BEST_DAILY[faena] || {};
-  var dates = Object.keys(faenaData).sort();
-  if (dates.length > 0) {
-    var fechaEl = document.getElementById('best-fecha');
-    var currentVal = fechaEl.value || bestDateStr(new Date());
-    var lunes = bestGetMonday(currentVal);
-    var hasData = false;
-    for (var i = 0; i < 7; i++) {
-      var d = new Date(lunes.getTime()); d.setDate(d.getDate() + i);
-      if (faenaData[bestDateStr(d)]) { hasData = true; break; }
-    }
-    if (!hasData) {
-      var lastMon = bestGetMonday(dates[dates.length - 1]);
-      fechaEl.value = bestDateStr(lastMon);
-    }
+  var fechaEl = document.getElementById('best-fecha');
+  var currentVal = fechaEl.value || bestDateStr(bestGetMonday());
+  if (!bestSemanaConTrabajo(faena, currentVal)) {
+    var ult = bestUltimoDiaConTrabajo(faena);
+    if (ult) fechaEl.value = bestDateStr(bestGetMonday(ult));
+    else if (!fechaEl.value) fechaEl.value = bestDateStr(bestGetMonday());
   }
   bestUpdate();
 }
@@ -14832,6 +14849,11 @@ function bestTradRender(){
   h += '</table></div>' +
        '<div style="font-size:10px;color:#888;margin-top:5px;">Misma lógica de la hoja <b>BestDiarioFaenas</b>. Tiempos perdidos: las 15 causas con más horas de <b>' + faena +
        '</b> en el mes, de mayor a menor. Día con 1 hora o menos trabajada: no se calcula FD/FE/TOB.</div>';
+  if (!bestSemanaConTrabajo(faena, fechaVal)){   // 10-11-2026: semana sin trabajo de esta faena -> aviso y atajo
+    var _ult = bestUltimoDiaConTrabajo(faena);
+    h = '<div style="margin:0 0 8px;padding:8px 12px;background:#fff7e0;border:1px solid #e0b84a;border-radius:6px;font-size:12px;color:#7a5200;">&#9888; <b>' + faena + '</b> no tiene horas ni m³ en esta semana.' +
+      (_ult ? ' Últimos datos: <b>' + _ult.split('-').reverse().join('-') + '</b>. <button onclick="bestIrSemana(\'' + bestDateStr(bestGetMonday(_ult)) + '\')" style="margin-left:6px;padding:2px 10px;border:1px solid #1a6b3a;background:#1a6b3a;color:#fff;border-radius:5px;cursor:pointer;font-size:11px;font-weight:700;">Ir a esa semana</button>' : '') + '</div>' + h;
+  }
   el.innerHTML = h;
 }
 
@@ -16359,6 +16381,7 @@ function guardarEnCache(filename, aniosTxt, minMes, maxMes) {
       st.put({id: 'prodfm', data: PROD_FAENA_MES});
       st.put({id: 'bodega', data: BODEGA});
       st.put({id: 'liq', data: LIQ});
+      st.put({id: 'costos', data: COSTOS_FAENA});
       st.put({id: 'ofcamb', data: OFERTA_CAMBIOS});
       st.put({id: 'meta', data: {
         filename: filename, savedAt: new Date().toISOString(),
@@ -16441,7 +16464,7 @@ function restaurarDesdeCache() {
       var tx  = db.transaction(OEE_STORE, 'readonly');
       var st  = tx.objectStore(OEE_STORE);
       var raw = null, bd = null, meta = null, faja = null, ofrod = null, prodrod = null, ofsnap = null, ihrs = null, grafx = null, diesel = null, causashp = null, dieseldet = null, oper = null, vmamix = null, bhtdias = null, vmadia = null, vmarod = null, prodfm = null, fmndias = null;
-      var pending = 25;
+      var pending = 26;
       function check() {
         pending--;
         if (pending > 0) return;
@@ -16476,6 +16499,7 @@ function restaurarDesdeCache() {
       st.get('prodfm').onsuccess  = function(e){ prodfm  = e.target.result ? e.target.result.data : null; check(); };
       st.get('bodega').onsuccess  = function(e){ BODEGA = (e.target.result ? e.target.result.data : null) || null; check(); };
       st.get('liq').onsuccess     = function(e){ LIQ = (e.target.result ? e.target.result.data : null) || []; check(); };
+      st.get('costos').onsuccess  = function(e){ COSTOS_FAENA = (e.target.result ? e.target.result.data : null) || []; check(); };
       st.get('ofcamb').onsuccess  = function(e){ OFERTA_CAMBIOS = (e.target.result ? e.target.result.data : null) || []; check(); };
       tx.onerror = function(){ applyFilters(); };
     } catch(e) {
@@ -18559,6 +18583,270 @@ function bodListaFundos(){
     .sort(function(a, b){ return act[b].localeCompare(act[a]); })
     .map(function(c){ return {cod: +c, nom: (B.nom[c] || c) + ' (' + c + ')', fin: act[c], faena: B.faena[c] || ''}; });
 }
+
+/* ===== LICITADO VS REAL POR FAENA (10-11-2026) =====
+   Va dentro de la ficha "Costo Hora Máq. Detenida" (selector arriba: Costo Hora / Licitado vs Real).
+   Réplica de la planilla de Gustavo "costo analisis faenas lpoo v2" (AnalisisCostoFaenasLpoo): por faena y mes, costo
+   LICITADO vs REAL en $/mes y $/m³, en los 18 ítems de la licitación.
+   REAL: hoja BaseCostosFaena del Best (la escribe el bot, core/costos_faena.py, desde la base de la web Empresas Poo en
+   solo lectura): combustible, bodega, OC, depreciación de activos, diferidos, rendiciones y la producción de las
+   liquidaciones con su VMA pagado. Sin remuneraciones (pendiente: vista con el total por faena).
+   LICITADO: tarifa del tramo de VMA (TARIFA_VMA + tarifaBaseTramo: base antigua hasta jun-2026, feb-2026 desde jul) ×
+   factor del polinomio del mes (poliFactorMes) × volumen del tramo, repartido según el % de cada ítem en la estructura de
+   costos del contrato. Tramo = VMA PAGADO del mes (liquidación); si no hay liquidación, VMA de Formin (VMA_MIX). */
+var COSTOS_FAENA = [];   // [{mes:'AAAA-MM', faena, linea, cat, codeq, equipo, tipoeq, monto, m3, vma}]
+function cfLeerDelLibro(wb){
+  var ws = wb.Sheets['BaseCostosFaena'];
+  if (!ws){ COSTOS_FAENA = []; console.log('[COSTOS] el Best no trae BaseCostosFaena (la escribe el bot, modo terreno)'); return; }
+  var rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:''}), out = [];
+  for (var i = 1; i < rows.length; i++){
+    var r = rows[i], mes = String(r[0]||'').trim();
+    if (!/^\d{4}-\d{2}$/.test(mes)) continue;
+    out.push({mes: mes, faena: String(r[1]||'').trim(), linea: String(r[2]||''), cat: String(r[3]||''), codeq: String(r[4]||''),
+              equipo: String(r[5]||''), tipoeq: String(r[6]||''), monto: parseFloat(r[7])||0, m3: parseFloat(r[8])||0,
+              vma: (r[9] === '' || r[9] == null) ? null : parseFloat(String(r[9]).replace(',', '.'))});
+  }
+  COSTOS_FAENA = out;
+  console.log('[COSTOS] ' + out.length + ' filas de costos por faena');
+}
+var LVR_ITEMS = [
+  {n:1,g:'maq',l:'Costo posesión (leasing, depreciación, arriendo, seguro)'},{n:2,g:'maq',l:'Combustible'},
+  {n:3,g:'maq',l:'Lubricantes'},{n:4,g:'maq',l:'Mantención y reparación'},
+  {n:5,g:'per',l:'Remuneraciones'},{n:6,g:'per',l:'Alimentación y pensión'},{n:7,g:'per',l:'EPP y capacitación'},
+  {n:11,g:'mis',l:'Administración central'},{n:12,g:'mis',l:'Furgón'},{n:13,g:'mis',l:'Camionetas'},
+  {n:14,g:'mis',l:'Fletes y traslados'},{n:15,g:'mis',l:'Camión combustible'},
+  {n:16,g:'mis',l:'Implementación faena (camión taller, insumos)'},{n:17,g:'mis',l:'Motosierra'},
+  {n:18,g:'mis',l:'Garantía y gastos financieros'}];
+var LVR_GRUPOS = [{k:'maq',l:'Maquinaria'},{k:'per',l:'Personal directo'},{k:'mis',l:'Misceláneos'}];
+// % por ítem: estructura de costos de cada contrato ($/mes; it + util = 100%)
+var LVR_EST = {
+  'Mec 3': {tarifa:'Mec 3', fuente:'% por ítem: estructura antigua (planilla de costos)',
+    it:{1:32023196,2:33559760,3:11525351,4:9447009,5:35778722,6:7592060,7:311758,11:3848498,12:4167520,13:3416000,14:1437892,15:1830000,16:1586000,17:378200,18:450700}, util:14735434},
+  'Mec 4': {tarifa:'Mec 4 Nitens', fuente:'% por ítem: "Estructura costo fusion mec4 AP", hoja Eucaliptus Nitens',
+    it:{1:69182000,2:26242385,3:7502972,4:18520736,5:36651264,6:9654750,7:291339,11:8185733,12:0,13:5100000,14:1000000,15:2800000,16:4660000,17:0,18:299733}, util:11897507},
+  'Mec 5': {tarifa:'Mec 5', fuente:'% por ítem: "Estructura Costos Mecanizada Euca Plano3 - OEE"',
+    it:{1:43706368,2:23776892,3:4516284,4:17015829,5:39498398,6:9630000,7:358100,11:6068069,12:2500000,13:3000000,14:500000,15:2500000,16:4530000,17:0,18:169850}, util:13890871}
+};
+var LVR_SUBCAT = {
+  'leasing':1,'activo leasing':1,'activos':1,'arriendo de maquinaria':1,'seguros':1,
+  'diesel':2,'adblue':2,'gasolina':2,'combustible':2,
+  'lubricantes':3,'grasas':3,'refrigerantes':3,'refrigerantes motor':3,
+  'alimentacion y hospedaje':6,'epp (implementos de seguridad)':7,'acreditaciones y capacitaciones':7,
+  'arriendo de vehiculo':13,'permisos de circulación':13,'revision tecnica':13,
+  'fletes y traslados':14,'tag y peajes':14,'encomiendas':14,'aceite 2t':17,'gastos financieros':18,'factoring':18,
+  'implementacion faena (señaletica en general)':16,'gastos de faena':16,'extintores':16,'retiro residuos':16,'elementos de limpieza':16,
+  'herramientas menores':16,'insumos y accesorios varios':16,'telefonía':16,'internet':16,'suministros':16,'consumo electrico':16,
+  'gastos generales':16,'artículos de oficina':16,'equipos computacionales':16,'equipos de oficina':16,'equipos y herramientas':16,'pintura de marcaje':16
+};
+var LVR_TIPOEQ = {camioneta:13,furgon:12,camion_estanque:15,estanque:15,camion_mantencion:16,equipos_taller:16,taller:16,camion_cama_baja:14,camion:14};
+function lvrItem(x){
+  if (x.linea === 'remuneraciones' || x.linea === 'honorarios') return 5;
+  if (LVR_TIPOEQ[x.tipoeq]) return LVR_TIPOEQ[x.tipoeq];
+  if (x.tipoeq === 'otro' && /motosierra/i.test(x.equipo)) return 17;
+  if (x.linea === 'combustible') return 2;
+  if (x.linea === 'depreciacion') return 1;
+  var c = String(x.cat || '').toLowerCase().trim();
+  return LVR_SUBCAT[c] || 4;
+}
+var LVR_SEL = {mes:'', prorr:true, det:null, ver:'todas'};
+function lvrCfg(){ try { return JSON.parse(localStorage.getItem('lvr_cfg') || '{}'); } catch(e){ return {}; } }
+function lvrCfgSet(c){ try { localStorage.setItem('lvr_cfg', JSON.stringify(c)); } catch(e){} }
+// 11-11-2026: reparto de Administración y Taller Lpoo entre las Mec (hoja RemuAdmTaller de la planilla de costos de Gustavo:
+// Emprecon 30% / Lpoo 70%, y Lpoo → Mec 3 34%, Mec 4 33%, Mec 5 33%). Editables; se guardan en lvr_cfg.rep.
+var LVR_REP_DEF = {lpoo:70, 'Mec 3':34, 'Mec 4':33, 'Mec 5':33};
+function lvrRep(){ var c = lvrCfg().rep || {}, o = {}; Object.keys(LVR_REP_DEF).forEach(function(k){ o[k] = c[k] != null ? c[k] : LVR_REP_DEF[k]; }); return o; }
+function lvrRepSet(k, v){ var c = lvrCfg(); c.rep = c.rep || {}; if (v === null) delete c.rep[k]; else c.rep[k] = v; lvrCfgSet(c); lvrRender(); }
+var LVR_CENTRAL_RE = /^(administraci[oó]n|taller) lpoo$/i, LVR_TRANSP_RE = /^transporte maquinaria lpoo$/i;
+var LVR_A_MAQUINA = {'leasing':1, 'activo leasing':1, 'arriendo de maquinaria':1};   // deben ir a su máquina: no se reparten
+function lvrMesL(m){ var MM=['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre']; var p=String(m).split('-'); return MM[parseInt(p[1],10)-1] + ' ' + p[0]; }
+function lvrVmaFormin(fa, mes){
+  var L = (window.VMA_MIX || {})[fa + '|' + mes.replace('-', '')]; if (!L || !L.length) return null;
+  var m3 = 0, s = 0; L.forEach(function(x){ m3 += (x.m3 || 0); s += (x.vma || 0) * (x.m3 || 0); });
+  return m3 ? Math.round(s / m3 * 1000) / 1000 : null;
+}
+// licitado de una faena en un mes
+function lvrLicitado(fa, mes, vmaPag){
+  var e = LVR_EST[fa], T = (window.TARIFA_VMA || {})[e.tarifa]; if (!T) return null;
+  var anio = parseInt(mes.slice(0,4), 10), mm = parseInt(mes.slice(5,7), 10);
+  var c = (lvrCfg()[fa + '|' + mes]) || {};
+  var vmaF = lvrVmaFormin(fa, mes);
+  var vma = vmaPag != null ? vmaPag : vmaF, fuente = vmaPag != null ? 'pagado' : (vmaF != null ? 'formin' : '');
+  var idx = c.tramo != null ? c.tramo : null;
+  if (idx == null && vma != null){
+    for (var i = 0; i < T.tramos.length; i++){ var t = T.tramos[i]; if (vma >= t.v1 && (vma < t.v2 || (t.v1 === t.v2 && vma === t.v1))){ idx = i; break; } }
+    if (idx == null) idx = vma < T.tramos[0].v1 ? 0 : T.tramos.length - 1;
+  }
+  if (idx == null){ idx = 0; T.tramos.forEach(function(t, i){ if (T.tramoLic && t.v1 === T.tramoLic[0]) idx = i; }); }
+  var t = T.tramos[idx];
+  var facAuto = (typeof poliFactorMes === 'function') ? poliFactorMes(fa, anio, mm) : null;
+  var fac = c.fac != null ? c.fac : (facAuto || 1);
+  var base = (typeof tarifaBaseTramo === 'function') ? tarifaBaseTramo(e.tarifa, t, anio, mm) : t.base;
+  var tarifa = base * fac, vol = t.vol, ing = tarifa * vol;
+  var tot = e.util; Object.keys(e.it).forEach(function(k){ tot += e.it[k]; });
+  var it = {}; Object.keys(e.it).forEach(function(k){ it[k] = ing * e.it[k] / tot; });
+  return {idx: idx, tramo: t, vma: vma, fuenteVma: fuente, manual: c.tramo != null, fac: fac, facAuto: facAuto, facManual: c.fac != null,
+          base: base, tarifa: tarifa, vol: vol, ing: ing, it: it, util: ing * e.util / tot, T: T};
+}
+function lvrSet(fa, k, v){ var c = lvrCfg(), key = fa + '|' + LVR_SEL.mes; c[key] = c[key] || {}; if (v === null) delete c[key][k]; else c[key][k] = v; lvrCfgSet(c); lvrRender(); }
+function lvrRender(){
+  var el = document.getElementById('ch-vista-lvr'); if (!el) return;
+  var nf = function(v, d){ return (v || 0).toLocaleString('es-CL', {minimumFractionDigits: d || 0, maximumFractionDigits: d || 0}); };
+  var money = function(v){ var r = Math.round(v || 0); return (r < 0 ? '-$' : '$') + Math.abs(r).toLocaleString('es-CL'); };
+  if (!COSTOS_FAENA.length){
+    el.innerHTML = '<div style="padding:16px;background:#fff;border:1px solid #ddd;border-radius:6px;color:#555;">No hay costos cargados. El Best tiene que traer la hoja <b>BaseCostosFaena</b> ' +
+      '(la escribe el bot de Mininco en el modo <b>terreno</b>, desde la base de la web Empresas Poo). Haz <b>Ctrl+Shift+R</b> y luego <b>Cargar Excel</b>.</div>';
+    return;
+  }
+  var FAS = ['Mec 3', 'Mec 4', 'Mec 5'];
+  var meses = {}; COSTOS_FAENA.forEach(function(x){ meses[x.mes] = 1; }); meses = Object.keys(meses).sort();
+  var conProd = meses.filter(function(m){ return COSTOS_FAENA.some(function(x){ return x.mes === m && x.linea === 'produccion' && FAS.indexOf(x.faena) >= 0; }); });
+  if (!LVR_SEL.mes || meses.indexOf(LVR_SEL.mes) < 0) LVR_SEL.mes = conProd.length ? conProd[conProd.length - 1] : meses[meses.length - 1];
+  var mes = LVR_SEL.mes, M = COSTOS_FAENA.filter(function(x){ return x.mes === mes; });
+  var R = {}, ING = {}, M3 = {}, PE = {}, VP = {}, DET = {}, comun = 0, CENT = [], PEND = [];
+  FAS.forEach(function(f){ R[f] = {}; ING[f] = 0; M3[f] = 0; PE[f] = 0; VP[f] = {s:0, m:0}; DET[f] = {}; });
+  M.forEach(function(x){
+    if (x.faena === '(sin faena)'){ if (x.linea !== 'produccion' && x.linea !== 'partidas') comun += x.monto; return; }
+    if (x.linea === 'produccion' || x.linea === 'partidas'){ if (FAS.indexOf(x.faena) < 0) return; }
+    else if (LVR_CENTRAL_RE.test(x.faena)){
+      var c0 = String(x.cat || '').toLowerCase().trim();
+      if (LVR_A_MAQUINA[c0]){ PEND.push(x); return; }   // leasing cargado a administración: corresponde a una máquina
+      var i0 = lvrItem(x); CENT.push({x: x, it: (i0 === 18 || c0 === 'seguros') ? 18 : 11}); return;
+    }
+    else if (LVR_TRANSP_RE.test(x.faena)){ PEND.push(x); return; }   // fletes: se cargan a la faena que corresponde
+    if (FAS.indexOf(x.faena) < 0) return;
+    var f = x.faena;
+    if (x.linea === 'produccion'){ ING[f] += x.monto; M3[f] += x.m3; if (x.vma != null && x.m3 > 0){ VP[f].s += x.vma * x.m3; VP[f].m += x.m3; } return; }
+    if (x.linea === 'partidas'){ PE[f] += x.monto; return; }
+    var it = lvrItem(x); R[f][it] = (R[f][it] || 0) + x.monto; (DET[f][it] = DET[f][it] || []).push(x);
+  });
+  var REP = lvrRep();
+  CENT.forEach(function(c){ FAS.forEach(function(f){ var a = c.x.monto * REP[f] / 100; R[f][c.it] = (R[f][c.it] || 0) + a;
+    (DET[f][c.it] = DET[f][c.it] || []).push({linea:'central', cat: c.x.faena + ' · ' + (c.x.cat || '—') + ' (' + REP[f] + '%)', equipo: c.x.equipo, monto: a}); }); });
+  if (LVR_SEL.prorr && comun) FAS.forEach(function(f){ var a = comun * REP.lpoo / 100 * REP[f] / 100; R[f][11] = (R[f][11] || 0) + a;
+    (DET[f][11] = DET[f][11] || []).push({linea:'comun', cat:'Gastos sin faena (' + REP.lpoo + '% Lpoo × ' + REP[f] + '%)', equipo:'', monto:a}); });
+  var LIC = {}; FAS.forEach(function(f){ LIC[f] = lvrLicitado(f, mes, VP[f].m ? Math.round(VP[f].s / VP[f].m * 1000) / 1000 : null); });
+  if (LVR_SEL.ver !== 'todas' && FAS.indexOf(LVR_SEL.ver) >= 0) FAS = [LVR_SEL.ver];   // 10-11: ver una sola faena (pantallas angostas)
+  var colF = (typeof LIQ_COLOR !== 'undefined') ? LIQ_COLOR : {};
+  var th = 'padding:5px 5px;background:#1E3A2D;color:#fff;font-size:10.5px;text-align:right;white-space:nowrap;';
+  var td = 'padding:3px 5px;font-size:11px;text-align:right;border-bottom:1px solid #EEF2F6;white-space:nowrap;';
+  var tdl = 'padding:3px 6px;font-size:11px;text-align:left;border-bottom:1px solid #EEF2F6;white-space:normal;min-width:150px;max-width:230px;';
+  function sem(l, r){ if (!l && !r) return ''; var q = l ? r / l : 9; return q <= 1 ? '#16A34A' : q <= 1.1 ? '#F59E0B' : '#DC2626'; }
+  function celdas(f, vL, vR, clic, soloLic){
+    var L = LIC[f], lm3 = L && L.vol ? vL / L.vol : 0, rm3 = M3[f] ? vR / M3[f] : 0, c = soloLic ? '' : sem(lm3, rm3);
+    var s = '<td style="' + td + '">' + money(vL) + '</td><td style="' + td + 'color:#475569;">' + nf(lm3) + '</td>';
+    if (soloLic) return s + '<td style="' + td + 'color:#CBD5E1;">—</td><td style="' + td + 'color:#CBD5E1;">—</td>';
+    return s + '<td style="' + td + (clic ? 'cursor:pointer;text-decoration:underline dotted;' : '') + '"' + (clic ? ' onclick="' + clic + '" title="Ver qué gastos forman este valor"' : '') + '>' + money(vR) + '</td>' +
+      '<td style="' + td + 'font-weight:700;color:' + (c || '#475569') + ';">' + (c ? '● ' : '') + nf(rm3) + '</td>';
+  }
+  var h = '';
+  // barra de controles
+  h += '<div style="background:#fff;border:1px solid #ccc;border-radius:5px;padding:8px 12px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:10px;">' +
+    '<b style="font-size:14px;color:#1E3A2D;">&#9878; Costo licitado vs real por faena</b>' +
+    '<select onchange="LVR_SEL.mes=this.value;lvrRender()" style="font-size:12px;padding:3px 6px;">' +
+    meses.slice().reverse().map(function(m){ return '<option value="' + m + '"' + (m === mes ? ' selected' : '') + '>' + lvrMesL(m) + '</option>'; }).join('') + '</select>' +
+    '<select onchange="LVR_SEL.ver=this.value;lvrRender()" style="font-size:12px;padding:3px 6px;">' + ['todas'].concat(['Mec 3','Mec 4','Mec 5']).map(function(v){ return '<option value="' + v + '"' + (v === LVR_SEL.ver ? ' selected' : '') + '>' + (v === 'todas' ? 'Faena: todas' : 'Faena: ' + v) + '</option>'; }).join('') + '</select>' +
+    '<label style="font-size:11px;display:flex;gap:4px;align-items:center;"><input type="checkbox"' + (LVR_SEL.prorr ? ' checked' : '') + ' onchange="LVR_SEL.prorr=this.checked;lvrRender()">' +
+    'Repartir gastos sin faena (' + money(comun) + '): ' + REP.lpoo + '% a Lpoo</label>' +
+    '<span style="font-size:11px;display:flex;gap:4px;align-items:center;flex-wrap:wrap;" title="Administración y Taller Lpoo se reparten entre las Mec con estos %. Planilla de costos, hoja RemuAdmTaller.">Reparto Adm. y Taller:' +
+    ['Mec 3','Mec 4','Mec 5','lpoo'].map(function(k){ return (k === 'lpoo' ? ' · sin faena a Lpoo' : ' ' + k) + ' <input type="number" step="1" min="0" max="100" value="' + REP[k] + '" onchange="var v=parseFloat(this.value);if(v>=0)lvrRepSet(\'' + k + '\',v)" style="width:44px;font-size:11px;">%'; }).join('') +
+    (lvrCfg().rep && Object.keys(lvrCfg().rep).length ? ' <button onclick="var c=lvrCfg();delete c.rep;lvrCfgSet(c);lvrRender()" style="font-size:10px;cursor:pointer;">volver a 34/33/33</button>' : '') +
+    (REP['Mec 3'] + REP['Mec 4'] + REP['Mec 5'] !== 100 ? ' <b style="color:#DC2626;">suma ' + (REP['Mec 3'] + REP['Mec 4'] + REP['Mec 5']) + '%</b>' : '') + '</span></div>';
+  // 11-11: cargos que no se reparten porque deben ir a una máquina o faena (leasing en Administración, Transporte Maquinaria)
+  if (PEND.length){
+    var gP = {}; PEND.forEach(function(x){ var k = x.faena + ' · ' + (x.cat || '—') + (x.equipo && !LVR_CENTRAL_RE.test(x.equipo) ? ' · ' + x.equipo : ''); gP[k] = (gP[k] || 0) + x.monto; });
+    var totP = PEND.reduce(function(s, x){ return s + x.monto; }, 0);
+    h += '<div style="background:#FFF7ED;border:1px solid #FDBA74;border-left:5px solid #EA580C;border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:#7C2D12;">' +
+      '<b>Pendiente de asignar a su máquina o faena: ' + money(totP) + '</b> — no se suman a ninguna faena hasta que se carguen donde corresponde en la web ' +
+      '(leasing a la máquina → ítem 1; fletes a la faena → ítem 14).<div style="margin-top:4px;line-height:1.6;">' +
+      Object.keys(gP).sort(function(a, b){ return gP[b] - gP[a]; }).map(function(k){ return k + ': <b>' + money(gP[k]) + '</b>'; }).join(' &nbsp;·&nbsp; ') + '</div></div>';
+  }
+  // tarjetas por faena: VMA, tramo, polinomio
+  h += '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:10px;">';
+  FAS.forEach(function(f){
+    var L = LIC[f]; if (!L) return; var col = colF[f] || '#1E3A2D';
+    h += '<div style="flex:1 1 260px;background:#fff;border:1px solid #ddd;border-left:5px solid ' + col + ';border-radius:6px;padding:8px 10px;font-size:11px;">' +
+      '<div style="font-weight:800;font-size:13px;color:' + col + ';">' + f + ' · tarifa ' + money(L.tarifa) + '/m³ · licitado ' + money(L.ing) + '</div>' +
+      '<div style="color:#64748B;margin:2px 0 6px;">Base ' + money(L.base) + ' × polinomio ' + nf(L.fac, 4) + ' · ' + LVR_EST[f].fuente + '</div>' +
+      'Tramo VMA: <select onchange="lvrSet(\'' + f + '\',\'tramo\',+this.value)" style="font-size:11px;">' +
+      L.T.tramos.map(function(t, i){ return '<option value="' + i + '"' + (i === L.idx ? ' selected' : '') + '>' + String(t.v1).replace('.', ',') + '–' + String(t.v2).replace('.', ',') + ' → ' + nf(t.vol) + ' m³</option>'; }).join('') + '</select> ' +
+      (L.vma != null ? '<span style="color:' + (L.manual ? '#B45309' : '#15803D') + ';" title="' + (L.fuenteVma === 'pagado' ? 'VMA ponderado por m³ de las líneas de producción de la liquidación de Mininco' : 'Todavía no hay liquidación de este mes: VMA de la productividad de Formin') + '">' +
+        (L.fuenteVma === 'pagado' ? 'VMA pagado ' : 'VMA Formin ') + nf(L.vma, 3) + (L.manual ? '' : ' ✓') + '</span>' : '<span style="color:#B45309;">sin VMA del mes</span>') +
+      (L.manual ? ' <button onclick="lvrSet(\'' + f + '\',\'tramo\',null)" style="font-size:10px;cursor:pointer;">auto</button>' : '') +
+      '<div style="margin-top:4px;">Factor polinomio: <input type="number" step="0.0001" value="' + L.fac + '" onchange="var v=parseFloat(this.value);if(v>0)lvrSet(\'' + f + '\',\'fac\',v)" style="width:76px;font-size:11px;"> ' +
+      (L.facManual ? '<button onclick="lvrSet(\'' + f + '\',\'fac\',null)" style="font-size:10px;cursor:pointer;">auto (' + (L.facAuto ? nf(L.facAuto, 4) : '—') + ')</button>' : '<span style="color:#94A3B8;">(del Polinomio de la App)</span>') + '</div></div>';
+  });
+  h += '</div>';
+  // tabla
+  h += '<div style="overflow-x:auto;background:#fff;border:1px solid #ddd;border-radius:6px;"><table style="border-collapse:collapse;width:100%;"><thead><tr><th rowspan="2" style="' + th + 'text-align:left;white-space:normal;">Ítem</th>';
+  FAS.forEach(function(f){ h += '<th colspan="4" style="' + th + 'text-align:center;border-left:2px solid #fff;background:' + (colF[f] || '#1E3A2D') + ';">' + f + ' · ' + nf(M3[f]) + ' m³ reales</th>'; });
+  h += '</tr><tr>';
+  FAS.forEach(function(){ h += '<th style="' + th + 'background:#2F5D46;border-left:2px solid #fff;">Licitado $</th><th style="' + th + 'background:#2F5D46;">$/m³</th><th style="' + th + 'background:#7A5A00;">Real $</th><th style="' + th + 'background:#7A5A00;">$/m³</th>'; });
+  h += '</tr></thead><tbody>';
+  var sinRemu = FAS.filter(function(f){ return !R[f][5]; });
+  LVR_GRUPOS.forEach(function(g){
+    h += '<tr><td colspan="' + (1 + FAS.length * 4) + '" style="' + tdl + 'background:#E8F1EC;font-weight:800;color:#1E3A2D;">' + g.l + '</td></tr>';
+    var its = LVR_ITEMS.filter(function(i){ return i.g === g.k; });
+    its.forEach(function(i){
+      h += '<tr><td style="' + tdl + '"><span style="color:#94A3B8;margin-right:6px;">' + i.n + '</span>' + i.l +
+        (i.n === 5 && sinRemu.length ? ' <span style="color:#B45309;cursor:help;" title="Sin remuneraciones cargadas (pendiente: total de sueldos por faena desde la web). El saldo sale más alto de lo real.">⚠</span>' : '') + '</td>';
+      FAS.forEach(function(f){ var vR = R[f][i.n] || 0; h += celdas(f, LIC[f] ? LIC[f].it[i.n] || 0 : 0, vR, vR ? "LVR_SEL.det={f:'" + f + "',it:" + i.n + "};lvrRender()" : null); });
+      h += '</tr>';
+    });
+    h += '<tr style="background:#F8FAFC;"><td style="' + tdl + 'font-weight:700;">Total ' + g.l.toLowerCase() + '</td>';
+    FAS.forEach(function(f){ h += celdas(f, its.reduce(function(s, i){ return s + (LIC[f] ? LIC[f].it[i.n] || 0 : 0); }, 0), its.reduce(function(s, i){ return s + (R[f][i.n] || 0); }, 0), null); });
+    h += '</tr>';
+  });
+  h += '<tr><td style="' + tdl + 'color:#475569;">Utilidad + impuesto (licitado)</td>';
+  FAS.forEach(function(f){ h += celdas(f, LIC[f] ? LIC[f].util : 0, 0, null, true); });
+  h += '</tr>';
+  var totR = function(f){ return LVR_ITEMS.reduce(function(s, i){ return s + (R[f][i.n] || 0); }, 0); };
+  h += '<tr style="background:#1E3A2D;"><td style="' + tdl + 'color:#fff;font-weight:800;">TOTAL</td>';
+  FAS.forEach(function(f){ var L = LIC[f]; h += '<td style="' + td + 'color:#fff;font-weight:800;">' + money(L ? L.ing : 0) + '</td><td style="' + td + 'color:#CDE5D6;">' + nf(L ? L.tarifa : 0) + '</td>' +
+    '<td style="' + td + 'color:#fff;font-weight:800;">' + money(totR(f)) + '</td><td style="' + td + 'color:#FDE68A;font-weight:800;">' + nf(M3[f] ? totR(f) / M3[f] : 0) + '</td>'; });
+  h += '</tr></tbody></table></div>';
+  // resultado del mes
+  h += '<div style="overflow-x:auto;background:#fff;border:1px solid #ddd;border-radius:6px;margin-top:10px;"><table style="border-collapse:collapse;min-width:100%;"><tr><th style="' + th + 'text-align:left;">Resultado del mes — ' + lvrMesL(mes) + '</th>';
+  FAS.forEach(function(f){ h += '<th colspan="2" style="' + th + 'background:' + (colF[f] || '#1E3A2D') + ';">' + f + '</th><th colspan="2" style="' + th + '">$/m³</th>'; });
+  h += '</tr>';
+  var filaRes = function(txt, a, b){ var s = '<tr><td style="' + tdl + '">' + txt + '</td>'; FAS.forEach(function(f){ s += '<td colspan="2" style="' + td + '">' + a(f) + '</td><td colspan="2" style="' + td + '">' + b(f) + '</td>'; }); return s + '</tr>'; };
+  var colr = function(v){ return v < 0 ? '#DC2626' : '#16A34A'; };
+  h += filaRes('Ingreso real (liquidación)', function(f){ return money(ING[f]); }, function(f){ return M3[f] ? nf(ING[f] / M3[f]) : ''; });
+  h += filaRes('Partidas especiales (multas, premios, ajustes)', function(f){ return money(PE[f]); }, function(){ return ''; });
+  h += filaRes('Saldo $ (ingreso + partidas − costo real)', function(f){ var s = ING[f] + PE[f] - totR(f); return '<b style="color:' + colr(s) + ';">' + money(s) + '</b>'; },
+    function(f){ var s = ING[f] + PE[f] - totR(f); return M3[f] ? '<b style="color:' + colr(s) + ';">' + nf(s / M3[f]) + '</b>' : ''; });
+  h += filaRes('m³ producidos − m³ licitados', function(f){ var d = M3[f] - (LIC[f] ? LIC[f].vol : 0); return '<b style="color:' + colr(d) + ';">' + (d > 0 ? '+' : '') + nf(d) + ' m³</b>'; },
+    function(f){ return nf(M3[f]) + ' / ' + nf(LIC[f] ? LIC[f].vol : 0); });
+  h += '</table></div>';
+  h += '<div style="font-size:10.5px;color:#64748B;margin-top:8px;line-height:1.6;">● verde: $/m³ real bajo el licitado · amarillo: hasta 10% sobre · rojo: más de 10% sobre. ' +
+    'Licitado = tarifa del tramo de VMA (base × polinomio) × volumen licitado del tramo, repartido según el % de cada ítem en la estructura del contrato. ' +
+    'Real = hoja BaseCostosFaena (OC, bodega, combustible, depreciación de activos, diferidos, rendiciones), ÷ m³ de la liquidación. Lo cargado a camionetas, furgones, camión combustible o camión taller va entero a su ítem. ' +
+    (sinRemu.length ? '<b>Sin remuneraciones:</b> el saldo sale más alto de lo real hasta tener el total de sueldos por faena.' : '') + '</div>';
+  // detalle
+  if (LVR_SEL.det){
+    var D = LVR_SEL.det, L2 = (DET[D.f] || {})[D.it] || [], g2 = {};
+    L2.forEach(function(x){ var k = (x.linea === 'comun' || x.linea === 'central' ? '' : x.linea + ' · ') + (x.cat || '—') + (x.equipo && x.linea !== 'central' ? ' · ' + x.equipo : ''); g2[k] = (g2[k] || 0) + x.monto; });
+    var rows = Object.keys(g2).map(function(k){ return [k, g2[k]]; }).sort(function(a, b){ return b[1] - a[1]; });
+    var it = LVR_ITEMS.filter(function(i){ return i.n === D.it; })[0];
+    h += '<div onclick="LVR_SEL.det=null;lvrRender()" style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2147483000;display:flex;align-items:center;justify-content:center;padding:16px;">' +
+      '<div onclick="event.stopPropagation()" style="background:#fff;border-radius:8px;max-width:760px;width:100%;max-height:80vh;overflow:auto;padding:14px 16px;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b>' + D.f + ' · ' + it.n + '. ' + it.l + ' · ' + lvrMesL(mes) + '</b>' +
+      '<button onclick="LVR_SEL.det=null;lvrRender()" style="background:#c0392b;color:#fff;border:0;border-radius:5px;padding:3px 10px;cursor:pointer;">✕</button></div>' +
+      '<table style="width:100%;border-collapse:collapse;">' + rows.map(function(r){ return '<tr><td style="' + tdl + '">' + r[0] + '</td><td style="' + td + '">' + money(r[1]) + '</td></tr>'; }).join('') +
+      '<tr><td style="' + tdl + 'font-weight:800;">Total</td><td style="' + td + 'font-weight:800;">' + money(rows.reduce(function(s, r){ return s + r[1]; }, 0)) + '</td></tr></table>' +
+      '<div style="font-size:10.5px;color:#64748B;margin-top:6px;">Línea · categoría (subcategoría) · cargo, de la hoja BaseCostosFaena.</div></div></div>';
+  }
+  el.innerHTML = h;
+}
+// selector de la ficha: Costo Hora Máq. Detenida / Licitado vs Real (se recuerda)
+function chVista(v){
+  try { localStorage.setItem('chVista', v); } catch(e){}
+  var a = document.getElementById('ch-vista-costo'), b = document.getElementById('ch-vista-lvr');
+  if (a) a.style.display = v === 'lvr' ? 'none' : '';
+  if (b) b.style.display = v === 'lvr' ? '' : 'none';
+  ['costo', 'lvr'].forEach(function(k){ var bt = document.getElementById('ch-btn-' + k); if (bt){ bt.style.background = k === v ? '#1a6b3a' : '#fff'; bt.style.color = k === v ? '#fff' : '#1a6b3a'; } });
+  if (v === 'lvr') lvrRender();
+}
+function chVistaInicial(){ var v = 'costo'; try { v = localStorage.getItem('chVista') || 'costo'; } catch(e){} chVista(v); }
 
 /* ===== Liquidaciones de Mininco (15-10-2026) =====
    Hoja BaseLiquidaciones del Best: la escribe el bot (modo terreno) desde la web Empresas Poo,
@@ -22768,7 +23056,12 @@ var FUNDOS_PLANO = {"101":[-36.94398,-73.11819,"ESCUADRON",3034.7,9],"102":[-36.
 </style>
 <script>
 var MP_NAC = [-37.5022, -72.6730];          // Base: Av. J. Hemmelmann 127, Nacimiento
-var MP_FACTOR_CAMINO = 1.5;                  // km por camino ~ 1,5 x linea recta (Nacimiento-Rucamanqui: 76 km recta, 120 km reales)
+/* km por camino ~ 1,4 x linea recta, calibrado con los traslados reales de trans_traslados (09-11-2026, km cargado):
+   Nacimiento-Las Malvinas 84 recta / ~105 real (1,25) · Samarkanda 67/83 (1,24) · Parcelas Cabrera 47/58-77 (~1,4) ·
+   Santa Cristina 64/80-100 (1,25-1,55) · Rucamanqui 76/120-145 (~1,65) · Caballo de Palo 35/63-65 (1,8).
+   Rango mostrado: x1,25 a x1,7 (cordillera y caminos interiores dan mas). */
+var MP_FACTOR_CAMINO = 1.4, MP_FACTOR_MIN = 1.25, MP_FACTOR_MAX = 1.7;
+var MP_CALC = {a: null, b: null};   // calculadora de distancia: {cod, nom, pos}
 var MP_COLOR = (typeof LIQ_COLOR !== 'undefined') ? LIQ_COLOR : {'Mec 3': '#ef6c00', 'Mec 4': '#27ae60', 'Mec 5': '#2471a3'};
 var MP_MAP = null, MP_CAPAS = {}, MP_D = null, MP_UBICANDO = null, MP_VER = {actual: true, proximo: true, historico: true};
 function mpE(s){ return String(s == null ? '' : s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
@@ -22787,8 +23080,15 @@ function mpCalzaNombre(a, b){   // "L.NIEVES" vs "LAS NIEVES": cada palabra de 3
   return ta.every(function(t){ return tb.some(function(w){ return w.indexOf(t) === 0 || t.indexOf(w) === 0; }); });
 }
 function mpUbicManual(){ try { return JSON.parse(localStorage.getItem('mp_ubic') || '{}'); } catch(e){ return {}; } }
+// 10-11-2026: fundos que NO estan en el plano 2015 y donde trabaja POO, ubicados con el GPS de las maquinas
+// (tabla telemetria_maquinas). Van fijos en la App para que se vean en todos los navegadores (lo puesto a mano queda
+// solo en el navegador de quien lo puso). Formato: cod: [lat, lon, nombre, fuente].
+var MP_UBIC_FIJA = {
+  '2447': [-37.10126, -71.86158, 'EL QUILLAY (VUELO)', 'GPS máquinas Mec 5 (Skidder 15, EG 02, Proc 08) 10-11-2026']
+};
 function mpPos(cod){
   var u = mpUbicManual()[cod]; if (u) return [u[0], u[1]];
+  var x = MP_UBIC_FIJA[cod]; if (x) return [x[0], x[1]];
   var p = (window.FUNDOS_PLANO || {})[cod]; return p ? [p[0], p[1]] : null;
 }
 function mpDatos(){
@@ -22838,13 +23138,22 @@ function mpDatos(){
   // 4) productividad Formin (m3 por rodal): Formin no trae fundo, se saca de la oferta (faena + rodal -> fundo)
   //    o de las cartolas (rodal -> cancha -> fundo). Gustavo 09-11-2026: el ultimo m3 de productividad o la ultima
   //    cartola dicen en que fundo esta hoy la faena.
-  var rodFundo = {};
-  (window.OFERTA_RODAL || []).forEach(function(o){ var c = mpCod(o.fundo); if (c && o.rodal) rodFundo[o.faena + '|' + o.rodal] = c; });
-  Object.keys(F).forEach(function(c){ Object.keys(F[c].fa).forEach(function(fa){ Object.keys(F[c].fa[fa].rod).forEach(function(r){
-    if (!rodFundo[fa + '|' + r] && !/^cancha /.test(c)) rodFundo[fa + '|' + r] = c; }); }); });
+  // OJO: el numero de rodal se repite entre fundos (200401 esta en Manantiales y en Samarkanda): el cruce es por
+  // faena + MES + rodal (oferta del mes y cartolas del mes); faena + rodal solo si ese rodal es de un unico fundo.
+  var rodMes = {}, rodUno = {};
+  var ponRod = function(fa, mes, r, c){ if (!c || !r) return; rodMes[fa + '|' + mes + '|' + r] = c;
+    var k = fa + '|' + r; rodUno[k] = (rodUno[k] === undefined || rodUno[k] === c) ? c : null; };
+  (window.OFERTA_RODAL || []).forEach(function(o){ ponRod(o.faena, o.mes, String(o.rodal || '').trim(), mpCod(o.fundo)); });
+  Object.keys(window.PROD_RODAL || {}).forEach(function(k){
+    var p = k.split('|'), cc = mpCod(p[1]); if (!cc) return;
+    var cf = c2f[+cc] ? String(c2f[+cc]) : (F[cc] ? cc : null); if (!cf) return;
+    var meses = {}; Object.keys(PROD_RODAL[k]).forEach(function(d){ meses[d.substring(0, 7)] = 1; });
+    Object.keys(meses).forEach(function(m){ ponRod(p[0], m, String(p[2] || '').trim(), cf); });
+  });
   (window.FMN_DIAS || []).forEach(function(r){
     var fa = String(r.faena || '').match(/mec\s*(\d)/i); if (!fa || !r.fecha || !r.rodal) return; fa = 'Mec ' + fa[1];
-    var c = rodFundo[fa + '|' + String(r.rodal).trim()]; if (!c || !((+r.arb || 0) > 0 || (+r.m3 || 0) > 0)) return;
+    var rd = String(r.rodal).trim(), c = rodMes[fa + '|' + r.fecha.substring(0, 7) + '|' + rd] || rodUno[fa + '|' + rd];
+    if (!c || !((+r.arb || 0) > 0 || (+r.m3 || 0) > 0)) return;
     var o = faena(fundo(c), fa); rango(o, r.fecha); o.dias[r.fecha] = 1; o.rod[String(r.rodal).trim()] = 1;
     if (!o.d2f || r.fecha > o.d2f) o.d2f = r.fecha;
   });
@@ -22884,16 +23193,43 @@ function mpCargarLeaflet(cb){
   s.onload = cb; s.onerror = function(){ alert('No se pudo cargar el mapa (sin internet o bloqueado): cdnjs.cloudflare.com'); };
   document.head.appendChild(s);
 }
+// 10-11-2026: dentro del sistema de la empresa la App va en un iframe que se estira al alto de TODO su contenido
+// (32.000+ px). Una ventana "a pantalla completa" (position:fixed; inset:0) quedaba de ese alto: el mapa salia centrado
+// 16.000 px mas abajo (se veia Peru) y la bitacora sin su encabezado a la vista. Se ajusta al trozo que el usuario ve.
+var MODAL_IFR = [];
+function modalVisible(el){
+  if (window.self === window.top) return;                       // App sola: la ventana normal ya es la pantalla
+  if (MODAL_IFR.indexOf(el) < 0) MODAL_IFR.push(el);
+  modalVisibleAjustar(el);
+  if (!window.__modalIfrListo){
+    window.__modalIfrListo = true;
+    var aj = function(){ MODAL_IFR.forEach(function(x){ if (x.style.display !== 'none') modalVisibleAjustar(x); }); };
+    try { window.parent.addEventListener('scroll', aj, true); window.parent.addEventListener('resize', aj); } catch(e){}
+  }
+}
+function modalVisibleAjustar(el){
+  var top = 0, h = Math.min(window.innerHeight, 900);
+  try {
+    var r = window.frameElement.getBoundingClientRect(), vh = window.parent.innerHeight;
+    top = Math.max(0, -r.top);                                   // lo que el marco ya subio por arriba de la pantalla
+    h = Math.max(320, vh - Math.max(0, r.top));                  // alto visible del marco
+  } catch(e){ top = window.scrollY || 0; }                      // sin acceso al padre: desde donde esta el usuario
+  el.style.inset = 'auto'; el.style.left = '0'; el.style.right = '0';
+  el.style.top = top + 'px'; el.style.height = h + 'px'; el.style.bottom = 'auto';
+  if (el.id === 'mp-modal' && window.MP_MAP) setTimeout(function(){ try { MP_MAP.invalidateSize(); } catch(e){} }, 50);
+}
 function mpAbrir(){
   var m = document.getElementById('mp-modal');
   if (m.parentNode !== document.body) document.body.appendChild(m);
   m.style.display = ''; document.body.style.overflow = 'hidden';
+  modalVisible(m);
   m.innerHTML = '<div class="mp-wrap"><div class="mp-bar"><b style="font-size:16px;">&#128506; MAPA DE FAENAS</b>' +
     '<input id="mp-buscar" placeholder="Buscar fundo por nombre o código…" style="padding:6px 8px;border-radius:5px;border:0;width:260px;" oninput="mpBuscar(this.value)">' +
     '<label><input type="checkbox" checked onchange="MP_VER.actual=this.checked;mpPintar()"> Actual</label>' +
     '<label><input type="checkbox" checked onchange="MP_VER.proximo=this.checked;mpPintar()"> Próximos (oferta)</label>' +
     '<label><input type="checkbox" checked onchange="MP_VER.historico=this.checked;mpPintar()"> Ya cosechados</label>' +
-    '<button style="margin-left:auto;background:#c0392b;color:#fff;" onclick="mpCerrar()">&#10005; Cerrar</button></div>' +
+    '<button style="margin-left:auto;background:#fff;color:#1f4e78;" onclick="mpExcel()" title="Tabla maestra de fundos: código, nombre, zona, ha, ubicación, cosechas y oferta de POO">&#11015; Tabla de fundos (Excel)</button>' +
+    '<button style="background:#c0392b;color:#fff;" onclick="mpCerrar()">&#10005; Cerrar</button></div>' +
     '<div class="mp-body"><div class="mp-side" id="mp-side">Cargando…</div><div class="mp-map" id="mp-map"></div></div></div>';
   mpCargarLeaflet(function(){
     MP_D = mpDatos();
@@ -22939,6 +23275,8 @@ function mpPopup(f){
     var a = MP_D.F[MP_D.actual[fa].cod]; if (!a || !a.pos || !f.pos || a.cod === f.cod) return;
     var k = mpKm(a.pos, f.pos); h += '<div class="mp-src">Desde donde está hoy ' + fa + ' (' + mpE(a.nom) + '): ' + mpN(k) + ' km recta · ~' + mpN(k * MP_FACTOR_CAMINO) + ' km camino</div>';
   });
+  if (f.pos) h += '<div style="margin-top:5px;"><button onclick="mpCalcPon(\'a\',\'' + mpE(f.cod) + '\')" style="font-size:11px;">Medir desde aquí</button> ' +
+    '<button onclick="mpCalcPon(\'b\',\'' + mpE(f.cod) + '\')" style="font-size:11px;">Medir hasta aquí</button></div>';
   if (f.pos) h += '<div style="margin-top:5px;"><a target="_blank" href="https://www.google.com/maps/dir/?api=1&destination=' + f.pos[0] + ',' + f.pos[1] + '">&#128663; Cómo llegar (Google Maps)</a> · ' +
     '<a target="_blank" href="https://www.google.com/maps/search/?api=1&query=' + f.pos[0] + ',' + f.pos[1] + '">Ver en Google Maps</a></div>';
   if (mpUbicManual()[f.cod]) h += '<div class="mp-src">Ubicación puesta a mano · <a href="#" onclick="mpQuitarUbic(\'' + mpE(f.cod) + '\');return false;">quitar</a></div>';
@@ -22979,7 +23317,7 @@ function mpBuscar(q){
   if (!q){ mpLateral(); return; }
   var res = [];
   Object.keys(window.FUNDOS_PLANO || {}).forEach(function(c){ var p = FUNDOS_PLANO[c]; if (c === q || String(p[2]).toUpperCase().indexOf(q) >= 0) res.push([c, p[2], p[3], p[4]]); });
-  Object.keys(MP_D.F).forEach(function(c){ var f = MP_D.F[c]; if (!(window.FUNDOS_PLANO || {})[c] && (String(f.nom).toUpperCase().indexOf(q) >= 0 || c === q)) res.push([c, f.nom + ' (sin ubicación en el plano)', null, null]); });
+  Object.keys(MP_D.F).forEach(function(c){ var f = MP_D.F[c]; if (!(window.FUNDOS_PLANO || {})[c] && !MP_UBIC_FIJA[c] && (String(f.nom).toUpperCase().indexOf(q) >= 0 || c === q)) res.push([c, f.nom + ' (sin ubicación en el plano)', null, null]); });
   side.innerHTML = '<div class="mp-card"><h4>Resultados (' + res.length + ')</h4>' + res.slice(0, 80).map(function(r){
     return '<div class="mp-item" onclick="mpIr(\'' + mpE(r[0]) + '\')"><b>' + mpE(r[1]) + '</b> <span class="mp-src">' + mpE(r[0]) + (r[3] ? ' · zona ' + r[3] : '') + (r[2] ? ' · ' + mpN(r[2], 1) + ' ha' : '') + '</span></div>'; }).join('') +
     (res.length > 80 ? '<div class="mp-src">… afina la búsqueda</div>' : '') + '</div>';
@@ -22989,9 +23327,78 @@ function mpUbicar(cod){
   MP_UBICANDO = cod; document.getElementById('mp-map').style.cursor = 'crosshair';
   alert('Haz clic en el mapa donde está el fundo ' + cod + '. (Queda guardado en este navegador.)');
 }
+/* ---- Punto 2 (09-11-2026): distancia entre dos puntos para cotizar la cama baja y planificar traslados ---- */
+function mpPunto(cod){   // 'NAC' = base Nacimiento; si no, codigo de fundo (plano, ubicacion manual o fundo de POO)
+  if (cod === 'NAC') return {cod: 'NAC', nom: 'Base Nacimiento', pos: MP_NAC};
+  var f = MP_D && MP_D.F[cod], pos = mpPos(cod) || (f && f.pos), pl = (window.FUNDOS_PLANO || {})[cod];
+  return pos ? {cod: cod, nom: (f && f.nom) || (pl && pl[2]) || cod, pos: pos} : null;
+}
+function mpCalcPon(lado, cod){
+  var p = mpPunto(cod); if (!p){ alert('Ese fundo no tiene ubicación en el mapa.'); return; }
+  MP_CALC[lado] = p; mpCalcPintar();
+}
+function mpCalcOpciones(){
+  var o = [['NAC', 'Base Nacimiento']];
+  Object.keys(MP_D.actual).sort().forEach(function(fa){ var c = MP_D.actual[fa].cod, f = MP_D.F[c]; if (f && f.pos) o.push([c, fa + ' hoy · ' + (f.nom || c)]); });
+  Object.keys(MP_D.F).forEach(function(c){ var f = MP_D.F[c]; if (f.estado === 'proximo' && f.pos) o.push([c, 'Próximo · ' + (f.nom || c) + ' (' + f.faenas.join(', ') + ')']); });
+  return o;
+}
+function mpCalcPintar(){
+  var el = document.getElementById('mp-calc'); if (!el) return;
+  var A = MP_CALC.a, B = MP_CALC.b, h = '';
+  if (A && B){
+    var k = mpKm(A.pos, B.pos);
+    h = '<div style="margin-top:6px;padding:6px;background:#f3f8fd;border-radius:6px;"><b>' + mpE(A.nom) + '</b> → <b>' + mpE(B.nom) + '</b><br>' +
+      'Línea recta: <b>' + mpN(k) + ' km</b><br>Por camino (estimado): <b style="font-size:14px;">~' + mpN(k * MP_FACTOR_CAMINO) + ' km</b> ' +
+      '<span class="mp-src">(entre ' + mpN(k * MP_FACTOR_MIN) + ' y ' + mpN(k * MP_FACTOR_MAX) + ' km)</span><br>' +
+      '<a target="_blank" href="https://www.google.com/maps/dir/?api=1&origin=' + A.pos[0] + ',' + A.pos[1] + '&destination=' + B.pos[0] + ',' + B.pos[1] + '&travelmode=driving">&#128663; Ver la ruta exacta en Google Maps</a></div>';
+    if (MP_MAP){ if (MP_CAPAS.calc) MP_MAP.removeLayer(MP_CAPAS.calc);
+      MP_CAPAS.calc = L.polyline([A.pos, B.pos], {color: '#c0392b', weight: 3, dashArray: '6 6'}).addTo(MP_MAP); }
+  }
+  el.innerHTML = h;
+  ['a', 'b'].forEach(function(l){ var s = document.getElementById('mp-calc-' + l); if (s && MP_CALC[l]) s.value = MP_CALC[l].cod; });
+}
+/* ---- Punto 3 (09-11-2026): tabla maestra de fundos a Excel ---- */
+function mpExcel(){
+  if (typeof XLSX === 'undefined'){ alert('No está disponible la librería de Excel'); return; }
+  var F = MP_D ? MP_D.F : {}, man = mpUbicManual(), filas = [];
+  var cab = ['Código fundo', 'Nombre', 'Zona', 'Hectáreas', 'Latitud', 'Longitud', 'Ubicación', 'Km recta a Nacimiento', 'Km camino aprox.',
+    'Faenas POO', 'Cosecha POO desde', 'Cosecha POO hasta', 'm³ cartolas POO', 'Rodales POO', 'Canchas en cartolas', 'Oferta vigente (meses)', 'Oferta vigente m³', 'Estado', 'Google Maps'];
+  var cods = {}; Object.keys(window.FUNDOS_PLANO || {}).forEach(function(c){ cods[c] = 1; }); Object.keys(F).forEach(function(c){ cods[c] = 1; });
+  Object.keys(cods).sort(function(a, b){ return (parseInt(a.replace(/\D/g, ''), 10) || 0) - (parseInt(b.replace(/\D/g, ''), 10) || 0); }).forEach(function(c){
+    var pl = (window.FUNDOS_PLANO || {})[c], f = F[c], pos = mpPos(c) || (f && f.pos);
+    var d1 = '', d2 = '', m3 = 0, rod = {}, fas = [];
+    if (f) Object.keys(f.fa).forEach(function(fa){ var o = f.fa[fa]; fas.push(fa); if (o.d1 && (!d1 || o.d1 < d1)) d1 = o.d1; if (o.d2 && o.d2 > d2) d2 = o.d2; m3 += o.m3; Object.keys(o.rod).forEach(function(r){ rod[r] = 1; }); });
+    var fut = f ? f.oferta.filter(function(o){ return o.mes >= MP_D.ymHoy; }) : [];
+    var k = pos ? mpKm(MP_NAC, pos) : null;
+    filas.push([c, (f && f.nom) || (pl && pl[2]) || '', pl ? pl[4] : '', pl ? pl[3] : '', pos ? pos[0] : '', pos ? pos[1] : '',
+      man[c] ? 'puesta a mano' : MP_UBIC_FIJA[c] ? MP_UBIC_FIJA[c][3] : pl ? 'plano Mininco 2015' : 'sin ubicación', k != null ? Math.round(k) : '', k != null ? Math.round(k * MP_FACTOR_CAMINO) : '',
+      (f ? f.faenas : []).join(', '), d1, d2, Math.round(m3) || '', Object.keys(rod).join(', '), f ? Object.keys(f.canchas).map(function(x){ return f.canchas[x] + ' ' + x; }).join(', ') : '',
+      fut.map(function(o){ return o.mes; }).join(', '), fut.reduce(function(s, o){ return s + o.total; }, 0) || '',
+      f ? ({actual: 'Faena hoy', proximo: 'Próximo', historico: 'Cosechado'}[f.estado] || '') : '',
+      pos ? 'https://www.google.com/maps/search/?api=1&query=' + pos[0] + ',' + pos[1] : '']);
+  });
+  var ws = XLSX.utils.aoa_to_sheet([cab].concat(filas)), wb = XLSX.utils.book_new();
+  ws['!cols'] = [10, 34, 6, 10, 10, 10, 16, 10, 10, 14, 12, 12, 12, 22, 26, 16, 12, 12, 40].map(function(w){ return {wch: w}; });
+  ws['!autofilter'] = {ref: 'A1:S' + (filas.length + 1)};
+  XLSX.utils.book_append_sheet(wb, ws, 'Fundos');
+  var info = XLSX.utils.aoa_to_sheet([['Tabla maestra de fundos'], ['Ubicación: plano "Ubicación Fundos CMPC Forestal" 2014-2015 (WGS84 huso 18), punto aproximado del fundo.'],
+    ['Código = código de FUNDO (fijo). Las cartolas traen el código de CANCHA, que a veces es otro: ver la columna "Canchas en cartolas".'],
+    ['Km camino aprox. = 1,4 x línea recta (calibrado con los traslados reales del módulo Transporte). Para el valor exacto, usar Google Maps.'],
+    ['Generada el ' + new Date().toLocaleDateString('es-CL') + ' desde la App OEE.']]);
+  XLSX.utils.book_append_sheet(wb, info, 'Nota');
+  XLSX.writeFile(wb, 'Tabla_maestra_fundos_' + new Date().toISOString().substring(0, 10) + '.xlsx');
+}
 function mpLateral(){
   var side = document.getElementById('mp-side'); if (!side || !MP_D) return;
   var F = MP_D.F, h = '';
+  // calculadora de distancia (punto 2)
+  var op = mpCalcOpciones().map(function(o){ return '<option value="' + mpE(o[0]) + '">' + mpE(o[1]) + '</option>'; }).join('');
+  h += '<div class="mp-card" style="border-left:5px solid #c0392b;"><h4>&#128207; Distancia para traslado</h4>' +
+    '<div style="display:grid;grid-template-columns:44px minmax(0,1fr);gap:4px;align-items:center;">' +
+    '<span>Desde</span><select id="mp-calc-a" style="width:100%;min-width:0;" onchange="mpCalcPon(\'a\',this.value)"><option value="">— elegir —</option>' + op + '</select>' +
+    '<span>Hasta</span><select id="mp-calc-b" style="width:100%;min-width:0;" onchange="mpCalcPon(\'b\',this.value)"><option value="">— elegir —</option>' + op + '</select></div>' +
+    '<div class="mp-src">Cualquier otro fundo: búscalo arriba o haz clic en él y usa "Medir desde / hasta aquí".</div><div id="mp-calc"></div></div>';
   // aviso si los datos cargados estan atrasados o son de antes del mapa (sin fecha de captura de la oferta)
   var ultPl = (window.BHT_DIAS || []).reduce(function(m, r){ return r.fecha > m ? r.fecha : m; }, '');
   var hace3 = new Date(Date.now() - 3 * 864e5).toISOString().substring(0, 10);
@@ -23005,8 +23412,8 @@ function mpLateral(){
     var prox = Object.keys(F).map(function(c){ return F[c]; }).filter(function(f){ return f.estado === 'proximo' && f.oferta.some(function(o){ return o.faena === fa && o.mes >= MP_D.ymHoy; }); });
     h += '<div class="mp-card" style="border-left:5px solid ' + col + ';"><h4 style="color:' + col + ';">' + fa + '</h4>';
     if (a){ var o = a.fa[fa];
-      h += '<div class="mp-item" onclick="mpIr(\'' + mpE(a.cod) + '\')"><b>Hoy:</b> ' + mpE(a.nom || a.cod) + ' <span class="mp-src">(' + mpE(a.cod) + ')</span><br><span class="mp-src">último dato ' + mpF(MP_D.actual[fa].d2) + ' (' + MP_D.actual[fa].fuente + ') · desde ' + mpF(o.d1) + ' · ' + mpN(o.m3) + ' m³ en cartolas' +
-           (a.pos ? ' · ' + mpN(mpKm(MP_NAC, a.pos)) + ' km recta a Nacimiento' : ' · sin ubicación') + '</span></div>'; }
+      h += '<div class="mp-item" onclick="' + (a.pos ? 'mpIr' : 'mpUbicar') + '(\'' + mpE(a.cod) + '\')"><b>Hoy:</b> ' + mpE(a.nom || a.cod) + ' <span class="mp-src">(' + mpE(a.cod) + ')</span><br><span class="mp-src">último dato ' + mpF(MP_D.actual[fa].d2) + ' (' + MP_D.actual[fa].fuente + ') · desde ' + mpF(o.d1) + ' · ' + mpN(o.m3) + ' m³ en cartolas' +
+           (a.pos ? ' · ' + mpN(mpKm(MP_NAC, a.pos)) + ' km recta a Nacimiento' : ' · <b style="color:#c0392b;">no está en el plano: no se dibuja en el mapa (clic para ponerla)</b>') + '</span></div>'; }
     else h += '<div class="mp-src">Sin registro en los últimos 10 días.</div>';
     prox.forEach(function(f){
       var of = f.oferta.filter(function(o){ return o.faena === fa && o.mes >= MP_D.ymHoy; }), tot = of.reduce(function(s, o){ return s + o.total; }, 0);
@@ -23021,8 +23428,9 @@ function mpLateral(){
   if (sin.length) h += '<div class="mp-card"><h4>Sin ubicación en el plano (' + sin.length + ')</h4><div class="mp-src">Fundos posteriores a 2015 o canchas sin fundo conocido. Clic para marcarlos en el mapa.</div>' +
     sin.map(function(f){ return '<div class="mp-item" onclick="mpUbicar(\'' + mpE(f.cod) + '\')">' + mpE(f.nom || f.cod) + ' <span class="mp-src">(' + mpE(f.cod) + ') · ' + f.faenas.join(', ') + '</span></div>'; }).join('') + '</div>';
   h += '<div class="mp-src">Ubicación: plano "Ubicación Fundos CMPC Forestal" 2015 (punto aprox. del fundo). Km por camino ≈ ' + MP_FACTOR_CAMINO + ' × línea recta. ' +
-       'Fuentes: oferta por rodal, planilla de horas y cartolas. Fundo actual = el de la planilla o cartola más reciente (últimos 10 días).</div>';
+       'Fuentes: oferta por rodal, planilla de horas, productividad Formin y cartolas. Fundo actual = el del dato más reciente (últimos 10 días).</div>';
   side.innerHTML = h;
+  mpCalcPintar();
 }
 document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && document.getElementById('mp-modal') && document.getElementById('mp-modal').style.display !== 'none') mpCerrar(); });
 window.addEventListener('resize', function(){ if (MP_MAP && document.getElementById('mp-modal').style.display !== 'none') MP_MAP.invalidateSize(); });
@@ -23096,6 +23504,7 @@ function btAbrir(){
   if (bm.parentNode !== document.body) document.body.appendChild(bm);   // fuera de cualquier contenedor de la App
   bm.style.display = '';
   document.body.style.overflow = 'hidden';
+  modalVisible(bm);
   btRender();
 }
 function btCerrar(){ document.getElementById('bt-modal').style.display = 'none'; document.body.style.overflow = ''; }
@@ -23458,6 +23867,7 @@ document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && docu
 .sf-c{display:inline-block;width:18px;height:18px;line-height:18px;border-radius:4px;font-weight:800;font-size:11px;}
 .sf-ok{background:#d9f2e1;color:#1a6b3a;} .sf-falta{background:#c0392b;color:#fff;} .sf-aviso{background:#f6d58e;color:#7a5200;}
 .sf-plazo{background:#dbeafe;color:#1e40af;} .sf-nt{background:#f1f3f2;color:#b5bcb8;}
+.sf-just{background:#e8e3f5;color:#5b3fa0;}
 .sf-dom{background:#fbf7ee;}
 .sf-lista{margin:4px 0 0;padding-left:18px;}
 .sf-lista li{margin:3px 0;}
@@ -23487,7 +23897,9 @@ function sfDatos(){
   var S = {}; SF_FAENAS.forEach(function(f){ S[f] = {F: {}, P: {}, C: {}, W: {}, K: {}}; });
   var pon = function(f, k, d){ f = sfFa(f); if (S[f] && d && d.length >= 10) S[f][k][d.substring(0, 10)] = 1; };
   (window.FMN_DIAS || []).forEach(function(r){ pon(r.faena, 'F', r.fecha); });
-  (window.BHT_DIAS || []).forEach(function(r){ pon(r.faena, 'P', r.fecha); });
+  (window.BHT_DIAS || []).forEach(function(r){ pon(r.faena, 'P', r.fecha);
+    // horas de Clasificado del dia (Gustavo 10-11-2026: sin clasificar no hay cartola; ej. Mec 5 05-06-11, garra EG 11 en R77)
+    var f = sfFa(r.faena); if (S[f] && r.fecha && /clasific/i.test(r.proceso || '')){ S[f].CL = S[f].CL || {}; var d = r.fecha.substring(0, 10); S[f].CL[d] = (S[f].CL[d] || 0) + (+r.hrs || 0); } });
   var bd = window.BEST_DAILY || {};
   Object.keys(bd).forEach(function(f){ Object.keys(bd[f] || {}).forEach(function(d){ if ((bd[f][d] && bd[f][d].m3) > 0) pon(f, 'C', d); }); });
   var fj = window.FAJA_DAILY || {}; Object.keys(fj).forEach(function(d){ if (fj[d] > 0) pon('Faja', 'C', d); });
@@ -23519,7 +23931,7 @@ function sfRender(){
     '<span style="color:#666;">Últimos ' + SF_DIAS + ' días: ' + sfFmt(dias[0]) + ' al ' + sfFmt(hoyI) + '</span>' +
     '<span style="margin-left:auto;font-size:11px;">' +
     '<span class="sf-c sf-ok">&#10003;</span> llegó &nbsp; <span class="sf-c sf-falta">&#10007;</span> falta (día con oferta) &nbsp;' +
-    '<span class="sf-c sf-aviso">!</span> sin registro ese día &nbsp; <span class="sf-c sf-plazo">&middot;</span> en plazo (hoy; cartolas: 3 días solo al inicio del mes) &nbsp;<span class="sf-c sf-nt"></span> sin oferta (no se trabaja)</span></div>';
+    '<span class="sf-c sf-aviso">!</span> sin registro ese día &nbsp; <span class="sf-c sf-just">J</span> justificado (sin clasificación ese día) &nbsp; <span class="sf-c sf-plazo">&middot;</span> en plazo (hoy; cartolas: 3 días solo al inicio del mes) &nbsp;<span class="sf-c sf-nt"></span> sin oferta (no se trabaja)</span></div>';
   if (!hayDatos) { p.innerHTML = h + '<div class="sf-card" style="color:#888;">Todavía no hay datos cargados. Carga el Excel o espera a que la App termine de leer la base.</div></div>'; return; }
   var resumen = [], detalle = '';
   SF_FAENAS.forEach(function(f){
@@ -23538,6 +23950,8 @@ function sfRender(){
     }
     var estado = function(x, d){
       if (D[x.k][d]) return 'ok';
+      // cartola justificada: hubo planilla ese dia y Clasificado trabajo menos de 2 h (clasificadora detenida o en falla)
+      if (x.k === 'C' && f !== 'Faja' && D.P[d] && ((D.CL || {})[d] || 0) < 2 && d < hoyI) return 'just';
       // Gustavo 03-11-2026: solo la cartola tiene plazo (3 dias, y solo al inicio del mes); lo demas debe estar al dia
       if (d >= ((x.plazoIniMes && hoy.getDate() <= x.plazoIniMes) ? dias[dias.length - 1 - x.plazoIniMes] : hoyI)) return 'plazo';
       if (!trabajo[d]) return 'nt';
@@ -23563,7 +23977,7 @@ function sfRender(){
       return '<tr><td class="sf-src">' + x.n + (ult ? '<br><span style="font-weight:400;color:#888;font-size:10px;">último dato: ' + sfFmt(ult) + '</span>' : '') + '</td>' +
         dias.map(function(d){ var e = estado(x, d);
           return '<td class="' + (sfDow(d) === 0 ? 'sf-dom' : '') + '"><span class="sf-c sf-' + e + '" title="' + x.n + ' · ' + SF_DSEM[sfDow(d)] + ' ' + sfFmt(d) + '">' +
-            (e === 'ok' ? '&#10003;' : e === 'falta' ? '&#10007;' : e === 'aviso' ? '!' : e === 'plazo' ? '&middot;' : '') + '</span></td>'; }).join('') + '</tr>';
+            (e === 'ok' ? '&#10003;' : e === 'falta' ? '&#10007;' : e === 'aviso' ? '!' : e === 'plazo' ? '&middot;' : e === 'just' ? 'J' : '') + '</span></td>'; }).join('') + '</tr>';
     }).join('');
     // los dias que faltan, escritos, y si se repite el mismo dia de la semana
     var items = fuentes.filter(function(x){ return faltas[x.k].length; }).map(function(x){
@@ -23652,6 +24066,9 @@ function sfRender(){
         var liqNuevo=false;
         if(ds.liq&&ds.liq.length){ try{ LIQ=ds.liq; liqNuevo=true; }catch(e){} }
         if(ds.ofcamb&&ds.ofcamb.length){ try{ OFERTA_CAMBIOS=ds.ofcamb; }catch(e){} }
+        // Build 11-11-2026: costos reales por faena y mes (hoja BaseCostosFaena → COSTOS_FAENA) para la vista 'Licitado vs Real'
+        // de la ficha Costo Hora Máq. Detenida. Si esa vista está a la vista, se repinta.
+        if(ds.costos_faena&&ds.costos_faena.length){ try{ COSTOS_FAENA=ds.costos_faena; var lv=document.getElementById('ch-vista-lvr'); if(lv&&lv.offsetParent!==null&&typeof lvrRender==='function') lvrRender(); }catch(e){} }
         // Build 04-11-2026: turnos por máquina de 'Disponibilidad por máquina' (EST_DISP). La App los guarda en localStorage;
         // el ERP los reparte desde la base (clave est_disp) para que todos vean los mismos turnos.
         if(ds.est_disp&&typeof ds.est_disp==='object'&&Object.keys(ds.est_disp).length){ try{ localStorage.setItem('EST_DISP',JSON.stringify(ds.est_disp)); if(typeof estRender==='function') estRender(); }catch(e){} }
@@ -23732,11 +24149,35 @@ function sfRender(){
   // contenido, así que 'centrado' quedaría fuera de pantalla. Se ubican en la franja visible del iframe según el scroll de la
   // página contenedora. Si una versión futura agrega OTRO modal fixed, sumarlo a AJ_MODALES.
   var AJ_MODALES=['rn-modal','rs-modal'];
+  // Franja del marco que el usuario realmente ve, en coordenadas del marco: la pantalla del padre recortada por cada
+  // contenedor con scroll u overflow oculto que envuelve al iframe (en el ERP, .content empieza bajo el encabezado).
+  function franjaVisible(){
+    var fe=window.frameElement; if(!fe||parent===window) return null;
+    var r=fe.getBoundingClientRect(), vt=0, vb=parent.innerHeight||800, n=fe.parentElement, pd=parent.document;
+    while(n&&n!==pd.body&&n!==pd.documentElement){
+      var oy=parent.getComputedStyle(n).overflowY;
+      if(oy==='auto'||oy==='scroll'||oy==='hidden'||oy==='clip'){ var q=n.getBoundingClientRect(); if(q.top>vt) vt=q.top; if(q.bottom<vb) vb=q.bottom; }
+      n=n.parentElement;
+    }
+    var top=Math.max(0,vt-r.top), bot=Math.min(r.height,vb-r.top);
+    return {top:Math.round(top), h:Math.round(Math.max(0,bot-top))};
+  }
+  // Reemplaza modalVisibleAjustar de la App (mapa y bitácora): el fuente la resuelve como global al llamar.
+  (function(){
+    var orig=window.modalVisibleAjustar; if(typeof orig!=='function') return;
+    window.modalVisibleAjustar=function(el){
+      var f=null; try{ f=franjaVisible(); }catch(e){}
+      if(!f||f.h<200) return orig.apply(this,arguments);
+      el.style.inset='auto'; el.style.left='0'; el.style.right='0'; el.style.bottom='auto';
+      el.style.top=f.top+'px'; el.style.height=f.h+'px';
+      if(el.id==='mp-modal'&&window.MP_MAP) setTimeout(function(){ try{ window.MP_MAP.invalidateSize(); }catch(e){} },50);
+    };
+  })();
   function ajModal(){
     try{
       var fe=window.frameElement; if(!fe||parent===window) return;
-      var r=fe.getBoundingClientRect(), vh=parent.innerHeight||800;
-      var visTop=Math.max(0,-r.top), visH=Math.max(200,Math.min(r.bottom,vh)-Math.max(r.top,0));
+      var fv=franjaVisible(); if(!fv) return;
+      var visTop=fv.top, visH=Math.max(200,fv.h);
       AJ_MODALES.forEach(function(id){
         var m=document.getElementById(id); if(!m||m.style.display!=='flex') return;
         var box=m.firstElementChild; if(!box) return;
