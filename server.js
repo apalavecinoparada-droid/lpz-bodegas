@@ -843,6 +843,9 @@ async function autoSetup() {
   // Factor de conversion (v2.3)
   await q(`ALTER TABLE productos ADD COLUMN IF NOT EXISTS unidad_compra VARCHAR(30)`);
   await q(`ALTER TABLE productos ADD COLUMN IF NOT EXISTS factor_conversion NUMERIC(10,4) DEFAULT 1`);
+  // Códigos de barras / QR asociados a cada producto (Andrés 2026-11-11): N por producto, cada código en un solo producto
+  await q(`CREATE TABLE IF NOT EXISTS producto_codigos (id SERIAL PRIMARY KEY, producto_id INT NOT NULL REFERENCES productos(producto_id) ON DELETE CASCADE, codigo VARCHAR(120) NOT NULL UNIQUE, tipo VARCHAR(20) DEFAULT 'barras', usuario VARCHAR(100), creado_en TIMESTAMP DEFAULT NOW())`);
+  await q(`CREATE INDEX IF NOT EXISTS producto_codigos_prod_idx ON producto_codigos(producto_id)`);
   // ── Control de Combustibles (v3.0) ──────────────────────────────────────
   await q(`CREATE TABLE IF NOT EXISTS tipos_documento (tipo_doc_id SERIAL PRIMARY KEY, codigo VARCHAR(10) NOT NULL UNIQUE, nombre VARCHAR(80) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true)`);
   await q(`CREATE TABLE IF NOT EXISTS motivos_movimiento (motivo_id SERIAL PRIMARY KEY, nombre VARCHAR(100) NOT NULL, tipo VARCHAR(20) NOT NULL, activo BOOLEAN NOT NULL DEFAULT true)`);
@@ -1790,7 +1793,7 @@ app.use('/api/proveedores', prvR);
 
 // PRODUCTOS con delete
 const prR=express.Router();
-prR.get('/', auth, async(req,res)=>{try{res.json((await pool.query('SELECT p.*,sc.nombre AS subcategoria_nombre,ca.categoria_id,ca.nombre AS categoria_nombre FROM productos p JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id JOIN categorias ca ON sc.categoria_id=ca.categoria_id ORDER BY p.nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
+prR.get('/', auth, async(req,res)=>{try{res.json((await pool.query('SELECT p.*,(SELECT COUNT(*) FROM producto_codigos pc WHERE pc.producto_id=p.producto_id)::int AS n_codigos,sc.nombre AS subcategoria_nombre,ca.categoria_id,ca.nombre AS categoria_nombre FROM productos p JOIN subcategorias sc ON p.subcategoria_id=sc.subcategoria_id JOIN categorias ca ON sc.categoria_id=ca.categoria_id ORDER BY p.nombre')).rows);}catch(e){res.status(500).json({error:e.message});}});
 prR.get('/:id', auth, async(req,res)=>{try{res.json((await pool.query('SELECT * FROM productos WHERE producto_id=$1',[req.params.id])).rows[0]);}catch(e){res.status(500).json({error:e.message});}});
 prR.post('/', auth, async(req,res)=>{
   try{
@@ -1819,6 +1822,69 @@ prR.delete('/:id', auth, async(req,res)=>{
     if(parseInt(oc.rows[0].count)>0) return res.status(409).json({error:'No se puede eliminar: el producto esta en ordenes de compra.'});
     await pool.query('DELETE FROM stock_actual WHERE producto_id=$1',[req.params.id]);
     await pool.query('DELETE FROM productos WHERE producto_id=$1',[req.params.id]);
+    res.json({ok:true});
+  }catch(e){res.status(400).json({error:e.message});}
+});
+// ══ Códigos de barras / QR de productos (Andrés 2026-11-11) ══
+// producto_codigos: N códigos por producto (el de barras del envase, otro del proveedor, etc.), cada código en un solo producto.
+// Además el sistema reconoce sin guardar nada: el QR interno 'POO-P-<producto_id>' (etiquetas que imprime el ERP) y el
+// código propio del producto (productos.codigo / codigo_alternativo).
+function prodCodNorm(s){ return String(s==null?'':s).replace(/[\u0000-\u001F\u007F]/g,'').trim().slice(0,120); }
+function prodCodPuede(req){ const u=req.user||{}; if(u.es_admin) return true; const m=u.modulos||[]; return !m.length||m.indexOf('inventario')>=0||m.indexOf('mantenedores')>=0; }
+async function prodCodResolver(codigo){
+  const c=prodCodNorm(codigo); if(!c) return null;
+  // un UPC-A (12 dígitos) se lee a veces como EAN-13 con un cero delante, y al revés: se prueban las dos formas
+  const cand=[c]; if(/^\d+$/.test(c)){ if(c.length===12) cand.push('0'+c); if(c.length===13&&c[0]==='0') cand.push(c.slice(1)); }
+  let r=await pool.query('SELECT producto_id,codigo FROM producto_codigos WHERE codigo=ANY($1) OR UPPER(codigo)=UPPER($2) ORDER BY id LIMIT 1',[cand,c]);
+  if(r.rows.length) return {producto_id:r.rows[0].producto_id,via:'codigo',codigo:r.rows[0].codigo};
+  const m=/^POO-P-(\d{1,9})$/i.exec(c); if(m) return {producto_id:parseInt(m[1]),via:'qr',codigo:c.toUpperCase()};
+  r=await pool.query('SELECT producto_id FROM productos WHERE UPPER(codigo)=UPPER($1) OR (codigo_alternativo IS NOT NULL AND UPPER(codigo_alternativo)=UPPER($1)) ORDER BY activo DESC,producto_id LIMIT 1',[c]);
+  if(r.rows.length) return {producto_id:r.rows[0].producto_id,via:'producto',codigo:c};
+  return null;
+}
+// ¿A qué producto corresponde este código? Devuelve el producto y su stock por bodega (para la salida/traspaso con escáner)
+app.get('/api/prod-codigos/buscar', auth, async(req,res)=>{
+  try{
+    const leido=prodCodNorm(req.query.codigo); if(!leido) return res.status(400).json({error:'Falta el código'});
+    const hit=await prodCodResolver(leido); if(!hit) return res.status(404).json({error:'Código no registrado',codigo:leido,no_registrado:true});
+    const p=await pool.query('SELECT p.producto_id,p.codigo,p.nombre,p.unidad_medida,p.activo,sc.nombre AS subcategoria_nombre FROM productos p LEFT JOIN subcategorias sc ON sc.subcategoria_id=p.subcategoria_id WHERE p.producto_id=$1',[hit.producto_id]);
+    if(!p.rows.length) return res.status(404).json({error:'El código apunta a un producto que ya no existe',codigo:leido});
+    const st=await pool.query('SELECT s.bodega_id,b.nombre AS bodega_nombre,s.cantidad_disponible,s.costo_promedio_actual FROM stock_actual s JOIN bodegas b ON b.bodega_id=s.bodega_id WHERE s.producto_id=$1 AND s.cantidad_disponible>0 ORDER BY b.nombre',[hit.producto_id]);
+    res.json({producto:p.rows[0],via:hit.via,codigo:leido,stock:st.rows});
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.get('/api/prod-codigos', auth, async(req,res)=>{
+  try{
+    const pid=parseInt(req.query.producto_id)||null;
+    const r=await pool.query(`SELECT pc.id,pc.producto_id,pc.codigo,pc.tipo,pc.usuario,pc.creado_en,p.codigo AS producto_codigo,p.nombre AS producto_nombre
+      FROM producto_codigos pc JOIN productos p ON p.producto_id=pc.producto_id ${pid?'WHERE pc.producto_id=$1':''} ORDER BY p.nombre,pc.id`,pid?[pid]:[]);
+    res.json(r.rows);
+  }catch(e){res.status(500).json({error:e.message});}
+});
+app.post('/api/prod-codigos', auth, async(req,res)=>{
+  try{
+    if(!prodCodPuede(req)) return res.status(403).json({error:'Sin permiso para asociar códigos a productos'});
+    const pid=parseInt(req.body&&req.body.producto_id); const c=prodCodNorm(req.body&&req.body.codigo);
+    if(!pid||!c) return res.status(400).json({error:'Faltan el producto y el código'});
+    if(c.length<3) return res.status(400).json({error:'El código es demasiado corto'});
+    const p=await pool.query('SELECT producto_id,nombre FROM productos WHERE producto_id=$1',[pid]); if(!p.rows.length) return res.status(404).json({error:'El producto no existe'});
+    if(/^POO-P-\d+$/i.test(c)) return res.status(400).json({error:'Ese es un QR interno del sistema: ya identifica a su producto y no hace falta asociarlo'});
+    const hit=await prodCodResolver(c);
+    if(hit){
+      if(hit.producto_id===pid) return res.json({ok:true,ya_estaba:true,producto_id:pid,codigo:c});
+      const o=await pool.query('SELECT codigo,nombre FROM productos WHERE producto_id=$1',[hit.producto_id]); const on=o.rows[0]?(o.rows[0].codigo+' — '+o.rows[0].nombre):('producto '+hit.producto_id);
+      return res.status(409).json({error:'Ese código ya pertenece a '+on,producto_id:hit.producto_id});
+    }
+    const t=String(req.body.tipo||'').toLowerCase(); const tipo=['barras','qr','otro'].includes(t)?t:(/^\d{8,14}$/.test(c)?'barras':'otro');
+    const r=await pool.query('INSERT INTO producto_codigos(producto_id,codigo,tipo,usuario) VALUES($1,$2,$3,$4) RETURNING *',[pid,c,tipo,req.user.email]);
+    res.status(201).json(Object.assign({ok:true},r.rows[0]));
+  }catch(e){ res.status(400).json({error:/producto_codigos_codigo_key|duplicate key/i.test(e.message)?'Ese código ya está asociado a un producto':e.message}); }
+});
+app.delete('/api/prod-codigos/:id', auth, async(req,res)=>{
+  try{
+    if(!prodCodPuede(req)) return res.status(403).json({error:'Sin permiso para quitar códigos de productos'});
+    const r=await pool.query('DELETE FROM producto_codigos WHERE id=$1 RETURNING id',[parseInt(req.params.id)||0]);
+    if(!r.rows.length) return res.status(404).json({error:'El código no existe'});
     res.json({ok:true});
   }catch(e){res.status(400).json({error:e.message});}
 });
