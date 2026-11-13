@@ -1,0 +1,1180 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Producción Emprecon SpA</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+/* App Emprecon SpA (caminos + faja). Va APARTE de la App de Leonidas Poo Zenteno: nunca se mezclan los datos.
+   Mismo estilo que la ficha "Produc. Diaria Faenas" de la App OEE, con color tierra para no confundirlas. */
+:root{--c1:#7a4a1e;--c2:#b0702f;--ok:#1a6b3a;--bad:#c0392b;--bg:#f4f1ec;}
+*{box-sizing:border-box;}
+body{margin:0;font-family:Segoe UI,Arial,sans-serif;background:var(--bg);color:#222;font-size:12px;}
+.wrap{max-width:1500px;margin:0 auto;padding:12px 16px 40px;}
+.top{background:linear-gradient(135deg,#4a2c10 0%,var(--c1) 55%,var(--c2) 100%);border-radius:10px;padding:12px 18px;color:#fff;display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px;}
+.top h1{font-size:17px;margin:0;}
+.top .sub{font-size:10.5px;opacity:.85;}
+.btn{background:#fff;color:var(--c1);border:0;border-radius:6px;padding:6px 12px;font-size:11.5px;font-weight:700;cursor:pointer;}
+.btn.sec{background:rgba(255,255,255,.15);color:#fff;border:1px solid rgba(255,255,255,.5);}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;}
+.tab{background:#fff;border:1px solid #d8cfc3;border-radius:7px;padding:7px 14px;font-size:12px;font-weight:700;color:#6b5a48;cursor:pointer;}
+.tab.on{background:var(--c1);color:#fff;border-color:var(--c1);}
+.ctl{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#fff;border:1px solid #ddd;border-radius:7px;padding:8px 12px;margin-bottom:10px;}
+.ctl select,.ctl input{font-size:12px;padding:3px 6px;}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:10px;}
+.kpi{background:#fff;border:1px solid #ddd;border-radius:7px;padding:9px 12px;position:relative;overflow:hidden;}
+.kpi::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--k,#b0702f);}
+.kpi .l{font-size:9px;color:#888;text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px;}
+.kpi .v{font-size:21px;font-weight:800;}
+.kpi .s{font-size:9.5px;color:#999;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;}
+.card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:10px;}
+.ct{font-size:12px;font-weight:700;color:var(--c1);margin-bottom:6px;}
+table.t{width:100%;border-collapse:collapse;font-size:10.5px;}
+.t th{background:var(--c1);color:#fff;padding:4px 4px;font-size:9.5px;font-weight:600;position:sticky;top:0;z-index:1;text-align:right;white-space:normal;line-height:1.15;vertical-align:bottom;min-width:52px;max-width:84px;}
+.t td{padding:3px 4px !important;}
+/* 12-11: líneas de color en el Resumen diario (cada faena con su color, como cosecha) */
+.t.res{border:2px solid #5b3a1a;}
+.t.res th{border:1px solid rgba(255,255,255,.35);}
+.t.res td{border-bottom:1px solid #e6d8c4;border-right:1px solid #eee3d4;}
+.t.res tbody tr:nth-child(even) td{background-image:linear-gradient(rgba(176,112,47,.05),rgba(176,112,47,.05));}
+.t.res td:nth-child(1){border-right:2px solid #5b3a1a;}
+.t.res td:nth-child(2){border-right:2px solid #8a5a2b;background-color:rgba(138,90,43,.06);}
+.t.res td:nth-child(3),.t.res td:nth-child(4),.t.res td:nth-child(5){background-color:rgba(36,113,163,.05);border-right:1px solid rgba(36,113,163,.30);border-bottom-color:rgba(36,113,163,.22);}
+.t.res td:nth-child(5){border-right:2px solid #2471a3;}
+.t.res td:nth-child(6){border-right:2px solid #1a6b3a;background-color:rgba(26,107,58,.06);border-bottom-color:rgba(26,107,58,.22);}
+.t.res td:nth-child(7){border-right:1px solid rgba(138,90,43,.35);background-color:rgba(138,90,43,.04);}
+.t.res td:nth-child(8){background-color:rgba(26,107,58,.04);}
+.t.res tr.tot td{background-color:#f3e7d8 !important;border-top:2px solid #5b3a1a;}
+.t.res tbody tr:hover td{background-color:#fbefdd;}
+.t.resG{width:100%;max-width:none;}
+.t.resG th{font-size:14px;padding:7px 10px;max-width:none;min-width:90px;text-align:center;}
+.t.resG td{font-size:17px;padding:7px 14px !important;}
+.t.resG td:first-child{font-size:16px;}
+.t.resG tr.tot td{font-size:17px;font-weight:800;}
+.t.res2{border:2px solid #5b3a1a;}
+.t.res2 td{border-bottom:1px solid #e6d8c4;border-right:1px solid #eee3d4;}
+.t.res2 th{border:1px solid rgba(255,255,255,.35);}
+.t.res2 tr.grp td{text-align:left;font-size:11px;letter-spacing:.3px;}
+.t.res2 tbody tr:hover td{background:#fbefdd;}
+.t th:first-child{text-align:left;}
+.t td{padding:4px 6px;border-bottom:1px solid #f0ebe4;text-align:right;white-space:nowrap;}
+.t td:first-child{text-align:left;font-weight:700;color:#555;}
+.t tr.dia{cursor:pointer;}
+.t tr.dia:hover td{background:#fbf3e9;}
+.t tr.tot td{background:#f3e7d8;font-weight:800;border-top:2px solid var(--c1);}
+.t tr.dom td{color:#aaa;}
+.ok{color:var(--ok);font-weight:700;} .bad{color:var(--bad);font-weight:700;}
+.nota{font-size:10.5px;color:#6b5a48;background:#fff8ee;border:1px solid #ecd9bf;border-radius:6px;padding:6px 10px;margin-bottom:10px;}
+.vacio{background:#fff;border:1px dashed #c9b79f;border-radius:8px;padding:30px;text-align:center;color:#6b5a48;font-size:13px;}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:99;padding:16px;}
+.modal .box{background:#fff;border-radius:10px;max-width:1100px;width:100%;max-height:85vh;overflow:auto;padding:14px 16px;}
+/* 13-11-2026: ficha Tiempos Perdidos con el look del Power BI de Ecofor (verde lima, filas verde claro, total oliva) */
+#panel-tp{font-family:'Segoe UI',Arial,sans-serif;}
+.pbhdr{display:flex;align-items:center;gap:14px;background:#fff;border:2px solid #9fcf55;border-radius:10px;padding:10px 16px;margin-bottom:8px;}
+.pbbtn{background:#7cb518;color:#fff;border:0;border-radius:4px;padding:7px 14px;font-weight:700;cursor:pointer;}
+.pbfil{display:flex;gap:12px;flex-wrap:wrap;background:#fff;border:2px solid #9fcf55;border-radius:10px;padding:8px 14px;margin-bottom:8px;}
+.pbf{display:flex;flex-direction:column;font-size:11px;color:#1a4d8f;font-weight:700;gap:2px;}
+.pbf select{font-size:12px;padding:3px 6px;border:1px solid #9fcf55;border-radius:3px;}
+.pbtabs{display:flex;gap:3px;flex-wrap:wrap;margin-bottom:8px;}
+.pbtab{background:#7cb518;color:#fff;border:0;padding:7px 14px;font-size:12px;font-weight:600;cursor:pointer;}
+.pbtab.on{background:#333;}
+.pbgrid{display:grid;grid-template-columns:1.25fr 1fr;gap:8px;margin-bottom:8px;}
+.pbcard{background:#fff;border:2px solid #9fcf55;border-radius:10px;padding:8px 10px;overflow:auto;}
+.pbct{font-weight:700;font-size:13px;color:#222;margin-bottom:6px;}
+table.pbt{border-collapse:collapse;width:100%;font-size:11px;}
+.pbt th{background:#7cb518;color:#fff;font-weight:600;padding:5px 6px;font-size:10.5px;text-align:center;position:sticky;top:0;z-index:1;}
+.pbt td{padding:3px 6px;text-align:right;white-space:nowrap;border-bottom:1px solid #fff;}
+.pbt td:nth-child(-n+2){text-align:left;}
+.pbt tbody tr:nth-child(odd) td{background:#e6f2d3;} .pbt tbody tr:nth-child(even) td{background:#f4f9ea;}
+.pbt tr.pbtot td{background:#8f7e35 !important;color:#fff;font-weight:800;}
+.pbt tr.pbsub td{background:#d5e9b6 !important;}
+.pbt tbody tr:hover td{background:#d9ecbc !important;}
+.pbt tbody tr[style*="background"] td{background:inherit !important;}
+.pbkpis{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:8px;}
+.pbkpis > div{background:#fff;border:2px solid #9fcf55;border-radius:10px;text-align:center;padding:10px;}
+.pbkpis span{display:block;font-size:12px;color:#555;letter-spacing:.5px;}
+.pbkpis b{display:block;font-size:28px;font-weight:500;color:#111;}
+@media (max-width:900px){.pbgrid{grid-template-columns:1fr;}.pbkpis{grid-template-columns:repeat(2,1fr);}}
+/* menú de fichas, mismo estilo que el de la App de cosecha (botones altos, el activo en color) */
+.menu{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;}
+.mtab{min-width:118px;min-height:92px;padding:10px 14px;border:1px solid #d6cbbd;border-radius:9px;background:#fff;color:#4a3a2a;font-size:15px;font-weight:700;
+  line-height:1.2;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;text-align:center;box-shadow:0 1px 2px rgba(0,0,0,.06);}
+.mtab .mi{font-size:18px;}
+.mtab:hover{background:#fbf3e9;}
+.mtab.on{background:#7a4a1e;color:#fff;border:3px solid #4a2c10;box-shadow:0 0 0 2px #4a2c10;}
+@media (max-width:900px){.kpis{grid-template-columns:repeat(2,1fr);}.grid2{grid-template-columns:1fr;}}
+
+#pc-btn{position:fixed;top:6px;right:10px;z-index:98;background:#5a3a1a;color:#fff;border:none;border-radius:6px;padding:4px 10px;font-size:11px;font-weight:700;cursor:pointer;opacity:.85;box-shadow:0 2px 6px rgba(0,0,0,.25);}
+#pc-btn:hover{opacity:1;}
+.bgraf{position:absolute;left:8px;top:6px;z-index:5;background:#fff;border:1px solid #c9b79c;color:#5a3a1a;border-radius:5px;width:26px;height:24px;font-size:14px;line-height:1;cursor:pointer;padding:0;}
+.bgraf:hover{background:#5a3a1a;color:#fff;}
+.gsolo{padding:12px;}
+.gsolo-box{background:#fff;border-radius:10px;width:96vw;height:92vh;display:flex;flex-direction:column;padding:10px 14px;box-shadow:0 8px 30px rgba(0,0,0,.4);}
+.gsolo-cab{display:flex;align-items:center;gap:12px;margin-bottom:6px;font-size:15px;color:#404040;}
+.gsolo-cab .btn{margin-left:auto;border:1px solid #ccc;}
+.gsolo-mes{background:linear-gradient(#fff9b8,#ffe97a);border:1px solid #e6d36a;padding:2px 10px;font-size:12px;font-weight:800;color:#1a8a2a;}
+.maqWrap{display:inline-block;width:86px;height:62px;overflow:visible;vertical-align:middle;margin-right:8px;}
+.maqAnim{height:62px;transform-origin:30% 95%;animation:maqTrab 3.2s ease-in-out infinite;filter:drop-shadow(2px 3px 2px rgba(0,0,0,.25));}
+@keyframes maqTrab{0%{transform:translateX(-6px) rotate(0deg);}20%{transform:translateX(4px) rotate(0deg);}35%{transform:translateX(4px) rotate(-3deg);}45%{transform:translateX(4px) rotate(1.5deg);}55%{transform:translateX(4px) rotate(-2deg);}70%{transform:translateX(4px) rotate(0deg);}100%{transform:translateX(-6px) rotate(0deg);}}
+@media (prefers-reduced-motion:reduce){.maqAnim{animation:none;}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <!-- 12-11-2026: menú de fichas como el de la App de cosecha; se le van agregando fichas (ver FICHAS en el script) -->
+  <div class="menu" id="menu"></div>
+  <div id="panel-pd" class="panel">
+  <div class="top">
+    <span class="maqWrap" title="Excavadora Emprecon"><img class="maqAnim" id="maqCab" alt="Excavadora"></span>
+    <div style="flex:1;min-width:220px;">
+      <h1>Emprecon SpA — Producción Diaria</h1>
+      <div class="sub">Caminos (Ecofor): del 26 del mes anterior al 25 · Faja (Mininco): del 1 al último día del mes · ← → para cambiar de pestaña</div>
+    </div>
+    <label class="btn" title="El Excel/CSV que baja Ecofor: Cartolas Web → Administración Cartolas → Exportar (puedes elegir varios)">📥 Cartolas Ecofor
+      <input type="file" id="fEco" accept=".csv,.xlsx,.xls" multiple style="display:none" onchange="cargarEcofor(this.files)"></label>
+    <label class="btn" title="El Best: se lee solo la hoja 'Produc Faja'">📥 Best (Faja)
+      <input type="file" id="fBest" accept=".xlsx,.xlsm" style="display:none" onchange="cargarBest(this.files[0])"></label>
+    <button class="btn sec" onclick="if(confirm('¿Borrar los datos guardados en este navegador?')){guardar({eco:[],faja:[]});location.reload();}">🗑</button>
+  </div>
+  <div id="estado" class="sub" style="margin:-4px 0 8px;color:#6b5a48;font-size:10.5px;"></div>
+
+  <div class="tabs" id="tabs"></div>
+  <div class="ctl" id="ctl"></div>
+  <div id="cuerpo"></div>
+  </div>
+  <!-- 13-11-2026: ficha Tiempos Perdidos y OEE, con los datos del Power BI público de Ecofor "Productividad Caminos" -->
+  <div id="panel-tp" class="panel" style="display:none;"></div>
+  <!-- 13-11-2026: ficha Ingresos (gráficos "metas de ingresos" e "ingresos mensuales por faenas" de costo emprecon caminos v2.xlsx) -->
+  <div id="panel-ing" class="panel" style="display:none;"></div>
+  <!-- 13-11-2026: ficha con la animación del ciclo de construcción de caminos (archivo aparte ciclo_caminos_emprecon.html) -->
+  <div id="panel-ciclo" class="panel" style="display:none;"><iframe id="ciclo-if" title="Ciclo de construcción de caminos" style="width:100%;height:80vh;border:none;border-radius:10px;background:#f4f1ec;display:block;"></iframe></div>
+  <!-- 12-11-2026: ficha Equipos (réplica depurada de la hoja AnalisisCostoEmprecon de "costo emprecon caminos v2.xlsx") -->
+  <div id="panel-eq" class="panel" style="display:none;">
+    <div class="top">
+      <span style="font-size:30px;">⛽</span>
+      <div style="flex:1;min-width:220px;">
+        <h1>Emprecon SpA — Equipos: horas, combustible y rendimiento</h1>
+        <div class="sub">Programado vs real por máquina y por faena · horas y litros del Best (BaseHorasTrab y BaseCombustible) · producción de Ecofor y Produc Faja</div>
+      </div>
+      <label class="btn" title="El Best: lee Produc Faja, BaseHorasTrab y BaseCombustible">📥 Best
+        <input type="file" accept=".xlsx,.xlsm" style="display:none" onchange="cargarBest(this.files[0])"></label>
+      <label class="btn" title="El export de Administración Cartolas de Ecofor">📥 Cartolas Ecofor
+        <input type="file" accept=".csv,.xlsx,.xls" multiple style="display:none" onchange="cargarEcofor(this.files)"></label>
+    </div>
+    <div class="ctl" id="eq-ctl"></div>
+    <div id="eq-cuerpo"></div>
+  </div>
+</div>
+
+<script>
+var MAQ_IMG = 'data:image/webp;base64,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';
+(function(){ function p(){ var m = document.getElementById('maqCab'); if (m) m.src = MAQ_IMG; } if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', p); else p(); })();
+var APP_BUILD = '13-11-2026 Emprecon: ficha Ciclo del camino (animación)';
+// Fichas de la App de caminos. Para agregar una: {id, ico, l (texto, \n = 2 líneas), clave (candado si pide clave)} + su <div id="panel-ID">.
+var FICHAS = [
+  {id:'pd', ico:'📈', l:'Produc.\nDiaria'},
+  {id:'eq', ico:'⛽', l:'Equipos: Horas,\nCombustible y Rend.'},
+  {id:'tp', ico:'⏱', l:'Tiempos Perdidos\ny OEE (Ecofor)'},
+  {id:'ing', ico:'💰', l:'Ingresos\nProgramado vs Real'}, {id:'ciclo', ico:'🎬', l:'Ciclo del camino\n(animación)'}
+];
+var FICHA = 'pd';
+try { FICHA = localStorage.getItem('emp_ficha') || 'pd'; } catch(e){}
+function menuRender(){
+  if (!FICHAS.some(function(f){ return f.id === FICHA; })) FICHA = FICHAS[0].id;
+  document.getElementById('menu').innerHTML = FICHAS.map(function(f){
+    return '<button class="mtab' + (f.id === FICHA ? ' on' : '') + '" onclick="fichaClic(\'' + f.id + '\')"><span class="mi">' + f.ico + '</span>' +
+      f.l.replace(/\n/g, '<br>') + (f.clave ? ' 🔒' : '') + '</button>'; }).join('');
+  FICHAS.forEach(function(f){ var p = document.getElementById('panel-' + f.id); if (p) p.style.display = f.id === FICHA ? '' : 'none'; });
+}
+function fichaVer(id){ FICHA = id; try { localStorage.setItem('emp_ficha', id); } catch(e){} menuRender(); if (id === 'pd') render(); if (id === 'eq') eqRender(); if (id === 'tp') tpAbrir(); if (id === 'ing') ingRender(); cicloVer(id === 'ciclo'); }
+// se carga solo al abrir la ficha y se descarga al salir, para que la animación no corra escondida
+function cicloVer(on){ var f = document.getElementById('ciclo-if'); if (!f) return;
+  if (!on){ if (f.getAttribute('src')) f.removeAttribute('src'); return; }
+  if (f.getAttribute('src')) return;
+  f.onload = function(){ try { var d = f.contentDocument; f.style.height = Math.max(420, d.documentElement.scrollHeight + 4) + 'px'; } catch(e){} };
+  f.src = 'ciclo_caminos_emprecon.html'; }
+console.log('[APP] build ' + APP_BUILD);
+var FAENAS = [
+  {id:'res', l:'📋 Resumen diario Emprecon', per:'res'},
+  {id:'mt', l:'Movimiento de tierra', cuad:'MOVIMIENTO DE TIERRA', per:'26-25'},
+  {id:'oa',  l:'Obras de arte', cuad:'OBRAS DE ARTE', per:'26-25'},
+  {id:'def', l:'Construcción de defensas', cuad:'CONSTRUCCION DE DEFENSAS', per:'26-25'},
+  {id:'faja',l:'Faja', per:'mes'}
+];
+var MESES = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+var CFG = {prog_mt:50000, prog_faja:0, metros:true};
+// 12-11-2026: el programa de Movimiento de tierra cambia cada mes: es el "PLAN MENSUAL" de Ecofor (Dashboard Caminos ->
+// Monitores de Gestion -> 3.0 Avance M3 Construccion). Se guarda por periodo; si no hay, se usa 50.000 (2 contratos x 25.000).
+var PROG_MT_ECOFOR = {'2026-11': 56054};
+function progMT(per){ var k = 'prog_mt_' + per; return CFG[k] != null ? CFG[k] : PROG_MT_ECOFOR[per] != null ? PROG_MT_ECOFOR[per] : CFG.prog_mt; }   // programa MT: 2 contratos × 25.000 m³ (CW2317986 y su gemelo)
+var S = {fa:'res', per:''};
+var DATA = {eco:[], faja:[]};
+
+// ---------- guardar en el navegador ----------
+function guardar(d){ try{ localStorage.setItem('emp_data', JSON.stringify(d)); }catch(e){ console.warn('no se pudo guardar', e); } }
+function leer(){ try{ var d = JSON.parse(localStorage.getItem('emp_data') || 'null'); if (d) DATA = d; }catch(e){}
+  try{ var c = JSON.parse(localStorage.getItem('emp_cfg') || 'null'); if (c) Object.keys(c).forEach(function(k){ CFG[k] = c[k]; }); }catch(e){}
+  try{ var s = JSON.parse(localStorage.getItem('emp_sel') || 'null'); if (s) S = s; }catch(e){} }
+function cfgSet(k, v){ CFG[k] = v; try{ localStorage.setItem('emp_cfg', JSON.stringify(CFG)); }catch(e){} render(); }
+function selSet(k, v){ S[k] = v; try{ localStorage.setItem('emp_sel', JSON.stringify(S)); }catch(e){} render(); }
+
+// ---------- utilidades ----------
+function num(s){ if (s == null || s === '') return 0; if (typeof s === 'number') return s; s = String(s).trim();
+  if (s.indexOf(',') >= 0){ s = s.replace(/\./g, '').replace(',', '.'); } var v = parseFloat(s); return isNaN(v) ? 0 : v; }
+function nf(v, d){ return (v || 0).toLocaleString('es-CL', {minimumFractionDigits: d || 0, maximumFractionDigits: d || 0}); }
+function iso(d){ return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); }
+function fechaISO(v){
+  if (v instanceof Date) return iso(v);
+  if (typeof v === 'number'){ var d = XLSX.SSF.parse_date_code(v); return d.y + '-' + String(d.m).padStart(2, '0') + '-' + String(d.d).padStart(2, '0'); }
+  var s = String(v || '').trim(), m;
+  if ((m = s.match(/^(\d{4})-(\d{2})-(\d{2})/))) return m[1] + '-' + m[2] + '-' + m[3];
+  if ((m = s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})/))) return m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0');
+  return '';
+}
+// período de caminos: 26 del mes anterior al 25 del mes. Clave 'AAAA-MM' = mes donde cierra.
+function perCaminos(f){ var y = +f.slice(0,4), m = +f.slice(5,7), d = +f.slice(8,10); if (d >= 26){ m++; if (m > 12){ m = 1; y++; } } return y + '-' + String(m).padStart(2, '0'); }
+function diasPer(per, tipo){
+  var y = +per.slice(0,4), m = +per.slice(5,7), a, b;
+  if (tipo === 'mes'){ a = new Date(y, m - 1, 1); b = new Date(y, m, 0); }
+  else { a = new Date(y, m - 2, 26); b = new Date(y, m - 1, 25); }
+  var out = []; for (var d = new Date(a); d <= b; d.setDate(d.getDate() + 1)) out.push(iso(d)); return out;
+}
+function perLabel(per, tipo){ var y = +per.slice(0,4), m = +per.slice(5,7), L = MESES[m - 1] + ' ' + y;
+  if (tipo === 'mes') return L.charAt(0).toUpperCase() + L.slice(1) + ' (1 al ' + new Date(y, m, 0).getDate() + ')';
+  var pm = m === 1 ? 12 : m - 1; return L.charAt(0).toUpperCase() + L.slice(1) + ' (26-' + String(pm).padStart(2, '0') + ' al 25-' + String(m).padStart(2, '0') + ')'; }
+function ddmm(f){ return f.slice(8,10) + '-' + f.slice(5,7); }
+function diaSem(f){ return ['dom','lun','mar','mié','jue','vie','sáb'][new Date(+f.slice(0,4), +f.slice(5,7) - 1, +f.slice(8,10)).getDay()]; }
+
+// ---------- carga Ecofor ----------
+function leerArchivo(file){ return new Promise(function(ok, ko){ var r = new FileReader(); r.onload = function(e){ ok(e.target.result); }; r.onerror = ko;
+  if (/\.csv$/i.test(file.name)) r.readAsText(file, 'utf-8'); else r.readAsArrayBuffer(file); }); }
+function filasDe(file, cont){
+  if (/\.csv$/i.test(file.name)){
+    return cont.replace(/\r/g, '').split('\n').filter(function(l){ return l.trim(); }).map(function(l){ return l.split(';'); });
+  }
+  var wb = XLSX.read(cont, {type:'array', cellDates:true}); var ws = wb.Sheets[wb.SheetNames[0]];
+  return XLSX.utils.sheet_to_json(ws, {header:1, defval:'', raw:true});
+}
+function cargarEcofor(files){
+  if (!files || !files.length) return;
+  Promise.all([].map.call(files, function(f){ return leerArchivo(f).then(function(c){ return {f:f, c:c}; }); })).then(function(L){
+    var nuevos = 0, act = 0, idx = {}; DATA.eco.forEach(function(x, i){ idx[x.k] = i; });
+    L.forEach(function(o){
+      var R = filasDe(o.f, o.c); if (!R.length) return;
+      var h = R[0].map(function(x){ return String(x).trim().toLowerCase(); });
+      var c = function(n, k){ var n2 = 0; for (var i = 0; i < h.length; i++) if (h[i] === n){ if (n2 === (k || 0)) return i; n2++; } return -1; };
+      var I = {cuad:c('cuadricula'), atr:c('atributo', 1), um:c('um'), cant:c('cantidad'), m3:c('m3'), fecha:c('fecha'), cart:c('num cartola'),
+        fundo:c('fundo', 1), camino:c('camino'), cancha:c('cancha'), diam:c('diam'), ens:c('num ensanche'), aud:c('auditada'), obs:c('obs global1'),
+        obsad:c('obs adic1'), idav:c('id avance'), emsefor:c('emsefor', 1), factor:c('factor m3 final'), tmat:c('tipo material'), dig:c('digitador'), ctrl:c('controlador')};
+      if (I.cuad < 0 || I.fecha < 0 || I.cart < 0){ alert('El archivo "' + o.f.name + '" no parece el export de Administración Cartolas de Ecofor (faltan columnas cuadricula / fecha / num cartola).'); return; }
+      for (var i = 1; i < R.length; i++){
+        var r = R[i], f = fechaISO(r[I.fecha]); if (!f) continue;
+        var x = {k: String(r[I.cart]) + '|' + String(I.idav >= 0 ? r[I.idav] : i), f: f, per: perCaminos(f), cuad: String(r[I.cuad]).trim().toUpperCase(),
+          atr: String(r[I.atr]).trim(), um: String(r[I.um]).trim().toUpperCase(), cant: num(r[I.cant]), m3: num(r[I.m3]), cart: String(r[I.cart]),
+          fundo: String(r[I.fundo] || '').trim(), camino: String(r[I.camino] || '').trim(), cancha: String(I.cancha >= 0 ? r[I.cancha] : '').trim(),
+          diam: I.diam >= 0 ? String(r[I.diam] || '') : '', aud: I.aud >= 0 ? String(r[I.aud] || '') : '', obs: I.obs >= 0 ? String(r[I.obs] || '') : '',
+          obsad: I.obsad >= 0 ? String(r[I.obsad] || '') : '', fac: I.factor >= 0 ? num(r[I.factor]) : 0, ctrl: I.ctrl >= 0 ? String(r[I.ctrl] || '') : ''};
+        if (idx[x.k] != null){ DATA.eco[idx[x.k]] = x; act++; } else { idx[x.k] = DATA.eco.length; DATA.eco.push(x); nuevos++; }
+      }
+    });
+    guardar(DATA); S.per = ''; render();
+    alert('Cartolas Ecofor: ' + nuevos + ' filas nuevas, ' + act + ' actualizadas.');
+  });
+}
+// ---------- carga Faja (Best, hoja Produc Faja) ----------
+function cargarBest(file){
+  if (!file) return; document.getElementById('estado').textContent = 'Leyendo el Best (solo la hoja Produc Faja)…';
+  leerArchivo(file).then(function(buf){
+    var wb = XLSX.read(buf, {type:'array', cellDates:true, sheets:['Produc Faja', 'BaseHorasTrab', 'BaseCombustible', 'BaseHorasPer', 'BaseCostosFaena']}); var ws = wb.Sheets['Produc Faja'];
+    if (!ws){ alert('El Best no trae la hoja "Produc Faja".'); return; }
+    // 12-11-2026: horas (BaseHorasTrab, solo maquinaria) y litros (BaseCombustible) de las faenas de Emprecon, para la ficha de Equipos
+    var faE = function(s){ s = String(s || '').toLowerCase(); return s.indexOf('tierra') >= 0 || s.indexOf('camino') >= 0 ? 'mt' : s.indexOf('arte') >= 0 ? 'oa' : s.indexOf('faja') >= 0 ? 'faja' : ''; };
+    var H = [], C = [], wsH = wb.Sheets['BaseHorasTrab'], wsC = wb.Sheets['BaseCombustible'];
+    if (wsH) XLSX.utils.sheet_to_json(wsH, {header:1, defval:'', raw:true}).slice(1).forEach(function(r){
+      var fa = faE(r[4]), f = fechaISO(r[0]); if (!fa || !f || String(r[8]).trim().toLowerCase() !== 'maquinaria') return;
+      H.push({f: f, fa: fa, eq: String(r[6]).trim(), h: num(r[11]), op: String(r[7] || '').trim()}); });
+    if (wsC) XLSX.utils.sheet_to_json(wsC, {header:1, defval:'', raw:true}).slice(1).forEach(function(r){
+      var fa = faE(r[6]), f = fechaISO(r[0]); if (!fa || !f) return; C.push({f: f, fa: fa, eq: String(r[5]).trim(), l: num(r[2])}); });
+    // 13-11-2026: tiempos perdidos de NUESTRA base (BaseHorasPer) para las máquinas que no están en el Power BI de Ecofor
+    // (Faja: Procesador 07 y Bell 12; Obras de arte: Retro 1). Clasificación 'E' = empresa, 'E - F' = empresa y Forestal.
+    var HP = [], wsP = wb.Sheets['BaseHorasPer'];
+    if (wsP) XLSX.utils.sheet_to_json(wsP, {header:1, defval:'', raw:true}).slice(1).forEach(function(r){
+      var fa = faE(r[2]), f = fechaISO(r[0]); if (!fa || !f) return;
+      HP.push({f: f, fa: fa, eq: String(r[4]).trim(), op: String(r[5] || '').replace(/�/g, '').trim(), causa: String(r[6] || '').replace(/�/g, 'Ó').trim(), cl: String(r[7] || '').trim(), h: num(r[8]), obs: String(r[9] || '').trim()}); });
+    // 13-11-2026 (Gustavo): el ingreso REAL de la Faja sale SIEMPRE de la liquidación de producción de Mininco
+    // (sistema de la empresa → Finanzas → Liquidaciones de Producción). El bot la copia a BaseCostosFaena (faena 'Faja',
+    // línea 'produccion' por fundo, con m³ y VMA pagado; 'partidas' = multas/premios). Mes = mes de la liquidación.
+    var LQ = {}, wsL = wb.Sheets['BaseCostosFaena'];
+    if (wsL) XLSX.utils.sheet_to_json(wsL, {header:1, defval:'', raw:true}).slice(1).forEach(function(r){
+      var mes = String(r[0] || '').trim(), lin = String(r[2] || '').trim(); if (String(r[1]).trim() !== 'Faja' || !/^\d{4}-\d{2}$/.test(mes) || (lin !== 'produccion' && lin !== 'partidas')) return;
+      var L = LQ[mes] = LQ[mes] || {monto:0, m3:0, part:0, fundos:[]};
+      if (lin === 'partidas'){ L.part += num(r[7]); return; }
+      L.monto += num(r[7]); L.m3 += num(r[8]); L.fundos.push({f: String(r[3] || ''), monto: num(r[7]), m3: num(r[8]), vma: r[9] === '' ? null : num(r[9])}); });
+    DATA.liqfaja = LQ;
+    DATA.horas = H; DATA.comb = C; DATA.hper = HP;
+    var R = XLSX.utils.sheet_to_json(ws, {header:1, defval:'', raw:true}), out = [], vistos = {};
+    for (var i = 1; i < R.length; i++){
+      var r = R[i], f = fechaISO(r[4]), cart = String(r[1] || '').trim(); if (!f || !cart || vistos[cart]) continue; vistos[cart] = 1;
+      out.push({cart: cart, f: f, per: f.slice(0, 7), cancha: String(r[10] || '').replace(/ /g, ' ').trim(), rodal: String(r[11] || ''),
+        equipo: String(r[13] || '').trim(), m3: num(r[18]), tipo: String(r[2] || '').trim()});
+    }
+    DATA.faja = out; guardar(DATA); S.per = ''; render(); if (FICHA === 'eq') eqRender();
+    alert('Best: ' + out.length + ' cartolas de Faja, ' + H.length + ' registros de horas y ' + C.length + ' cargas de combustible de Emprecon.');
+  });
+}
+
+// ---------- render ----------
+var CH = null;
+function render(){
+  var est = document.getElementById('estado');
+  est.textContent = 'Guardado en este navegador: ' + DATA.eco.length + ' filas Ecofor · ' + DATA.faja.length + ' cartolas de Faja · build ' + APP_BUILD;
+  document.getElementById('tabs').innerHTML = FAENAS.map(function(f){ return '<button class="tab' + (S.fa === f.id ? ' on' : '') + '" onclick="selSet(\'fa\',\'' + f.id + '\');S.per=\'\'">' + f.l + '</button>'; }).join('');
+  var fa = FAENAS.filter(function(f){ return f.id === S.fa; })[0] || FAENAS[0];
+  if (fa.id === 'res') return renderRes();
+  var filas = fa.id === 'faja' ? DATA.faja : DATA.eco.filter(function(x){ return x.cuad === fa.cuad; });
+  var pers = {}; filas.forEach(function(x){ pers[x.per] = 1; }); pers = Object.keys(pers).sort();
+  var ctl = document.getElementById('ctl'), cu = document.getElementById('cuerpo');
+  if (!pers.length){
+    ctl.innerHTML = ''; if (CH){ CH.destroy(); CH = null; }
+    cu.innerHTML = '<div class="vacio">' + (fa.id === 'faja' ? 'No hay producción de Faja. Usa <b>📥 Best (Faja)</b> y elige el Best (se lee solo la hoja Produc Faja).'
+      : 'No hay cartolas de <b>' + fa.l + '</b>. Usa <b>📥 Cartolas Ecofor</b> con el archivo que exporta Ecofor (Administración Cartolas → Fecha Pago 26 al 25 → EMPRECON SPA → Exportar).') + '</div>';
+    return;
+  }
+  if (!S.per || pers.indexOf(S.per) < 0) S.per = pers[pers.length - 1];
+  var per = S.per, tipo = fa.per, dias = diasPer(per, tipo);
+  var P = filas.filter(function(x){ return x.per === per; });
+  var h = '<b style="color:var(--c1);">Período</b> <select onchange="selSet(\'per\',this.value)">' +
+    pers.slice().reverse().map(function(p){ return '<option value="' + p + '"' + (p === per ? ' selected' : '') + '>' + perLabel(p, tipo) + '</option>'; }).join('') + '</select>';
+  if (fa.id === 'mt') h += ' &nbsp; Programa del período <input type="number" step="1" value="' + progMT(per) + '" style="width:80px" onchange="cfgSet(\'prog_mt_' + per + '\',+this.value)"> m³ <span style="color:#999;">(plan mensual de Ecofor; sin dato = 2 contratos × 25.000)</span>' +
+    ' &nbsp; <label title="Las filas que Ecofor informa en metros y convierte a m³ con el factor del trazado. Pendiente que Gustavo confirme si suman al programa."><input type="checkbox"' + (CFG.metros ? ' checked' : '') + ' onchange="cfgSet(\'metros\',this.checked)"> contar las filas en metros convertidas a m³</label>';
+  if (fa.id === 'faja') h += ' &nbsp; Programa del mes <input type="number" step="100" value="' + (CFG['prog_faja_' + per] || 0) + '" style="width:80px" onchange="cfgSet(\'prog_faja_' + per + '\',+this.value)"> m³ <span style="color:#999;">(oferta de Mininco; 0 = sin programa)</span>';
+  ctl.innerHTML = h;
+  if (fa.id === 'mt') cu.innerHTML = vistaMT(P, dias, per);
+  else if (fa.id === 'faja') cu.innerHTML = vistaFaja(P, dias, per);
+  else cu.innerHTML = vistaCant(P, dias, fa);
+  grafico(fa);
+}
+
+// 12-11-2026 (Gustavo): informe diario de Emprecon como su planilla: Día | Mov. Tierra | Obras de Arte (Alcantarillas,
+// Defensas, Mantenciones) | Faja. Cada faena con su período: caminos del 26 al 25 y Faja del 1 a fin de mes; las filas van
+// del 26 del mes anterior al último día del mes y lo que queda fuera del período de cada faena se ve en gris.
+var COL_F = {mt:'#8a5a2b', oa:'#2471a3', faja:'#1a6b3a'};   // colores por faena, como en la App de cosecha
+function renderRes(){
+  var ctl = document.getElementById('ctl'), cu = document.getElementById('cuerpo'); if (CH){ CH.destroy(); CH = null; }
+  var pers = {}; DATA.eco.forEach(function(x){ pers[x.per] = 1; }); DATA.faja.forEach(function(x){ pers[x.per] = 1; }); pers = Object.keys(pers).sort();
+  if (!pers.length){ ctl.innerHTML = ''; cu.innerHTML = '<div class="vacio">Carga las <b>📥 Cartolas Ecofor</b> y el <b>📥 Best (Faja)</b> para ver el resumen.</div>'; return; }
+  if (!S.per || pers.indexOf(S.per) < 0) S.per = pers[pers.length - 1];
+  var per = S.per, dC = diasPer(per, '26-25'), dF = diasPer(per, 'mes');
+  var dias = dC.concat(dF.filter(function(d){ return dC.indexOf(d) < 0; })).sort();
+  ctl.innerHTML = '<b style="color:var(--c1);">Mes</b> <select onchange="selSet(\'per\',this.value)">' + pers.slice().reverse().map(function(p){ var y = +p.slice(0,4), m = +p.slice(5,7);
+    return '<option value="' + p + '"' + (p === per ? ' selected' : '') + '>' + MESES[m - 1].charAt(0).toUpperCase() + MESES[m - 1].slice(1) + ' ' + y + '</option>'; }).join('') + '</select>' +
+    ' &nbsp; <span style="color:#6b5a48;">Mov. Tierra y Obras de Arte: ' + perLabel(per, '26-25').replace(/^.*\(/, '').replace(')', '') + ' · Faja: ' + perLabel(per, 'mes').replace(/^.*\(/, '').replace(')', '') + '</span>';
+  var D = {}; dias.forEach(function(d){ D[d] = {mt:0, alc:0, def:0, man:0, faja:0}; });
+  DATA.eco.forEach(function(x){ if (x.per !== per || !D[x.f]) return; var a = x.atr.toLowerCase();
+    if (x.cuad === 'MOVIMIENTO DE TIERRA'){ if (m3Prog(x)) D[x.f].mt += x.m3; }
+    else if (x.cuad === 'CONSTRUCCION DE DEFENSAS') D[x.f].def += x.cant;
+    else if (x.cuad === 'OBRAS DE ARTE'){ if (a.indexOf('mantenc') >= 0) D[x.f].man += x.cant; else if (a.indexOf('alcantar') >= 0) D[x.f].alc += x.cant; else D[x.f].def += x.cant; } });
+  DATA.faja.forEach(function(x){ if (x.per === per && D[x.f]) D[x.f].faja += x.m3; });
+  var T = {mt:0, alc:0, def:0, man:0, faja:0}, AC = {mt:0, faja:0};
+  var thG = function(c, txt, span, rows){ return '<th colspan="' + (span || 1) + '" rowspan="' + (rows || 1) + '" style="background:' + c + ';text-align:center;max-width:none;">' + txt + '</th>'; };
+  var t = '<table class="t res resG"><thead><tr>' + thG('#5b3a1a', 'Día', 1, 2) + thG(COL_F.mt, 'Faena') + thG(COL_F.oa, 'Faena Obras de Arte', 3) + thG(COL_F.faja, 'Faena') + thG('#5b3a1a', 'Acumulado', 2) + '</tr><tr>' +
+    thG(COL_F.mt, 'Mov. Tierra (m³)') + thG(COL_F.oa, 'Alcantarillas (m)') + thG(COL_F.oa, 'Defensas (m²)') + thG(COL_F.oa, 'Mantenciones (un)') + thG(COL_F.faja, 'Faja (m³)') +
+    thG(COL_F.mt, 'Mov. Tierra') + thG(COL_F.faja, 'Faja') + '</tr></thead><tbody>';
+  var gris = 'color:#c9bfb3;background:#faf8f5;';
+  dias.forEach(function(d){ var x = D[d], inC = dC.indexOf(d) >= 0, inF = dF.indexOf(d) >= 0;
+    if (inC){ T.mt += x.mt; T.alc += x.alc; T.def += x.def; T.man += x.man; AC.mt += x.mt; } if (inF){ T.faja += x.faja; AC.faja += x.faja; }
+    var c = function(v, ok, col, dec){ return '<td style="' + (ok ? 'color:' + col + ';' : gris) + '">' + (ok ? (v ? nf(v, dec || 0) : '') : '·') + '</td>'; };
+    t += '<tr class="' + (diaSem(d) === 'dom' ? 'dom' : '') + '"><td>' + diaSem(d) + ' ' + ddmm(d) + '</td>' +
+      c(x.mt, inC, COL_F.mt) + c(x.alc, inC, COL_F.oa, 1) + c(x.def, inC, COL_F.oa, 1) + c(x.man, inC, COL_F.oa) + c(x.faja, inF, COL_F.faja, 1) +
+      '<td style="' + (inC ? 'color:' + COL_F.mt : gris) + '">' + (inC && x.mt + AC.mt ? nf(AC.mt) : inC ? '' : '·') + '</td><td style="' + (inF ? 'color:' + COL_F.faja : gris) + '">' + (inF ? nf(AC.faja) : '·') + '</td></tr>'; });
+  var pf = CFG['prog_faja_' + per] || 0;
+  t += '<tr class="tot"><td>Total</td><td>' + nf(T.mt) + '</td><td>' + nf(T.alc, 1) + '</td><td>' + nf(T.def, 1) + '</td><td>' + nf(T.man) + '</td><td>' + nf(T.faja, 1) + '</td><td></td><td></td></tr>' +
+    '<tr class="tot" style="font-weight:600;"><td>Programa</td><td>' + nf(progMT(per)) + '</td><td colspan="3" style="text-align:center;color:#888;">sin programa en m³</td><td>' + (pf ? nf(pf) : '—') + '</td><td></td><td></td></tr>' +
+    '<tr class="tot"><td>% cumplimiento</td><td class="' + (T.mt >= progMT(per) ? 'ok' : 'bad') + '">' + nf(T.mt / progMT(per) * 100, 1) + '%</td><td colspan="3"></td><td>' + (pf ? nf(T.faja / pf * 100, 1) + '%' : '—') + '</td><td></td><td></td></tr></tbody></table>';
+  cu.innerHTML = '<div class="kpis" style="grid-template-columns:repeat(5,1fr);">' +
+    '<div class="kpi" style="--k:' + COL_F.mt + '"><div class="l">🚜 Movimiento de tierra</div><div class="v" style="color:' + COL_F.mt + '">' + nf(T.mt) + ' m³</div><div class="s">' + nf(T.mt / progMT(per) * 100, 1) + '% de ' + nf(progMT(per)) + ' m³ · 26 al 25</div></div>' +
+    '<div class="kpi" style="--k:' + COL_F.oa + '"><div class="l">🔧 Alcantarillas</div><div class="v" style="color:' + COL_F.oa + '">' + nf(T.alc, 1) + ' m</div><div class="s">obras de arte · 26 al 25</div></div>' +
+    '<div class="kpi" style="--k:' + COL_F.oa + '"><div class="l">🪵 Defensas</div><div class="v" style="color:' + COL_F.oa + '">' + nf(T.def, 1) + ' m²</div><div class="s">empalizadas · 26 al 25</div></div>' +
+    '<div class="kpi" style="--k:' + COL_F.oa + '"><div class="l">🛠 Mantenciones</div><div class="v" style="color:' + COL_F.oa + '">' + nf(T.man) + '</div><div class="s">alcantarillas mantenidas</div></div>' +
+    '<div class="kpi" style="--k:' + COL_F.faja + '"><div class="l">🌲 Faja</div><div class="v" style="color:' + COL_F.faja + '">' + nf(T.faja) + ' m³</div><div class="s">' + (pf ? nf(T.faja / pf * 100, 1) + '% de ' + nf(pf) + ' · ' : '') + 'del 1 a fin de mes</div></div></div>' +
+    '<div class="card"><div class="ct">📋 Producción diaria Emprecon SpA — ' + MESES[+per.slice(5,7) - 1] + ' ' + per.slice(0,4) + '</div>' +
+    '<div class="nota" style="margin:0 0 6px;">Cada faena con su período: Movimiento de tierra y Obras de arte del 26 al 25; Faja del 1 al último día. Los días fuera del período de una faena salen con un punto gris. Mov. Tierra sin Habilitación (va por metro lineal).</div>' +
+    '<div style="overflow:auto;max-height:calc(100vh - 40px);">' + t + '</div></div>';
+}
+
+var G = null;   // datos del gráfico de la vista actual
+function kpis(prog, real, dias, hoyIdx, unidad){
+  var dif = real - prog, pct = prog ? real / prog * 100 : 0;
+  var transc = Math.max(1, Math.min(dias.length, hoyIdx + 1)), proy = real / transc * dias.length;
+  var esp = prog ? prog / dias.length * transc : 0;
+  return '<div class="kpis">' +
+    '<div class="kpi" style="--k:#1a6b3a"><div class="l">🎯 Programa</div><div class="v" style="color:#1a6b3a">' + (prog ? nf(prog) : '—') + '</div><div class="s">' + unidad + ' del período</div></div>' +
+    '<div class="kpi" style="--k:#2471a3"><div class="l">📦 Producción real</div><div class="v" style="color:#2471a3">' + nf(real) + '</div><div class="s">' + unidad + ' · ' + nf(transc) + ' de ' + dias.length + ' días</div></div>' +
+    '<div class="kpi" style="--k:' + (real >= esp ? '#1a6b3a' : '#c0392b') + '"><div class="l">📉 Vs lo esperado a la fecha</div><div class="v ' + (real >= esp ? 'ok' : 'bad') + '">' + (prog ? (real - esp >= 0 ? '+' : '') + nf(real - esp) : '—') + '</div><div class="s">esperado ' + nf(esp) + ' ' + unidad + '</div></div>' +
+    '<div class="kpi" style="--k:#e67e22"><div class="l">✅ % del programa</div><div class="v" style="color:#e67e22">' + (prog ? nf(pct, 1) + '%' : '—') + '</div><div class="s">faltan ' + (prog ? nf(Math.max(0, -dif)) : '—') + ' ' + unidad + '</div></div>' +
+    '<div class="kpi" style="--k:#8e44ad"><div class="l">🔮 Proyección al cierre</div><div class="v" style="color:#8e44ad">' + nf(proy) + '</div><div class="s">' + (prog ? nf(proy / prog * 100, 0) + '% del programa · ' : '') + 'al ritmo actual</div></div></div>';
+}
+function hoyIndex(dias, filas){
+  var hoy = iso(new Date()), i = dias.indexOf(hoy); if (i >= 0) return i;
+  if (hoy > dias[dias.length - 1]) return dias.length - 1;
+  var ult = filas.reduce(function(m, x){ return x.f > m ? x.f : m; }, ''); return Math.max(0, dias.indexOf(ult));
+}
+function m3Prog(x){ return x.atr.toLowerCase().indexOf('habilitac') < 0 && (CFG.metros || x.um === 'M3'); }
+
+function vistaMT(P, dias, per){
+  var atrs = {}; P.forEach(function(x){ if (m3Prog(x)) atrs[x.atr] = (atrs[x.atr] || 0) + x.m3; });
+  atrs = Object.keys(atrs).sort(function(a, b){ return atrs[b] - atrs[a]; });
+  var porDia = {}; dias.forEach(function(d){ porDia[d] = {t:0, hab:0, conv:0}; });
+  P.forEach(function(x){ var D = porDia[x.f]; if (!D) return;
+    if (x.atr.toLowerCase().indexOf('habilitac') >= 0){ if (x.um === 'M') D.hab += x.cant; return; }
+    if (!m3Prog(x)) return; D[x.atr] = (D[x.atr] || 0) + x.m3; D.t += x.m3; if (x.um !== 'M3') D.conv += x.m3; });
+  var real = 0, conv = 0, hab = 0; dias.forEach(function(d){ real += porDia[d].t; conv += porDia[d].conv; hab += porDia[d].hab; });
+  var excl = P.filter(function(x){ return x.atr.toLowerCase().indexOf('habilitac') < 0 && !m3Prog(x); }).reduce(function(s, x){ return s + x.m3; }, 0);
+  var prog = progMT(per), pd = prog / dias.length, hi = hoyIndex(dias, P);
+  var h = kpis(prog, real, dias, hi, 'm³');
+  h += '<div class="nota">De los <b>' + nf(real) + ' m³</b>, ' + nf(conv) + ' vienen de filas informadas en <b>metros</b> que Ecofor convierte a m³ con el factor del trazado' +
+    (CFG.metros ? '' : ' (excluidas ahora: ' + nf(excl) + ' m³)') + '. La <b>Habilitación</b> (' + nf(hab) + ' m) va por metro lineal y no suma al programa. Programa diario: ' + nf(pd) + ' m³ (programa ÷ ' + dias.length + ' días).</div>';
+  // tabla
+  var t = '<table class="t"><thead><tr><th>Día</th>' + atrs.map(function(a){ return '<th>' + a + '</th>'; }).join('') +
+    '<th>Total m³</th><th>Acumulado</th><th>Programa acum.</th><th>Dif.</th><th>Habilitación m</th></tr></thead><tbody>';
+  var acum = 0, G1 = {lab:[], real:[], acum:[], prog:[]};
+  dias.forEach(function(d, i){ var D = porDia[d]; acum += D.t; var pa = pd * (i + 1), fut = i > hi && !D.t;
+    G1.lab.push(ddmm(d)); G1.real.push(Math.round(D.t)); G1.acum.push(fut ? null : Math.round(acum)); G1.prog.push(Math.round(pa));
+    t += '<tr class="dia' + (diaSem(d) === 'dom' ? ' dom' : '') + '" onclick="detalleDia(\'' + d + '\')" title="Ver las cartolas del día"><td>' + diaSem(d) + ' ' + ddmm(d) + '</td>' +
+      atrs.map(function(a){ return '<td>' + (D[a] ? nf(D[a]) : '') + '</td>'; }).join('') +
+      '<td><b>' + (D.t ? nf(D.t) : '') + '</b></td><td>' + (fut ? '' : nf(acum)) + '</td><td style="color:#888">' + nf(pa) + '</td>' +
+      '<td class="' + (fut ? '' : acum - pa >= 0 ? 'ok' : 'bad') + '">' + (fut ? '' : nf(acum - pa)) + '</td><td style="color:#888">' + (D.hab ? nf(D.hab) : '') + '</td></tr>';
+  });
+  var tot = {}; atrs.forEach(function(a){ tot[a] = 0; dias.forEach(function(d){ tot[a] += porDia[d][a] || 0; }); });
+  t += '<tr class="tot"><td>Total</td>' + atrs.map(function(a){ return '<td>' + nf(tot[a]) + '</td>'; }).join('') + '<td>' + nf(real) + '</td><td>' + nf(real) + '</td><td>' + nf(prog) + '</td><td class="' + (real - prog >= 0 ? 'ok' : 'bad') + '">' + nf(real - prog) + '</td><td>' + nf(hab) + '</td></tr></tbody></table>';
+  G = G1;
+  return h + '<div class="grid2"><div class="card"><div class="ct">📊 m³ por día y acumulado vs programa</div><div style="position:relative;height:300px;"><canvas id="ch"></canvas></div></div>' +
+    '<div class="card"><div class="ct">🧱 m³ por atributo en el período</div>' + resumenAtr(P) + '</div></div>' +
+    '<div class="card"><div class="ct">📋 Movimiento de tierra — detalle diario m³ (clic en un día para ver sus cartolas)</div><div style="overflow:auto;max-height:560px;">' + t + '</div></div>';
+}
+function resumenAtr(P){
+  var A = {}; P.forEach(function(x){ var k = x.atr; A[k] = A[k] || {m3:0, cm:0, c3:0, n:{}, um:{}}; A[k].m3 += x.m3; if (x.um === 'M3') A[k].c3 += x.m3; else A[k].cm += x.cant; A[k].n[x.cart] = 1; A[k].um[x.um] = 1; });
+  var ks = Object.keys(A).sort(function(a, b){ return A[b].m3 - A[a].m3; }), T = 0;
+  return '<table class="t"><thead><tr><th>Atributo</th><th>Cartolas</th><th>Informado en m³</th><th>Informado en m (u otra)</th><th>Total m³</th><th>Suma al programa</th></tr></thead><tbody>' +
+    ks.map(function(k){ var a = A[k], hab = k.toLowerCase().indexOf('habilitac') >= 0, suma = !hab && (CFG.metros || a.c3 === a.m3); if (!hab) T += CFG.metros ? a.m3 : a.c3;
+      return '<tr><td>' + k + '</td><td>' + Object.keys(a.n).length + '</td><td>' + nf(a.c3) + '</td><td>' + (a.cm ? nf(a.cm) + ' ' + Object.keys(a.um).filter(function(u){ return u !== 'M3'; }).join('/') : '') + '</td><td>' + nf(a.m3) + '</td><td>' +
+        (hab ? '<span class="bad">no (metro lineal)</span>' : CFG.metros || !a.cm ? '<span class="ok">sí</span>' : '<span style="color:#e67e22;font-weight:700;">solo lo informado en m³</span>') + '</td></tr>'; }).join('') +
+    '<tr class="tot"><td>Para el programa</td><td></td><td></td><td></td><td></td><td>' + nf(T) + ' m³</td></tr></tbody></table>';
+}
+function vistaCant(P, dias, fa){
+  var cols = {}; P.forEach(function(x){ var k = x.atr + (x.diam && x.diam !== '0' && /alcantar/i.test(x.atr) ? ' Ø' + x.diam : '') + ' (' + x.um + ')'; x._c = k; cols[k] = (cols[k] || 0) + x.cant; });
+  var ks = Object.keys(cols).sort(); var porDia = {}; dias.forEach(function(d){ porDia[d] = {}; });
+  P.forEach(function(x){ if (porDia[x.f]) porDia[x.f][x._c] = (porDia[x.f][x._c] || 0) + x.cant; });
+  var nc = {}; P.forEach(function(x){ nc[x.cart] = 1; });
+  var h = '<div class="kpis" style="grid-template-columns:repeat(' + Math.min(5, ks.length + 1) + ',1fr)"><div class="kpi"><div class="l">📄 Cartolas</div><div class="v">' + Object.keys(nc).length + '</div><div class="s">' + P.length + ' líneas</div></div>' +
+    ks.slice(0, 4).map(function(k){ return '<div class="kpi" style="--k:#2471a3"><div class="l">' + k + '</div><div class="v" style="color:#2471a3">' + nf(cols[k], 1) + '</div><div class="s">en el período</div></div>'; }).join('') + '</div>';
+  h += '<div class="nota">' + fa.l + ' no se mide en m³: cada atributo va en su unidad (metros de alcantarilla, unidades, m²). Se valoriza con la tarifa de cada atributo en la ficha de Valorización (próxima).</div>';
+  var t = '<table class="t"><thead><tr><th>Día</th>' + ks.map(function(k){ return '<th>' + k + '</th>'; }).join('') + '<th>Cartolas</th></tr></thead><tbody>', G1 = {lab:[], series:{}};
+  ks.forEach(function(k){ G1.series[k] = []; });
+  dias.forEach(function(d){ var D = porDia[d], n = {}; P.forEach(function(x){ if (x.f === d) n[x.cart] = 1; }); G1.lab.push(ddmm(d)); ks.forEach(function(k){ G1.series[k].push(D[k] || 0); });
+    t += '<tr class="dia' + (diaSem(d) === 'dom' ? ' dom' : '') + '" onclick="detalleDia(\'' + d + '\')"><td>' + diaSem(d) + ' ' + ddmm(d) + '</td>' + ks.map(function(k){ return '<td>' + (D[k] ? nf(D[k], 1) : '') + '</td>'; }).join('') + '<td>' + (Object.keys(n).length || '') + '</td></tr>'; });
+  t += '<tr class="tot"><td>Total</td>' + ks.map(function(k){ return '<td>' + nf(cols[k], 1) + '</td>'; }).join('') + '<td>' + Object.keys(nc).length + '</td></tr></tbody></table>';
+  G = G1;
+  return h + '<div class="card" style="margin-bottom:10px;"><div class="ct">📊 Cantidad por día</div><div style="position:relative;height:260px;"><canvas id="ch"></canvas></div></div>' +
+    '<div class="card"><div class="ct">📋 ' + fa.l + ' — detalle diario (clic en un día para ver sus cartolas)</div><div style="overflow:auto;max-height:560px;">' + t + '</div></div>';
+}
+function vistaFaja(P, dias, per){
+  var porDia = {}; dias.forEach(function(d){ porDia[d] = {m3:0, n:0}; }); P.forEach(function(x){ if (porDia[x.f]){ porDia[x.f].m3 += x.m3; porDia[x.f].n++; } });
+  var real = P.reduce(function(s, x){ return s + x.m3; }, 0), prog = CFG['prog_faja_' + per] || 0, pd = prog / dias.length, hi = hoyIndex(dias, P);
+  var cn = {}; P.forEach(function(x){ var k = x.cancha || '—'; cn[k] = (cn[k] || 0) + x.m3; });
+  var h = kpis(prog, real, dias, hi, 'm³');
+  var t = '<table class="t"><thead><tr><th>Día</th><th>Cartolas</th><th>m³</th><th>Acumulado</th>' + (prog ? '<th>Programa acum.</th><th>Dif.</th>' : '') + '</tr></thead><tbody>', acum = 0, G1 = {lab:[], real:[], acum:[], prog:[]};
+  dias.forEach(function(d, i){ var D = porDia[d]; acum += D.m3; var fut = i > hi && !D.m3, pa = pd * (i + 1);
+    G1.lab.push(ddmm(d)); G1.real.push(Math.round(D.m3)); G1.acum.push(fut ? null : Math.round(acum)); G1.prog.push(prog ? Math.round(pa) : null);
+    t += '<tr class="dia' + (diaSem(d) === 'dom' ? ' dom' : '') + '" onclick="detalleDia(\'' + d + '\')"><td>' + diaSem(d) + ' ' + ddmm(d) + '</td><td>' + (D.n || '') + '</td><td><b>' + (D.m3 ? nf(D.m3, 1) : '') + '</b></td><td>' + (fut ? '' : nf(acum)) + '</td>' +
+      (prog ? '<td style="color:#888">' + nf(pa) + '</td><td class="' + (fut ? '' : acum - pa >= 0 ? 'ok' : 'bad') + '">' + (fut ? '' : nf(acum - pa)) + '</td>' : '') + '</tr>'; });
+  t += '<tr class="tot"><td>Total</td><td>' + P.length + '</td><td>' + nf(real, 1) + '</td><td>' + nf(real) + '</td>' + (prog ? '<td>' + nf(prog) + '</td><td class="' + (real - prog >= 0 ? 'ok' : 'bad') + '">' + nf(real - prog) + '</td>' : '') + '</tr></tbody></table>';
+  G = G1;
+  return h + '<div class="grid2"><div class="card"><div class="ct">📊 m³ por día y acumulado</div><div style="position:relative;height:300px;"><canvas id="ch"></canvas></div></div>' +
+    '<div class="card"><div class="ct">🌲 m³ por cancha (fundo)</div><table class="t"><thead><tr><th>Cancha</th><th>m³</th></tr></thead><tbody>' +
+    Object.keys(cn).sort(function(a, b){ return cn[b] - cn[a]; }).map(function(k){ return '<tr><td>' + k + '</td><td>' + nf(cn[k], 1) + '</td></tr>'; }).join('') + '</tbody></table></div></div>' +
+    '<div class="card"><div class="ct">📋 Faja — detalle diario m³ (del 1 al ' + dias.length + '; clic en un día para ver sus cartolas)</div><div style="overflow:auto;max-height:560px;">' + t + '</div></div>';
+}
+function grafico(fa){
+  if (CH){ CH.destroy(); CH = null; } var cv = document.getElementById('ch'); if (!cv || !G || typeof Chart === 'undefined') return;
+  if (G.series){
+    var pal = ['#b0702f','#2471a3','#1a6b3a','#8e44ad','#c0392b','#16a085','#7f8c8d'];
+    CH = new Chart(cv, {type:'bar', data:{labels:G.lab, datasets:Object.keys(G.series).map(function(k, i){ return {label:k, data:G.series[k], backgroundColor:pal[i % pal.length]}; })},
+      options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{labels:{font:{size:10}}}}, scales:{x:{stacked:true, ticks:{font:{size:9}}}, y:{stacked:true}}}});
+    return;
+  }
+  var ds = [{type:'bar', label:'m³ del día', data:G.real, backgroundColor:'#d6a46c', yAxisID:'y'},
+    {type:'line', label:'Acumulado real', data:G.acum, borderColor:'#2471a3', backgroundColor:'#2471a3', pointRadius:2, tension:.2, yAxisID:'y2'}];
+  if (G.prog.some(function(v){ return v != null; })) ds.push({type:'line', label:'Programa acumulado', data:G.prog, borderColor:'#1a6b3a', borderDash:[6, 4], pointRadius:0, yAxisID:'y2'});
+  CH = new Chart(cv, {data:{labels:G.lab, datasets:ds}, options:{responsive:true, maintainAspectRatio:false, interaction:{mode:'index', intersect:false},
+    plugins:{legend:{labels:{font:{size:10}}}, tooltip:{callbacks:{label:function(c){ return c.dataset.label + ': ' + nf(c.parsed.y) + ' m³'; }}}},
+    scales:{x:{ticks:{font:{size:9}}}, y:{position:'left', title:{display:true, text:'m³ del día'}}, y2:{position:'right', grid:{drawOnChartArea:false}, title:{display:true, text:'acumulado'}}}}});
+}
+function detalleDia(d){
+  var fa = FAENAS.filter(function(f){ return f.id === S.fa; })[0], h;
+  if (fa.id === 'faja'){
+    var L = DATA.faja.filter(function(x){ return x.f === d; });
+    h = '<table class="t"><thead><tr><th>Cartola</th><th>Tipo</th><th>Cancha</th><th>Rodal</th><th>Equipo</th><th>m³</th></tr></thead><tbody>' +
+      L.map(function(x){ return '<tr><td>' + x.cart + '</td><td>' + x.tipo + '</td><td>' + x.cancha + '</td><td>' + x.rodal + '</td><td>' + x.equipo + '</td><td>' + nf(x.m3, 2) + '</td></tr>'; }).join('') + '</tbody></table>';
+  } else {
+    var L2 = DATA.eco.filter(function(x){ return x.f === d && x.cuad === fa.cuad; });
+    h = '<table class="t"><thead><tr><th>Cartola</th><th>Fundo</th><th>Camino</th><th>Cancha</th><th>Atributo</th><th>Cantidad</th><th>UM</th><th>m³</th><th>Auditada</th><th>Observación</th></tr></thead><tbody>' +
+      L2.map(function(x){ return '<tr><td>' + x.cart + '</td><td>' + x.fundo + '</td><td>' + x.camino + '</td><td>' + x.cancha + '</td><td>' + x.atr + (x.diam && x.diam !== '0' && /alcantar/i.test(x.atr) ? ' Ø' + x.diam : '') + '</td><td>' + nf(x.cant, 1) + '</td><td>' + x.um + '</td><td>' + (x.m3 ? nf(x.m3) : '') + '</td><td>' + x.aud + '</td><td style="white-space:normal;text-align:left;max-width:320px;">' + [x.obs, x.obsad].filter(Boolean).join(' — ') + '</td></tr>'; }).join('') + '</tbody></table>';
+  }
+  var m = document.createElement('div'); m.className = 'modal'; m.onclick = function(){ m.remove(); };
+  m.innerHTML = '<div class="box" onclick="event.stopPropagation()"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b style="color:var(--c1);font-size:14px;">' + fa.l + ' · ' + diaSem(d) + ' ' + d.slice(8,10) + '-' + d.slice(5,7) + '-' + d.slice(0,4) + '</b>' +
+    '<button class="btn" style="background:#c0392b;color:#fff;" onclick="this.closest(\'.modal\').remove()">✕</button></div>' + (h.indexOf('<td>') < 0 ? '<div class="vacio">Sin cartolas este día.</div>' : h) + '</div>';
+  document.body.appendChild(m);
+}
+// ================= FICHA EQUIPOS: horas, combustible y rendimiento (12-11-2026) =================
+// Réplica depurada de la hoja AnalisisCostoEmprecon (costo emprecon caminos v2.xlsx). Por máquina: horas programadas vs
+// trabajadas y litros programados (hrs prog × L/h prog) vs gastados. Por faena: producción, rendimiento (m³/h) y litros según
+// producción (L/m³ estándar × producción) vs gastados. Programas prorrateados a la fecha (días transcurridos hasta ayer).
+// Estándares de la planilla (hoja Costo); se pueden cambiar en "⚙ Estándares" y quedan guardados en el navegador.
+var EQ_GRUPOS = [
+  {id:'mt',   l:'Movimiento de tierra', col:'#8a5a2b', fa:'mt',   per:'26-25', und:'m³'},
+  {id:'oa',   l:'Obras de arte',        col:'#2471a3', fa:'oa',   per:'26-25', und:'m alcantarilla'},
+  {id:'clas', l:'Faja clasificado',     col:'#1a6b3a', fa:'faja', per:'mes',   und:'m³', re:/bell/i},
+  {id:'proc', l:'Faja procesado',       col:'#27ae60', fa:'faja', per:'mes',   und:'m³', re:/proc/i},
+  {id:'fo',   l:'Faja (otros equipos)', col:'#7f8c8d', fa:'faja', per:'mes',   und:'',   otros:true}
+];
+var EQ_RP = {mt:85, oa:5, clas:15, proc:15};          // rendimiento programado (m³/h; obras de arte en m/h)
+var EQ_LM = {mt:0.247, oa:1.4, clas:0.4334, proc:1.9}; // litros por unidad producida (estándar de la planilla)
+function eqStd(eq){
+  var s = (CFG.eqstd || {})[eq]; if (s) return s;
+  if (/^e\s*\d+/i.test(eq)) return {hp:147, lh:21};
+  if (/retro/i.test(eq)) return {hp:140, lh:7};
+  if (/bell\s*0?6\b/i.test(eq)) return {hp:116.7, lh:7};
+  if (/bell/i.test(eq)) return {hp:116.7, lh:6};
+  if (/proc\D*0?7\b/i.test(eq)) return {hp:116.7, lh:27};
+  if (/proc/i.test(eq)) return {hp:116.7, lh:30};
+  return {hp:0, lh:0};
+}
+function eqStdSet(eq, k, v){ CFG.eqstd = CFG.eqstd || {}; var s = eqStd(eq); CFG.eqstd[eq] = {hp:s.hp, lh:s.lh}; CFG.eqstd[eq][k] = v; cfgSet('eqstd', CFG.eqstd); eqRender(); }
+function eqGrpSet(t, g, v){ CFG[t] = CFG[t] || {}; CFG[t][g] = v; cfgSet(t, CFG[t]); eqRender(); }
+function eqRP(g){ return (CFG.rp || {})[g] != null ? CFG.rp[g] : EQ_RP[g]; }
+function eqLM(g){ return (CFG.lm || {})[g] != null ? CFG.lm[g] : EQ_LM[g]; }
+function eqGrupoDe(fa, eq){ if (fa !== 'faja') return fa; return /bell/i.test(eq) ? 'clas' : /proc/i.test(eq) ? 'proc' : 'fo'; }
+var EQCH = [];
+function eqRender(){
+  var ctl = document.getElementById('eq-ctl'), cu = document.getElementById('eq-cuerpo'); EQCH.forEach(function(c){ c.destroy(); }); EQCH = [];
+  var H = DATA.horas || [], C = DATA.comb || [];
+  if (!H.length && !C.length){ ctl.innerHTML = ''; cu.innerHTML = '<div class="vacio">Carga el <b>📥 Best</b>: de ahí salen las horas (BaseHorasTrab) y los litros (BaseCombustible) de las máquinas de Emprecon. Para la producción, carga también las <b>📥 Cartolas Ecofor</b>.</div>'; return; }
+  var perDe = function(fa, f){ return fa === 'faja' ? f.slice(0, 7) : perCaminos(f); };
+  var pers = {}; H.concat(C).forEach(function(x){ pers[perDe(x.fa, x.f)] = 1; }); pers = Object.keys(pers).sort();
+  if (!S.eqper || pers.indexOf(S.eqper) < 0) S.eqper = pers[pers.length - 1];
+  var per = S.eqper, ayer = iso(new Date(Date.now() - 864e5));
+  var dC = diasPer(per, '26-25'), dF = diasPer(per, 'mes');
+  var trans = function(d){ var n = d.filter(function(x){ return x <= ayer; }).length; return {n: n, tot: d.length, fac: n / d.length}; };
+  var tC = trans(dC), tF = trans(dF);
+  ctl.innerHTML = '<b style="color:var(--c1);">Mes</b> <select onchange="S.eqper=this.value;try{localStorage.setItem(\'emp_sel\',JSON.stringify(S))}catch(e){};eqRender()">' +
+    pers.slice().reverse().map(function(p){ var m = +p.slice(5,7); return '<option value="' + p + '"' + (p === per ? ' selected' : '') + '>' + MESES[m - 1].charAt(0).toUpperCase() + MESES[m - 1].slice(1) + ' ' + p.slice(0,4) + '</option>'; }).join('') + '</select>' +
+    ' &nbsp; <span style="color:#6b5a48;">Caminos: ' + ddmm(dC[0]) + ' al ' + ddmm(dC[dC.length - 1]) + ' (' + tC.n + ' de ' + tC.tot + ' días) · Faja: ' + ddmm(dF[0]) + ' al ' + ddmm(dF[dF.length - 1]) + ' (' + tF.n + ' de ' + tF.tot + ' días)</span>';
+  // acumular por máquina
+  var M = {};
+  var enPer = function(x){ return (x.fa === 'faja' ? dF : dC).indexOf(x.f) >= 0; };
+  H.forEach(function(x){ if (!enPer(x)) return; var g = eqGrupoDe(x.fa, x.eq), k = g + '|' + x.eq; M[k] = M[k] || {g:g, eq:x.eq, h:0, l:0}; M[k].h += x.h; });
+  C.forEach(function(x){ if (!enPer(x)) return; var g = eqGrupoDe(x.fa, x.eq), k = g + '|' + x.eq; M[k] = M[k] || {g:g, eq:x.eq, h:0, l:0}; M[k].l += x.l; });
+  // vehículos de apoyo (camionetas): cargan combustible pero no son maquinaria → aparte, no entran a la comparación
+  var esMaq = {}; H.forEach(function(x){ esMaq[x.eq] = 1; });
+  var APOYO = {}; Object.keys(M).forEach(function(k){ var m = M[k]; if (!esMaq[m.eq] && !eqStd(m.eq).hp){ APOYO[m.g] = APOYO[m.g] || []; APOYO[m.g].push(m); delete M[k]; } });
+  // una máquina que aparece en otra faena (ej. E 14 con una carga en Faja) lleva su programa solo en su faena principal (la de más horas)
+  var princ = {}; Object.keys(M).forEach(function(k){ var m = M[k], p = princ[m.eq]; if (!p || m.h > p.h || (m.h === p.h && m.l > p.l)) princ[m.eq] = m; });
+  // producción por grupo
+  var prod = {mt:0, oa:0, clas:0, proc:0};
+  DATA.eco.forEach(function(x){ if (x.per !== per) return;
+    if (x.cuad === 'MOVIMIENTO DE TIERRA' && m3Prog(x)) prod.mt += x.m3;
+    if (x.cuad === 'OBRAS DE ARTE' && /alcantar/i.test(x.atr) && !/mantenc/i.test(x.atr)) prod.oa += x.cant; });
+  DATA.faja.forEach(function(x){ if (x.per === per){ prod.clas += x.m3; prod.proc += x.m3; } });
+  var pct = function(a, b){ return b ? a / b * 100 : 0; };
+  var semP = function(p, inv){ if (!p) return '#94a3b8'; var ok = inv ? p <= 100 : p >= 100; return ok ? '#1a6b3a' : (inv ? p <= 110 : p >= 90) ? '#e67e22' : '#c0392b'; };
+  // ---- tabla 1: máquinas ----
+  var th = function(t, c){ return '<th style="' + (c ? 'background:' + c + ';' : '') + '">' + t + '</th>'; };
+  var t1 = '<table class="t res2"><thead><tr>' + th('Equipo') + th('Hrs prog<br>mes') + th('Hrs prog<br>a la fecha') + th('Hrs<br>trabajadas') + th('% horas') +
+    th('L/h<br>prog') + th('L/h<br>real') + th('Litros prog<br>a la fecha') + th('Litros<br>gastados') + th('% litros') + '</tr></thead><tbody>';
+  var GR = {}, labs = [], hp = [], ht = [], lp = [], lg = [], lhp = [], lhr = [], cols = [], hpm = [], lpm = [];
+  EQ_GRUPOS.forEach(function(G){
+    var L = Object.keys(M).map(function(k){ return M[k]; }).filter(function(m){ return m.g === G.id; }).sort(function(a, b){ return a.eq.localeCompare(b.eq, 'es', {numeric:true}); });
+    if (!L.length) return;
+    var fac = G.fa === 'faja' ? tF.fac : tC.fac, T = {hpm:0, hpf:0, h:0, lpf:0, l:0, lpm:0};
+    t1 += '<tr class="grp"><td colspan="10" style="background:' + G.col + ';color:#fff;font-weight:800;">' + G.l + '</td></tr>';
+    L.forEach(function(m){ var s = princ[m.eq] === m ? eqStd(m.eq) : {hp:0, lh:0}, hpf = s.hp * fac, lpf = s.hp * s.lh * fac, lh = m.h ? m.l / m.h : 0;
+      T.hpm += s.hp; T.lpm += s.hp * s.lh; T.hpf += hpf; T.h += m.h; T.lpf += lpf; T.l += m.l;
+      var ph = pct(m.h, hpf), pl = pct(m.l, lpf);
+      t1 += '<tr><td style="color:' + G.col + ';">' + m.eq + '</td><td>' + nf(s.hp, 1) + '</td><td>' + nf(hpf, 1) + '</td><td><b>' + nf(m.h, 1) + '</b></td>' +
+        '<td style="color:' + semP(ph) + ';font-weight:700;">' + (hpf ? nf(ph, 0) + '%' : '—') + '</td><td>' + nf(s.lh, 1) + '</td>' +
+        '<td style="color:' + semP(pct(lh, s.lh), true) + ';font-weight:700;">' + (m.h ? nf(lh, 1) : '—') + '</td><td>' + nf(lpf) + '</td><td><b>' + nf(m.l) + '</b></td>' +
+        '<td style="color:' + semP(pl, true) + ';font-weight:700;">' + (lpf ? nf(pl, 0) + '%' : '—') + '</td></tr>';
+      if (!G.otros){ labs.push(m.eq); hp.push(Math.round(hpf)); ht.push(Math.round(m.h)); lp.push(Math.round(lpf)); lg.push(Math.round(m.l)); lhp.push(s.lh); lhr.push(m.h ? Math.round(lh * 10) / 10 : null); cols.push(G.col); hpm.push(s.hp); lpm.push(Math.round(s.hp * s.lh)); } });
+    if (APOYO[G.id]) t1 += '<tr><td colspan="10" style="text-align:left;font-weight:400;color:#888;font-size:10px;">Vehículos de apoyo (no entran al total): ' + APOYO[G.id].map(function(m){ return m.eq + ' ' + nf(m.l) + ' L'; }).join(' · ') + '</td></tr>';
+    t1 += '<tr class="tot"><td>Total ' + G.l.toLowerCase() + '</td><td>' + nf(T.hpm, 1) + '</td><td>' + nf(T.hpf, 1) + '</td><td>' + nf(T.h, 1) + '</td><td>' + (T.hpf ? nf(pct(T.h, T.hpf), 0) + '%' : '') + '</td><td></td><td>' + (T.h ? nf(T.l / T.h, 1) : '') + '</td><td>' + nf(T.lpf) + '</td><td>' + nf(T.l) + '</td><td>' + (T.lpf ? nf(pct(T.l, T.lpf), 0) + '%' : '') + '</td></tr>';
+    GR[G.id] = T;
+  });
+  t1 += '</tbody></table>';
+  // ---- tabla 2: rendimiento por faena ----
+  var t2 = '<table class="t res2"><thead><tr>' + th('Faena') + th('Producción') + th('Hrs<br>trabajadas') + th('Rend. prog<br>(por hora)') + th('Rend. real<br>(por hora)') + th('% rend.') +
+    th('Litros por unidad<br>estándar') + th('Litros por unidad<br>real') + th('Litros según<br>producción') + th('Litros<br>gastados') + th('Diferencia<br>litros') + '</tr></thead><tbody>';
+  var rl = [], rp = [], rr = [], rc = [], cl = [], cs = [], cg = [], rgid = [];
+  EQ_GRUPOS.forEach(function(G){ if (G.otros) return; var T = GR[G.id] || {h:0, l:0}, P = prod[G.id] || 0, rP = eqRP(G.id), rR = T.h ? P / T.h : 0, lm = eqLM(G.id), lsp = lm * P, lmr = P ? T.l / P : 0;
+    if (!P && !T.h && !T.l) return;
+    var pFaja = G.id === 'clas' && GR.proc ? ' rowspan="2" style="vertical-align:middle;border-bottom:2px solid #5a3a1a;" title="Es la misma madera: lo que procesa el procesador lo clasifica el Bell"' : '';
+    t2 += '<tr><td style="color:' + G.col + ';">' + G.l + '</td>' + (G.id === 'proc' && GR.clas ? '' : '<td' + pFaja + '><b>' + nf(P) + '</b> ' + G.und + '</td>') + '<td>' + nf(T.h, 1) + '</td><td>' + nf(rP, 1) + '</td>' +
+      '<td style="color:' + semP(pct(rR, rP)) + ';font-weight:700;">' + (T.h ? nf(rR, 1) : '—') + '</td><td style="color:' + semP(pct(rR, rP)) + ';font-weight:700;">' + (T.h && rP ? nf(pct(rR, rP), 0) + '%' : '—') + '</td>' +
+      '<td>' + nf(lm, 3) + '</td><td style="color:' + semP(pct(lmr, lm), true) + ';font-weight:700;">' + (P ? nf(lmr, 3) : '—') + '</td><td>' + nf(lsp) + '</td><td>' + nf(T.l) + '</td>' +
+      '<td class="' + (T.l - lsp <= 0 ? 'ok' : 'bad') + '">' + (T.l - lsp > 0 ? '+' : '') + nf(T.l - lsp) + '</td></tr>';
+    rgid.push(G.id); rl.push(G.l); rp.push(rP); rr.push(T.h ? Math.round(rR * 10) / 10 : 0); rc.push(G.col); cl.push(G.l); cs.push(Math.round(lsp)); cg.push(Math.round(T.l)); });
+  t2 += '</tbody></table>';
+  // ---- estándares editables ----
+  var std = '<details style="margin-top:8px;"><summary style="cursor:pointer;font-weight:700;color:var(--c1);">⚙ Estándares (programa) — se guardan en este navegador</summary><div class="grid2" style="margin-top:6px;"><div><table class="t"><thead><tr><th>Equipo</th><th>Hrs prog mes</th><th>L/h prog</th></tr></thead><tbody>' +
+    Object.keys(M).map(function(k){ return M[k].eq; }).filter(function(v, i, a){ return a.indexOf(v) === i; }).sort().map(function(eq){ var s = eqStd(eq), q = eq.replace(/'/g, "\\'");
+      return '<tr><td>' + eq + '</td><td><input type="number" step="0.1" value="' + s.hp + '" style="width:70px" onchange="eqStdSet(\'' + q + '\',\'hp\',+this.value)"></td><td><input type="number" step="0.1" value="' + s.lh + '" style="width:60px" onchange="eqStdSet(\'' + q + '\',\'lh\',+this.value)"></td></tr>'; }).join('') +
+    '</tbody></table></div><div><table class="t"><thead><tr><th>Faena</th><th>Rend. prog por hora</th><th>Litros por unidad</th></tr></thead><tbody>' +
+    EQ_GRUPOS.filter(function(G){ return !G.otros; }).map(function(G){ return '<tr><td>' + G.l + '</td><td><input type="number" step="0.1" value="' + eqRP(G.id) + '" style="width:70px" onchange="eqGrpSet(\'rp\',\'' + G.id + '\',+this.value)"></td><td><input type="number" step="0.001" value="' + eqLM(G.id) + '" style="width:70px" onchange="eqGrpSet(\'lm\',\'' + G.id + '\',+this.value)"></td></tr>'; }).join('') +
+    '</tbody></table><div style="font-size:10px;color:#888;margin-top:4px;">Valores iniciales de la planilla "costo emprecon caminos v2" (hoja Costo). Obras de arte: producción en metros de alcantarilla instalada.</div>' +
+    ' <button class="btn" style="border:1px solid #ccc;margin-top:4px;" onclick="delete CFG.eqstd;delete CFG.rp;delete CFG.lm;cfgSet(\'x\',0);eqRender()">Volver a los valores de la planilla</button></div></div></details>';
+  // 13-11-2026 (Gustavo): los 5 gráficos IGUALES a los de la planilla "costo emprecon caminos v2" (colores, superposición,
+  // etiquetas y el papelito amarillo con el mes). Programa del mes completo como la planilla; con el selector, "a la fecha".
+  var mesN = MESES[+per.slice(5, 7) - 1], mesL = per.slice(0, 4) + ' ' + mesN.charAt(0).toUpperCase() + mesN.slice(1);
+  var aFecha = S.eqprog === 'fecha', enCurso = tC.fac < 1 || tF.fac < 1;
+  var card = function(id, t, h){ return '<div class="card" style="position:relative;margin-bottom:10px;"><div style="text-align:center;margin:2px 130px 4px;"><span style="font-weight:700;font-size:14.5px;color:#404040;background:#eee;padding:1px 6px;">' + t + '</span></div>' +
+    '<div style="position:absolute;right:12px;top:8px;background:linear-gradient(#fff9b8,#ffe97a);border:1px solid #e6d36a;box-shadow:3px 3px 6px rgba(0,0,0,.3);padding:3px 12px;font-size:12px;font-weight:800;color:#1a8a2a;">' + mesL + '</div>' +
+    '<div style="position:relative;height:' + (h || 360) + 'px;"><canvas id="' + id + '"></canvas></div></div>'; };
+  var selProg = '<div class="ctl" style="margin:10px 0 6px;"><b style="color:var(--c1);">Programa en los gráficos</b> <select onchange="S.eqprog=this.value;eqRender()"><option value="mes"' + (aFecha ? '' : ' selected') + '>Mes completo (como la planilla)</option><option value="fecha"' + (aFecha ? ' selected' : '') + '>A la fecha (días transcurridos)</option></select>' +
+    (enCurso && !aFecha ? ' <span style="color:#c0392b;font-size:11px;">Mes en curso: lo trabajado llega hasta ayer y el programa es del mes completo.</span>' : '') + '</div>';
+  cu.innerHTML = '<div class="nota">Programa <b>a la fecha</b> = programa del mes × días transcurridos hasta ayer. % horas y % rendimiento: verde ≥ 100%, naranjo 90-99%, rojo bajo 90%. Litros: verde si se gastó igual o menos que lo programado.</div>' +
+    '<div class="card" style="margin-bottom:10px;"><div class="ct">🚜 Por máquina: horas y combustible</div><div style="overflow:auto;">' + t1 + '</div></div>' +
+    '<div class="card" style="margin-bottom:10px;"><div class="ct">📏 Por faena: producción, rendimiento y combustible</div><div style="overflow:auto;">' + t2 + '</div>' + std + '</div>' + selProg +
+    '<div class="grid2">' + card('eqc5', 'Grafico de Combustible Prog vs  Comb Consumido faena Mov. Tierra en caminos mes de', 380) +
+    card('eqc4', 'Grafico de rendimientos Rend M³ Prog. Vs Rend M³ real', 380) + '</div>' +
+    card('eqc1', 'Grafico de Hrs Prog. Vs  Hrs Trabajadas en el mes de', 420) +
+    card('eqc2', 'gráfico combustiblesProg. vs Gastado mes', 360) +
+    card('eqc3', 'gráfico Combustible Lts/Hr Prog. vs Lts/Hr Gastado mes', 360);
+  if (typeof Chart === 'undefined') return;
+  // etiquetas por serie: lbl = {pos:'top'|'mid'|'in'|'right', c:color, f:tamaño, box:true, dec:decimales}
+  var etq = {id:'etqEq', afterDatasetsDraw:function(ch){ var c = ch.ctx; ch.data.datasets.forEach(function(ds, i){ var L = ds.lbl, m = ch.getDatasetMeta(i); if (!L || m.hidden) return;
+    m.data.forEach(function(b, j){ var v = ds.data[j]; if (v == null) return; var t = nf(v, L.dec && v % 1 ? L.dec : 0), x = b.x, y;
+      if (L.pos === 'top') y = b.y - 7; else if (L.pos === 'mid') y = (b.y + b.base) / 2 + 5; else if (L.pos === 'in') y = b.y + 22; else { x = b.x + 8; y = b.y + 4; }
+      c.save(); c.font = 'bold ' + (L.f || 12) + 'px Segoe UI'; c.textAlign = L.pos === 'right' ? 'left' : 'center';
+      if (L.box){ var w = c.measureText(t).width + 12; c.strokeStyle = '#5b7fa6'; c.lineWidth = 1; c.strokeRect(x - w / 2, y - 16, w, 21); }
+      c.fillStyle = L.c || '#333'; c.fillText(t, x, y); c.restore(); }); }); }};
+  // degradado horizontal tipo "bisel" de las barras de Excel
+  var bisel = function(osc, med, cla){ return function(ctx){ var el = ctx.element; if (!ctx.chart.chartArea || !el || !el.width) return med;
+    var g = ctx.chart.ctx.createLinearGradient(el.x - el.width / 2, 0, el.x + el.width / 2, 0); g.addColorStop(0, osc); g.addColorStop(.15, cla); g.addColorStop(.5, med); g.addColorStop(.85, cla); g.addColorStop(1, osc); return g; }; };
+  var ejes = function(max){ var t = {callback:function(v){ return nf(v); }, font:{size:10}, color:'#595959'};
+    return {x:{grid:{display:false}, ticks:{font:{size:10.5, weight:'bold'}, color:'#404040'}}, y:{min:0, max:max, ticks:t, grid:{color:'#d9d9d9'}}, y2:{position:'right', min:0, max:max, ticks:t, grid:{display:false}}}; };
+  var maxDe = function(arr, paso){ var m = Math.max.apply(null, arr.filter(function(v){ return v != null; }).concat([1])); return Math.ceil(m * 1.12 / paso) * paso; };
+  var opc = function(leg, max, dec){ return {responsive:true, maintainAspectRatio:false, animation:false, plugins:{legend:Object.assign({labels:{boxWidth:11, font:{size:11}, color:'#595959'}}, leg),
+    tooltip:{callbacks:{label:function(c){ return c.dataset.label + ': ' + nf(c.parsed.y, dec || 0); }}}}, scales:ejes(max)}; };
+  var progH = aFecha ? hp : hpm, progL = aFecha ? lp : lpm;
+  // 1) Combustible Mov. tierra: según m³ producidos (azul) y consumidos (naranjo) delante; programados (lila) atrás, más ancho
+  var iMT = rgid.indexOf('mt'), Tm = GR.mt || {lpf:0, lpm:0}, c1 = [iMT >= 0 ? cs[iMT] : 0, iMT >= 0 ? cg[iMT] : 0, Math.round(aFecha ? Tm.lpf : Tm.lpm)];
+  EQCH.push(new Chart(document.getElementById('eqc5'), {type:'bar', plugins:[etq], data:{labels:['Mov. Tierra Camino'], datasets:[
+    {label:'Lts/SegunM3Prod', data:[c1[0]], backgroundColor:'#4a5bb3', order:1, barPercentage:.98, categoryPercentage:.6, lbl:{pos:'in', c:'#333a5c', f:13}},
+    {label:'LtsConsumido', data:[c1[1]], backgroundColor:'rgba(213,95,45,.88)', order:1, barPercentage:.98, categoryPercentage:.6, lbl:{pos:'in', c:'#ffc000', f:15, box:true}},
+    {label:'LtsProgramados', data:[c1[2]], backgroundColor:'rgba(176,160,200,.7)', order:2, grouped:false, barPercentage:1, categoryPercentage:.68, lbl:{pos:'top', c:'#7030a0', f:15}}]},
+    options:opc({position:'top'}, maxDe(c1, 5000))}));
+  // 2) Horas: programa dorado y ancho atrás (etiqueta naranja arriba), trabajadas verde delante (etiqueta blanca adentro)
+  var mxH = maxDe(ht.concat(progH), 50);
+  EQCH.push(new Chart(document.getElementById('eqc1'), {type:'bar', plugins:[etq], data:{labels:labs, datasets:[
+    {label:'Hrs Trab', data:ht, backgroundColor:'#00b050', borderColor:'#00843c', borderWidth:1, order:1, barPercentage:.62, categoryPercentage:.85, lbl:{pos:'mid', c:'#fff', f:14}},
+    {label:'Hrs Prog', data:progH.map(function(v){ return Math.round(v * 10) / 10; }), backgroundColor:bisel('#9c7a12', '#e9c43a', '#f7e08a'), borderColor:'#8a6d10', borderWidth:1, order:2, grouped:false, barPercentage:1, categoryPercentage:.85, lbl:{pos:'top', c:'#ed7d31', f:12, dec:1}}]},
+    options:opc({display:false}, mxH, 1)}));
+  // 3) Rendimiento m³/hr por faena: programado naranjo ancho atrás, real verde delante
+  var rl2 = rl.map(function(l, i){ return ({mt:'Mov. Tierra Camino', oa:'Obras de Arte', clas:'Faja Clasificado', proc:'Faja Procesado'})[rgid[i]] || l; });
+  var mxR = maxDe(rp.concat(rr), 10);
+  EQCH.push(new Chart(document.getElementById('eqc4'), {type:'bar', plugins:[etq], data:{labels:rl2, datasets:[
+    {label:'Rend. Prom Real (m³/Hr)', data:rr, backgroundColor:'#70ad47', order:1, barPercentage:.55, categoryPercentage:.45, lbl:{pos:'mid', c:'#333', f:12, dec:1}},
+    {label:'m3/Hr Prog (Prom)', data:rp, backgroundColor:bisel('#c55a11', '#f4a460', '#f8cbad'), borderColor:'#c55a11', borderWidth:1, order:2, grouped:false, barPercentage:.75, categoryPercentage:.45, lbl:{pos:'top', c:'#ed7d31', f:11, dec:1}}]},
+    options:opc({position:'top', align:'end', reverse:true}, mxR, 1)}));
+  // 4) Litros por máquina: gastados en barras verdes, programa en línea azul con puntos
+  var mxL = maxDe(lg.concat(progL), 500);
+  EQCH.push(new Chart(document.getElementById('eqc2'), {plugins:[etq], data:{labels:labs, datasets:[
+    {type:'line', label:'Lts Prog', data:progL, borderColor:'#4472c4', backgroundColor:'#4472c4', borderWidth:2.5, pointRadius:4, order:0, lbl:{pos:'right', c:'#333', f:11}},
+    {type:'bar', label:'Lts Gastados', data:lg, backgroundColor:'#70ad47', order:1, barPercentage:.6, lbl:{pos:'mid', c:'#333', f:11}}]},
+    options:opc({display:false}, mxL)}));
+  // 5) Litros por hora: real en barras naranjas con bisel, programado en línea azul
+  var mxLh = maxDe(lhr.concat(lhp), 10);
+  EQCH.push(new Chart(document.getElementById('eqc3'), {plugins:[etq], data:{labels:labs, datasets:[
+    {type:'line', label:'Lts/Hrs Prog', data:lhp, borderColor:'#4472c4', backgroundColor:'#4472c4', borderWidth:2.5, pointRadius:4, order:0, lbl:{pos:'right', c:'#333', f:11}},
+    {type:'bar', label:'Lts/Hrs Real', data:lhr, backgroundColor:bisel('#c55a11', '#f79646', '#fbc08f'), borderColor:'#c55a11', borderWidth:1, order:1, barPercentage:.6, lbl:{pos:'mid', c:'#404040', f:11, dec:1}}]},
+    options:opc({position:'bottom', reverse:true}, mxLh, 1)}));
+}
+
+// ================= FICHA TIEMPOS PERDIDOS Y OEE (13-11-2026) =================
+// Datos en vivo del Power BI PÚBLICO de Ecofor "Productividad Caminos - Movimiento de Tierra" (el que usa el supervisor).
+// La App los pide directo a la API pública de Power BI (permite CORS), sin bot ni Best.
+// Definiciones verificadas contra el informe (jun-2026: 1.290,3 h en fundo y 263,7 h de tiempo perdido, iguales al Power BI):
+//   Horas en fundo  = Σ "Tiempo Actividad Ava" de DETALLE_DE_AVANCE, por fecha de inicio del avance.
+//   Horas T.Perdido = Σ "Tiempo Perdido" de TIEMPO_PERDIDO con clasificación "T. PERDIDO", por fecha de inicio del tiempo muerto.
+//   Horas efectivas = fundo − perdido; Disponibilidad (OEE del informe) = efectivas / fundo. Período 26 al 25.
+// Colores y vistas como el Power BI para que el supervisor lo lea igual; las pestañas con ★ son agregados nuestros.
+var PBI = {r:'eyJrIjoiZGIxYjdiNDQtN2Q2NS00ZjY2LWIyYjgtMGVjMzZjNWFhYTg1IiwidCI6ImVmZmRlZDU1LTQ0YWItNDNiYi1iZjQ2LThmYzUzYzFiOWQ4OCIsImMiOjR9',
+  base:'https://wabi-south-central-us-api.analysis.windows.net/public/reports'};
+PBI.k = JSON.parse(atob(PBI.r)).k;
+var TPD = null;   // {ts, refresh, tp:[...], av:[...], bench:{eess:{per:{fu,tp}}}}
+var TPS = {v:'diaria', d:'', h:'', fundo:'', resp:''};
+var TPCH = [];
+var PG = {g:'#7cb518', gd:'#5a8f12', l:'#e6f2d3', l2:'#f4f9ea', t:'#8f7e35', tx:'#1f3b08'};
+function tpEsc(s){ return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+function pbiDecode(j, cols){
+  var dsr = j.results[0].result.data.dsr.DS[0], vd = dsr.ValueDicts || {}, rows = (dsr.PH[0] || {}).DM0 || [], out = [], prev = [], sch = null;
+  rows.forEach(function(r){
+    if (r.S) sch = r.S; var C = r.C || [], rep = r.R || 0, nul = r['Ø'] || 0, ci = 0, v = [];
+    for (var i = 0; i < cols.length; i++){
+      var x; if (rep >> i & 1) x = prev[i]; else if (nul >> i & 1) x = null; else { x = C[ci++]; var dn = sch && sch[i] && sch[i].DN; if (dn && typeof x === 'number') x = vd[dn][x]; }
+      v.push(x); }
+    prev = v; out.push(v); });
+  return out;
+}
+async function pbiQuery(model, tabla, cols){
+  var body = {version:'1.0.0', modelId:model, queries:[{Query:{Commands:[{SemanticQueryDataShapeCommand:{
+    Query:{Version:2, From:[{Name:'t', Entity:tabla, Type:0}], Select:cols.map(function(c){ return {Column:{Expression:{SourceRef:{Source:'t'}}, Property:c}, Name:'t.' + c}; })},
+    Binding:{Primary:{Groupings:[{Projections:cols.map(function(c, i){ return i; })}]}, DataReduction:{DataVolume:4, Primary:{Window:{Count:30000}}}, Version:1}}}]}}]};
+  var r = await fetch(PBI.base + '/querydata?synchronous=true', {method:'POST', headers:{'X-PowerBI-ResourceKey':PBI.k, 'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  if (!r.ok) throw new Error('Power BI respondió ' + r.status);
+  return pbiDecode(await r.json(), cols);
+}
+// Ecofor manda los tildes como '?' (OPERACI?N, COLACI?N): se corrigen los casos comunes
+function tpFix(s){ return String(s || '').replace(/CI\?N/g, 'CIÓN').replace(/ci\?n/g, 'ción').replace(/A\?O/g, 'AÑO'); }
+function msISO(ms){ return typeof ms === 'number' ? new Date(ms).toISOString().slice(0, 10) : ''; }
+async function tpActualizar(){
+  var el = document.getElementById('tp-est'); if (el) el.textContent = 'Pidiendo los datos al Power BI de Ecofor…';
+  try {
+    var m = await (await fetch(PBI.base + '/' + PBI.k + '/modelsAndExploration?preferReadOnlySession=true', {headers:{'X-PowerBI-ResourceKey':PBI.k}})).json();
+    var model = m.models[0].id, refresh = m.models[0].LastRefreshTime;
+    var T = await pbiQuery(model, 'TIEMPO_PERDIDO', ['c0_emsefor','c0_nombre_controlador','c0_fundo','c0_camino','c0_tipo_obra','c0_tiempo_muerto','c0_responsabilidad','c0_clasificacion','c0_tm_fecha_inicio','c0_tm_fecha_fin','Tiempo Perdido','c0_obs']);
+    var A = await pbiQuery(model, 'DETALLE_DE_AVANCE', ['c0_emsefor','c0_nombre_controlador','c0_fundo','c0_fecha_inicio_ava','Tiempo Actividad Ava']);
+    var bench = {}, tp = [], av = [];
+    var B = function(e, per){ bench[e] = bench[e] || {}; return bench[e][per] = bench[e][per] || {fu:0, tp:0}; };
+    T.forEach(function(r){ var f = msISO(r[8]); if (!f) return; var h = parseFloat(r[10]) || 0, e = String(r[0] || '');
+      if (r[7] === 'T. PERDIDO') B(e, perCaminos(f)).tp += h;
+      if (e === 'EMPRECON SPA') tp.push([r[1], r[2], r[3], r[4], tpFix(r[5]), r[6], r[7], f, r[8], r[9], Math.round(h * 1000) / 1000, tpFix(r[11] || '')]); });
+    A.forEach(function(r){ var f = msISO(r[3]); if (!f) return; var h = parseFloat(r[4]) || 0, e = String(r[0] || '');
+      B(e, perCaminos(f)).fu += h; if (e === 'EMPRECON SPA') av.push([r[1], r[2], f, Math.round(h * 1000) / 1000]); });
+    TPD = {ts: Date.now(), refresh: refresh, tp: tp, av: av, bench: bench};
+    try { localStorage.setItem('emp_pbi', JSON.stringify(TPD)); } catch(e){ console.warn('no cabe en el navegador', e); }
+    TPS.d = TPS.h = ''; tpRender();
+  } catch(e){ if (el) el.innerHTML = '<span style="color:#c0392b;">No se pudo leer el Power BI: ' + tpEsc(e.message) + '. Revisa la conexión a internet y vuelve a intentar.</span>'; }
+}
+function tpAbrir(){
+  if (!TPD){ try { TPD = JSON.parse(localStorage.getItem('emp_pbi') || 'null'); } catch(e){} }
+  tpRender();
+  if (!TPD || Date.now() - TPD.ts > 6 * 3600e3) tpActualizar();   // más de 6 h: se actualiza solo
+}
+// --- operador de Ecofor → máquina, con la planilla de horas (BaseHorasTrab tiene operador desde ago-2026) ---
+function tpTok(s){ return String(s || '').toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Z ]/g, ' ').split(/\s+/).filter(function(w){ return w.length > 2; }); }
+function tpCasi(a, b){ if (a === b) return true; if (a.length < 5 || Math.abs(a.length - b.length) > 1) return false;
+  var i = 0, j = 0, d = 0; while (i < a.length && j < b.length){ if (a[i] === b[j]){ i++; j++; continue; } if (++d > 1) return false; if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; } } return d + (a.length - i) + (b.length - j) <= 1; }
+function tpMismo(pbi, bht){ var A = tpTok(pbi), Bt = tpTok(bht), n = 0; A.forEach(function(a){ if (Bt.some(function(b){ return tpCasi(a, b); })) n++; }); return n >= 2; }
+var TP_MAQ = {};
+function tpMaq(op, per){
+  var k = op + '|' + per; if (TP_MAQ[k] !== undefined) return TP_MAQ[k];
+  var H = (DATA.horas || []).filter(function(x){ return x.op && x.h > 0 && tpMismo(op, x.op); });
+  var cuenta = function(L){ var c = {}; L.forEach(function(x){ c[x.eq] = (c[x.eq] || 0) + x.h; }); var b = null; Object.keys(c).forEach(function(e){ if (!b || c[e] > c[b]) b = e; }); return b; };
+  return TP_MAQ[k] = cuenta(H.filter(function(x){ return perCaminos(x.f) === per; })) || cuenta(H) || null;
+}
+function tpNomCorto(op){ var t = String(op || '').split(/\s+/); return t.length > 2 ? t[0] + ' ' + t[t.length - 1] : op; }
+// --- utilidades de vista ---
+function tpGauge(p, w){
+  w = w || 200; var r = 80, cx = 100, cy = 95, L = Math.PI * r, v = Math.max(0, Math.min(1, p || 0));
+  var a = Math.PI * (1 - 0.9), mx = cx + r * Math.cos(a), my = cy - r * Math.sin(a);
+  return '<svg viewBox="0 0 200 120" width="' + w + '"><path d="M20 95 A80 80 0 0 1 180 95" fill="none" stroke="#e5e5e5" stroke-width="26"/>' +
+    '<path d="M20 95 A80 80 0 0 1 180 95" fill="none" stroke="' + PG.g + '" stroke-width="26" stroke-dasharray="' + (L * v) + ' ' + L + '"/>' +
+    '<line x1="' + (cx + (r - 15) * Math.cos(a)) + '" y1="' + (cy - (r - 15) * Math.sin(a)) + '" x2="' + (cx + (r + 15) * Math.cos(a)) + '" y2="' + (cy - (r + 15) * Math.sin(a)) + '" stroke="#c0392b" stroke-width="2"/>' +
+    '<text x="' + (mx + 6) + '" y="' + (my - 6) + '" font-size="9" fill="#555">90 %</text><text x="100" y="92" text-anchor="middle" font-size="30" fill="#333">' + Math.round(v * 100) + ' %</text>' +
+    '<text x="20" y="114" text-anchor="middle" font-size="9" fill="#555">0 %</text><text x="180" y="114" text-anchor="middle" font-size="9" fill="#555">100 %</text></svg>';
+}
+function tpDatos(){
+  // filtra por rango de períodos, fundo y responsable
+  var d = TPS.d, h = TPS.h, fu = TPS.fundo, rs = TPS.resp;
+  var enR = function(f){ var p = perCaminos(f); return p >= d && p <= h; };
+  var tp = TPD.tp.filter(function(x){ return enR(x[7]) && (!fu || x[1] === fu) && (!rs || x[5] === rs); });
+  var av = TPD.av.filter(function(x){ return enR(x[2]) && (!fu || x[1] === fu); });
+  return {tp: tp, av: av};
+}
+function tpSum(L, i){ return L.reduce(function(s, x){ return s + (x[i] || 0); }, 0); }
+function tpPerd(L){ return L.filter(function(x){ return x[6] === 'T. PERDIDO'; }); }
+function tpTab(cols, rows, tot, opt){
+  opt = opt || {};
+  var h = '<table class="pbt"><thead><tr>' + cols.map(function(c){ return '<th>' + c + '</th>'; }).join('') + '</tr></thead><tbody>';
+  if (tot) h += '<tr class="pbtot">' + tot.map(function(v){ return '<td>' + v + '</td>'; }).join('') + '</tr>';
+  // texto a la izquierda, números a la derecha
+  var al = function(v){ var s = String(v).replace(/<[^>]*>/g, '').trim(); return s && !/^[-+]?[\d.,]+\s*(%|h)?$/.test(s) && !/^[-+]?[\d.,]+ /.test(s) ? ' style="text-align:left"' : ''; };
+  rows.forEach(function(r){ h += '<tr' + (r.attr || '') + '>' + r.c.map(function(v){ return '<td' + al(v) + '>' + v + '</td>'; }).join('') + '</tr>'; });
+  return h + '</tbody></table>';
+}
+function tpRender(){
+  var P = document.getElementById('panel-tp'); if (!P) return; TPCH.forEach(function(c){ c.destroy(); }); TPCH = [];
+  var cab = '<div class="pbhdr"><div><div style="font-size:11px;color:#1a4d8f;font-weight:700;">Actualización</div><div style="font-size:13px;font-weight:800;color:#1a4d8f;">' +
+    (TPD && TPD.refresh ? new Date(TPD.refresh + 'Z').toLocaleString('es-CL') : '—') + '</div></div>' +
+    '<div style="flex:1;text-align:center;"><div style="font-style:italic;font-size:15px;">Productividad Caminos · Emprecon SpA</div><div style="font-weight:800;font-size:19px;">MOVIMIENTO DE TIERRA</div></div>' +
+    '<span class="maqWrap" title="Excavadora Emprecon"><img class="maqAnim" alt="Excavadora" src="' + MAQ_IMG + '"></span> <button class="pbbtn" onclick="tpActualizar()" title="Volver a pedir los datos al Power BI de Ecofor">🔄 Actualizar</button></div>' +
+    '<div id="tp-est" style="font-size:10.5px;color:#5a6b48;margin:-4px 0 8px;">Fuente: Power BI público de Ecofor "Productividad Caminos" (el mismo que usa el supervisor). ' +
+    (TPD ? TPD.tp.length + ' tiempos muertos y ' + TPD.av.length + ' avances de Emprecon · leído ' + new Date(TPD.ts).toLocaleString('es-CL') : '') + '</div>';
+  if (!TPD){ P.innerHTML = cab + '<div class="vacio">Cargando los datos del Power BI de Ecofor…</div>'; return; }
+  var pers = {}; TPD.av.forEach(function(x){ pers[perCaminos(x[2])] = 1; }); TPD.tp.forEach(function(x){ pers[perCaminos(x[7])] = 1; }); pers = Object.keys(pers).sort();
+  if (!TPS.h || pers.indexOf(TPS.h) < 0) TPS.h = pers[pers.length - 1];
+  if (!TPS.d || pers.indexOf(TPS.d) < 0 || TPS.d > TPS.h) TPS.d = TPS.h;
+  var fundos = {}; TPD.av.forEach(function(x){ fundos[x[1]] = 1; });
+  var perL = function(p){ var m = +p.slice(5, 7); return p.slice(0, 4) + '-' + p.slice(5, 7) + ' (' + MESES[m - 1].slice(0, 3) + ')'; };
+  var sel = function(id, val, opts, lab){ return '<label class="pbf"><span>' + lab + '</span><select onchange="TPS.' + id + '=this.value;tpRender()">' + opts.map(function(o){ return '<option value="' + tpEsc(o[0]) + '"' + (o[0] === val ? ' selected' : '') + '>' + tpEsc(o[1]) + '</option>'; }).join('') + '</select></label>'; };
+  var popt = pers.slice().reverse().map(function(p){ return [p, perL(p)]; });
+  var fil = '<div class="pbfil">' + sel('d', TPS.d, popt, 'Período desde') + sel('h', TPS.h, popt, 'Período hasta') +
+    sel('fundo', TPS.fundo, [['', 'Todos']].concat(Object.keys(fundos).sort().map(function(f){ return [f, f]; })), 'Fundo') +
+    sel('resp', TPS.resp, [['', 'Todos'], ['CMPC', 'CMPC'], ['EESS', 'EESS']], 'Responsable T.P.') +
+    '<span style="font-size:10px;color:#5a6b48;align-self:end;">Período del 26 al 25 · ' + perLabel(TPS.d, '26-25').replace(/^.*\(/, '').replace(')', '') + (TPS.d !== TPS.h ? ' → ' + perLabel(TPS.h, '26-25').replace(/^.*\(/, '').replace(')', '') : '') + '</span></div>';
+  var V = [['diaria', 'Reportabilidad diaria'], ['resumen', 'Resumen gestión operativa'], ['oper', 'Resumen por operador'], ['rank', '★ Ranking de máquinas'], ['comp', '★ Horas App vs Ecofor'], ['bench', '★ Comparación con otras EESS']];
+  var tabs = '<div class="pbtabs">' + V.map(function(v){ return '<button class="pbtab' + (TPS.v === v[0] ? ' on' : '') + '" onclick="TPS.v=\'' + v[0] + '\';tpRender()">' + v[1] + '</button>'; }).join('') + '</div>';
+  var D = tpDatos(), fn = {diaria: tpVDiaria, resumen: tpVResumen, oper: tpVOper, rank: tpVRank, comp: tpVComp, bench: tpVBench}[TPS.v] || tpVDiaria;
+  P.innerHTML = cab + fil + tabs + '<div id="tp-body"></div>';
+  document.getElementById('tp-body').innerHTML = fn(D);
+  if (TPS.v === 'rank') tpChartRank(D);
+}
+function tpKpis(D){
+  var fu = tpSum(D.av, 3), pe = tpSum(tpPerd(D.tp), 10), ef = fu - pe, vol = tpSum(D.tp.filter(function(x){ return /volteo/i.test(x[4]); }), 10);
+  return {fu: fu, pe: pe, ef: ef, disp: fu ? ef / fu : 0, vol: vol};
+}
+function tpVDiaria(D){
+  var K = tpKpis(D), g = {};
+  D.av.forEach(function(x){ var k = x[2] + '|' + x[1]; g[k] = g[k] || {f:x[2], fu:x[1], h:0, p:0}; g[k].h += x[3]; });
+  tpPerd(D.tp).forEach(function(x){ var k = x[7] + '|' + x[1]; g[k] = g[k] || {f:x[7], fu:x[1], h:0, p:0}; g[k].p += x[10]; });
+  var L = Object.keys(g).map(function(k){ return g[k]; }).sort(function(a, b){ return a.f === b.f ? a.fu.localeCompare(b.fu) : a.f < b.f ? -1 : 1; });
+  var rows = [], ult = '';
+  L.forEach(function(r){ var ef = r.h - r.p; rows.push({c:[r.f !== ult ? '<b>⊟ ' + r.f.slice(8) + '/' + r.f.slice(5, 7) + '/' + r.f.slice(0, 4) + '</b>' : '', '⊞ ' + tpEsc(r.fu), nf(r.h, 1), nf(ef, 2), nf(r.p, 1), r.h ? nf(ef / r.h * 100, 0) + ' %' : '', r.h ? nf(r.p / r.h * 100, 0) + ' %' : '']}); ult = r.f; });
+  var t1 = tpTab(['Fecha Reporte', 'Fundo', 'HORAS_EN<br>_FUNDO', 'H_EFECTIVAS', 'HORAS_TIEMPO<br>_PERDIDO', 'F_DISPONIBILIDAD', 'F_T_PERDIDO'], rows,
+    ['Total', '', nf(K.fu, 1), nf(K.ef, 2), nf(K.pe, 1), K.fu ? nf(K.disp * 100, 0) + ' %' : '', K.fu ? nf(K.pe / K.fu * 100, 0) + ' %' : '']);
+  return '<div class="pbgrid"><div class="pbcard" style="grid-column:1/3;max-height:420px;overflow:auto;">' + t1 + '</div>' +
+    '<div class="pbcard"><div class="pbct">DetalleTiempos Perdidos <i style="font-weight:400;font-size:11px;">(en Horas)</i></div>' + tpDetalleCausas(D) + '</div>' +
+    '<div class="pbcard" style="text-align:center;"><div class="pbct" style="font-size:20px;">OEE (DISPONIBILIDAD)</div>' + tpGauge(K.disp, 260) + '</div></div>' +
+    tpKpiRow(K);
+}
+function tpKpiRow(K){
+  return '<div class="pbkpis"><div><span>HORAS EN FUNDO</span><b>' + nf(K.fu) + '</b></div><div><span>H EFECTIVAS</span><b>' + nf(K.ef) + '</b></div><div><span>HORAS TIEMPO PERDIDO</span><b>' + nf(K.pe, 1) + '</b></div>' +
+    '<div title="Tiempo efectivo responsabilidad CMPC: las excavadoras voltean y apilan los árboles de la faja; no da m³ de camino"><span>★ VOLTEO Y ARRUMADO (faja)</span><b>' + nf(K.vol, 1) + '</b></div></div>';
+}
+function tpDetalleCausas(D){
+  var g = {}; tpPerd(D.tp).forEach(function(x){ var r = x[5] || '—'; g[r] = g[r] || {t:0, c:{}}; g[r].t += x[10]; g[r].c[x[4]] = (g[r].c[x[4]] || 0) + x[10]; });
+  var tot = 0, rows = []; Object.keys(g).sort().forEach(function(r){ tot += g[r].t; rows.push({c:['<b>⊟ ' + r + '</b>', '<b>Total</b>', '<b>' + nf(g[r].t, 1) + '</b>']});
+    Object.keys(g[r].c).sort(function(a, b){ return g[r].c[b] - g[r].c[a]; }).forEach(function(c){ rows.push({c:['', tpEsc(c), nf(g[r].c[c], 1)]}); }); });
+  return tpTab(['c0_responsabilidad', 'c0_tiempo_muerto', 'HORAS_TIEMPO_PERDIDO'], rows, ['Total', '', nf(tot, 1)]);
+}
+function tpVResumen(D){
+  var K = tpKpis(D), dias = {}, M = {};
+  tpPerd(D.tp).forEach(function(x){ dias[x[7]] = 1; var k = (x[5] || '—') + '|' + x[4]; M[k] = M[k] || {}; M[k][x[7]] = (M[k][x[7]] || 0) + x[10]; });
+  dias = Object.keys(dias).sort();
+  var rs = {}; Object.keys(M).forEach(function(k){ var p = k.split('|'); (rs[p[0]] = rs[p[0]] || []).push(p[1]); });
+  var tot = function(o){ return dias.reduce(function(s, d){ return s + (o[d] || 0); }, 0); };
+  var rows = [], T = {};
+  Object.keys(rs).sort().forEach(function(r){ var S = {}; rs[r].forEach(function(c){ dias.forEach(function(d){ S[d] = (S[d] || 0) + (M[r + '|' + c][d] || 0); T[d] = (T[d] || 0) + (M[r + '|' + c][d] || 0); }); });
+    rows.push({attr:' class="pbsub"', c:['<b>⊟ ' + r + '</b>', '<b>Total</b>'].concat(dias.map(function(d){ return S[d] ? '<b>' + nf(S[d], 1) + '</b>' : ''; })).concat(['<b>' + nf(tot(S), 1) + '</b>'])});
+    rs[r].sort(function(a, b){ return tot(M[r + '|' + b]) - tot(M[r + '|' + a]); }).forEach(function(c){ var o = M[r + '|' + c]; rows.push({c:['', tpEsc(c)].concat(dias.map(function(d){ return o[d] ? nf(o[d], 1) : ''; })).concat([nf(tot(o), 1)])}); }); });
+  var t = tpTab(['Responsabilidad TP', 'Nombre TP'].concat(dias.map(function(d){ return d.slice(8) + '<br><span style="font-weight:400">' + d.slice(5, 7) + '</span>'; })).concat(['Total']), rows,
+    ['Total', ''].concat(dias.map(function(d){ return T[d] ? nf(T[d], 1) : ''; })).concat([nf(tot(T), 1)]));
+  return '<div class="pbgrid"><div class="pbkpis" style="grid-column:1/3;margin:0;">' +
+    '<div><span>HORAS_EN_FUNDO</span><b style="font-size:34px;">' + nf(K.fu) + '</b></div><div><span>H_EFECTIVAS</span><b style="font-size:34px;">' + nf(K.ef) + '</b></div><div><span>HORAS_TIEMPO_PERDIDO</span><b style="font-size:34px;">' + nf(K.pe, 1) + '</b></div></div>' +
+    '<div class="pbcard" style="text-align:center;"><div class="pbct" style="font-size:18px;">OEE (DISPONIBILIDAD)</div>' + tpGauge(K.disp, 200) + '</div></div>' +
+    '<div class="pbcard"><div class="pbct" style="text-align:center;color:#1a4d8f;text-decoration:underline;">HORA TIEMPOS PERDIDOS</div><div style="overflow:auto;max-height:480px;">' + t + '</div></div>';
+}
+function tpVOper(D){
+  var dias = {}, O = {}, P2 = {};
+  D.av.forEach(function(x){ dias[x[2]] = 1; O[x[0]] = O[x[0]] || {}; O[x[0]][x[2]] = (O[x[0]][x[2]] || 0) + x[3]; });
+  tpPerd(D.tp).forEach(function(x){ P2[x[0] + '|' + x[7]] = (P2[x[0] + '|' + x[7]] || 0) + x[10]; });
+  dias = Object.keys(dias).sort();
+  var T = {}, rows = Object.keys(O).sort().map(function(op){ var s = 0; var per = perCaminos(TPS.h + '-25');
+    var maq = tpMaq(op, TPS.h);
+    return {c:['', tpEsc(op) + (maq ? ' <span style="color:' + PG.gd + ';font-weight:700;">· ' + tpEsc(maq) + '</span>' : '')].concat(dias.map(function(d){ var v = O[op][d] || 0; s += v; T[d] = (T[d] || 0) + v; var p = P2[op + '|' + d] || 0;
+      return v ? (p >= 2 ? '<span title="' + nf(p, 1) + ' h de tiempo perdido" style="display:inline-block;width:9px;height:9px;border-radius:50%;background:#e74c3c;margin-right:3px;"></span>' : '') + nf(v, 1) : ''; })).concat(['<b>' + nf(s, 1) + '</b>'])}; });
+  var tt = 0; dias.forEach(function(d){ tt += T[d] || 0; });
+  var t = tpTab(['c0_emsefor', 'c0_nombre_controlador'].concat(dias.map(function(d){ return d.slice(8) + '<br><span style="font-weight:400">' + d.slice(5, 7) + '</span>'; })).concat(['Total']), rows,
+    ['EMPRECON SPA', 'Total'].concat(dias.map(function(d){ return T[d] ? nf(T[d], 1) : ''; })).concat([nf(tt, 1)]));
+  return '<div class="pbcard"><div class="pbct">Horas en fundo por operador y día <span style="font-weight:400;font-size:10.5px;">· ● rojo = el día tuvo 2 h o más de tiempo perdido · en verde la máquina según nuestra planilla de horas</span></div><div style="overflow:auto;max-height:520px;">' + t + '</div></div>';
+}
+// ---------- ★ Ranking de máquinas e historial por causa ----------
+function tpPorMaq(D){
+  var R = {};
+  var get = function(op, f){ var m = tpMaq(op, perCaminos(f)) || ('Operador: ' + tpNomCorto(op)); return R[m] = R[m] || {m:m, ops:{}, fu:0, pe:0, ef:0, vol:0, c:{}, ev:[]}; };
+  D.av.forEach(function(x){ var r = get(x[0], x[2]); r.fu += x[3]; r.ops[x[0]] = 1; });
+  D.tp.forEach(function(x){ var r = get(x[0], x[7]); r.ops[x[0]] = 1; if (/volteo/i.test(x[4])) r.vol += x[10];
+    if (x[6] === 'T. PERDIDO'){ r.pe += x[10]; var c = r.c[x[4]] = r.c[x[4]] || {h:0, n:0, rs:x[5]}; c.h += x[10]; c.n++; r.ev.push(x); } });
+  Object.keys(R).forEach(function(k){ R[k].src = 'Ecofor'; });
+  // 13-11-2026 (Gustavo): Faja (Procesador 07, Bell 12) y Obras de arte (Retro 1) no están en el Power BI de Ecofor →
+  // salen de NUESTRA base: horas trabajadas de BaseHorasTrab + tiempos perdidos de BaseHorasPer. Faja por mes calendario.
+  var d = TPS.d, h = TPS.h, enR = function(x){ var p = x.fa === 'faja' ? x.f.slice(0, 7) : perCaminos(x.f); return p >= d && p <= h; };
+  var esN = function(x){ return (x.fa === 'faja' || x.fa === 'oa') && /proc|bell|retro/i.test(x.eq); };
+  (DATA.horas || []).forEach(function(x){ if (!esN(x) || !enR(x) || TPS.fundo) return; var r = R[x.eq] = R[x.eq] || {m:x.eq, ops:{}, fu:0, pe:0, vol:0, c:{}, ev:[], src:'Nuestra base', fa:x.fa};
+    r.fu += x.h; if (x.op && x.op.length > 3) r.ops[x.op] = 1; });
+  (DATA.hper || []).forEach(function(x){ if (!esN(x) || !enR(x) || TPS.fundo) return; var rs = x.cl === 'E' ? 'EESS' : x.cl || 'EESS'; if (TPS.resp && TPS.resp !== rs) return;
+    var r = R[x.eq] = R[x.eq] || {m:x.eq, ops:{}, fu:0, pe:0, vol:0, c:{}, ev:[], src:'Nuestra base', fa:x.fa};
+    r.fu += x.h; r.pe += x.h; var c = r.c[x.causa] = r.c[x.causa] || {h:0, n:0, rs:rs}; c.h += x.h; c.n++;
+    r.ev.push([x.op, '', '', x.fa === 'faja' ? 'Faja' : 'Obras de arte', x.causa, rs, 'T. PERDIDO', x.f, Date.parse(x.f + 'T00:00:00Z'), null, x.h, x.obs]); });
+  return Object.keys(R).map(function(k){ var r = R[k]; r.top = Object.keys(r.c).sort(function(a, b){ return r.c[b].h - r.c[a].h; })[0] || ''; return r; }).sort(function(a, b){ return b.pe - a.pe; });
+}
+var TP_RANK = [];
+function tpVRank(D){
+  var L = tpPorMaq(D); TP_RANK = L;
+  var rows = L.map(function(r, i){ var c = r.top ? r.c[r.top] : null;
+    return {attr:' style="cursor:pointer;" onclick="tpHist(' + i + ')" title="Ver en qué pierde las horas"', c:['<b>' + (i + 1) + '</b>', '<b>' + tpEsc(r.m) + '</b>' + (r.src === 'Nuestra base' ? ' <span style="font-size:9.5px;background:#fff3c4;border:1px solid #e0c96a;border-radius:3px;padding:0 4px;" title="No está en el Power BI de Ecofor: horas de nuestra planilla y tiempos perdidos de BaseHorasPer">' + (r.fa === 'faja' ? 'Faja' : 'Obras de arte') + ' · nuestra base</span>' : ''),
+      (Object.keys(r.ops).map(tpNomCorto).map(tpEsc).join(', ') || '—'),
+      nf(r.fu, 1), '<b style="color:#c0392b;">' + nf(r.pe, 1) + '</b>', r.fu ? nf(r.pe / r.fu * 100, 0) + ' %' : '—', r.fu ? nf((r.fu - r.pe) / r.fu * 100, 0) + ' %' : '—',
+      c ? tpEsc(r.top) + ' <span style="color:#888;">(' + nf(c.h, 1) + ' h · ' + c.rs + ')</span>' : '—', nf(r.vol, 1)]}; });
+  return '<div class="nota">De la máquina que <b>más</b> horas pierde a la que <b>menos</b>, en el rango elegido. <b>Haz clic en una fila</b> para abrir su historial: en qué causas pierde las horas y cómo va mes a mes. ' +
+    'Las excavadoras de Movimiento de tierra salen del Power BI de Ecofor (la máquina sale del operador cruzado con nuestra planilla de horas). ' +
+    'La <b>Faja</b> (Procesador 07, Bell 12) y <b>Obras de arte</b> (Retro 1) no están en Ecofor: salen de <b>nuestra base</b> (horas trabajadas + tiempos perdidos de la planilla; la Faja por mes calendario). ' +
+    'Si una máquina aparece con 0 horas perdidas, es que en terreno no se le registraron detenciones.' + (TPS.fundo ? ' <b>Con un fundo elegido solo se muestran las de Ecofor.</b>' : '') + '</div>' +
+    '<div class="pbgrid"><div class="pbcard" style="grid-column:1/3;">' + tpTab(['#', 'Máquina', 'Operador(es)', 'Horas en<br>fundo', 'Horas<br>perdidas', '% tiempo<br>perdido', 'Disponi-<br>bilidad', 'Causa con más horas', 'Volteo faja<br>(efectivo)'], rows) + '</div>' +
+    '<div class="pbcard" style="grid-column:1/3;"><div class="pbct">Horas perdidas por máquina (de mayor a menor)</div><div style="position:relative;height:' + Math.max(160, L.length * 34) + 'px;"><canvas id="tpc-rank"></canvas></div></div></div>';
+}
+function tpChartRank(D){
+  var cv = document.getElementById('tpc-rank'); if (!cv || typeof Chart === 'undefined') return; var L = TP_RANK;
+  TPCH.push(new Chart(cv, {type:'bar', data:{labels:L.map(function(r){ return r.m; }), datasets:[
+    {label:'Horas perdidas CMPC', data:L.map(function(r){ return Math.round(Object.keys(r.c).reduce(function(s, k){ return s + (r.c[k].rs === 'CMPC' ? r.c[k].h : 0); }, 0) * 10) / 10; }), backgroundColor:'#a3c76a'},
+    {label:'Horas perdidas EESS (nuestras)', data:L.map(function(r){ return Math.round(Object.keys(r.c).reduce(function(s, k){ return s + (r.c[k].rs !== 'CMPC' ? r.c[k].h : 0); }, 0) * 10) / 10; }), backgroundColor:PG.gd}]},
+    options:{indexAxis:'y', responsive:true, maintainAspectRatio:false, plugins:{legend:{labels:{font:{size:10}}}}, scales:{x:{stacked:true}, y:{stacked:true}}, onClick:function(e, el){ if (el.length) tpHist(el[0].index); }}}));
+}
+function tpHist(i){
+  var r = TP_RANK[i]; if (!r) return;
+  var cs = Object.keys(r.c).sort(function(a, b){ return r.c[b].h - r.c[a].h; });
+  var t1 = tpTab(['Causa', 'Responsable', 'Horas', 'Eventos', '% de sus horas perdidas'], cs.map(function(c){ var x = r.c[c]; return {c:[tpEsc(c), x.rs, '<b>' + nf(x.h, 1) + '</b>', x.n, nf(x.h / (r.pe || 1) * 100, 0) + ' %']}; }), ['Total', '', nf(r.pe, 1), r.ev.length, '100 %']);
+  // evolución por período (todo el historial disponible de esa máquina, no solo el rango)
+  var H = {}, top = cs.slice(0, 6);
+  var suma = function(p, causa, hh){ H[p] = H[p] || {t:0}; H[p].t += hh; var k = top.indexOf(causa) >= 0 ? causa : 'Otras'; H[p][k] = (H[p][k] || 0) + hh; };
+  if (r.src === 'Nuestra base') (DATA.hper || []).forEach(function(x){ if (x.eq === r.m) suma(x.fa === 'faja' ? x.f.slice(0, 7) : perCaminos(x.f), x.causa, x.h); });
+  else TPD.tp.forEach(function(x){ if (x[6] !== 'T. PERDIDO') return; var p = perCaminos(x[7]); var m = tpMaq(x[0], p) || ('Operador: ' + tpNomCorto(x[0])); if (m !== r.m) return; suma(p, x[4], x[10]); });
+  var ps = Object.keys(H).sort(), colsE = top.concat(['Otras']);
+  var t2 = tpTab(['Período'].concat(colsE.map(tpEsc)).concat(['Total']), ps.map(function(p){ return {c:[p].concat(colsE.map(function(c){ return H[p][c] ? nf(H[p][c], 1) : ''; })).concat(['<b>' + nf(H[p].t, 1) + '</b>'])}; }));
+  var ev = r.ev.slice().sort(function(a, b){ return b[8] - a[8]; }).slice(0, 40);
+  var t3 = tpTab(['Fecha', 'Inicio', 'Fin', 'Horas', 'Causa', 'Resp.', 'Fundo', 'Camino', 'Obs.'], ev.map(function(x){ var hi = r.src === 'Nuestra base' ? '' : new Date(x[8]).toISOString().slice(11, 16), hf = x[9] ? new Date(x[9]).toISOString().slice(11, 16) : '';
+    return {c:[x[7].slice(8) + '-' + x[7].slice(5, 7), hi, hf, nf(x[10], 1), tpEsc(x[4]), x[5], tpEsc(x[1]), tpEsc(x[2]), '<span style="white-space:normal;">' + tpEsc(x[11]) + '</span>']}; }));
+  var m = document.createElement('div'); m.className = 'modal'; m.onclick = function(){ m.remove(); };
+  m.innerHTML = '<div class="box" onclick="event.stopPropagation()"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b style="color:' + PG.gd + ';font-size:15px;">Historial de tiempos perdidos · ' + tpEsc(r.m) + '</b>' +
+    '<button class="btn" style="background:#c0392b;color:#fff;" onclick="this.closest(\'.modal\').remove()">✕</button></div>' +
+    '<div style="font-size:11px;color:#555;margin-bottom:8px;">Operador(es): ' + Object.keys(r.ops).map(tpEsc).join(', ') + ' · en el rango: ' + nf(r.fu, 1) + ' h en fundo, <b>' + nf(r.pe, 1) + ' h perdidas</b> (' + (r.fu ? nf(r.pe / r.fu * 100, 0) : '—') + ' %)</div>' +
+    '<div class="pbct">En qué pierde las horas (de mayor a menor)</div>' + t1 + '<div class="pbct" style="margin-top:12px;">Mes a mes (todo el historial ' + (r.src === 'Nuestra base' ? 'de nuestra base' : 'de Ecofor') + ')</div><div style="overflow:auto;">' + t2 + '</div>' +
+    '<div class="pbct" style="margin-top:12px;">Últimos eventos del rango</div><div style="overflow:auto;max-height:300px;">' + t3 + '</div></div>';
+  document.body.appendChild(m);
+}
+// ---------- ★ Horas en nuestra App (planilla de horas) vs Ecofor ----------
+function tpVComp(D){
+  var d = TPS.d, h = TPS.h, enR = function(f){ var p = perCaminos(f); return p >= d && p <= h; };
+  var M = {};
+  var get = function(m){ return M[m] = M[m] || {m:m, app:0, fu:0, pe:0, ops:{}, dA:{}, dE:{}}; };
+  (DATA.horas || []).forEach(function(x){ if (x.fa !== 'mt' || !enR(x.f) || !/^e\s*\d+/i.test(x.eq)) return; var r = get(x.eq); r.app += x.h; r.dA[x.f] = (r.dA[x.f] || 0) + x.h; });
+  D.av.forEach(function(x){ var m = tpMaq(x[0], perCaminos(x[2])) || ('Operador: ' + tpNomCorto(x[0])); var r = get(m); r.fu += x[3]; r.ops[x[0]] = 1; r.dE[x[2]] = (r.dE[x[2]] || 0) + x[3]; });
+  tpPerd(D.tp).forEach(function(x){ var m = tpMaq(x[0], perCaminos(x[7])) || ('Operador: ' + tpNomCorto(x[0])); get(m).pe += x[10]; });
+  var L = Object.keys(M).map(function(k){ return M[k]; }).sort(function(a, b){ return a.m.localeCompare(b.m, 'es', {numeric:true}); });
+  if (!(DATA.horas || []).length) return '<div class="vacio">Para comparar hace falta nuestra planilla de horas: carga el <b>📥 Best</b> en la ficha de Producción o de Equipos.</div>';
+  TP_COMP = L;
+  var rows = L.map(function(r, i){ var ef = r.fu - r.pe, dif = r.app - ef, pct = ef ? dif / ef * 100 : 0, alerta = Math.abs(dif) > Math.max(8, ef * 0.1);
+    var dd = Object.keys(Object.assign({}, r.dA, r.dE)).filter(function(f){ return Math.abs((r.dA[f] || 0) - (r.dE[f] || 0)) >= 3; }).length;
+    var com = !r.fu ? 'No aparece en Ecofor en el rango (¿sin reportes del operador o máquina en otra faena?).' : !r.app ? 'No tiene horas en nuestra planilla en el rango.' :
+      alerta ? (dif > 0 ? 'Nuestra App tiene ' + nf(dif, 0) + ' h MÁS que las horas efectivas de Ecofor (' + nf(pct, 0) + ' %).' : 'Nuestra App tiene ' + nf(-dif, 0) + ' h MENOS que las horas efectivas de Ecofor (' + nf(pct, 0) + ' %).') + (dd ? ' ' + dd + ' días con diferencia de 3 h o más.' : '') : 'Cuadra (diferencia bajo 10 %).';
+    return {attr:' style="cursor:pointer;' + (alerta || !r.fu || !r.app ? 'background:#fbd9d2;' : '') + '" onclick="tpCompDias(' + i + ')" title="Ver día por día"',
+      c:['<b>' + tpEsc(r.m) + '</b>', Object.keys(r.ops).map(tpNomCorto).map(tpEsc).join(', '), nf(r.app, 1), nf(r.fu, 1), nf(r.pe, 1), nf(ef, 1),
+        '<b style="color:' + (alerta ? '#c0392b' : PG.gd) + ';">' + (dif > 0 ? '+' : '') + nf(dif, 1) + '</b>', '<span style="white-space:normal;text-align:left;display:block;max-width:360px;">' + (alerta || !r.fu || !r.app ? '⚠ ' : '✓ ') + com + '</span>']}; });
+  return '<div class="nota">Compara las horas de cada excavadora de <b>Movimiento de tierra</b> en <b>nuestra App</b> (planilla de horas de terreno) con lo que tiene <b>Ecofor</b>. ' +
+    'Lo justo es comparar nuestras horas trabajadas con las <b>horas efectivas</b> de Ecofor (en fundo menos tiempo perdido). En rojo, las que difieren más de 10 % (o más de 8 h). Clic en una fila para ver los días.</div>' +
+    '<div class="pbcard">' + tpTab(['Máquina', 'Operador(es) Ecofor', 'Horas en<br>nuestra App', 'Ecofor:<br>en fundo', 'Ecofor:<br>perdidas', 'Ecofor:<br>efectivas', 'Diferencia<br>App − efectivas', 'Comentario'], rows) + '</div>';
+}
+var TP_COMP = [];
+function tpCompDias(i){
+  var r = TP_COMP[i]; if (!r) return; var ds = Object.keys(Object.assign({}, r.dA, r.dE)).sort();
+  var t = tpTab(['Día', 'Nuestra App', 'Ecofor en fundo', 'Diferencia'], ds.map(function(f){ var a = r.dA[f] || 0, e = r.dE[f] || 0, df = a - e;
+    return {attr: Math.abs(df) >= 3 ? ' style="background:#fff1ee;"' : '', c:[diaSem(f) + ' ' + f.slice(8) + '-' + f.slice(5, 7), a ? nf(a, 1) : '—', e ? nf(e, 1) : '—', '<b style="color:' + (Math.abs(df) >= 3 ? '#c0392b' : '#555') + ';">' + (df > 0 ? '+' : '') + nf(df, 1) + '</b>']}; }));
+  var m = document.createElement('div'); m.className = 'modal'; m.onclick = function(){ m.remove(); };
+  m.innerHTML = '<div class="box" style="max-width:640px;" onclick="event.stopPropagation()"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><b style="color:' + PG.gd + ';">' + tpEsc(r.m) + ' · horas día por día</b>' +
+    '<button class="btn" style="background:#c0392b;color:#fff;" onclick="this.closest(\'.modal\').remove()">✕</button></div><div style="font-size:10.5px;color:#666;margin-bottom:6px;">Día por día se compara con las horas en fundo de Ecofor (incluyen tiempo perdido). En rojo, días con 3 h o más de diferencia.</div>' + t + '</div>';
+  document.body.appendChild(m);
+}
+// ---------- ★ Comparación con las otras empresas contratistas ----------
+function tpVBench(D){
+  var d = TPS.d, h = TPS.h, L = Object.keys(TPD.bench).map(function(e){ var s = {e:e, fu:0, tp:0}; Object.keys(TPD.bench[e]).forEach(function(p){ if (p >= d && p <= h){ s.fu += TPD.bench[e][p].fu; s.tp += TPD.bench[e][p].tp; } }); s.disp = s.fu ? (s.fu - s.tp) / s.fu : 0; return s; })
+    .filter(function(s){ return s.fu > 0; }).sort(function(a, b){ return b.disp - a.disp; });
+  var rows = L.map(function(s, i){ var yo = s.e === 'EMPRECON SPA'; return {attr: yo ? ' style="background:#fff3c4;font-weight:800;"' : '', c:[i + 1, tpEsc(s.e) + (yo ? ' ◄' : ''), nf(s.fu, 0), nf(s.fu - s.tp, 0), nf(s.tp, 1), nf(s.tp / s.fu * 100, 1) + ' %', '<b>' + nf(s.disp * 100, 1) + ' %</b>']}; });
+  return '<div class="nota">Todas las empresas de caminos que aparecen en el Power BI de Ecofor, en el mismo rango de períodos, ordenadas por disponibilidad (de mejor a peor). Es solo tiempo; no incluye m³ ni rendimiento.</div>' +
+    '<div class="pbcard">' + tpTab(['#', 'Empresa', 'Horas en fundo', 'Horas efectivas', 'Horas perdidas', '% tiempo perdido', 'Disponibilidad'], rows) + '</div>';
+}
+
+// ================= FICHA INGRESOS: programado vs real (13-11-2026) =================
+// Réplica de los gráficos "metas de Ingresos mensuales por Faenas" (programado) e "Ingresos mensuales por Faenas" (real) de
+// costo emprecon caminos v2.xlsx, con sus colores y la barra del total detrás de las de cada faena.
+// PROGRAMADO (hoja Costo de la planilla): cantidad del mes × tarifa programada. Mov. tierra = plan mensual (Ecofor) × 1.011,35 $/m³;
+//   Faja 3.500 m³ × 16.354,43; Obras de arte 700 × 30.478,14. Editables.
+// REAL: lo producido en el período (Ecofor 26→25, Faja 1→fin) × tarifa del contrato CW2317986 × factor de reajuste.
+//   El factor sale de la liquidación de Mininco: oct-2026 todos los precios pagados = tarifa contrato × 1,2882
+//   (polinomio 1,3462 × factor de productividad 0,957). Mov. tierra se valoriza por m³ (también las filas en metros, que se pagan
+//   convertidas a m³). Faja a 17.500 $/m³ (valor de la planilla; el contrato la paga por tramo de VMA). Editables.
+var ING_BASE = {'construccion a derrame':673, 'construccion no derrame':3153, 'ampliacion a derrame':727, 'ampliacion no derrame':3153,
+  'ensanche derrame':727, 'ensanche no derrame':3153, 'mantencion de alcantarillas':45928, 'empalizadas':21951, 'bajadas de agua':24089};
+var ING_ALC = {300:36465, 450:45799, 500:45799, 600:75586, 800:112487, 1000:167911, 1200:210249};   // alcantarilla completa por diámetro ($/m)
+var ING_HAB = {M:703.3, M2:101.4};   // habilitación: no está en el contrato; precio pagado oct-2026 ÷ 1,2882
+var ING_PROG = {mt:1011.3465, faja_m3:3500, faja:16354.4287, oa_u:700, oa:30478.1399};
+function ingCfg(k){ return CFG['ing_' + k] != null ? CFG['ing_' + k] : ({fac:1.2882, faja_precio:17500})[k] != null ? ({fac:1.2882, faja_precio:17500})[k] : ING_PROG[k]; }
+function ingSet(k, v){ CFG['ing_' + k] = v; try { localStorage.setItem('emp_cfg', JSON.stringify(CFG)); } catch(e){} ingRender(); }
+function ingBase(x){
+  var a = x.atr.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').trim();
+  if (/alcantar/.test(a) && !/mantenc/.test(a)) return {b: ING_ALC[+x.diam] || ING_ALC[300], q: x.cant, nota: 'Ø' + x.diam};
+  if (/habilitac/.test(a)) return {b: ING_HAB[x.um] || 0, q: x.cant};
+  if (/roca/.test(a)) return {b: /no derrame/.test(a) ? 4049 : 1720, q: x.m3};
+  if (/atomiz/.test(a)) return {b: 1700, q: x.m3};
+  var b = ING_BASE[a]; if (b == null) return {b: 0, q: 0, sin: true};
+  // 13-11-2026: "AJUSTE M3 MÍNIMOS" de la liquidación: una fila de Mov. tierra informada en METROS se paga con al menos
+  // 2 m³ por metro lineal (m³ = metros × máx(factor m³/ml, 2)). Con esto oct-2026 da $113.312.363 vs $113.319.375 liquidados.
+  if (x.cuad === 'MOVIMIENTO DE TIERRA' && x.um === 'M'){ var fm = x.fac || (x.cant ? x.m3 / x.cant : 0); return {b: b, q: x.cant * Math.max(fm, 2), nota: fm < 2 ? 'mín. 2 m³/m' : ''}; }
+  return {b: b, q: x.cuad === 'MOVIMIENTO DE TIERRA' ? x.m3 : x.cant};
+}
+var INGCH = [];
+function ingRender(){
+  var P = document.getElementById('panel-ing'); if (!P) return; INGCH.forEach(function(c){ c.destroy(); }); INGCH = [];
+  var pers = {}; DATA.eco.forEach(function(x){ pers[x.per] = 1; }); DATA.faja.forEach(function(x){ pers[x.per] = 1; }); pers = Object.keys(pers).sort();
+  var cab = '<div class="top"><span style="font-size:30px;">💰</span><div style="flex:1;"><h1>Emprecon SpA — Ingresos por faena: programado vs real</h1>' +
+    '<div class="sub">Programado: cantidad del mes × tarifa programada · Real: producción (Ecofor y Produc Faja) × tarifa del contrato × factor de reajuste</div></div></div>';
+  if (!pers.length){ P.innerHTML = cab + '<div class="vacio">Carga las <b>Cartolas Ecofor</b> y el <b>Best</b> en la ficha Produc. Diaria.</div>'; return; }
+  if (!S.ingper || pers.indexOf(S.ingper) < 0) S.ingper = pers[pers.length - 1];
+  var per = S.ingper, fac = CFG['ing_fac_' + per] != null ? CFG['ing_fac_' + per] : ingCfg('fac');
+  // ---- programado ----
+  var pr = {mt: progMT(per) * ingCfg('mt'), faja: ingCfg('faja_m3') * ingCfg('faja'), oa: ingCfg('oa_u') * ingCfg('oa')};
+  pr.tot = pr.mt + pr.faja + pr.oa;
+  // ---- real ----
+  var re = {mt:0, faja:0, oa:0}, det = {}, sinP = {};
+  DATA.eco.forEach(function(x){ if (x.per !== per) return; var b = ingBase(x); if (b.sin){ sinP[x.atr] = 1; return; }
+    var g = x.cuad === 'MOVIMIENTO DE TIERRA' ? 'mt' : 'oa', v = b.q * b.b * fac; re[g] += v;
+    var k = g + '|' + x.atr + (b.nota ? ' ' + b.nota : '') + ' (' + (x.cuad === 'MOVIMIENTO DE TIERRA' && !/habilit/i.test(x.atr) ? 'm³' : x.um) + ')';
+    det[k] = det[k] || {q:0, v:0, b:b.b}; det[k].q += b.q; det[k].v += v; });
+  var m3f = DATA.faja.filter(function(x){ return x.per === per; }).reduce(function(s, x){ return s + x.m3; }, 0);
+  var LQ = (DATA.liqfaja || {})[per], fajaLiq = !!(LQ && LQ.monto);
+  if (fajaLiq){   // liquidación de Mininco (lo pagado de verdad)
+    re.faja = LQ.monto + LQ.part;
+    LQ.fundos.forEach(function(f){ det['faja|' + f.f + ' (liquidación, VMA ' + (f.vma != null ? nf(f.vma, 2) : '—') + ')'] = {q:f.m3, v:f.monto, b:f.m3 ? f.monto / f.m3 / fac : 0}; });
+    if (LQ.part) det['faja|Partidas especiales (multas/premios)'] = {q:0, v:LQ.part, b:0};
+  } else {        // sin liquidación todavía: estimado con las cartolas del mes × precio de referencia
+    re.faja = m3f * ingCfg('faja_precio'); det['faja|Faja ESTIMADA: cartolas del mes (m³) × precio de referencia'] = {q:m3f, v:re.faja, b:ingCfg('faja_precio') / fac};
+  }
+  re.tot = re.mt + re.faja + re.oa;
+  var M = function(v){ return v / 1e6; };
+  var ctl = '<div class="ctl"><b style="color:var(--c1);">Mes</b> <select onchange="S.ingper=this.value;ingRender()">' + pers.slice().reverse().map(function(p){ var m = +p.slice(5, 7);
+      return '<option value="' + p + '"' + (p === per ? ' selected' : '') + '>' + p.slice(0, 4) + ' ' + MESES[m - 1] + '</option>'; }).join('') + '</select>' +
+    ' <span style="color:#6b5a48;font-size:11px;">Caminos ' + perLabel(per, '26-25').replace(/^.*\(/, '').replace(')', '') + ' · Faja ' + perLabel(per, 'mes').replace(/^.*\(/, '').replace(')', '') + '</span>' +
+    ' &nbsp; Factor de reajuste del mes <input type="number" step="0.0001" value="' + fac + '" style="width:72px" onchange="CFG[\'ing_fac_' + per + '\']=+this.value;ingSet(\'x\',0)" title="Precio pagado ÷ tarifa del contrato. Oct-2026 = 1,2882 (polinomio 1,3462 × productividad 0,957)."></div>';
+  var card = function(id, t, mes){ return '<div class="card" style="position:relative;"><div style="text-align:center;font-weight:700;font-size:14px;color:#404040;margin:2px 0 4px;">' + t + '</div>' +
+    '<div style="position:absolute;right:10px;top:8px;background:#fff6a8;border:1px solid #e6d36a;box-shadow:2px 2px 4px rgba(0,0,0,.25);padding:2px 10px;font-size:11px;font-weight:700;">' + mes + '</div>' +
+    '<div style="position:relative;height:380px;"><canvas id="' + id + '"></canvas></div></div>'; };
+  var mesL = per.slice(0, 4) + ' ' + MESES[+per.slice(5, 7) - 1];
+  var dif = function(r, p){ var d = r - p; return '<b style="color:' + (d >= 0 ? '#1a6b3a' : '#c0392b') + ';">' + (d >= 0 ? '+' : '') + nf(M(d), 1) + '</b>'; };
+  // 13-11: mes en curso → también el programado A LA FECHA (días transcurridos hasta ayer), para que el % no engañe
+  var ayer = iso(new Date(Date.now() - 864e5)), dC = diasPer(per, '26-25'), dF = diasPer(per, 'mes');
+  var fC = dC.filter(function(d){ return d <= ayer; }).length / dC.length, fF = dF.filter(function(d){ return d <= ayer; }).length / dF.length;
+  var enCurso = fC < 1 || fF < 1, pf = {mt: pr.mt * fC, faja: pr.faja * fF, oa: pr.oa * fC}; pf.tot = pf.mt + pf.faja + pf.oa;
+  var thF = enCurso ? '<th>Programado<br>a la fecha</th><th>Dif. vs<br>a la fecha</th><th>% a la<br>fecha</th>' : '';
+  var tdF = function(k){ return enCurso ? '<td>' + nf(M(pf[k]), 1) + '</td><td>' + dif(re[k], pf[k]) + '</td><td>' + (pf[k] ? nf(re[k] / pf[k] * 100, 0) + ' %' : '') + '</td>' : ''; };
+  var resumen = (enCurso ? '<div class="nota" style="margin:8px 0 0;">📅 <b>Mes en curso:</b> el real llega hasta ayer (caminos ' + Math.round(fC * dC.length) + ' de ' + dC.length + ' días · Faja ' + Math.round(fF * dF.length) + ' de ' + dF.length + ' días). Compáralo con el <b>programado a la fecha</b>; el programado del mes completo es la meta al cierre.</div>' : '') +
+    '<table class="t res2" style="max-width:980px;margin-top:8px;"><thead><tr><th>Faena</th><th>Programado<br>mes (MM$)</th><th>Real<br>(MM$)</th><th>Diferencia<br>(MM$)</th><th>% del<br>programado</th>' + thF + '</tr></thead><tbody>' +
+    [['Mov. tierra', 'mt', '#4f5bc0'], ['Faja', 'faja', '#c9563d'], ['Obras de arte', 'oa', '#8a7a92']].map(function(f){ return '<tr><td style="color:' + f[2] + ';">' + f[0] + (f[1] === 'faja' && !fajaLiq ? ' <b style="color:#c0392b;" title="Sin liquidación de Mininco para este mes: cartolas × precio de referencia">(ESTIMADA)</b>' : '') + '</td><td>' + nf(M(pr[f[1]]), 1) + '</td><td><b>' + nf(M(re[f[1]]), 1) + '</b></td><td>' + dif(re[f[1]], pr[f[1]]) + '</td><td>' + (pr[f[1]] ? nf(re[f[1]] / pr[f[1]] * 100, 0) + ' %' : '') + '</td>' + tdF(f[1]) + '</tr>'; }).join('') +
+    '<tr class="tot"><td>Total mes</td><td>' + nf(M(pr.tot), 1) + '</td><td>' + nf(M(re.tot), 1) + '</td><td>' + dif(re.tot, pr.tot) + '</td><td>' + nf(re.tot / pr.tot * 100, 0) + ' %</td>' + tdF('tot') + '</tr></tbody></table>';
+  var dt = '<details style="margin-top:8px;"><summary style="cursor:pointer;font-weight:700;color:var(--c1);">Detalle del ingreso real (cantidad × tarifa contrato × factor)</summary><table class="t res2" style="max-width:820px;margin-top:6px;"><thead><tr><th>Faena · atributo</th><th>Cantidad</th><th>Tarifa contrato</th><th>Precio con factor</th><th>Ingreso $</th></tr></thead><tbody>' +
+    Object.keys(det).sort(function(a, b){ return det[b].v - det[a].v; }).map(function(k){ var d = det[k], p = k.split('|');
+      return '<tr><td>' + ({mt:'Mov. tierra', oa:'Obras de arte', faja:'Faja'})[p[0]] + ' · ' + tpEsc(p[1]) + '</td><td>' + nf(d.q, 1) + '</td><td>' + nf(d.b, 0) + '</td><td>' + nf(d.b * fac, 2) + '</td><td>' + nf(d.v) + '</td></tr>'; }).join('') +
+    '</tbody></table>' + (Object.keys(sinP).length ? '<div style="color:#c0392b;font-size:11px;margin-top:4px;">Sin tarifa (no se valorizan): ' + Object.keys(sinP).map(tpEsc).join(', ') + '</div>' : '') + '</details>';
+  var prog = '<details style="margin-top:8px;"><summary style="cursor:pointer;font-weight:700;color:var(--c1);">⚙ Programado y precios (se guardan en este navegador)</summary><div style="font-size:11.5px;line-height:2;margin-top:4px;">' +
+    'Mov. tierra: ' + nf(progMT(per)) + ' m³ (plan mensual, se cambia en Produc. Diaria) × <input type="number" step="0.01" value="' + ingCfg('mt') + '" style="width:80px" onchange="ingSet(\'mt\',+this.value)"> $/m³<br>' +
+    'Faja: <input type="number" step="100" value="' + ingCfg('faja_m3') + '" style="width:70px" onchange="ingSet(\'faja_m3\',+this.value)"> m³ × <input type="number" step="0.01" value="' + ingCfg('faja') + '" style="width:80px" onchange="ingSet(\'faja\',+this.value)"> $/m³ · ' +
+    'precio de referencia de la Faja (solo si aún no hay liquidación) <input type="number" step="100" value="' + ingCfg('faja_precio') + '" style="width:70px" onchange="ingSet(\'faja_precio\',+this.value)"> $/m³<br>' +
+    'Obras de arte: <input type="number" step="10" value="' + ingCfg('oa_u') + '" style="width:70px" onchange="ingSet(\'oa_u\',+this.value)"> unidades × <input type="number" step="0.01" value="' + ingCfg('oa') + '" style="width:80px" onchange="ingSet(\'oa\',+this.value)"> $/u</div></details>';
+  // 13-11: si el período no tiene cartolas de Ecofor cargadas, avisarlo (el real de caminos saldría en 0)
+  ctl += '<div class="nota" style="margin:6px 0 0;">Faja: ' + (fajaLiq ? '<b>liquidación de Mininco</b> del mes: ' + nf(LQ.m3, 1) + ' m³ · $' + nf(LQ.monto) + ' · ' + nf(LQ.monto / LQ.m3) + ' $/m³' + (LQ.part ? ' · partidas $' + nf(LQ.part) : '') :
+    '<b style="color:#c0392b;">' + (Object.keys(DATA.liqfaja || {}).length ? 'todavía no hay liquidación de este mes' : 'la App no tiene las liquidaciones de Mininco: vuelve a cargar el Best (botón Best)') + '</b>: se estima con las cartolas (' + nf(m3f, 1) + ' m³) × $' + nf(ingCfg('faja_precio')) + '/m³') + '.</div>';
+  var nEco = DATA.eco.filter(function(x){ return x.per === per; }).length;
+  if (!nEco) ctl += '<div class="nota" style="background:#fdecea;border-color:#f5b7b1;color:#922b21;">⚠ <b>No hay cartolas de Ecofor cargadas para este período</b> (' + perLabel(per, '26-25').replace(/^.*\(/, '').replace(')', '') + '), por eso Mov. tierra y Obras de arte salen en 0. ' +
+    'Exporta de Ecofor ese período (Administración Cartolas → Fecha Pago del 26 al 25 → EMPRECON SPA → Exportar) y súbelo con <b>Cartolas Ecofor</b> en la ficha Produc. Diaria.</div>';
+  P.innerHTML = cab + ctl + '<div class="grid2">' + card('ingc1', 'Grafico de metas de Ingresos mensuales por Faenas', mesL) + card('ingc2', 'Grafico de Ingresos mensuales por Faenas', mesL) + '</div>' +
+    '<div class="card">' + resumen + dt + prog + '</div>';
+  if (typeof Chart === 'undefined') return;
+  // etiquetas sobre las barras, en el color de cada serie (como en la planilla)
+  var etiq = {id:'etiq', afterDatasetsDraw:function(ch, a, o){ var c = ch.ctx; ch.data.datasets.forEach(function(ds, i){ var m = ch.getDatasetMeta(i); if (m.hidden) return;
+    m.data.forEach(function(b, j){ var v = ds.data[j]; if (v == null) return; c.save(); c.fillStyle = ds.lab || ds.borderColor || '#333'; c.font = 'bold 11px Segoe UI'; c.textAlign = 'center';
+      c.fillText(nf(v, o.dec), b.x, b.y - 6); c.restore(); }); }); }};
+  var graf = function(id, vals, col, legTot, dec){
+    return new Chart(document.getElementById(id), {type:'bar', plugins:[etiq],
+      data:{labels:['$/mes'], datasets:[
+        {label:'Mov.tierra', data:[M(vals.mt)], backgroundColor:col.mt, borderColor:col.mtb, borderWidth:1, lab:col.mtl, order:1, barPercentage:0.95, categoryPercentage:0.86},
+        {label:'Faja', data:[M(vals.faja)], backgroundColor:col.fa, borderColor:col.fab, borderWidth:1, lab:col.fal, order:1, barPercentage:0.95, categoryPercentage:0.86},
+        {label:'Obras de Arte', data:[M(vals.oa)], backgroundColor:col.oa, borderColor:col.oab, borderWidth:1, lab:col.oal, order:1, barPercentage:0.95, categoryPercentage:0.86},
+        {label:legTot, data:[M(vals.tot)], backgroundColor:col.to, borderColor:col.tob, borderWidth:2, lab:col.tol, order:2, grouped:false, barPercentage:1, categoryPercentage:0.92}]},
+      options:{responsive:true, maintainAspectRatio:false, plugins:{legend:{position:'top', labels:{boxWidth:10, font:{size:12}}}, etiq:{dec:dec}, tooltip:{callbacks:{label:function(c){ return c.dataset.label + ': ' + nf(c.parsed.y, 1) + ' MM$'; }}}},
+        scales:{y:{beginAtZero:true, suggestedMax:Math.max(M(vals.tot), M(pr.tot), M(re.tot)) * 1.12, title:{display:true, text:'Millones'}, ticks:{callback:function(v){ return nf(v); }}}, x:{grid:{display:false}}}}});
+  };
+  // izquierda (programado): azul, café claro, amarillo y total celeste; derecha (real): azul índigo, rojo ladrillo, gris lila y total lila
+  INGCH.push(graf('ingc1', pr, {mt:'#6a96d6', mtb:'#5b84c4', mtl:'#4472c4', fa:'#d49b7b', fab:'#c28a6a', fal:'#ed7d31', oa:'#e3ed5c', oab:'#cfd94a', oal:'#d4d400',
+    to:'rgba(214,232,250,.85)', tob:'#a9c6e8', tol:'#8faadc'}, 'Total mes $', 1));
+  INGCH.push(graf('ingc2', re, {mt:'#4f5bc0', mtb:'#3f4aa8', mtl:'#4f5bc0', fa:'#c9563d', fab:'#b04530', fal:'#e46c3c', oa:'#9a8aa0', oab:'#857590', oal:'#7f6f60',
+    to:'rgba(200,170,225,.55)', tob:'#a98bc7', tol:'#7030a0'}, 'Total Mes ($)', 0));
+}
+
+// 12-11-2026: flechas ← → para moverse por las fichas y sus pestañas (como en la App de cosecha). Recorre en orden las pestañas
+// de Produc. Diaria (Resumen, Mov. tierra, Obras de arte, Defensas, Faja) y sigue con las fichas siguientes del menú.
+// No actúan mientras se escribe en un campo ni con una ventana de detalle abierta.
+document.addEventListener('keydown', function(e){
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+  var tg = e.target || {}, tag = (tg.tagName || '').toUpperCase();
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tg.isContentEditable) return;
+  if (document.querySelector('.modal')) return;
+  var L = []; FICHAS.forEach(function(f){ if (f.id === 'pd') FAENAS.forEach(function(x){ L.push({f:'pd', t:x.id}); }); else L.push({f:f.id}); });
+  var i = L.findIndex(function(x){ return x.f === FICHA && (x.f !== 'pd' || x.t === S.fa); });
+  var j = e.key === 'ArrowRight' ? Math.min(L.length - 1, i + 1) : Math.max(0, i - 1); if (i < 0) j = 0;
+  if (j === i) return; e.preventDefault();
+  var d = L[j]; if (d.f === 'pd'){ S.per = ''; S.fa = d.t; try { localStorage.setItem('emp_sel', JSON.stringify(S)); } catch(x){} }
+  fichaVer(d.f);
+  var b = document.querySelector('.tab.on') || document.querySelector('.mtab.on'); if (b) try { b.scrollIntoView({block:'nearest', inline:'nearest'}); } catch(x){}
+});
+leer(); menuRender(); render(); if (FICHA === 'eq') eqRender(); if (FICHA === 'tp') tpAbrir(); if (FICHA === 'ing') ingRender();
+
+// 13-11-2026 (Gustavo): al hacer clic en una ficha la App pasa a PANTALLA COMPLETA (Esc o el botón de arriba para salir),
+// y cada gráfico tiene un botón ⛶ para verlo solo, en grande.
+function pcActiva(){ return !!(document.fullscreenElement || document.webkitFullscreenElement); }
+function pcEntrar(){ var d = document.documentElement, f = d.requestFullscreen || d.webkitRequestFullscreen; if (!f || pcActiva()) return;
+  try { var p = f.call(d); if (p && p.catch) p.catch(function(){}); } catch(e){} }
+function pcSalir(){ var f = document.exitFullscreen || document.webkitExitFullscreen; if (f && pcActiva()) try { var p = f.call(document); if (p && p.catch) p.catch(function(){}); } catch(e){} }
+function pcBoton(){ var b = document.getElementById('pc-btn'); if (!b){ b = document.createElement('button'); b.id = 'pc-btn'; document.body.appendChild(b);
+    b.onclick = function(){ pcActiva() ? pcSalir() : pcEntrar(); }; }
+  b.textContent = pcActiva() ? '✕ Salir de pantalla completa' : '⛶ Pantalla completa'; }
+document.addEventListener('fullscreenchange', pcBoton); document.addEventListener('webkitfullscreenchange', pcBoton);
+function fichaClic(id){ pcEntrar(); fichaVer(id); }
+
+// ---- botón ⛶ en cada gráfico: lo abre solo, en una ventana grande ----
+var GRAF_SOLO = null;
+function grafSolo(cv){
+  var ch = window.Chart && Chart.getChart(cv); if (!ch) return;
+  var card = cv.closest('.card'), tit = '';
+  if (card){ var t = card.querySelector('.ct, span[style*="font-weight:700"], div[style*="font-weight:700"]'); tit = t ? t.textContent.trim() : ''; }
+  var nota = card ? card.querySelector('div[style*="fff6a8"], div[style*="ffe97a"]') : null;
+  var M = document.createElement('div'); M.className = 'modal gsolo';
+  M.innerHTML = '<div class="gsolo-box"><div class="gsolo-cab"><b>' + tpEsc(tit) + '</b>' + (nota ? '<span class="gsolo-mes">' + tpEsc(nota.textContent) + '</span>' : '') +
+    '<button class="btn" onclick="grafSoloCerrar()">✕ Cerrar (Esc)</button></div><div style="position:relative;flex:1;min-height:0;"><canvas></canvas></div></div>';
+  M.onclick = function(e){ if (e.target === M) grafSoloCerrar(); };
+  document.body.appendChild(M);
+  var c = ch.config, d = c.data;
+  var data = {labels: (d.labels || []).slice(), datasets: d.datasets.map(function(ds){ return Object.assign({}, ds, {data: (ds.data || []).slice()}); })};
+  var op = Object.assign({}, c.options, {responsive:true, maintainAspectRatio:false});
+  GRAF_SOLO = {M: M, ch: new Chart(M.querySelector('canvas'), {type: c.type, data: data, options: op, plugins: (c.plugins || []).slice()})};
+}
+function grafSoloCerrar(){ if (!GRAF_SOLO) return; try { GRAF_SOLO.ch.destroy(); } catch(e){} GRAF_SOLO.M.remove(); GRAF_SOLO = null; }
+document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && GRAF_SOLO){ e.preventDefault(); grafSoloCerrar(); } });
+function grafBotones(){
+  document.querySelectorAll('canvas').forEach(function(cv){
+    if (cv.closest('.gsolo')) return;
+    var cont = cv.closest('.card'); if (!cont || cont.querySelectorAll('canvas').length > 1) cont = cv.parentElement;
+    if (!cont || cont.querySelector(':scope > .bgraf')) return;
+    if (getComputedStyle(cont).position === 'static') cont.style.position = 'relative';
+    var b = document.createElement('button'); b.className = 'bgraf'; b.title = 'Ver este gráfico solo, en grande'; b.textContent = '⛶';
+    b.onclick = function(e){ e.stopPropagation(); grafSolo(cv); }; cont.appendChild(b); });
+}
+var GRAF_T = null;
+new MutationObserver(function(){ clearTimeout(GRAF_T); GRAF_T = setTimeout(grafBotones, 150); }).observe(document.documentElement, {childList:true, subtree:true});
+document.addEventListener('DOMContentLoaded', function(){ pcBoton(); grafBotones(); });
+if (document.readyState !== 'loading') setTimeout(function(){ pcBoton(); grafBotones(); }, 0);
+</script>
+</body>
+</html>

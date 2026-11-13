@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="es-CL">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ciclo de construcción de caminos forestales</title>
+<style>
+:root{--c1:#5a3a1a;--am:#f2b705;--bg:#f4f1ec;--tx:#2b2520;}
+*{box-sizing:border-box;}
+html,body{margin:0;background:var(--bg);color:var(--tx);font-family:"Segoe UI",system-ui,-apple-system,Arial,sans-serif;}
+.wrap{max-width:1500px;margin:0 auto;padding:10px 14px 18px;}
+h1{font-size:clamp(16px,2.2vw,24px);margin:4px 0 2px;color:var(--c1);}
+.sub{font-size:12.5px;color:#6b5a48;margin-bottom:8px;}
+.etapa{display:flex;align-items:center;gap:12px;background:linear-gradient(90deg,#5a3a1a,#8a5a2b);color:#fff;border-radius:10px 10px 0 0;padding:8px 14px;min-height:58px;}
+.etapa .num{background:var(--am);color:#2b2520;font-weight:800;border-radius:50%;width:38px;height:38px;flex:0 0 38px;display:flex;align-items:center;justify-content:center;font-size:18px;}
+.etapa .tit{font-weight:800;font-size:clamp(14px,1.9vw,21px);letter-spacing:.4px;}
+.etapa .des{font-size:clamp(11px,1.2vw,14px);opacity:.93;line-height:1.25;}
+.lienzo{position:relative;background:#cfe8f5;border:2px solid #5a3a1a;border-top:none;border-radius:0 0 10px 10px;overflow:hidden;}
+svg{display:block;width:100%;height:auto;}
+.panel{position:absolute;right:10px;top:10px;background:rgba(255,255,255,.9);border:1px solid #c9b79c;border-radius:8px;padding:6px 10px;font-size:clamp(9px,1.05vw,13px);box-shadow:0 2px 6px rgba(0,0,0,.18);}
+.panel div{display:flex;justify-content:space-between;gap:14px;line-height:1.55;}
+.panel b{font-variant-numeric:tabular-nums;color:var(--c1);}
+.ctl{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px;}
+button{font:inherit;font-size:13px;font-weight:600;border:1px solid #c9b79c;background:#fff;color:var(--c1);border-radius:7px;padding:6px 11px;cursor:pointer;}
+button:hover{background:#fbefdd;}
+button.on{background:var(--c1);color:#fff;border-color:var(--c1);}
+button.pp{background:var(--am);border-color:#c79500;color:#2b2520;min-width:92px;}
+.sep{width:1px;height:26px;background:#d8cbb8;margin:0 4px;}
+input[type=range]{flex:1 1 100%;accent-color:#8a5a2b;margin-top:4px;}
+.rm .solo-anim{display:none;}
+.solo-rm{display:none;}
+.rm .solo-rm{display:inline-block;}
+.nota{font-size:11.5px;color:#7a6a58;margin-top:6px;}
+@media (max-width:640px){.panel{position:static;border-radius:0;border:none;border-top:1px solid #c9b79c;display:grid;grid-template-columns:1fr 1fr;gap:0 14px;box-shadow:none;}
+  .etapa{min-height:74px;} button{padding:6px 8px;font-size:12px;}}
+</style>
+</head>
+<body>
+<div class="wrap" id="wrap">
+  <h1>Ciclo de construcción de caminos forestales con cosecha de la faja</h1>
+  <div class="sub">Trazado → Volteo → Madereo → Movimiento de tierra → Procesado → Ordenamiento y clasificado</div>
+  <div class="etapa"><div class="num" id="e-num">1</div><div><div class="tit" id="e-tit"></div><div class="des" id="e-des"></div></div></div>
+  <div class="lienzo">
+    <svg id="sv" viewBox="0 0 1800 900" role="img" aria-label="Animación del ciclo de construcción de caminos forestales"></svg>
+    <div class="panel" aria-live="off">
+      <div><span>🌲 Árboles volteados</span><b id="k-arb">0</b></div>
+      <div><span>⛏ Mov. de tierra</span><b id="k-mt">0 m³</b></div>
+      <div><span>🪵 Madera procesada</span><b id="k-mad">0,0 m³</b></div>
+      <div><span>📦 Rumas armadas</span><b id="k-rum">0</b></div>
+    </div>
+  </div>
+  <div class="ctl">
+    <button class="pp solo-anim" id="b-pp">⏸ Pausa</button>
+    <button class="solo-rm" id="b-ant">◀ Anterior</button>
+    <button class="solo-rm" id="b-sig">Siguiente ▶</button>
+    <span class="solo-anim" style="font-size:12px;color:#6b5a48;">Velocidad</span>
+    <button class="solo-anim vel" data-v="0.5">0,5x</button>
+    <button class="solo-anim vel on" data-v="1">1x</button>
+    <button class="solo-anim vel" data-v="2">2x</button>
+    <span class="sep"></span>
+    <span id="b-etapas" style="display:contents;"></span>
+    <button class="solo-rm" id="b-mov" title="Tu equipo pide reducir el movimiento; con este botón se muestra igual">▶ Ver con movimiento</button>
+    <input class="solo-anim" type="range" id="barra" min="0" max="1000" value="0" aria-label="Avance del ciclo">
+  </div>
+  <div class="nota">Esquema ilustrativo en corte transversal. Las cantidades del panel corresponden a la escena dibujada, no a una faena real.</div>
+</div>
+<script>
+(function(){
+'use strict';
+var NS = 'http://www.w3.org/2000/svg', sv = document.getElementById('sv');
+var $ = function(id){ return document.getElementById(id); };
+var cl = function(v, a, b){ a = a == null ? 0 : a; b = b == null ? 1 : b; return Math.max(a, Math.min(b, v)); };
+var sm = function(u){ u = cl(u); return u * u * (3 - 2 * u); };
+var lerp = function(a, b, u){ return a + (b - a) * u; };
+var U = function(t, a, b){ return cl((t - a) / (b - a)); };
+function K(t, p){ if (t <= p[0][0]) return p[0][1];
+  for (var i = 1; i < p.length; i++) if (t <= p[i][0]){ var a = p[i - 1], b = p[i]; return b[0] === a[0] ? b[1] : lerp(a[1], b[1], sm((t - a[0]) / (b[0] - a[0]))); }
+  return p[p.length - 1][1]; }
+var D2R = Math.PI / 180, SL = 0.319, SLDEG = Math.atan(SL) / D2R;
+var gy = function(x){ return x <= 640 ? 700 : 700 - SL * (x - 640); };          // terreno original
+var rotAt = function(x){ return -SLDEG * sm((x - 610) / 70); };                   // inclinación de la máquina según dónde va
+var dir = function(a){ return [Math.sin(a * D2R), -Math.cos(a * D2R)]; };         // hacia dónde apunta un árbol girado "a" grados
+var nf = function(v, d){ return v.toLocaleString('es-CL', {minimumFractionDigits: d || 0, maximumFractionDigits: d || 0}); };
+
+// ---------- tiempos ----------
+var ET = [
+  {n:'TRAZADO', a:0, b:7, d:'Se marcan con pintura los árboles de la faja: esa línea es el eje del futuro camino.', f:6.6},
+  {n:'VOLTEO', a:7, b:24, d:'La excavadora con garra voltea los árboles enteros, con raíz, y los deja a un costado para seguir avanzando.', f:18.9},
+  {n:'MADEREO', a:24, b:35, d:'La excavadora lleva los fustes desde la faja hasta la cancha de procesado.', f:29.4},
+  {n:'MOVIMIENTO DE TIERRA', a:35, b:54, d:'La excavadora con balde corta la ladera hasta dejar corte firme; el material sobrante se va al derrame.', f:53.5},
+  {n:'PROCESADO', a:54, b:68, d:'Con el camino ya hecho, el procesador desrama cada fuste y lo troza a largo comercial.', f:63.2},
+  {n:'ORDENAMIENTO Y CLASIFICADO', a:68, b:81, d:'El trineumático toma los trozos y arma rumas separadas por producto.', f:78.2},
+  {n:'CAMINO TERMINADO', a:81, b:87, d:'Camino construido y madera de la faja ordenada en rumas, lista para el despacho.', f:85}
+];
+var TT = 87;
+var TX = [800, 890, 980, 1070, 1160, 1250], HT = [228, 214, 236, 220, 232, 216];   // árboles de la faja
+var V0 = 9.5, VD = 2.4;        // volteo: inicio y duración por árbol
+var M0 = 24, MD = 3.6;         // madereo: por viaje
+var C0 = 39.4, CD = 2.0;       // mov. tierra: por ciclo de balde
+var P0 = 56.3, PD = 1.9;       // procesado: por fuste
+var B0 = 69.4, BD = 1.85;      // Bell: por viaje
+
+// ---------- dibujo base ----------
+function el(tag, at, par){ var e = document.createElementNS(NS, tag); for (var k in at) e.setAttribute(k, at[k]); (par || sv).appendChild(e); return e; }
+function grp(id, par){ return el('g', id ? {id:id} : {}, par); }
+var defs = el('defs', {});
+defs.innerHTML = '<linearGradient id="cielo" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#9fd3f0"/><stop offset="1" stop-color="#e9f6fb"/></linearGradient>' +
+  '<linearGradient id="suelo" gradientUnits="userSpaceOnUse" x1="0" y1="330" x2="0" y2="900"><stop offset="0" stop-color="#8f6539"/><stop offset="1" stop-color="#5d4127"/></linearGradient>' +
+  '<clipPath id="cpCorte"><rect id="rCorte" x="953" y="300" width="900" height="400"/></clipPath>' +
+  '<clipPath id="cpRell"><rect id="rRell" x="953" y="500" width="10" height="300"/></clipPath>';
+el('rect', {x:0, y:0, width:1800, height:900, fill:'url(#cielo)'});
+el('circle', {cx:1230, cy:105, r:46, fill:'#fff3b0', opacity:.9});
+var nubes = grp('nubes');
+nubes.innerHTML = '<g fill="#fff" opacity=".85"><ellipse cx="260" cy="130" rx="90" ry="24"/><ellipse cx="320" cy="112" rx="60" ry="22"/><ellipse cx="980" cy="90" rx="110" ry="22"/><ellipse cx="1040" cy="74" rx="56" ry="18"/></g>';
+// bosque lejano (silueta)
+(function(){ var d = 'M0,700', x = 0, i = 0; while (x < 1800){ var base = gy(x) - 6, h = 46 + ((i * 37) % 30); d += ' L' + x + ',' + (base - 8) + ' L' + (x + 13) + ',' + (base - h) + ' L' + (x + 26) + ',' + (base - 8); x += 26; i++; }
+  d += ' L1800,900 L0,900 Z'; el('path', {d:d, fill:'#5f8f76', opacity:.55}); })();
+var gFondo = grp('fondo');
+// terreno: forma final (con el corte hecho y sin el relleno), y encima el suelo que se va a sacar y el derrame que se va a poner
+el('path', {d:'M0,900 L0,700 L640,700 L953,600 L1240,600 L1275,497.5 L1800,330 L1800,900 Z', fill:'url(#suelo)'});
+el('path', {d:'M0,900 L0,800 L640,800 L1800,440 L1800,900 Z', fill:'#4b3522', opacity:.55});
+el('path', {d:'M0,700 L640,700 L953,600', fill:'none', stroke:'#4f8a3c', 'stroke-width':7, 'stroke-linecap':'round'});
+el('path', {d:'M1275,497.5 L1800,330', fill:'none', stroke:'#4f8a3c', 'stroke-width':7, 'stroke-linecap':'round'});
+var talud = el('path', {d:'M1240,600 L1275,497.5', fill:'none', stroke:'#a3a39b', 'stroke-width':9, 'stroke-linecap':'round', opacity:0});          // talud
+var gCorte = el('g', {'clip-path':'url(#cpCorte)'});
+el('path', {d:'M953,600 L1240,600 L1275,497.5 Z', fill:'url(#suelo)'}, gCorte);
+el('path', {d:'M953,600 L1275,497.5', fill:'none', stroke:'#4f8a3c', 'stroke-width':7}, gCorte);
+var rell = el('path', {d:'M953,600 L953,600 L953,600 Z', fill:'#b08a58', stroke:'#9a7647', 'stroke-width':2, 'stroke-linejoin':'round'});
+var carpeta = el('path', {d:'M840,600 L1240,600 L1236,607 L843,607 Z', fill:'#d2bf95', stroke:'#a8956b', 'stroke-width':1.5, opacity:0});
+// eje / faja marcada
+var gEje = grp('eje');
+gEje.innerHTML = '<line id="ejeL" x1="770" y1="655.5" x2="770" y2="655.5" stroke="#ff5a1f" stroke-width="5" stroke-dasharray="14 10"/>' +
+  '<g id="jal1"><line x1="770" y1="658" x2="770" y2="618" stroke="#333" stroke-width="3"/><path d="M770,618 l20,7 l-20,7 Z" fill="#ff5a1f"/></g>' +
+  '<g id="jal2"><line x1="1290" y1="492" x2="1290" y2="452" stroke="#333" stroke-width="3"/><path d="M1290,452 l20,7 l-20,7 Z" fill="#ff5a1f"/></g>' +
+  '<text id="ejeT" x="1030" y="640" text-anchor="middle" font-size="24" font-weight="700" fill="#fff" stroke="#3a2a1a" stroke-width="5" paint-order="stroke" transform="rotate(-17.7 1030 640)">Faja marcada · eje del camino</text>';
+// rótulos del corte
+var gRot = grp('rot');
+var halo = 'font-weight="700" fill="#fff" stroke="#3a2a1a" stroke-width="5" paint-order="stroke"';
+gRot.innerHTML =
+  '<text x="1570" y="470" text-anchor="middle" font-size="25" ' + halo + ' transform="rotate(-17.7 1570 470)">Pendiente transversal</text>' +
+  '<g><rect x="1296" y="398" width="118" height="38" rx="4" fill="#fff" stroke="#333" stroke-width="2"/><text x="1355" y="424" text-anchor="middle" font-size="22" font-weight="700" fill="#222">Víscera</text><path d="M1310,436 L1277,494" stroke="#333" stroke-width="2" fill="none"/><circle cx="1275" cy="497" r="5" fill="#e23d28"/></g>' +
+  '<g stroke="#fff" stroke-width="3" fill="none"><path d="M1322,498 V600 M1312,498 H1332 M1312,600 H1332"/></g>' +
+  '<text x="1340" y="556" font-size="23" ' + halo + '>Altura de corte</text>' +
+  '<text x="1200" y="566" text-anchor="end" font-size="23" ' + halo + '>Talud</text><path d="M1204,560 L1250,556" stroke="#fff" stroke-width="3"/>' +
+  '<text x="1096" y="650" text-anchor="middle" font-size="25" ' + halo + '>Corte firme</text><path d="M953,624 H1240 M953,614 V634 M1240,614 V634" stroke="#fff" stroke-width="3" fill="none"/>' +
+  '<text x="800" y="748" text-anchor="middle" font-size="25" ' + halo + '>Derrame</text><path d="M806,722 L850,640" stroke="#fff" stroke-width="3"/>';
+// flecha de madereo
+var gMad = grp('mad');
+gMad.innerHTML = '<g stroke="#12a150" stroke-width="9" fill="none" stroke-linecap="round"><path d="M470,470 L1010,300"/><path d="M470,470 l34,6 M470,470 l22,-27"/><path d="M1010,300 l-34,-6 M1010,300 l-22,27"/></g>' +
+  '<text x="740" y="360" text-anchor="middle" font-size="30" font-weight="800" fill="#0c7a3b" stroke="#fff" stroke-width="6" paint-order="stroke" transform="rotate(-17.5 740 360)">Madereo</text>';
+// cancha: rótulos
+var gCan = grp('can');
+gCan.innerHTML = '<text x="330" y="800" text-anchor="middle" font-size="26" ' + halo + '>Cancha de procesado</text>';
+// rumas (estacas) y rótulos
+var gRum = grp('rumas');
+gRum.innerHTML = '<g id="est1" stroke="#3a2a1a" stroke-width="5" stroke-linecap="round"><path d="M214,694 V590 M286,694 V590"/></g><g id="est2" stroke="#3a2a1a" stroke-width="5" stroke-linecap="round"><path d="M92,694 V640 M148,694 V640"/></g>' +
+  '<text id="rt1" x="250" y="576" text-anchor="middle" font-size="19" font-weight="700" fill="#3a2a1a" stroke="#fff" stroke-width="4" paint-order="stroke">Aserrable</text>' +
+  '<text id="rt2" x="120" y="626" text-anchor="middle" font-size="19" font-weight="700" fill="#3a2a1a" stroke="#fff" stroke-width="4" paint-order="stroke">Pulpable</text>';
+var brush = el('path', {d:'M-46,0 C-44,-20 -24,-30 -8,-24 C2,-40 26,-36 30,-20 C46,-20 50,-6 46,0 Z', fill:'#2f7a47', stroke:'#1f5f3a', 'stroke-width':2});
+var gArb = grp('arboles'), gLogs = grp('logs'), gMaq = grp('maq'), gPart = grp('part'), gFin = grp('fin');
+gFin.innerHTML = '<rect x="590" y="150" width="620" height="78" rx="12" fill="#1a6b3a" opacity=".93"/><text x="900" y="203" text-anchor="middle" font-size="40" font-weight="800" fill="#fff">✔ CAMINO TERMINADO</text>';
+var velo = el('rect', {x:0, y:0, width:1800, height:900, fill:'#f4f1ec', opacity:0, 'pointer-events':'none'});
+
+// ---------- árboles ----------
+function pino(par, H, id, tono){
+  var g = el('g', {}, par), v = tono || ['#1f5f3a', '#2b7a4b'];
+  var h = '<g class="raiz" opacity="0"><path d="M-17,1 C-25,13 -9,24 0,18 C10,26 25,13 16,1 Z" fill="#4a3320"/><path d="M-14,10 l-9,9 M0,17 l1,11 M13,10 l9,8" stroke="#4a3320" stroke-width="3" stroke-linecap="round"/></g>';
+  if (id != null) h = '<defs><clipPath id="ct' + id + '"><rect class="ct" x="-90" y="' + (-H - 70) + '" width="180" height="' + (H + 70) + '"/></clipPath><clipPath id="cc' + id + '"><rect class="cc" x="-90" y="' + (-H - 70) + '" width="180" height="' + (H + 70) + '"/></clipPath></defs>' + h;
+  h += '<g' + (id != null ? ' clip-path="url(#ct' + id + ')"' : '') + '><path d="M-6.5,0 L6.5,0 L2,' + (-H) + ' L-2,' + (-H) + ' Z" fill="#7a5230" stroke="#5a3a1f" stroke-width="1"/></g>';
+  h += '<g' + (id != null ? ' clip-path="url(#cc' + id + ')"' : '') + '>';
+  var y0 = -H * 0.40, n = 6;
+  for (var i = 0; i < n; i++){ var yb = lerp(y0, -H + 26, i / (n - 1)), w = lerp(50, 17, i / (n - 1)), ht = lerp(52, 40, i / (n - 1));
+    h += '<path d="M' + (-w) + ',' + yb + ' L0,' + (yb - ht) + ' L' + w + ',' + yb + ' Z" fill="' + v[i % 2] + '"/>'; }
+  h += '</g><rect class="pint" x="-8" y="-58" width="16" height="8" fill="#ff5a1f" opacity="0"/>';
+  g.innerHTML = h; return g;
+}
+// fondo: árboles que quedan en pie (ladera arriba y borde de la faja)
+[[1330, 205, .9], [1392, 240, 1], [1460, 215, .95], [1525, 250, 1], [1600, 222, .92], [1668, 245, 1], [1735, 228, .96], [1790, 250, 1], [700, 200, .9], [655, 180, .85]].forEach(function(a, i){
+  var g = pino(gFondo, a[1], null, i % 2 ? ['#2a6a45', '#357f55'] : ['#24633f', '#2f744b']); g.setAttribute('transform', 'translate(' + a[0] + ',' + (gy(a[0]) + 2) + ') scale(' + a[2] + ')'); });
+var ARB = TX.map(function(x, i){ var g = pino(gArb, HT[i], i); return {g:g, H:HT[i], raiz:g.querySelector('.raiz'), pint:g.querySelector('.pint'), ct:g.querySelector('.ct'), cc:g.querySelector('.cc')}; });
+function setArb(i, x, y, a, o){ o = o || {}; var A = ARB[i];
+  A.g.setAttribute('transform', 'translate(' + x.toFixed(1) + ',' + y.toFixed(1) + ') rotate(' + a.toFixed(2) + ')');
+  A.g.setAttribute('opacity', o.op == null ? 1 : o.op); A.raiz.setAttribute('opacity', o.raiz || 0); A.pint.setAttribute('opacity', o.pint == null ? 1 : o.pint);
+  A.ct.setAttribute('height', Math.max(0, A.H + 70 - (o.ct || 0))); A.cc.setAttribute('height', Math.max(0, A.H + 70 - (o.cc || 0))); }
+
+// ---------- trozos ----------
+var LOG = []; for (var k = 0; k < 18; k++){ var pu = k % 3 === 2, len = pu ? 48 : 62, hh = pu ? 6 : 8;
+  var g = el('g', {}, gLogs); g.innerHTML = '<rect x="' + (-len / 2) + '" y="' + (-hh / 2) + '" width="' + len + '" height="' + hh + '" rx="2" fill="' + (pu ? '#d9b077' : '#b9793f') + '" stroke="#6b4423" stroke-width="1"/><rect x="' + (len / 2 - 3) + '" y="' + (-hh / 2) + '" width="3" height="' + hh + '" fill="#f0d9a8"/>';
+  LOG.push({g:g, len:len, pu:pu}); }
+
+// ---------- máquinas ----------
+var AM = '#f2b705', AMo = '#b98900', SC = 1.25;   // SC: tamaño de las máquinas
+var garraSVG = '<g transform="rotate(-90)"><rect x="-4" y="0" width="8" height="14" fill="#333"/><circle cx="0" cy="15" r="7" fill="#555"/>' +
+  '<g class="tl"><path d="M-2,15 C-31,20 -31,47 -7,55 L-4,49 C-19,43 -19,28 0,23 Z" fill="#1d1d1d"/></g><g class="tr"><path d="M2,15 C31,20 31,47 7,55 L4,49 C19,43 19,28 0,23 Z" fill="#1d1d1d"/></g></g>';
+var baldeSVG = '<path d="M-2,-9 L20,-11 L35,2 L37,21 L30,21 L26,9 L13,3 L-2,7 Z" fill="#2a2a2a" stroke="#111" stroke-width="1"/><path class="tierra" d="M13,3 L26,9 L30,21 L37,21 L41,17 C40,6 28,-3 13,3 Z" fill="#8f6539" opacity="0"/><path d="M37,21 l5,3 l-6,2 Z" fill="#888"/>';
+var cabezalSVG = '<g transform="rotate(-90)"><rect x="-5" y="0" width="10" height="10" fill="#333"/><rect x="-20" y="6" width="44" height="11" rx="4" fill="' + AM + '" stroke="' + AMo + '"/>' +
+  '<path d="M-19,14 C-28,22 -28,38 -19,46" stroke="#222" stroke-width="5" fill="none" stroke-linecap="round"/><rect x="13" y="14" width="10" height="35" rx="2" fill="#333"/>' +
+  '<g class="saw"><rect x="16.5" y="15" width="3.5" height="33" fill="#d43d2a"/></g>' +
+  '<g transform="translate(-3,20)"><circle r="8.5" fill="#1d1d1d"/><g class="rod"><path d="M-8,0H8M0,-8V8" stroke="#aaa" stroke-width="2.5"/></g></g><g transform="translate(-3,40)"><circle r="8.5" fill="#1d1d1d"/><g class="rod"><path d="M-8,0H8M0,-8V8" stroke="#aaa" stroke-width="2.5"/></g></g></g>';
+function excSVG(tool){ return '<g class="under"><rect x="-68" y="-30" width="136" height="30" rx="15" fill="#2a2a2a"/>' +
+  '<rect class="tread" x="-66" y="-28" width="132" height="26" rx="13" fill="none" stroke="#0b0b0b" stroke-width="5" stroke-dasharray="5 6"/>' +
+  '<circle cx="-53" cy="-15" r="10" fill="#5a5a5a"/><circle cx="53" cy="-15" r="10" fill="#5a5a5a"/><circle cx="-28" cy="-7" r="4" fill="#666"/><circle cx="-9" cy="-7" r="4" fill="#666"/><circle cx="10" cy="-7" r="4" fill="#666"/><circle cx="29" cy="-7" r="4" fill="#666"/>' +
+  '<rect x="-17" y="-41" width="34" height="11" fill="#3a3a3a"/></g>' +
+  '<g class="upper"><path d="M-64,-41 L-64,-74 Q-64,-82 -56,-82 L12,-82 L12,-41 Z" fill="' + AM + '" stroke="' + AMo + '" stroke-width="1.5"/><rect x="-72" y="-70" width="17" height="29" rx="5" fill="#2a2a2a"/>' +
+  '<path d="M-48,-74 h34 M-48,-66 h34 M-48,-58 h34" stroke="' + AMo + '" stroke-width="2.5"/>' +
+  '<g class="boom"><path d="M0,-9 L56,-25 L125,-7 L125,7 L60,-7 L0,10 Z" fill="' + AM + '" stroke="' + AMo + '" stroke-width="1.5"/><path d="M14,-3 L62,-16" stroke="#555" stroke-width="5" stroke-linecap="round"/>' +
+  '<g class="stick"><path d="M-12,-7 L100,-4.5 L100,4.5 L-12,8 Z" fill="' + AM + '" stroke="' + AMo + '" stroke-width="1.5"/><circle r="5" fill="#333"/><g class="tool">' + tool + '</g></g></g>' +
+  '<path d="M8,-41 L8,-106 L44,-106 L55,-72 L55,-41 Z" fill="' + AM + '" stroke="' + AMo + '" stroke-width="1.5"/><path d="M13,-100 L41,-100 L50,-72 L13,-72 Z" fill="#bfe3f2" stroke="#222" stroke-width="2"/><path d="M27,-100 V-72" stroke="#222" stroke-width="1.5"/>' +
+  '<rect x="-64" y="-46" width="119" height="5" fill="#222"/></g>'; }
+function rueda(x, y, r){ return '<g transform="translate(' + x + ',' + y + ')"><circle r="' + r + '" fill="#1a1a1a"/><circle r="' + (r * .62) + '" fill="#444"/><g class="spin" data-r="' + r + '"><path d="M' + (-r * .6) + ',0H' + (r * .6) + 'M0,' + (-r * .6) + 'V' + (r * .6) + '" stroke="' + AM + '" stroke-width="' + (r * .16) + '"/></g><circle r="' + (r * .2) + '" fill="' + AM + '"/></g>'; }
+var bellSVG = '<g class="upper"><path d="M-60,-30 L-22,-46 L52,-46 L60,-30 L24,-22 L-42,-20 Z" fill="' + AM + '" stroke="' + AMo + '" stroke-width="1.5"/>' +
+  '<g class="boom"><path d="M0,-7 L40,-17 L78,-5 L78,5 L40,-4 L0,8 Z" fill="' + AM + '" stroke="' + AMo + '" stroke-width="1.5"/><g class="stick"><path d="M-8,-5 L62,-3.5 L62,3.5 L-8,6 Z" fill="' + AM + '" stroke="' + AMo + '" stroke-width="1.5"/><circle r="4" fill="#333"/><g class="tool">' + garraSVG + '</g></g></g>' +
+  '<rect x="-24" y="-96" width="42" height="52" rx="5" fill="' + AM + '" stroke="' + AMo + '" stroke-width="1.5"/><rect x="-18" y="-90" width="30" height="26" rx="2" fill="#bfe3f2" stroke="#222" stroke-width="2"/><rect x="-28" y="-101" width="50" height="6" rx="2" fill="#222"/>' +
+  rueda(-48, -14, 14) + rueda(28, -28, 28) + '</g>';
+function Maq(svg, c){ var g = el('g', {}, gMaq); g.innerHTML = svg; this.g = g; var q = function(s){ return g.querySelector(s); };
+  this.upper = q('.upper'); this.boom = q('.boom'); this.stick = q('.stick'); this.tool = q('.tool'); this.tread = q('.tread'); this.spins = g.querySelectorAll('.spin');
+  this.tl = q('.tl'); this.tr = q('.tr'); this.saw = q('.saw'); this.rods = g.querySelectorAll('.rod'); this.tierra = q('.tierra');
+  this.px = c.px; this.py = c.py; this.L1 = c.L1; this.L2 = c.L2; this.x = 0; this.y = 0; this.rot = 0; this.s = 1; this.end = [0, 0]; }
+Maq.prototype.place = function(x, y, rot, s){ this.x = x; this.y = y; this.rot = rot; this.s = s; var v = x > -150 && x < 1950;
+  this.g.setAttribute('visibility', v ? 'visible' : 'hidden');
+  this.g.setAttribute('transform', 'translate(' + x.toFixed(1) + ',' + y.toFixed(1) + ') rotate(' + rot.toFixed(2) + ') scale(' + SC + ')');
+  this.upper.setAttribute('transform', 'scale(' + (Math.abs(s) < .02 ? .02 : s).toFixed(3) + ',1)');
+  if (this.tread) this.tread.setAttribute('stroke-dashoffset', (-x / SC).toFixed(1));
+  for (var i = 0; i < this.spins.length; i++){ var r = +this.spins[i].getAttribute('data-r') * SC; this.spins[i].setAttribute('transform', 'rotate(' + (x / r / D2R * (s < 0 ? -1 : 1)).toFixed(1) + ')'); } };
+// brazo: lleva la punta del brazo (donde cuelga la herramienta) al punto local (X,Y); phi = ángulo de la herramienta (por defecto cuelga vertical)
+Maq.prototype.arm = function(X, Y, phi){ var L1 = this.L1, L2 = this.L2, dx = X - this.px, dy = Y - this.py, d = Math.hypot(dx, dy) || 1;
+  var dd = cl(d, Math.abs(L1 - L2) + 10, L1 + L2 - 1); dx *= dd / d; dy *= dd / d; d = dd;
+  var a = Math.atan2(dy, dx), B = Math.acos(cl((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d), -1, 1)), C = Math.acos(cl((L1 * L1 + L2 * L2 - d * d) / (2 * L1 * L2), -1, 1));
+  var b = a - B, s2 = Math.PI - C;
+  if (phi == null) phi = 90 - this.rot * (this.s < 0 ? -1 : 1);
+  this.boom.setAttribute('transform', 'translate(' + this.px + ',' + this.py + ') rotate(' + (b / D2R).toFixed(2) + ')');
+  this.stick.setAttribute('transform', 'translate(' + L1 + ',0) rotate(' + (s2 / D2R).toFixed(2) + ')');
+  this.tool.setAttribute('transform', 'translate(' + L2 + ',0) rotate(' + (phi - (b + s2) / D2R).toFixed(2) + ')');
+  this.end = [this.px + dx, this.py + dy]; };
+Maq.prototype.world = function(X, Y){ var r = this.rot * D2R, c = Math.cos(r), s = Math.sin(r), lx = this.s * X * SC; Y *= SC; return [this.x + lx * c - Y * s, this.y + lx * s + Y * c]; };
+Maq.prototype.local = function(wx, wy){ var r = this.rot * D2R, c = Math.cos(r), s = Math.sin(r), dx = (wx - this.x) / SC, dy = (wy - this.y) / SC; return [(dx * c + dy * s) * (this.s < 0 ? -1 : 1), -dx * s + dy * c]; };
+Maq.prototype.aimW = function(wx, wy, off, phi){ var L = this.local(wx, wy - (off || 0)); this.arm(L[0], L[1], phi); };
+Maq.prototype.grab = function(off){ var w = this.world(this.end[0], this.end[1]); return [w[0], w[1] + (off || 0)]; };
+Maq.prototype.garra = function(o){ if (!this.tl) return; this.tl.setAttribute('transform', 'rotate(' + (26 * o).toFixed(1) + ' 0 15)'); this.tr.setAttribute('transform', 'rotate(' + (-26 * o).toFixed(1) + ' 0 15)'); };
+var EXC = {px:16, py:-62, L1:125, L2:100};
+var E2 = new Maq(excSVG(garraSVG), EXC), E1 = new Maq(excSVG(baldeSVG), EXC), E3 = new Maq(excSVG(cabezalSVG), EXC), BL = new Maq(bellSVG, {px:22, py:-80, L1:78, L2:62});
+var OFG = 38 * SC, OFC = 30 * SC, REST = [105, -100];
+var PART = []; for (var i = 0; i < 5; i++) PART.push(el('circle', {r:5 + (i % 2) * 2, fill:'#8f6539', opacity:0}, gPart));
+var TWIG = []; for (i = 0; i < 4; i++) TWIG.push(el('path', {d:'M-9,0 L0,-5 L9,0 L0,4 Z', fill:'#2b7a4b', opacity:0}, gPart));
+
+// ---------- cálculos fijos de la coreografía ----------
+var MX = TX.map(function(x){ return x - 150; });                 // dónde se para la excavadora para cada árbol
+// pose del árbol ya volteado (queda tendido detrás de la máquina, ladera abajo)
+var FELL = TX.map(function(x, i){ var mx = MX[i], r = rotAt(mx), m = {x:mx, y:gy(mx), rot:r, s:-1}, E = Maq.prototype.world.call(m, 150, -44), G = [E[0], E[1] + OFG], a = -90 + r, d = dir(a);
+  return {x:G[0] - 80 * d[0], y:G[1] - 80 * d[1], a:a, G:G}; });
+var SLOT = [0, 1, 2, 3, 4, 5].map(function(j){ return {x:440 + 3 * (j % 2), y:694 - 7.5 * j, a:-90}; });      // fustes en la cancha
+var PAR = [[5, 4], [3, 2], [1, 0]];                               // madereo: qué árboles lleva cada viaje
+var LOADX = PAR.map(function(p){ return FELL[p[0]].G[0] + 143; });
+var E2X = [[7, -170], [V0, 640]]; (function(){ var prev = 640; TX.forEach(function(x, i){ var t0 = V0 + VD * i; E2X.push([t0, prev], [t0 + 0.6, MX[i]]); prev = MX[i]; });
+  PAR.forEach(function(p, k){ var T0 = M0 + MD * k; E2X.push([T0, prev], [T0 + .15 * MD, LOADX[k]], [T0 + .30 * MD, LOADX[k]], [T0 + .72 * MD, 510]); prev = 510; });
+  E2X.push([35, 510], [36.9, -240]); })();
+var E1X = [[36.3, -170], [C0, 930]], CORTE = [[C0, 953]], RELL = [[C0, 953]];
+(function(){ for (var c = 0; c < 6; c++){ var t0 = C0 + CD * c; E1X.push([t0 + CD, 930 + 26 * (c + 1)]);
+  CORTE.push([t0 + .05 * CD, c ? 1056 + 46 * (c - 1) : 953], [t0 + .32 * CD, 1056 + 46 * c]);
+  RELL.push([t0 + .55 * CD, 953 - 36.5 * c], [t0 + .8 * CD, 953 - 36.5 * (c + 1)]); } E1X.push([53.6, 1000]); })();
+var ASER = [0, 1, 3, 4, 6, 7, 9, 10, 12, 13, 15, 16], PULP = [2, 5, 8, 11, 14, 17];
+var VIAJE = [['A', 0], ['A', 1], ['P', 0], ['A', 2], ['A', 3], ['P', 1]];        // viajes del Bell
+var LINFO = {}; VIAJE.forEach(function(v, q){ for (var r = 0; r < 3; r++){ var A = v[0] === 'A', id = A ? ASER[11 - 3 * v[1] - r] : PULP[5 - 3 * v[1] - r], sl = 3 * v[1] + (2 - r);
+  LINFO[id] = {q:q, r:r, A:A, rx:A ? 250 : 120, ry:A ? 690 - 8 * sl - 4 : 690 - 6 * sl - 3}; } });
+var BLX = [[68, -160], [B0, 360]]; VIAJE.forEach(function(v, q){ var b = B0 + BD * q; if (v[0] === 'P') BLX.push([b + .3 * BD, 360], [b + .55 * BD, 230], [b + .76 * BD, 230], [b + .98 * BD, 360]); });
+BLX.push([B0 + 6 * BD, 360], [81, 292]);
+var tCorte = function(n, p){ return P0 + PD * n + PD * (0.26 + 0.165 * p + 0.165 * 0.8); };      // p: 0 = despunte de raíz, 1..3 = trozos
+var CUTS = [14, 76, 138, 186];
+
+// ---------- cuadro ----------
+function render(t){
+  var i, j, k, u, p;
+  // nubes
+  nubes.setAttribute('transform', 'translate(' + ((t * 6) % 400 - 100).toFixed(1) + ',0)');
+  // eje y jalones
+  var ejeOn = U(t, 0.4, 5.5), ejeOff = 1 - U(t, 35, 37);
+  gEje.setAttribute('opacity', ejeOff); $('ejeL').setAttribute('x2', lerp(770, 1290, ejeOn).toFixed(1)); $('ejeL').setAttribute('y2', lerp(655.5, 489.5, ejeOn).toFixed(1));
+  $('jal1').setAttribute('opacity', U(t, 0.2, 0.7)); $('jal2').setAttribute('opacity', U(t, 5.2, 5.8)); $('ejeT').setAttribute('opacity', U(t, 4.6, 5.6) * (1 - U(t, 8.5, 10)));
+  // terreno
+  $('rCorte').setAttribute('x', K(t, CORTE).toFixed(1)); var pr = (953 - K(t, RELL)) / 219; rell.setAttribute('d', 'M' + lerp(953, 735, pr).toFixed(1) + ',' + lerp(600, 670, pr).toFixed(1) + ' L' + lerp(953, 840, pr).toFixed(1) + ',600 L953,600 Z'); rell.setAttribute('opacity', pr > 0.01 ? 1 : 0);
+  carpeta.setAttribute('opacity', U(t, 51.6, 53.2)); talud.setAttribute('opacity', U(K(t, CORTE), 1235, 1286));
+  gRot.setAttribute('opacity', Math.max(U(t, 51.8, 53) * (1 - U(t, 55.5, 57)), U(t, 81.2, 82.2)));
+  gMad.setAttribute('opacity', U(t, 24.3, 25.2) * (1 - U(t, 34.2, 35)));
+  gCan.setAttribute('opacity', Math.max(U(t, 26.5, 27.5) * (1 - U(t, 35, 36)), U(t, 54.5, 55.5) * (1 - U(t, 68, 69))));
+  gFin.setAttribute('opacity', U(t, 81.3, 82.3)); velo.setAttribute('opacity', U(t, 86.2, 87));
+  var rOn = U(t, 68.3, 69.3); $('est1').setAttribute('opacity', rOn); $('est2').setAttribute('opacity', rOn); $('rt1').setAttribute('opacity', U(t, B0 + .7 * BD, B0 + BD)); $('rt2').setAttribute('opacity', U(t, B0 + 2.7 * BD, B0 + 3 * BD));
+
+  // ===== E2: excavadora con garra (volteo y madereo) =====
+  var x2 = K(t, E2X), s2 = 1, open2 = .6, POSE = [];
+  for (i = 0; i < 6; i++) POSE.push({x:TX[i], y:gy(TX[i]) + 2, a:0, raiz:0});
+  E2.place(x2, gy(x2), rotAt(x2), 1); E2.arm(REST[0], REST[1]);
+  if (t >= V0 && t < M0){
+    i = Math.min(5, Math.floor((t - V0) / VD)); u = cl((t - V0 - VD * i) / VD);
+    for (j = 0; j < i; j++) POSE[j] = {x:FELL[j].x, y:FELL[j].y, a:FELL[j].a, raiz:1};
+    var gx = TX[i], gyy = gy(TX[i]) - 80, a0 = -28;
+    if (u < .25){ s2 = i ? 1 : 1; E2.place(x2, gy(x2), rotAt(x2), 1); E2.arm(REST[0], REST[1]); open2 = 1; }
+    else if (u < .4){ p = sm(U(u, .25, .38)); var L = E2.local(gx, gyy - OFG); E2.arm(lerp(REST[0], L[0], p), lerp(REST[1], L[1], p)); open2 = 1 - U(u, .37, .4); }
+    else if (u < .6){ p = sm(U(u, .4, .6)); var a = a0 * p, d = dir(a), bx = TX[i], by = gy(TX[i]) + 2 - 12 * p; POSE[i] = {x:bx, y:by, a:a, raiz:p};
+      E2.aimW(bx + 80 * d[0], by + 80 * d[1], OFG); open2 = 0; }
+    else { // gira la tornamesa y deja el árbol atrás
+      var d0 = dir(a0), b0x = TX[i], b0y = gy(TX[i]) - 10; E2.place(x2, gy(x2), rotAt(x2), 1); var L0 = E2.local(b0x + 80 * d0[0], b0y + 80 * d0[1] - OFG);
+      p = sm(U(u, .6, .85)); s2 = Math.cos(Math.PI * p); var aF = -90 + E2.rot;
+      if (u >= .92 && i < 5){ var qq = sm(U(u, .92, 1)); s2 = -Math.cos(Math.PI * qq); E2.place(x2, gy(x2), rotAt(x2), s2); E2.arm(lerp(150, REST[0], qq), lerp(-44, REST[1], qq)); open2 = 1; POSE[i] = {x:FELL[i].x, y:FELL[i].y, a:FELL[i].a, raiz:1}; }
+      else { E2.place(x2, gy(x2), rotAt(x2), s2); E2.arm(lerp(L0[0], 150, p), lerp(L0[1], -44, p) - 55 * Math.sin(Math.PI * p));
+        var G = E2.grab(OFG), aa = lerp(a0, aF, p), dd = dir(aa); POSE[i] = {x:G[0] - 80 * dd[0], y:G[1] - 80 * dd[1], a:aa, raiz:1}; open2 = U(u, .86, .9); }
+    }
+  } else if (t >= M0){
+    for (j = 0; j < 6; j++) POSE[j] = {x:FELL[j].x, y:FELL[j].y, a:FELL[j].a, raiz:1};
+    E2.place(x2, gy(x2), rotAt(x2), -1); E2.arm(REST[0], REST[1]); open2 = .6;
+    if (t < 35){
+      k = Math.min(2, Math.floor((t - M0) / MD)); u = cl((t - M0 - MD * k) / MD);
+      for (j = 0; j < k; j++){ POSE[PAR[j][0]] = {x:SLOT[2 * j].x, y:SLOT[2 * j].y, a:-90, raiz:1}; POSE[PAR[j][1]] = {x:SLOT[2 * j + 1].x, y:SLOT[2 * j + 1].y, a:-90, raiz:1}; }
+      var ta = PAR[k][0], tb = PAR[k][1], Fa = FELL[ta], Fb = FELL[tb], Sa = SLOT[2 * k], Sb = SLOT[2 * k + 1];
+      var held = function(){ var G = E2.grab(OFG), pa = sm(U(u, .3, .5)), aa = lerp(Fa.a, -100, pa), dd = dir(aa); return {x:G[0] - 80 * dd[0], y:G[1] - 80 * dd[1], a:aa}; };
+      if (u < .15){ open2 = 1; }
+      else if (u < .3){ p = sm(U(u, .15, .27)); var Lg = E2.local(Fa.G[0], Fa.G[1] - OFG); E2.arm(lerp(REST[0], Lg[0], p), lerp(REST[1], Lg[1], p)); open2 = 1 - U(u, .26, .3);
+        var pb = sm(U(u, .2, .3)); POSE[tb] = {x:lerp(Fb.x, Fa.x + 3, pb), y:lerp(Fb.y, Fa.y + 8, pb), a:lerp(Fb.a, Fa.a, pb), raiz:1}; }
+      else if (u < .72){ p = sm(U(u, .3, .42)); var Lh = E2.local(Fa.G[0], Fa.G[1] - OFG); if (u < .42) E2.arm(lerp(Lh[0], 150, p), lerp(Lh[1], -78, p)); else E2.arm(150, -78);
+        var H = held(); POSE[ta] = {x:H.x, y:H.y, a:H.a, raiz:1}; POSE[tb] = {x:H.x + 3, y:H.y + 8, a:H.a, raiz:1}; open2 = 0; }
+      else if (u < .88){ p = sm(U(u, .72, .88)); E2.arm(150, -78); var H2 = held(), ax = lerp(H2.x, Sa.x, p), ay = lerp(H2.y, Sa.y, p), aa2 = lerp(H2.a, -90, p), d2 = dir(aa2);
+        POSE[ta] = {x:ax, y:ay, a:aa2, raiz:1}; POSE[tb] = {x:lerp(H2.x + 3, Sb.x, p), y:lerp(H2.y + 8, Sb.y, p), a:aa2, raiz:1}; E2.aimW(ax + 80 * d2[0], ay + 80 * d2[1], OFG); open2 = 0; }
+      else { p = sm(U(u, .9, 1)); POSE[ta] = {x:Sa.x, y:Sa.y, a:-90, raiz:1}; POSE[tb] = {x:Sb.x, y:Sb.y, a:-90, raiz:1}; var Ls = E2.local(Sa.x - 80, Sa.y - OFG); E2.arm(lerp(Ls[0], REST[0], p), lerp(Ls[1], REST[1], p)); open2 = U(u, .88, .92); }
+    } else { for (j = 0; j < 3; j++){ POSE[PAR[j][0]] = {x:SLOT[2 * j].x, y:SLOT[2 * j].y, a:-90, raiz:1}; POSE[PAR[j][1]] = {x:SLOT[2 * j + 1].x, y:SLOT[2 * j + 1].y, a:-90, raiz:1}; } }
+  }
+  E2.garra(open2);
+
+  // ===== E1: excavadora con balde (movimiento de tierra) =====
+  var x1 = K(t, E1X), niv = sm(U(t, C0, C0 + 1.6)), s1 = 1;
+  var y1 = lerp(gy(x1), 600, niv), r1 = rotAt(x1) * (1 - niv), X1 = REST[0], Y1 = REST[1], ph = 95, carga = 0, tirando = -1;
+  if (t >= C0 && t < C0 + 6 * CD){ u = ((t - C0) / CD) % 1;
+    X1 = K(u, [[0, 105], [.15, 170], [.3, 128], [.5, 112], [.62, 152], [.75, 150], [1, 105]]); Y1 = K(u, [[0, -98], [.15, -42], [.3, -34], [.5, -104], [.62, -78], [.75, -78], [1, -98]]);
+    ph = K(u, [[0, 85], [.14, 85], [.3, 150], [.58, 150], [.68, 35], [.8, 35], [1, 85]]);
+    s1 = u < .32 ? 1 : u < .55 ? Math.cos(Math.PI * sm(U(u, .32, .55))) : u < .76 ? -1 : -Math.cos(Math.PI * sm(U(u, .76, 1)));
+    carga = U(u, .2, .28) * (1 - U(u, .6, .68)); if (u > .6 && u < .86) tirando = U(u, .6, .86); }
+  E1.place(x1, y1, r1, s1); E1.arm(X1, Y1, ph); if (E1.tierra) E1.tierra.setAttribute('opacity', carga);
+  var Bw = E1.grab(0);
+  for (i = 0; i < PART.length; i++){ var pp = tirando < 0 ? -1 : cl(tirando * 1.5 - i * .1); if (pp <= 0 || pp >= 1){ PART[i].setAttribute('opacity', 0); continue; }
+    var px = Bw[0] - 14 + (i - 2) * 9, gyp = Math.min(gy(px), px > 840 ? 600 : 9999); PART[i].setAttribute('opacity', 1); PART[i].setAttribute('cx', px.toFixed(1)); PART[i].setAttribute('cy', lerp(Bw[1] + 18, gyp - 4, pp * pp).toFixed(1)); }
+
+  // ===== E3: procesador =====
+  var x3 = K(t, [[54, -170], [56, 640]]), s3 = t < 55.5 ? 1 : Math.cos(Math.PI * sm(U(t, 55.5, 56.2)));
+  E3.place(x3, 700, 0, s3); E3.arm(REST[0], REST[1]);
+  var fedTot = 0, sawA = -75, cortados = 0, alim = false, hecho = 0;
+  if (t >= P0){
+    var n = Math.min(5, Math.floor((t - P0) / PD)); u = cl((t - P0 - PD * n) / PD); if (t >= P0 + 6 * PD){ n = 6; u = 0; }
+    hecho = Math.min(6, n + (n < 6 ? u : 0));
+    for (j = 0; j < Math.min(n, 6); j++) POSE[j].op = 0;
+    if (n < 6){ var S = SLOT[5 - n], fed = 0, ct = 0, bx3 = S.x, by3 = S.y, op = 1;
+      if (u < .14){ p = sm(U(u, 0, .13)); E3.aimW(lerp(450, S.x - 12, p), lerp(640, S.y, p), OFC); }
+      else if (u < .26){ p = sm(U(u, .14, .26)); bx3 = lerp(S.x, 448, p); by3 = lerp(S.y, 640, p); E3.aimW(lerp(S.x - 12, 450, p), by3, OFC); }
+      else { E3.aimW(450, 640, OFC); var w = (u - .26) / .165, pi = Math.min(3, Math.floor(w)), wu = w - pi; if (u >= .92){ pi = 3; wu = 1; }
+        var prev = pi ? CUTS[pi - 1] + 12 : 0; fed = lerp(prev, CUTS[pi] + 12, sm(U(wu, 0, .65))); ct = wu >= .8 ? CUTS[pi] : (pi ? CUTS[pi - 1] : 0);
+        sawA = wu > .62 && wu < .98 ? lerp(-75, 0, Math.sin(Math.PI * U(wu, .62, .98))) : -75; alim = wu < .65 && u < .92; bx3 = 448 + fed; by3 = 640;
+        if (u >= .92){ p = U(u, .92, 1); by3 += 46 * p * p; op = 1 - p; } }
+      POSE[n] = {x:bx3, y:by3, a:-90, raiz:ct > 0 ? 0 : 1, ct:ct, cc:fed + 10, op:op}; fedTot = n * 200 + fed;
+    }
+    for (j = 0; j < 4; j++) TWIG[j].setAttribute('opacity', 0);
+    if (alim && n < 6 && POSE[n].cc > 80) for (j = 0; j < 4; j++){ var tw = ((t * 2.2) + j * .27) % 1; TWIG[j].setAttribute('opacity', 1 - tw * .4); TWIG[j].setAttribute('transform', 'translate(' + (432 - j * 7 - tw * 14).toFixed(1) + ',' + (646 + tw * 48).toFixed(1) + ') rotate(' + (tw * 200 + j * 50).toFixed(0) + ')'); }
+  } else for (j = 0; j < 4; j++) TWIG[j].setAttribute('opacity', 0);
+  if (E3.saw) E3.saw.setAttribute('transform', 'rotate(' + sawA.toFixed(1) + ' 18 15)');
+  for (j = 0; j < E3.rods.length; j++) E3.rods[j].setAttribute('transform', 'rotate(' + (fedTot * (j ? -6 : 6)).toFixed(0) + ')');
+  var bs = cl(hecho / 6) * (1 - 0); brush.setAttribute('transform', 'translate(398,702) scale(' + (0.05 + bs * 1.05).toFixed(3) + ')'); brush.setAttribute('opacity', hecho > 0.2 ? 1 : 0);
+
+  // ===== Bell =====
+  var xb = K(t, BLX), sb = 1, ob = .7, Xb = 78, Yb = -98, vq = -1, vu = 0;
+  if (t >= B0 && t < B0 + 6 * BD){ vq = Math.floor((t - B0) / BD); vu = (t - B0 - BD * vq) / BD; var V = VIAJE[vq], Am = V[0] === 'A', m = V[1];
+    var Gy = Am ? 686 - 24 * m - 16 : 687 - 18 * m - 16, hL = [123 / SC, (676 - OFG - 700) / SC], rL = [110 / SC, (Gy - OFG - 700) / SC];
+    sb = vu < .2 ? 1 : vu < .42 ? lerp(1, -1, sm(U(vu, .2, .42))) : vu < .78 ? -1 : lerp(-1, 1, sm(U(vu, .78, .98)));
+    Xb = K(vu, [[0, 78], [.17, hL[0]], [.22, hL[0]], [.36, 92], [.55, 92], [.7, rL[0]], [.76, rL[0]], [.92, 78]]);
+    Yb = K(vu, [[0, -98], [.17, hL[1]], [.22, hL[1]], [.36, Math.min(-96, rL[1] - 26)], [.55, Math.min(-96, rL[1] - 26)], [.7, rL[1]], [.76, rL[1]], [.92, -98]]);
+    ob = vu < .14 ? 1 : vu < .2 ? 1 - U(vu, .14, .2) : vu < .72 ? 0 : U(vu, .72, .78); }
+  BL.place(xb, 700, 0, sb); BL.arm(Xb, Yb); BL.garra(ob); var GB = BL.grab(OFG);
+
+  // ===== árboles =====
+  for (i = 0; i < 6; i++){ var P = POSE[i]; setArb(i, P.x, P.y, P.a, {raiz:P.raiz, pint:U(t, 1 + .75 * i, 1.4 + .75 * i), ct:P.ct || 0, cc:P.cc || 0, op:P.op == null ? 1 : P.op}); }
+
+  // ===== trozos =====
+  var nA = 0, nP = 0, m3 = 0;
+  for (k = 0; k < 18; k++){ var Lg2 = LOG[k], nn = Math.floor(k / 3), pk = k % 3, tc = tCorte(nn, pk + 1), I = LINFO[k], lx, ly;
+    if (t < tc){ Lg2.g.setAttribute('opacity', 0); continue; } cortados++; m3 += Lg2.pu ? 0.2 : 0.35;
+    var hx = 452 + (k % 3) * 5 + Lg2.len / 2, hy = 696 - Math.floor(k / 3) * 5, tP = B0 + BD * I.q + .2 * BD, tD = B0 + BD * I.q + .72 * BD;
+    if (t < tP){ p = U(t, tc, tc + .38); lx = lerp(460 + Lg2.len / 2, hx, sm(p)); ly = lerp(640, hy, p * p); }
+    else if (t < tD){ p = sm(U(t, tP, tP + .12)); lx = lerp(hx, GB[0], p); ly = lerp(hy, GB[1] + 2 + 7 * I.r, p); }
+    else { p = sm(U(t, tD, tD + .1)); lx = lerp(GB[0], I.rx, p); ly = lerp(GB[1] + 2 + 7 * I.r, I.ry, p); if (I.A) nA++; else nP++; }
+    Lg2.g.setAttribute('opacity', 1); Lg2.g.setAttribute('transform', 'translate(' + lx.toFixed(1) + ',' + ly.toFixed(1) + ')'); }
+
+  // ===== panel y letrero =====
+  var volt = t < V0 ? 0 : t >= M0 ? 6 : Math.min(6, Math.floor((t - V0) / VD) + (((t - V0) / VD) % 1 >= .6 ? 1 : 0));
+  $('k-arb').textContent = volt; $('k-mt').textContent = nf(Math.round(cl((K(t, CORTE) - 953) / 333) * 420)) + ' m³';
+  $('k-mad').textContent = nf(m3, 1) + ' m³'; $('k-rum').textContent = (nA === 12 ? 1 : 0) + (nP === 6 ? 1 : 0);
+  var e = 0; for (i = 0; i < ET.length; i++) if (t >= ET[i].a) e = i;
+  if (render.e !== e){ render.e = e; $('e-num').textContent = e < 6 ? e + 1 : '✔'; $('e-tit').textContent = (e < 6 ? 'Etapa ' + (e + 1) + ' de 6 · ' : '') + ET[e].n; $('e-des').textContent = ET[e].d;
+    var bs2 = document.querySelectorAll('.b-et'); for (i = 0; i < bs2.length; i++) bs2[i].classList.toggle('on', +bs2[i].getAttribute('data-e') === Math.min(e, 5)); }
+}
+
+// ---------- controles ----------
+var T = 0, play = true, vel = 1, last = 0, RM = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches, rmE = 0;
+var bE = $('b-etapas'); ET.slice(0, 6).forEach(function(E, i){ var b = document.createElement('button'); b.className = 'b-et'; b.setAttribute('data-e', i); b.textContent = (i + 1) + '. ' + E.n.charAt(0) + E.n.slice(1).toLowerCase(); b.title = 'Ir a la etapa ' + (i + 1);
+  b.onclick = function(){ if (RM){ rmE = i; T = ET[i].f; } else T = E.a + 0.01; pinta(); }; bE.appendChild(b); });
+function pinta(){ render(T); $('barra').value = Math.round(T / TT * 1000); }
+function tick(ts){ var dt = Math.min(0.1, (ts - last) / 1000 || 0); last = ts; if (play && !RM){ T += dt * vel; if (T >= TT) T = 0; pinta(); } requestAnimationFrame(tick); }
+$('b-pp').onclick = function(){ play = !play; this.textContent = play ? '⏸ Pausa' : '▶ Reproducir'; };
+Array.prototype.forEach.call(document.querySelectorAll('.vel'), function(b){ b.onclick = function(){ vel = +b.getAttribute('data-v'); Array.prototype.forEach.call(document.querySelectorAll('.vel'), function(x){ x.classList.toggle('on', x === b); }); }; });
+$('barra').oninput = function(){ T = this.value / 1000 * TT * 0.999; render(T); };
+$('b-ant').onclick = function(){ rmE = (rmE + 6) % 7; T = ET[rmE].f; pinta(); }; $('b-sig').onclick = function(){ rmE = (rmE + 1) % 7; T = ET[rmE].f; pinta(); };
+$('b-mov').onclick = function(){ RM = false; $('wrap').classList.remove('rm'); T = 0; play = true; };
+document.addEventListener('keydown', function(ev){ if (ev.key === ' ' && !RM && ev.target.tagName !== 'BUTTON'){ ev.preventDefault(); $('b-pp').click(); } });
+if (RM){ $('wrap').classList.add('rm'); T = ET[0].f; }
+window.CICLO = {ir:function(t){ T = t; pinta(); }, pausa:function(){ play = false; }, total:TT};
+pinta(); requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>

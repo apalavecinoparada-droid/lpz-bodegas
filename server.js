@@ -10658,6 +10658,18 @@ app.post('/api/prod/oee/import', auth, async(req,res)=>{
   finally{client.release();}
 });
 
+// ── OEE Caminos (Emprecon SpA): App de Gustavo, emprecon-app.html (Andrés 2026-11-13) ──
+// La App trae escritas las tarifas del contrato, así que NO vive en frontend/ (esa carpeta se sirve sin sesión):
+// está en privado/ y se entrega solo con sesión y módulo productividad. El ERP la muestra con srcDoc.
+// La animación (frontend/ciclo_caminos_emprecon.html) no tiene datos y sí se sirve como archivo estático.
+app.get('/api/prod/caminos/app', auth, requireModulo('productividad'), (req,res)=>{
+  const f=path.join(__dirname,'privado','emprecon-app.html');
+  require('fs').readFile(f,'utf8',(err,txt)=>{
+    if(err) return res.status(404).json({error:'La App OEE Caminos no está instalada en este servidor'});
+    res.setHeader('Cache-Control','no-store'); res.type('html').send(txt);
+  });
+});
+
 // ── Datasets auxiliares del OEE (Best Diario / Producción Diaria) ──
 // Se guardan como JSONB por clave: best_daily, prod_rodal, oferta_rodal, faja_daily
 app.get('/api/prod/oee/datasets', auth, async(req,res)=>{
