@@ -318,6 +318,43 @@ async function mantExigirPropia(req,otId){
   if(!r.rows.length) throw new Error('La OT no existe');
   if(String(r.rows[0].usuario||'').toLowerCase()!==String(req.user.email||'').toLowerCase()) throw new Error('Solo puedes ver y editar las OT que creaste tú');
 }
+// ── OT cerrada con OC vinculadas todavía PENDIENTES (Andrés 2026-11-13) ──
+// Regla: la OT se puede cerrar aunque tenga OC vinculadas sin cerrar, pero exige una observación y queda como
+// 'cerrada · OC pendiente' (valores provisorios). Ese estado NO es una columna: se deriva en cada consulta
+// (`oc_pendientes` = N° de OC en estado PENDIENTE con líneas enlazadas a la OT), así se resuelve solo cuando la OC se
+// cierra, y vuelve si la OC se reabre. El costo de compras de la OT siempre se calcula en vivo desde las líneas de la OC.
+// Lo que sí se guarda: mant_ot.cierre_obs (observación del cierre + notas automáticas de lo que pasa con sus OC) y
+// mant_ot.costos_def_en (cuándo quedaron definitivos los valores).
+function mantHoyCl(){ return new Date().toLocaleDateString('es-CL',{timeZone:'America/Santiago',day:'2-digit',month:'2-digit',year:'numeric'}); }
+function mantPesos(v){ return '$'+Math.round(parseFloat(v)||0).toString().replace(/\B(?=(\d{3})+(?!\d))/g,'.'); }
+async function mantOtOcPendientes(otId,q){
+  const r=await (q||pool).query(`SELECT oc.oc_id,oc.numero_oc,COALESCE(SUM(d.cantidad*d.precio_unitario),0) AS neto
+    FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON oc.oc_id=d.oc_id
+    WHERE d.ot_id=$1 AND oc.estado='PENDIENTE' GROUP BY oc.oc_id,oc.numero_oc ORDER BY oc.numero_oc`,[otId]);
+  return r.rows;
+}
+// Deja una nota en las OT CERRADAS enlazadas a la OC cuando la OC se cierra, se reabre o se anula (las OT abiertas ven
+// los valores en vivo y no necesitan nota). Se llama DESPUÉS de cambiar el estado de la OC. `q` = pool o client.
+async function mantOtNotaOC(q,ocId,evento){
+  const r=await q.query(`SELECT d.ot_id,o.estado,oc.numero_oc,oc.numero_documento,COALESCE(SUM(d.cantidad*d.precio_unitario),0) AS neto
+    FROM ordenes_compra_detalle d JOIN ordenes_compra oc ON oc.oc_id=d.oc_id JOIN mant_ot o ON o.ot_id=d.ot_id
+    WHERE d.oc_id=$1 AND d.ot_id IS NOT NULL GROUP BY d.ot_id,o.estado,oc.numero_oc,oc.numero_documento`,[ocId]);
+  for(const x of r.rows){
+    if(x.estado!=='cerrada') continue;
+    const otras=(await mantOtOcPendientes(x.ot_id,q)).filter(p=>String(p.oc_id)!==String(ocId)).length;
+    let nota='['+mantHoyCl()+'] '+x.numero_oc+' ', def=null;
+    if(evento==='cerrada'){
+      nota+='cerrada'+(x.numero_documento?' (documento N° '+x.numero_documento+')':'')+': '+mantPesos(x.neto)+' neto cargado a esta OT. '+(otras?'Quedan '+otras+' OC pendiente(s).':'Sin OC pendientes: valores definitivos.');
+      def=otras===0?true:null;
+    }else if(evento==='reabierta'){
+      nota+='reabierta: sus valores ('+mantPesos(x.neto)+' neto) vuelven a ser provisorios hasta que se cierre de nuevo.'; def=false;
+    }else if(evento==='anulada'){
+      nota+='anulada: se desvinculó de esta OT ('+mantPesos(x.neto)+' neto que ya no se considera). '+(otras?'Quedan '+otras+' OC pendiente(s).':'Sin OC pendientes.');
+      def=otras===0?true:null;
+    }else continue;
+    await q.query("UPDATE mant_ot SET cierre_obs=COALESCE(cierre_obs||E'\\n','')||$1,costos_def_en=CASE WHEN $2::boolean IS TRUE THEN NOW() WHEN $2::boolean IS FALSE THEN NULL ELSE costos_def_en END,actualizado_en=NOW() WHERE ot_id=$3",[nota,def,x.ot_id]);
+  }
+}
 
 async function audit(tabla, id, accion, antes, despues, usr, ip) {
   try { await pool.query('INSERT INTO auditoria(tabla_afectada,registro_id,accion,datos_anteriores,datos_nuevos,usuario,ip_origen) VALUES($1,$2,$3,$4,$5,$6,$7)',[tabla,id,accion,antes?JSON.stringify(antes):null,despues?JSON.stringify(despues):null,usr,ip||null]); } catch(e) { console.error('audit:',e.message); }
@@ -707,6 +744,9 @@ async function setupMantenciones(q){
   try{await q('ALTER TABLE mant_ot ADD COLUMN IF NOT EXISTS vehiculo_traslado VARCHAR(100)');}catch(e){}
   try{await q('ALTER TABLE mant_ot ADD COLUMN IF NOT EXISTS distancia_km NUMERIC(8,1) DEFAULT 0');}catch(e){}
   try{await q('ALTER TABLE mant_ot ADD COLUMN IF NOT EXISTS costo_combustible_traslado NUMERIC(14,2) DEFAULT 0');}catch(e){}
+  // Cierre con OC pendientes (2026-11-13): observación + notas automáticas, y cuándo quedaron definitivos los valores
+  try{await q('ALTER TABLE mant_ot ADD COLUMN IF NOT EXISTS cierre_obs TEXT');}catch(e){}
+  try{await q('ALTER TABLE mant_ot ADD COLUMN IF NOT EXISTS costos_def_en TIMESTAMP');}catch(e){}
   // ── Mano de obra externa MANUAL separada: costo_mano_obra_externa guarda el total (manual + personal externo por tarea).
   //    recalcOTCosts leía ese total como si fuera solo el manual y volvía a sumar las tareas → se duplicaba en cada recálculo.
   //    Migración única: manual = total guardado − tareas externas (acotado a 0).
@@ -2975,8 +3015,30 @@ ocR.put('/:id', auth, requireOC('editar'), async(req,res)=>{
     const _fechaDoc = fecha_documento || null;
     await client.query('UPDATE ordenes_compra SET empresa_id=$1,proveedor_id=$2,fecha_emision=$3,solicitante=$4,retira=$5,condicion_id=$6,impuesto_adicional=$7,neto=$8,iva=$9,total=$10,observaciones=$11,tipo_doc_id=$12,numero_documento=$13,fecha_documento=$14,es_activo_fijo=$15,af_vida_util_meses=$16,af_valor_residual=$17,af_descripcion=$18,es_diferido=$19,dif_desde=$20,dif_hasta=$21,dif_descripcion=$22,dif_cerrado_en=CASE WHEN $19 THEN dif_cerrado_en ELSE NULL END,modificado_en=NOW() WHERE oc_id=$23',[empresa_id||null,proveedor_id,fecha_emision,solicitante||null,retira||null,condicion_id||null,imp,neto,iva,total,observaciones||null,_tipoDoc,_numDoc,_fechaDoc,es_activo_fijo||false,es_activo_fijo?(parseInt(af_vida_util_meses)||60):null,es_activo_fijo?(parseFloat(af_valor_residual)||0):null,es_activo_fijo?(af_descripcion||null):null,_dif.es,_dif.desde,_dif.hasta,_dif.desc,req.params.id]);
     await client.query('UPDATE ordenes_compra SET modificado_por=$1 WHERE oc_id=$2',[req.user.email,req.params.id]);
+    // Enlace con OT: las líneas se borran y se vuelven a crear; antes de 2026-11-13 el enlace se perdía en silencio al editar
+    const _otPrev=(await client.query('SELECT detalle_id,linea_num,producto_id,descripcion,ot_id FROM ordenes_compra_detalle WHERE oc_id=$1 ORDER BY linea_num',[req.params.id])).rows;
     await client.query('DELETE FROM ordenes_compra_detalle WHERE oc_id=$1',[req.params.id]);
     for(let i=0;i<lineas.length;i++){const l=lineas[i];await client.query('INSERT INTO ordenes_compra_detalle(oc_id,linea_num,descripcion,producto_id,subcategoria_id,faena_id,equipo_id,cantidad,precio_unitario,ingresa_bodega,bodega_destino_id,exenta) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[req.params.id,i+1,l.descripcion||null,l.producto_id||null,l.subcategoria_id||null,l.faena_id||null,l.equipo_id||null,parseFloat(l.cantidad)||0,parseFloat(l.precio_unitario)||0,l.ingresa_bodega||false,l.bodega_destino_id||null,l.exenta||false]);}
+    {
+      const _conOt=_otPrev.filter(x=>x.ot_id);
+      if(_conOt.length){
+        const _ots=[...new Set(_conOt.map(x=>x.ot_id))];
+        if(_ots.length===1&&_conOt.length===_otPrev.length){
+          // toda la OC estaba en una sola OT → las líneas nuevas (también las agregadas) quedan en esa OT
+          await client.query('UPDATE ordenes_compra_detalle SET ot_id=$1 WHERE oc_id=$2',[_ots[0],req.params.id]);
+        }else{
+          // enlace parcial o a varias OT: cada línea enlazada busca su línea nueva (id que devuelve el formulario, producto+descripción, N° de línea)
+          const _nuevas=(await client.query('SELECT detalle_id,linea_num,producto_id,descripcion FROM ordenes_compra_detalle WHERE oc_id=$1 ORDER BY linea_num',[req.params.id])).rows;
+          const _nrm=s=>String(s||'').trim().toLowerCase(); const _usadas=new Set();
+          for(const v of _conOt){
+            let i=lineas.findIndex((l,ix)=>!_usadas.has(ix)&&l&&l.detalle_id&&String(l.detalle_id)===String(v.detalle_id)&&ix<_nuevas.length);
+            if(i<0) i=_nuevas.findIndex((n,ix)=>!_usadas.has(ix)&&String(n.producto_id||'')===String(v.producto_id||'')&&_nrm(n.descripcion)===_nrm(v.descripcion));
+            if(i<0) i=_nuevas.findIndex((n,ix)=>!_usadas.has(ix)&&n.linea_num===v.linea_num);
+            if(i>=0){ _usadas.add(i); await client.query('UPDATE ordenes_compra_detalle SET ot_id=$1 WHERE detalle_id=$2',[v.ot_id,_nuevas[i].detalle_id]); }
+          }
+        }
+      }
+    }
     await ocGuardarIec(client,req.params.id,req.body,lineas);
     // Si se asignó un DTE manualmente y existe en dte_recibidos del mismo proveedor → vincular automáticamente en dte_oc
     if(_numDoc && _tipoDoc && proveedor_id){
@@ -3058,6 +3120,7 @@ ocR.patch('/:id/cerrar', auth, requireOC('editar'), async(req,res)=>{
     const _snapAntesCierre=await ocSnapshot(pool,req.params.id);
     await pool.query("UPDATE ordenes_compra SET estado='CERRADA',tipo_doc_id=$1,numero_documento=$2,fecha_documento=$3,cerrada_por=$4,fecha_cierre=NOW(),modificado_en=NOW() WHERE oc_id=$5",[_tipoDoc,_numDoc,_fechaDoc,req.user.email,req.params.id]);
     await auditOC(pool,req.params.id,'CERRAR',_snapAntesCierre,req);
+    try{ await mantOtNotaOC(pool,req.params.id,'cerrada'); }catch(e){console.log('[WARN] nota OC cerrada en OT:',e.message);}
     // ── Si la OC es activo fijo y aún no se ha capitalizado, crear el registro ──
     try{
       const ocFull=await pool.query('SELECT * FROM ordenes_compra WHERE oc_id=$1',[req.params.id]);
@@ -3141,6 +3204,7 @@ ocR.patch('/:id/reabrir', auth, requireOC('reabrir'), async(req,res)=>{
     // 3) Volver a PENDIENTE y limpiar campos de cierre/recepción — registrando QUIÉN reabre y por qué
     await client.query("UPDATE ordenes_compra SET estado='PENDIENTE',tipo_doc_id=NULL,numero_documento=NULL,fecha_documento=NULL,movimiento_id=NULL,recibido_en=NULL,bodega_ingreso_id=NULL,cerrada_por=NULL,fecha_cierre=NULL,reabierto_en=NOW(),reabierto_por=$1,motivo_reapertura=$2,modificado_en=NOW(),modificado_por=$1 WHERE oc_id=$3",[req.user.email,(req.body&&req.body.motivo)||null,req.params.id]);
     await auditOC(client,req.params.id,'REABRIR',_snapAntesReabrir,req);
+    await client.query('SAVEPOINT ot_nota'); try{ await mantOtNotaOC(client,req.params.id,'reabierta'); await client.query('RELEASE SAVEPOINT ot_nota'); }catch(e){ await client.query('ROLLBACK TO SAVEPOINT ot_nota'); console.log('[WARN] nota OC reabierta en OT:',e.message); }
     await client.query('COMMIT');
     res.json({ok:true,info:infoRevert});
   }catch(e){await client.query('ROLLBACK');res.status(400).json({error:e.message});}
@@ -3174,6 +3238,9 @@ ocR.patch('/:id/anular', auth, requireOC('anular'), async(req,res)=>{
     // Quitar vinculaciones con DTE recibidos: una OC anulada no debe seguir contando en el avance de cierre de las facturas
     // (las vinculaciones quedan preservadas en dte_vinculados del snapshot ANTES en auditoría)
     await client.query('DELETE FROM dte_oc WHERE oc_id=$1',[req.params.id]);
+    // Una OC anulada no puede seguir sumando costo a una OT: nota en las OT cerradas y se quita el enlace
+    // (el enlace queda en el snapshot ANTES de la auditoría)
+    await client.query('SAVEPOINT ot_nota'); try{ await mantOtNotaOC(client,req.params.id,'anulada'); await client.query('UPDATE ordenes_compra_detalle SET ot_id=NULL WHERE oc_id=$1 AND ot_id IS NOT NULL',[req.params.id]); await client.query('RELEASE SAVEPOINT ot_nota'); }catch(e){ await client.query('ROLLBACK TO SAVEPOINT ot_nota'); console.log('[WARN] desvincular OC anulada de OT:',e.message); }
     await auditOC(client,req.params.id,'ANULAR',_snapAntesAnular,req);
     await client.query('COMMIT');
     res.json({ok:true});
@@ -6827,7 +6894,7 @@ app.get('/api/mant/ot', auth, async(req,res)=>{
     if(hasta){vals.push(hasta);where.push(`o.fecha_apertura<=$${vals.length}`);}
     if(mantSoloPropias(req)){vals.push(req.user.email);where.push(`LOWER(o.usuario)=LOWER($${vals.length})`);}
     await mantMovilEnsure();
-    const r=await pool.query(`SELECT o.*,(SELECT COUNT(*) FROM mant_ot_fotos ff WHERE ff.ot_id=o.ot_id)::int AS fotos,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,eq.horas_productivas_dia,eq.horometro_actual,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY o.creado_en DESC`,vals);
+    const r=await pool.query(`SELECT o.*,(SELECT COUNT(*) FROM mant_ot_fotos ff WHERE ff.ot_id=o.ot_id)::int AS fotos,eq.codigo AS equipo_codigo,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,eq.horas_productivas_dia,eq.horometro_actual,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,(SELECT COUNT(DISTINCT ocp.oc_id) FROM ordenes_compra_detalle dp JOIN ordenes_compra ocp ON ocp.oc_id=dp.oc_id WHERE dp.ot_id=o.ot_id AND ocp.estado='PENDIENTE')::int AS oc_pendientes,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE ${where.join(' AND ')} ORDER BY o.creado_en DESC`,vals);
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -7020,6 +7087,12 @@ app.patch('/api/mant/ot/:id/movil', auth, async(req,res)=>{
     const r=await pool.query('UPDATE mant_ot SET '+sets.join(',')+' WHERE ot_id=$'+vals.length+' RETURNING ot_id,numero_ot,estado,prioridad,horometro_servicio,sintoma_reportado,diagnostico,trabajo_realizado,repuestos_texto,observaciones,fecha_inicio,fecha_termino',vals);
     if(horo!=null) await pool.query('UPDATE equipos SET horometro_actual=GREATEST(COALESCE(horometro_actual,0),$1) WHERE equipo_id=$2',[horo,o.equipo_id]);
     if(b.estado==='cerrada') await pool.query("UPDATE equipos SET estado_operativo='operativo' WHERE equipo_id=$1 AND estado_operativo='detenido'",[o.equipo_id]);
+    if(b.estado==='cerrada'&&o.estado!=='cerrada'){
+      try{ const _pend=await mantOtOcPendientes(id); if(_pend.length){
+        const _obs=String(b.cierre_obs||'').trim().slice(0,1500)||'cerrada desde el celular, sin observación';
+        await pool.query("UPDATE mant_ot SET cierre_obs=COALESCE(cierre_obs||E'\\n','')||$1,costos_def_en=NULL WHERE ot_id=$2",['['+mantHoyCl()+'] OT cerrada por '+((req.user&&(req.user.nombre||req.user.email))||'')+' con '+_pend.length+' OC pendiente(s): '+_pend.map(x=>x.numero_oc+' ('+mantPesos(x.neto)+' neto provisorio)').join(', ')+'. Observación: '+_obs,id]);
+      } }catch(e){console.log('[WARN] cierre con OC pendientes (movil):',e.message);}
+    }
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -7276,6 +7349,16 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
     // ── Auto-gestión de fechas y tiempo de detención ──
     const prevOT=await pool.query('SELECT estado,fecha_inicio,fecha_termino FROM mant_ot WHERE ot_id=$1',[req.params.id]);
     const prev=prevOT.rows[0]||{};
+    // Cierre con OC vinculadas aún PENDIENTES: se permite, pero con observación; la OT queda 'cerrada · OC pendiente'
+    let _cierreNota=null;
+    if(estado==='cerrada'&&prev.estado&&prev.estado!=='cerrada'){
+      const _pend=await mantOtOcPendientes(req.params.id);
+      if(_pend.length){
+        const _obs=String(req.body.cierre_obs||'').trim().slice(0,1500);
+        if(!_obs) return res.status(400).json({error:'La OT tiene '+_pend.length+' OC pendiente(s) ('+_pend.map(x=>x.numero_oc).join(', ')+'). Para cerrarla con valores provisorios hay que indicar una observación.',oc_pendientes:_pend});
+        _cierreNota='['+mantHoyCl()+'] OT cerrada por '+((req.user&&(req.user.nombre||req.user.email))||'')+' con '+_pend.length+' OC pendiente(s): '+_pend.map(x=>x.numero_oc+' ('+mantPesos(x.neto)+' neto provisorio)').join(', ')+'. Observación: '+_obs;
+      }
+    }
     // Auto fecha_inicio: si cambia a en_ejecucion y no tiene fecha_inicio
     let fInicio=fecha_inicio||null;
     if(estado==='en_ejecucion'&&!prev.fecha_inicio&&!fInicio){
@@ -7324,6 +7407,7 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
     const r=await pool.query(`UPDATE mant_ot SET estado=$1,fecha_inicio=$2,fecha_termino=$3,horometro_servicio=$4,kilometraje_servicio=$5,diagnostico=$6,causa=$7,trabajo_realizado=$8,observaciones=$9,responsable=$10,mecanico_asignado=$11,taller_tipo=$12,taller_nombre=$13,tiempo_detenido_hrs=$14,costo_repuestos=0,costo_lubricantes=0,costo_mano_obra_interna=$15,costo_mano_obra_externa=$16,costo_servicios=0,costo_traslado=$17,costo_otros=$18,costo_total=$19,prioridad=$20,sistema=$21,vehiculo_traslado=$22,distancia_km=$23,costo_combustible_traslado=$24,actualizado_en=NOW() WHERE ot_id=$25 RETURNING *`,
       [estado,fInicio,fTermino,horometro_servicio||null,kilometraje_servicio||null,diagnostico||null,causa||null,trabajo_realizado||null,observaciones||null,responsable||null,mecanico_asignado||null,taller_tipo||'interno',taller_nombre||null,hrsDetenido,moInt,moExt,tras,otros,total,prioridad||'normal',sistema||null,vehiculo_traslado||null,parseFloat(distancia_km)||0,parseFloat(costo_combustible_traslado)||0,req.params.id]);
     const ot=r.rows[0];
+    if(_cierreNota) await pool.query("UPDATE mant_ot SET cierre_obs=COALESCE(cierre_obs||E'\\n','')||$1,costos_def_en=NULL WHERE ot_id=$2",[_cierreNota,req.params.id]);
     if(req.body.repuestos_texto!==undefined){ try{ await mantMovilEnsure(); await pool.query('UPDATE mant_ot SET repuestos_texto=$1 WHERE ot_id=$2',[String(req.body.repuestos_texto||'').slice(0,4000)||null,req.params.id]); }catch(e){console.log('[WARN] repuestos_texto:',e.message);} }
     // Mano de obra externa: el valor del formulario es la parte MANUAL; el total (manual + tareas externas) lo fija recalcOTCosts
     try{ await pool.query('UPDATE mant_ot SET costo_mo_externa_manual=$1 WHERE ot_id=$2',[parseFloat(costo_mano_obra_externa)||0,req.params.id]); await recalcOTCosts(req.params.id); }catch(e){console.log('[WARN] mo externa manual:',e.message);}
@@ -7349,7 +7433,7 @@ app.put('/api/mant/ot/:id', auth, async(req,res)=>{
       }
     }
     // Re-fetch con joins para devolver datos completos
-    const full=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,eq.horas_productivas_dia,eq.horometro_actual,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
+    const full=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,eq.horas_productivas_dia,eq.horometro_actual,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,(SELECT COUNT(DISTINCT ocp.oc_id) FROM ordenes_compra_detalle dp JOIN ordenes_compra ocp ON ocp.oc_id=dp.oc_id WHERE dp.ot_id=o.ot_id AND ocp.estado='PENDIENTE')::int AS oc_pendientes,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
     res.json(full.rows[0]||ot);
   }catch(e){res.status(400).json({error:e.message});}
 });
@@ -7389,7 +7473,7 @@ app.patch('/api/mant/ot/:id/reabrir', auth, async(req,res)=>{
 // GET single OT with joins
 app.get('/api/mant/ot/:id/full', auth, async(req,res)=>{
   try{
-    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,eq.horas_productivas_dia,eq.horometro_actual,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
+    const r=await pool.query(`SELECT o.*,eq.nombre AS equipo_nombre,eq.tipo_activo,eq.familia,eq.horas_productivas_dia,eq.horometro_actual,f.nombre AS faena_nombre,emp.razon_social AS empresa_nombre,COALESCE((SELECT SUM(d.cantidad*d.precio_unitario) FROM ordenes_compra_detalle d WHERE d.ot_id=o.ot_id),0) AS costo_oc,(SELECT COUNT(DISTINCT ocp.oc_id) FROM ordenes_compra_detalle dp JOIN ordenes_compra ocp ON ocp.oc_id=dp.oc_id WHERE dp.ot_id=o.ot_id AND ocp.estado='PENDIENTE')::int AS oc_pendientes,COALESCE((SELECT SUM(md.cantidad*md.costo_unitario) FROM movimiento_detalle md JOIN movimiento_encabezado me ON md.movimiento_id=me.movimiento_id WHERE md.ot_id=o.ot_id AND me.tipo_movimiento='SALIDA' AND me.estado='ACTIVO'),0) AS costo_salidas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='interno'),0) AS costo_mo_tareas,COALESCE((SELECT SUM(tp.costo_total) FROM mant_ot_tarea_personal tp JOIN mant_ot_tareas t ON tp.tarea_id=t.tarea_id WHERE t.ot_id=o.ot_id AND tp.tiene_costo=true AND tp.tipo_personal='externo'),0) AS costo_mo_ext_tareas FROM mant_ot o LEFT JOIN equipos eq ON o.equipo_id=eq.equipo_id LEFT JOIN faenas f ON o.faena_id=f.faena_id LEFT JOIN empresas emp ON o.empresa_id=emp.empresa_id WHERE o.ot_id=$1`,[req.params.id]);
     res.json(r.rows[0]||null);
   }catch(e){res.status(500).json({error:e.message});}
 });

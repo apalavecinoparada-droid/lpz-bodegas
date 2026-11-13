@@ -9697,7 +9697,7 @@ function OCView(p){
           }},'Recibir'),
           r.estado==='CERRADA'&&h('button',{className:'btn btn-a btn-xs',onClick:function(){setReabrirOC(r);},title:r.movimiento_id||r.recibido_en?'Reabrir OC recibida (revierte stock)':'Reabrir OC cerrada'},null,'↩ Reabrir'),
           r.estado==='CERRADA'&&(r.movimiento_id||r.recibido_en)&&h(Bg,{c:'teal'},'Recibida'),
-          r.estado==='CERRADA'&&h('button',{className:'btn btn-teal btn-xs',onClick:function(){openLinkOT(r);},title:'Vincular líneas de esta OC a Órdenes de Trabajo de mantención'},'🔗 OT'),
+          (r.estado==='CERRADA'||r.estado==='PENDIENTE')&&h('button',{className:'btn btn-teal btn-xs',onClick:function(){openLinkOT(r);},title:'Vincular líneas de esta OC a Órdenes de Trabajo de mantención'},'🔗 OT'),
           (r.estado==='CERRADA'||r.estado==='PENDIENTE')&&h('button',{className:'btn btn-g btn-xs',onClick:function(){openDoc(r);}},'Ver'),
           h('button',{className:'btn btn-xs',title:'Historial de auditoría de esta OC',onClick:function(){verHistorial(r);},style:{background:'#F1F5F9',color:'#475569',border:'1px solid #CBD5E1',borderRadius:4,padding:'2px 6px',fontSize:10,cursor:'pointer'}},'🕘')
         );
@@ -14083,6 +14083,7 @@ function MantOT(p){
   // Se cargan todas las OT una vez y los filtros (estado, prioridad) se aplican en pantalla: así el tablero de
   // prioridades siempre cuenta las OT activas, cualquiera sea el filtro elegido.
   const[filtPrio,setFiltPrio]=useState('');
+  const[filtEmp,setFiltEmp]=useState('');const[filtFae,setFiltFae]=useState('');   // alcance: empresa y faena
   const[orden,setOrden]=useState(function(){try{return localStorage.getItem('lpz_ot_orden')==='prioridad'?'prioridad':'recientes';}catch(e){return 'recientes';}});
   function cambiarOrden(v){setOrden(v);try{localStorage.setItem('lpz_ot_orden',v);}catch(e){}}
   function load(){api('/mant/ot','GET',null,p.tok).then(function(r){setOts(Array.isArray(r)?r:[]);}).catch(function(){});}
@@ -14095,15 +14096,23 @@ function MantOT(p){
   var ESTADO_COLORS={'abierta':'b','programada':'p','en_ejecucion':'teal','pausada':'y','cerrada':'g','cancelada':'r'};
   if(selOT) return h(MantOTDetalle,{tok:p.tok,m:p.m,ot:selOT,onBack:function(){setSelOT(null);load();}});
   // ── Tablero: OT activas (ni cerradas ni canceladas) por prioridad ──
-  var activas=ots.filter(otActiva);
+  // Alcance (empresa y faena): acota TODO lo que se ve —tablero, contadores y tabla—; estado y prioridad filtran dentro de él.
+  // Las opciones salen de las propias OT, así solo aparecen empresas y faenas que tienen órdenes.
+  var optEmp={},optFae={},haySinFaena=false;
+  ots.forEach(function(o){if(o.empresa_id)optEmp[o.empresa_id]=o.empresa_nombre||('Empresa '+o.empresa_id);
+    if(filtEmp&&String(o.empresa_id||'')!==filtEmp)return; if(o.faena_id)optFae[o.faena_id]=o.faena_nombre||('Faena '+o.faena_id); else haySinFaena=true;});
+  var base=ots.filter(function(o){if(filtEmp&&String(o.empresa_id||'')!==filtEmp)return false;if(filtFae==='0'){if(o.faena_id)return false;}else if(filtFae&&String(o.faena_id||'')!==filtFae)return false;return true;});
+  var otProv=function(o){return o.estado==='cerrada'&&(parseInt(o.oc_pendientes)||0)>0;};   // cerrada con OC vinculadas aún pendientes
+  var selS={padding:'4px 8px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:11.5,background:'#fff',maxWidth:230};
+  var activas=base.filter(otActiva);
   var tablero=OT_PRIO_ORDEN.map(function(k){
     var l=activas.filter(function(o){return otPrioKey(o.prioridad)===k;});
     var maxD=null;l.forEach(function(o){var d=otDiasAbierta(o);if(d!==null&&(maxD===null||d>maxD))maxD=d;});
     return {pr:OT_PRIO[k],n:l.length,ejec:l.filter(function(o){return o.estado==='en_ejecucion';}).length,maxD:maxD};
   });
-  var cuentaEst=function(e){return e===''?ots.length:e==='activas'?activas.length:ots.filter(function(o){return o.estado===e;}).length;};
-  var filas=ots.filter(function(o){
-    if(filtEst==='activas'){if(!otActiva(o))return false;}else if(filtEst&&o.estado!==filtEst)return false;
+  var cuentaEst=function(e){return e===''?base.length:e==='activas'?activas.length:e==='oc_pend'?base.filter(otProv).length:base.filter(function(o){return o.estado===e;}).length;};
+  var filas=base.filter(function(o){
+    if(filtEst==='activas'){if(!otActiva(o))return false;}else if(filtEst==='oc_pend'){if(!otProv(o))return false;}else if(filtEst&&o.estado!==filtEst)return false;
     if(filtPrio&&otPrioKey(o.prioridad)!==filtPrio)return false;
     return true;
   });
@@ -14118,13 +14127,19 @@ function MantOT(p){
       return a.i-b.i;
     }).map(function(x){return x.o;});
   }
-  var ESTADO_LBL={'':'Todas','activas':'Activas'};
+  var ESTADO_LBL={'':'Todas','activas':'Activas','oc_pend':'⏳ OC pendiente'};
   var segBtn=function(on){return {padding:'4px 10px',borderRadius:4,fontSize:11,cursor:'pointer',border:'1px solid '+(on?'#1E293B':'#CBD5E1'),background:on?'#1E293B':'#F8FAFC',color:on?'#fff':'#475569',fontWeight:on?700:500};};
   return h('div',null,
     h('div',{style:{marginBottom:12}},
       h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:6,gap:8,flexWrap:'wrap'}},
         h('div',{style:{fontSize:10.5,fontWeight:700,letterSpacing:1,color:'#475569',textTransform:'uppercase'}},'Clasificación por prioridad · ',h('span',{style:{color:'#0F172A'}},activas.length+' OT activas')),
-        h('div',{style:{fontSize:10.5,color:'#94A3B8'}},filtPrio?h('a',{onClick:function(){setFiltPrio('');},style:{color:'#2563EB',cursor:'pointer',fontWeight:600}},'✕ Quitar filtro de prioridad'):'Toca una prioridad para ver sus OT')),
+        h('div',{style:{display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}},
+          h('span',{style:{fontSize:10.5,color:'#94A3B8',textTransform:'uppercase',letterSpacing:.6,fontWeight:700}},'Empresa'),
+          h('select',{value:filtEmp,onChange:function(e){setFiltEmp(e.target.value);setFiltFae('');},style:Object.assign({},selS,filtEmp?{borderColor:'#1E293B',fontWeight:700}:null)},h('option',{value:''},'Todas'),Object.keys(optEmp).sort(function(a,b){return optEmp[a].localeCompare(optEmp[b]);}).map(function(k){return h('option',{key:k,value:k},optEmp[k]);})),
+          h('span',{style:{fontSize:10.5,color:'#94A3B8',textTransform:'uppercase',letterSpacing:.6,fontWeight:700}},'Faena'),
+          h('select',{value:filtFae,onChange:function(e){setFiltFae(e.target.value);},style:Object.assign({},selS,filtFae?{borderColor:'#1E293B',fontWeight:700}:null)},h('option',{value:''},'Todas'),Object.keys(optFae).sort(function(a,b){return optFae[a].localeCompare(optFae[b]);}).map(function(k){return h('option',{key:k,value:k},optFae[k]);}),haySinFaena&&h('option',{value:'0'},'— Sin faena —')),
+          (filtEmp||filtFae)&&h('a',{onClick:function(){setFiltEmp('');setFiltFae('');},style:{fontSize:10.5,color:'#2563EB',cursor:'pointer',fontWeight:600}},'✕ Quitar'),
+          h('span',{style:{fontSize:10.5,color:'#94A3B8',marginLeft:6}},filtPrio?h('a',{onClick:function(){setFiltPrio('');},style:{color:'#2563EB',cursor:'pointer',fontWeight:600}},'✕ Quitar filtro de prioridad'):'Toca una prioridad para ver sus OT'))),
       h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10}},tablero.map(function(t){
         var pr=t.pr;var on=filtPrio===pr.k;
         return h('div',{key:pr.k,role:'button',onClick:function(){if(on){setFiltPrio('');}else{setFiltPrio(pr.k);setFiltEst('activas');}},title:'Ver las OT activas con prioridad '+pr.lbl.toLowerCase(),
@@ -14141,7 +14156,7 @@ function MantOT(p){
     ),
     h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,gap:8,flexWrap:'wrap'}},
       h('div',{style:{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center'}},
-        ['','activas','abierta','programada','en_ejecucion','pausada','cerrada','cancelada'].map(function(e){return h('button',{key:e,onClick:function(){setFiltEst(e);},style:segBtn(filtEst===e)},(ESTADO_LBL[e]||e.replace(/_/g,' '))+' ',h('span',{style:{fontFamily:'Consolas,"Courier New",monospace',opacity:.75}},String(cuentaEst(e))));}),
+        ['','activas','abierta','programada','en_ejecucion','pausada','cerrada','oc_pend','cancelada'].map(function(e){return h('button',{key:e,onClick:function(){setFiltEst(e);},title:e==='oc_pend'?'OT cerradas que tienen OC vinculadas sin cerrar: sus valores de compra son provisorios':undefined,style:segBtn(filtEst===e)},(ESTADO_LBL[e]||e.replace(/_/g,' '))+' ',h('span',{style:{fontFamily:'Consolas,"Courier New",monospace',opacity:.75}},String(cuentaEst(e))));}),
         h('span',{style:{fontSize:10.5,color:'#94A3B8',margin:'0 2px 0 10px',textTransform:'uppercase',letterSpacing:.6,fontWeight:700}},'Orden'),
         h('button',{onClick:function(){cambiarOrden('recientes');},style:segBtn(orden==='recientes')},'Más recientes'),
         h('button',{onClick:function(){cambiarOrden('prioridad');},style:segBtn(orden==='prioridad'),title:'Activas primero, de P1 a P4; dentro de cada prioridad, la que lleva más días abierta'},'Prioridad')
@@ -14179,10 +14194,10 @@ function MantOT(p){
         {lbl:'Faena',k:'faena_nombre'},
         {lbl:'Tipo',render:function(r){return r.tipo_mantencion.replace(/_/g,' ');}},
         {lbl:'Sistema',render:function(r){return r.sistema?(r.sistema.replace(/_/g,' ')):'—';}},
-        {lbl:'Estado',render:function(r){return h(Bg,{c:ESTADO_COLORS[r.estado]||'b'},r.estado.replace(/_/g,' '));}},
-        {lbl:'Costo',r:true,render:function(r){var t=(parseFloat(r.costo_total)||0)+(parseFloat(r.costo_oc)||0)+(parseFloat(r.costo_salidas)||0);return t>0?CLP(Math.round(t)):'—';}},
+        {lbl:'Estado',render:function(r){return otProv(r)?h('span',{title:r.oc_pendientes+' OC vinculada(s) sin cerrar: el costo de compras es provisorio y se actualiza solo cuando se cierren',style:{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:600,whiteSpace:'nowrap',background:'#FEF3C7',color:'#92400E',border:'1px solid #FCD34D'}},'⏳ cerrada · OC pendiente'):h(Bg,{c:ESTADO_COLORS[r.estado]||'b'},r.estado.replace(/_/g,' '));}},
+        {lbl:'Costo',r:true,render:function(r){var t=(parseFloat(r.costo_total)||0)+(parseFloat(r.costo_oc)||0)+(parseFloat(r.costo_salidas)||0);if(!(t>0))return '—';return (parseInt(r.oc_pendientes)||0)>0?h('span',{title:'Incluye OC pendiente: valor provisorio',style:{color:'#B45309',fontStyle:'italic',whiteSpace:'nowrap'}},CLP(Math.round(t))+' *'):CLP(Math.round(t));}},
         {lbl:'',render:function(r){return h(Btn,{v:'a',sm:true,onClick:function(){setSelOT(r);}},null,'Ver');}}
-      ],rows:filas,rowKey:'ot_id',rowStyle:function(r){var k=otPrioKey(r.prioridad);return otActiva(r)&&(k==='urgente'||k==='alta')?{background:OT_PRIO[k].bg}:null;},empty:(filtEst||filtPrio)?'Sin órdenes de trabajo con ese filtro':'Sin órdenes de trabajo'})
+      ],rows:filas,rowKey:'ot_id',rowStyle:function(r){var k=otPrioKey(r.prioridad);return otActiva(r)&&(k==='urgente'||k==='alta')?{background:OT_PRIO[k].bg}:null;},empty:(filtEst||filtPrio||filtEmp||filtFae)?'Sin órdenes de trabajo con ese filtro':'Sin órdenes de trabajo'})
     )
   );
 }
@@ -14236,6 +14251,21 @@ function MantOTDetalle(p){
   }
   // Prioridad: se guarda al elegirla (PATCH propio), en cualquier estado de la OT. También se deja en `form` para que
   // un 'Guardar' posterior (PUT completo) no la devuelva al valor anterior.
+  // Cierre de la OT. Si tiene OC vinculadas todavía PENDIENTES se puede cerrar igual, pero pide una observación y la OT
+  // queda como 'cerrada · OC pendiente' (valores provisorios) hasta que esas OC se cierren; ahí se actualiza sola.
+  const[cierrePend,setCierrePend]=useState(null);   // {ocs:[{oc_id,numero_oc,proveedor,neto}],obs:'',enviando:false}
+  function ocPendientesDeLaOT(){var m={};comprasOT.forEach(function(r){if(r.oc_estado!=='PENDIENTE')return;var g=m[r.oc_id]||(m[r.oc_id]={oc_id:r.oc_id,numero_oc:r.numero_oc,proveedor:r.proveedor,neto:0});g.neto+=(parseFloat(r.cantidad)||0)*(parseFloat(r.precio_unitario)||0);});return Object.values(m);}
+  function enviarCierre(obs){
+    var f2=Object.assign({},form,{estado:'cerrada'});if(!f2.fecha_inicio)f2.fecha_inicio=ot.fecha_inicio||new Date().toISOString();if(obs)f2.cierre_obs=obs;
+    return api('/mant/ot/'+ot.ot_id,'PUT',f2,p.tok).then(function(r){setOt(r);setForm(r);setCierrePend(null);setMsg((parseInt(r.oc_pendientes)||0)>0?'OT cerrada con OC pendiente: los valores de compra son provisorios y se actualizarán solos cuando la OC se cierre':'OT cerrada correctamente');})
+      .catch(function(e){setCierrePend(null);loadDetail();setMsg('Error: '+e.message+(/OC pendiente/.test(e.message)?' Vuelve a presionar "Cerrar OT".':''));});
+  }
+  function cerrarOT(){
+    var pend=ocPendientesDeLaOT();
+    if(pend.length){setCierrePend({ocs:pend,obs:'',enviando:false});return;}
+    if(!confirm('Cerrar esta OT? Se registrará la fecha de término y se calculará el tiempo de detención.'))return;
+    enviarCierre('');
+  }
   const[prioGuardando,setPrioGuardando]=useState(false);
   function cambiarPrioridad(k){
     setPrioGuardando(true);
@@ -14315,12 +14345,13 @@ function MantOTDetalle(p){
         h('button',{onClick:function(){p.onBack();},style:{padding:'5px 12px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12}},'← Volver'),
         h('span',{style:{fontWeight:700,fontSize:16}},ot.numero_ot),
         h(Bg,{c:ESTADO_COLORS[ot.estado]||'b'},ot.estado.replace(/_/g,' ')),
-        h(OTPrioChip,{v:ot.prioridad,lg:true})
+        h(OTPrioChip,{v:ot.prioridad,lg:true}),
+        ot.estado==='cerrada'&&(parseInt(ot.oc_pendientes)||0)>0&&h('span',{title:'Tiene '+ot.oc_pendientes+' OC vinculada(s) sin cerrar: el costo de compras es provisorio y se actualiza solo cuando se cierren',style:{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:600,whiteSpace:'nowrap',background:'#FEF3C7',color:'#92400E',border:'1px solid #FCD34D'}},'⏳ OC pendiente · valores provisorios')
       ),
       h('div',{style:{display:'flex',gap:6}},
         h(Btn,{v:'teal',sm:true,onClick:exportarOT},'⬇ Excel'),
         ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&h(Btn,{onClick:guardar},'💾 Guardar'),
-        ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&h(Btn,{v:'g',sm:true,onClick:function(){if(!confirm('Cerrar esta OT? Se registrará la fecha de término y se calculará el tiempo de detención.'))return;var f2=Object.assign({},form,{estado:'cerrada'});if(!f2.fecha_inicio)f2.fecha_inicio=ot.fecha_inicio||new Date().toISOString();api('/mant/ot/'+ot.ot_id,'PUT',f2,p.tok).then(function(r){setOt(r);setForm(r);setMsg('OT cerrada correctamente');}).catch(function(e){setMsg('Error: '+e.message);});}},'✓ Cerrar OT'),
+        ot.estado!=='cerrada'&&ot.estado!=='cancelada'&&h(Btn,{v:'g',sm:true,onClick:cerrarOT},'✓ Cerrar OT'),
         ot.estado==='cerrada'&&h('button',{onClick:function(){setReabrirModal(true);setReabrirMotivo('');},style:{padding:'4px 10px',fontSize:11,color:'#fff',border:'none',borderRadius:5,background:'#F59E0B',cursor:'pointer',fontWeight:600},title:'Reabrir esta OT para agregar items pendientes'},'🔓 Reabrir OT'),
         ot.estado!=='cerrada'&&h('button',{onClick:deleteOT,style:{padding:'4px 10px',fontSize:11,color:'#EF4444',border:'1px solid #FCA5A5',borderRadius:5,background:'#FFF1F2',cursor:'pointer'}},'🗑 Eliminar')
       )
@@ -14331,6 +14362,35 @@ function MantOTDetalle(p){
       h('div',{style:{fontSize:10.5,fontWeight:700,letterSpacing:1,color:'#475569',textTransform:'uppercase'}},'Prioridad'),
       h(OTPrioSelector,{value:ot.prioridad,onChange:cambiarPrioridad,disabled:prioGuardando}),
       h('div',{style:{fontSize:11,color:'#64748B'}},h('strong',{style:{color:otPrio(ot.prioridad).tx}},otPrio(ot.prioridad).desc),prioGuardando?' · guardando…':' · se guarda al elegir')),
+    // Cierre con OC pendientes: estado (provisorio / definitivo) + observación del cierre y notas automáticas de sus OC
+    (function(){
+      var prov=ot.estado==='cerrada'&&(parseInt(ot.oc_pendientes)||0)>0;
+      if(!prov&&!ot.cierre_obs)return null;
+      var tit=prov?'Cerrada con OC pendiente — valores provisorios':(ot.estado==='cerrada'?'Cierre con OC pendientes — valores definitivos':'Historial del cierre con OC pendientes');
+      var c=prov?{b:'#D97706',bg:'#FFFBEB',t:'#92400E'}:(ot.estado==='cerrada'?{b:'#16A34A',bg:'#F0FDF4',t:'#166534'}:{b:'#94A3B8',bg:'#F8FAFC',t:'#475569'});
+      return h('div',{className:'card',style:{marginBottom:12,padding:'10px 14px',borderLeft:'6px solid '+c.b,background:c.bg}},
+        h('div',{style:{display:'flex',alignItems:'baseline',gap:10,flexWrap:'wrap'}},
+          h('div',{style:{fontSize:10.5,fontWeight:700,letterSpacing:1,textTransform:'uppercase',color:c.t}},tit),
+          h('div',{style:{fontSize:11,color:'#64748B'}},prov?(ot.oc_pendientes+' OC sin cerrar. El costo de compras de esta OT se actualiza solo cuando se cierren.'):(ot.estado==='cerrada'?'Todas las OC vinculadas están cerradas.':''))),
+        ot.cierre_obs&&h('div',{style:{fontSize:12,color:'#334155',whiteSpace:'pre-wrap',marginTop:6,lineHeight:1.5}},ot.cierre_obs));
+    })(),
+    cierrePend&&h('div',{style:{position:'fixed',inset:0,background:'rgba(0,0,0,0.55)',display:'flex',alignItems:'center',justifyContent:'center',zIndex:1000,padding:20}},
+      h('div',{style:{background:'#fff',borderRadius:8,maxWidth:560,width:'100%',boxShadow:'0 10px 40px rgba(0,0,0,0.2)'}},
+        h('div',{style:{padding:'14px 18px',borderBottom:'1px solid #E2E8F0',display:'flex',justifyContent:'space-between',alignItems:'center',background:'#FFFBEB'}},
+          h('div',null,
+            h('div',{style:{fontSize:15,fontWeight:700,color:'#92400E'}},'⏳ Cerrar OT con OC pendientes'),
+            h('div',{style:{fontSize:11,color:'#64748B',marginTop:2}},ot.numero_ot+' · '+(ot.equipo_nombre||''))),
+          h('button',{onClick:function(){setCierrePend(null);},style:{fontSize:18,cursor:'pointer',background:'none',border:'none',color:'#94A3B8'}},'✕')),
+        h('div',{style:{padding:18}},
+          h('div',{style:{fontSize:12,color:'#334155',lineHeight:1.5,marginBottom:10}},'Esta OT tiene ',h('strong',null,cierrePend.ocs.length+' orden(es) de compra sin cerrar'),'. Se puede cerrar igual: quedará como ',h('strong',null,'"cerrada · OC pendiente"'),' con valores provisorios, y el costo se actualizará solo cuando cada OC se cierre.'),
+          h('div',{style:{border:'1px solid #E2E8F0',borderRadius:6,marginBottom:12}},cierrePend.ocs.map(function(o,i){return h('div',{key:o.oc_id,style:{display:'flex',justifyContent:'space-between',gap:10,padding:'7px 10px',fontSize:12,borderTop:i?'1px solid #F1F5F9':'none'}},
+            h('span',null,h('strong',{style:{fontFamily:'Consolas,"Courier New",monospace'}},o.numero_oc),' — ',o.proveedor||'sin proveedor'),
+            h('span',{style:{fontFamily:'Consolas,"Courier New",monospace',color:'#B45309',whiteSpace:'nowrap'}},o.neto>0?CLP(Math.round(o.neto))+' neto (provisorio)':'sin valor aún'));})),
+          h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Observación del cierre *'),
+          h('textarea',{value:cierrePend.obs,autoFocus:true,rows:3,onChange:function(e){var v=e.target.value;setCierrePend(function(c){return Object.assign({},c,{obs:v});});},placeholder:'Ej: máquina operativa; falta que llegue la factura del proveedor',style:{width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box',resize:'vertical'}}),
+          h('div',{style:{display:'flex',justifyContent:'flex-end',gap:8,marginTop:14}},
+            h(Btn,{v:'g',onClick:function(){setCierrePend(null);}},'Cancelar'),
+            h(Btn,{disabled:!cierrePend.obs.trim()||cierrePend.enviando,onClick:function(){var o=cierrePend.obs.trim();setCierrePend(function(c){return Object.assign({},c,{enviando:true});});enviarCierre(o);}},cierrePend.enviando?'Cerrando…':'✓ Cerrar con valores provisorios'))))),
     // Header info
     h('div',{className:'g2',style:{marginBottom:12}},
       h('div',{className:'card'},
@@ -14349,7 +14409,7 @@ function MantOTDetalle(p){
       h('div',{className:'card'},
         h('div',{style:{fontWeight:600,fontSize:12,marginBottom:8,color:'#475569'}},'COSTOS'),
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'4px 12px',fontSize:12}},
-          totalOC>0&&h('div',{style:{gridColumn:'1/-1'}},h('span',{style:{fontWeight:600,fontSize:11,color:'#3B82F6'}},'Compras OC: '),CLP(Math.round(totalOC))),
+          totalOC>0&&h('div',{style:{gridColumn:'1/-1'}},h('span',{style:{fontWeight:600,fontSize:11,color:'#3B82F6'}},'Compras OC'+(comprasOT.some(function(r){return r.oc_estado==='PENDIENTE';})?' (provisorio: hay OC pendiente)':'')+': '),CLP(Math.round(totalOC))),
           totalOC>0&&Object.entries(costosOC).map(function(e){return h('div',{key:e[0],style:{paddingLeft:8}},h('span',{style:{color:'#64748B',fontSize:11}},e[0]+': '),h('span',{style:{fontSize:11}},CLP(Math.round(e[1]))));}),
           calcSalidasInv>0&&h('div',{style:{gridColumn:'1/-1',borderTop:totalOC>0?'1px dashed #CBD5E1':'none',paddingTop:totalOC>0?4:0,marginTop:totalOC>0?2:0}},h('span',{style:{fontWeight:600,fontSize:11,color:'#10B981'}},'Salidas Inventario: '),CLP(Math.round(calcSalidasInv))),
           h('div',{style:{gridColumn:'1/-1',borderTop:'1px dashed #CBD5E1',paddingTop:4,marginTop:2}}),
@@ -14426,10 +14486,10 @@ function MantOTDetalle(p){
     h('div',{className:'card',style:{marginBottom:12}},
       h('div',{style:{fontWeight:600,fontSize:13,marginBottom:8}},'Ordenes de Compra vinculadas ('+comprasOT.length+')'),
       comprasOT.length>0&&h('div',{style:{marginBottom:8}},
-        (function(){var grouped={};comprasOT.forEach(function(r){if(!grouped[r.oc_id])grouped[r.oc_id]={numero_oc:r.numero_oc,oc_id:r.oc_id,proveedor:r.proveedor,fecha:r.fecha_emision,items:[]};grouped[r.oc_id].items.push(r);});return Object.values(grouped).map(function(g){
+        (function(){var grouped={};comprasOT.forEach(function(r){if(!grouped[r.oc_id])grouped[r.oc_id]={numero_oc:r.numero_oc,oc_id:r.oc_id,proveedor:r.proveedor,fecha:r.fecha_emision,estado:r.oc_estado,items:[]};grouped[r.oc_id].items.push(r);});return Object.values(grouped).map(function(g){
           return h('div',{key:g.oc_id,style:{border:'1px solid #E2E8F0',borderRadius:6,padding:8,marginBottom:6}},
             h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:4}},
-              h('span',{style:{fontWeight:600,fontSize:12}},g.numero_oc,' — ',g.proveedor||'','  ',fmtD(g.fecha)),
+              h('span',{style:{fontWeight:600,fontSize:12,display:'inline-flex',alignItems:'center',gap:8,flexWrap:'wrap'}},h('span',null,g.numero_oc,' — ',g.proveedor||'','  ',fmtD(g.fecha)),g.estado==='PENDIENTE'?h('span',{title:'La OC aún no se cierra: sus valores pueden cambiar',style:{display:'inline-flex',alignItems:'center',gap:4,padding:'2px 8px',borderRadius:12,fontSize:11,fontWeight:600,whiteSpace:'nowrap',background:'#FEF3C7',color:'#92400E',border:'1px solid #FCD34D'}},'⏳ OC pendiente · valor provisorio'):g.estado==='CERRADA'?h(Bg,{c:'g'},'OC cerrada'):g.estado?h(Bg,{c:'gray'},String(g.estado).toLowerCase()):null),
               ot.estado!=='cerrada'&&h('button',{onClick:function(){unlinkOC(g.oc_id);},style:{fontSize:10,color:'#EF4444',cursor:'pointer',border:'none',background:'none'}},'✕ Desenlazar')
             ),
             h(TBL,{cols:[{lbl:'Subcategoría',render:function(r){return h('span',{style:{fontSize:10}},r.subcategoria_nombre||'—');}},{lbl:'Descripcion',k:'descripcion'},{lbl:'Cant',r:true,render:function(r){return r.cantidad;}},{lbl:'P.Unit',r:true,render:function(r){return CLP(Math.round(r.precio_unitario||0));}},{lbl:'Total',r:true,render:function(r){return r.total_linea?CLP(Math.round(r.total_linea)):'—';}}],rows:g.items,empty:''})
