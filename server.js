@@ -665,6 +665,8 @@ async function setupMantenciones(q){
   try{await q('ALTER TABLE mant_planes ADD COLUMN IF NOT EXISTS ultimo_servicio_hrs NUMERIC(10,1)');}catch(e){}
   try{await q('ALTER TABLE mant_planes ADD COLUMN IF NOT EXISTS ultimo_servicio_km INT');}catch(e){}
   try{await q('ALTER TABLE mant_planes ADD COLUMN IF NOT EXISTS ultimo_servicio_fecha DATE');}catch(e){}
+  // Planes creados a mano quedaban sin empresa (el formulario no la pedía): heredan la del equipo (2026-11-13)
+  try{await q('UPDATE mant_planes p SET empresa_id=e.empresa_id FROM equipos e WHERE p.empresa_id IS NULL AND p.equipo_id=e.equipo_id AND e.empresa_id IS NOT NULL');}catch(e){}
 
   // ── Programación semanal de mano de obra de mantención ──
   await q(`CREATE TABLE IF NOT EXISTS mant_prog_tareas (
@@ -5722,20 +5724,40 @@ app.get('/api/mant/planes', auth, async(req,res)=>{
     res.json(r.rows);
   }catch(e){res.status(500).json({error:e.message});}
 });
+// Empresa de un plan: la que se indica; si viene vacía, la del equipo (2026-11-13)
+async function mantPlanEmpresa(empresa_id,equipo_id){
+  const emp=parseInt(empresa_id)||null; if(emp) return emp;
+  const eq=parseInt(equipo_id)||null; if(!eq) return null;
+  const r=await pool.query('SELECT empresa_id FROM equipos WHERE equipo_id=$1',[eq]);
+  return r.rows.length?(r.rows[0].empresa_id||null):null;
+}
 app.post('/api/mant/planes', auth, async(req,res)=>{
   try{
     const{empresa_id,nombre,descripcion,tipo_activo,familia,marca,modelo_filtro,equipo_id,sistema,componente,tipo_mantencion,intervalo_horas,intervalo_km,intervalo_dias,tolerancia_horas,tolerancia_km,tolerancia_dias,tiempo_estimado_hrs,prioridad,checklist_items,repuestos_sugeridos,lubricantes_sugeridos}=req.body;
     if(!nombre) return res.status(400).json({error:'Nombre requerido'});
     const r=await pool.query(`INSERT INTO mant_planes(empresa_id,nombre,descripcion,tipo_activo,familia,marca,modelo_filtro,equipo_id,sistema,componente,tipo_mantencion,intervalo_horas,intervalo_km,intervalo_dias,tolerancia_horas,tolerancia_km,tolerancia_dias,tiempo_estimado_hrs,prioridad,checklist_items,repuestos_sugeridos,lubricantes_sugeridos) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING *`,
-      [empresa_id||null,nombre,descripcion||null,tipo_activo||'todos',familia||null,marca||null,modelo_filtro||null,equipo_id||null,sistema||null,componente||null,tipo_mantencion||'preventivo',intervalo_horas||null,intervalo_km||null,intervalo_dias||null,tolerancia_horas||10,tolerancia_km||200,tolerancia_dias||5,tiempo_estimado_hrs||null,prioridad||'normal',JSON.stringify(checklist_items||[]),JSON.stringify(repuestos_sugeridos||[]),JSON.stringify(lubricantes_sugeridos||[])]);
+      [await mantPlanEmpresa(empresa_id,equipo_id),nombre,descripcion||null,tipo_activo||'todos',familia||null,marca||null,modelo_filtro||null,equipo_id||null,sistema||null,componente||null,tipo_mantencion||'preventivo',intervalo_horas||null,intervalo_km||null,intervalo_dias||null,tolerancia_horas||10,tolerancia_km||200,tolerancia_dias||5,tiempo_estimado_hrs||null,prioridad||'normal',JSON.stringify(checklist_items||[]),JSON.stringify(repuestos_sugeridos||[]),JSON.stringify(lubricantes_sugeridos||[])]);
     res.status(201).json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
 app.put('/api/mant/planes/:id', auth, async(req,res)=>{
   try{
-    const{nombre,descripcion,tipo_activo,familia,marca,modelo_filtro,equipo_id,sistema,componente,tipo_mantencion,intervalo_horas,intervalo_km,intervalo_dias,tolerancia_horas,tolerancia_km,tolerancia_dias,tiempo_estimado_hrs,prioridad,checklist_items,repuestos_sugeridos,lubricantes_sugeridos,activo}=req.body;
-    const r=await pool.query(`UPDATE mant_planes SET nombre=$1,descripcion=$2,tipo_activo=$3,familia=$4,marca=$5,modelo_filtro=$6,equipo_id=$7,sistema=$8,componente=$9,tipo_mantencion=$10,intervalo_horas=$11,intervalo_km=$12,intervalo_dias=$13,tolerancia_horas=$14,tolerancia_km=$15,tolerancia_dias=$16,tiempo_estimado_hrs=$17,prioridad=$18,checklist_items=$19,repuestos_sugeridos=$20,lubricantes_sugeridos=$21,activo=$22 WHERE plan_id=$23 RETURNING *`,
-      [nombre,descripcion||null,tipo_activo||'todos',familia||null,marca||null,modelo_filtro||null,equipo_id||null,sistema||null,componente||null,tipo_mantencion||'preventivo',intervalo_horas||null,intervalo_km||null,intervalo_dias||null,tolerancia_horas||10,tolerancia_km||200,tolerancia_dias||5,tiempo_estimado_hrs||null,prioridad||'normal',JSON.stringify(checklist_items||[]),JSON.stringify(repuestos_sugeridos||[]),JSON.stringify(lubricantes_sugeridos||[]),activo!==false,req.params.id]);
+    // Actualización PARCIAL (2026-11-13): solo se tocan los campos que vienen en el cuerpo; el resto conserva su valor.
+    // Antes se reescribían todos, y el formulario de edición (que manda 8 campos) dejaba en blanco descripción, sistema,
+    // tolerancias, checklist, repuestos, etc. Además la empresa no se actualizaba nunca.
+    const b=req.body||{};
+    const cur=await pool.query('SELECT * FROM mant_planes WHERE plan_id=$1',[req.params.id]);
+    if(!cur.rows.length) return res.status(404).json({error:'Plan no encontrado'});
+    const c=cur.rows[0];
+    const has=k=>Object.prototype.hasOwnProperty.call(b,k)&&b[k]!==undefined;
+    const v=k=>has(k)?((b[k]===''||b[k]===null)?null:b[k]):c[k];
+    const js=k=>JSON.stringify((has(k)?b[k]:c[k])||[]);
+    const nombre=has('nombre')?String(b.nombre||'').trim():c.nombre;
+    if(!nombre) return res.status(400).json({error:'Nombre requerido'});
+    const equipo_id=v('equipo_id');
+    const empresa_id=await mantPlanEmpresa(has('empresa_id')?b.empresa_id:c.empresa_id,equipo_id);
+    const r=await pool.query(`UPDATE mant_planes SET nombre=$1,descripcion=$2,tipo_activo=$3,familia=$4,marca=$5,modelo_filtro=$6,equipo_id=$7,sistema=$8,componente=$9,tipo_mantencion=$10,intervalo_horas=$11,intervalo_km=$12,intervalo_dias=$13,tolerancia_horas=$14,tolerancia_km=$15,tolerancia_dias=$16,tiempo_estimado_hrs=$17,prioridad=$18,checklist_items=$19,repuestos_sugeridos=$20,lubricantes_sugeridos=$21,activo=$22,empresa_id=$23 WHERE plan_id=$24 RETURNING *`,
+      [nombre,v('descripcion'),v('tipo_activo')||'todos',v('familia'),v('marca'),v('modelo_filtro'),equipo_id,v('sistema'),v('componente'),v('tipo_mantencion')||'preventivo',v('intervalo_horas'),v('intervalo_km'),v('intervalo_dias'),v('tolerancia_horas')||10,v('tolerancia_km')||200,v('tolerancia_dias')||5,v('tiempo_estimado_hrs'),v('prioridad')||'normal',js('checklist_items'),js('repuestos_sugeridos'),js('lubricantes_sugeridos'),has('activo')?b.activo!==false:c.activo!==false,empresa_id,req.params.id]);
     res.json(r.rows[0]);
   }catch(e){res.status(400).json({error:e.message});}
 });
