@@ -5756,6 +5756,23 @@ app.put('/api/mant/planes/:id', auth, async(req,res)=>{
     if(!nombre) return res.status(400).json({error:'Nombre requerido'});
     const equipo_id=v('equipo_id');
     const empresa_id=await mantPlanEmpresa(has('empresa_id')?b.empresa_id:c.empresa_id,equipo_id);
+    // Último servicio conocido (semilla de Próximos Vencimientos): lo edita a mano el modal 'Editar último servicio'.
+    // Hasta 2026-11-13 este PUT no lo guardaba y la edición manual se perdía. Solo se toca lo que viene en el cuerpo.
+    const enCuerpo=k=>Object.prototype.hasOwnProperty.call(b,k);
+    const sem=[], semV=[];
+    for(const k of ['ultimo_servicio_hrs','ultimo_servicio_km']){
+      if(!enCuerpo(k)) continue;
+      let n=(b[k]===''||b[k]===null||b[k]===undefined)?null:parseFloat(String(b[k]).replace(',','.'));
+      if(n!==null&&(!isFinite(n)||n<0)) return res.status(400).json({error:(k==='ultimo_servicio_km'?'Kilometraje':'Horómetro')+' del último servicio no válido'});
+      if(n!==null&&k==='ultimo_servicio_km') n=Math.round(n);
+      semV.push(n); sem.push(k+'=$'+semV.length);
+    }
+    if(enCuerpo('ultimo_servicio_fecha')){
+      const f=(b.ultimo_servicio_fecha===''||b.ultimo_servicio_fecha==null)?null:String(b.ultimo_servicio_fecha).slice(0,10);
+      if(f!==null&&!/^\d{4}-\d{2}-\d{2}$/.test(f)) return res.status(400).json({error:'Fecha del último servicio no válida'});
+      semV.push(f); sem.push('ultimo_servicio_fecha=$'+semV.length);
+    }
+    if(sem.length){ semV.push(req.params.id); await pool.query('UPDATE mant_planes SET '+sem.join(',')+' WHERE plan_id=$'+semV.length,semV); }
     const r=await pool.query(`UPDATE mant_planes SET nombre=$1,descripcion=$2,tipo_activo=$3,familia=$4,marca=$5,modelo_filtro=$6,equipo_id=$7,sistema=$8,componente=$9,tipo_mantencion=$10,intervalo_horas=$11,intervalo_km=$12,intervalo_dias=$13,tolerancia_horas=$14,tolerancia_km=$15,tolerancia_dias=$16,tiempo_estimado_hrs=$17,prioridad=$18,checklist_items=$19,repuestos_sugeridos=$20,lubricantes_sugeridos=$21,activo=$22,empresa_id=$23 WHERE plan_id=$24 RETURNING *`,
       [nombre,v('descripcion'),v('tipo_activo')||'todos',v('familia'),v('marca'),v('modelo_filtro'),equipo_id,v('sistema'),v('componente'),v('tipo_mantencion')||'preventivo',v('intervalo_horas'),v('intervalo_km'),v('intervalo_dias'),v('tolerancia_horas')||10,v('tolerancia_km')||200,v('tolerancia_dias')||5,v('tiempo_estimado_hrs'),v('prioridad')||'normal',js('checklist_items'),js('repuestos_sugeridos'),js('lubricantes_sugeridos'),has('activo')?b.activo!==false:c.activo!==false,empresa_id,req.params.id]);
     res.json(r.rows[0]);
