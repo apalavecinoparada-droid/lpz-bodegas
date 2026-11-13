@@ -6921,6 +6921,21 @@ async function mantFotosSubirPendientes(){
 if(!process.env.MANT_SIN_CRON){ setTimeout(()=>mantFotosSubirPendientes(),90*1000); setInterval(()=>mantFotosSubirPendientes(),3*60*1000); }
 console.log(dropboxConfigurado()?'[dropbox] configurado: carpeta '+(DBX.carpeta||'(carpeta de la app)'):'[dropbox] sin claves: las fotos de OT quedan pendientes en la base hasta configurar Dropbox');
 
+// Prioridad de una OT (clasificación P1 urgente · P2 alta · P3 normal · P4 baja). Se puede cambiar en cualquier momento
+// y en cualquier estado; no pasa por el PUT completo, así que no recalcula costos ni toca fechas ni el estado del equipo.
+const MANT_PRIORIDADES=['urgente','alta','normal','baja'];
+function mantPrioridad(v){ const s=String(v==null?'':v).trim().toLowerCase(); return s==='critica'||s==='crítica'?'urgente':s; }
+app.patch('/api/mant/ot/:id/prioridad', auth, async(req,res)=>{
+  try{
+    const id=parseInt(req.params.id); if(!id) return res.status(400).json({error:'OT no válida'});
+    const pr=mantPrioridad((req.body||{}).prioridad);
+    if(MANT_PRIORIDADES.indexOf(pr)<0) return res.status(400).json({error:'Prioridad no válida (urgente, alta, normal o baja)'});
+    await mantExigirPropia(req,id);
+    const r=await pool.query('UPDATE mant_ot SET prioridad=$1,actualizado_en=NOW() WHERE ot_id=$2 RETURNING ot_id,numero_ot,prioridad',[pr,id]);
+    if(!r.rows.length) return res.status(404).json({error:'La OT no existe'});
+    res.json(r.rows[0]);
+  }catch(e){res.status(400).json({error:e.message});}
+});
 // POST: OT creada desde el celular. `uid` + `en` (hora del celular) vienen de la cola sin señal: si el mismo uid
 // llega dos veces se responde lo ya guardado (mant_sync) y no se duplica. Fotos: data URL jpeg (máx 8, ≤1,5 MB c/u).
 app.post('/api/mant/ot/movil', auth, async(req,res)=>{
@@ -6948,7 +6963,7 @@ app.post('/api/mant/ot/movil', auth, async(req,res)=>{
     const faenaId=parseInt(b.faena_id)||e.faena_id||null;
     const r=await client.query(`INSERT INTO mant_ot(numero_ot,empresa_id,equipo_id,faena_id,tipo_mantencion,origen,fecha_apertura,fecha_inicio,fecha_termino,horometro_servicio,estado,prioridad,sintoma_reportado,trabajo_realizado,repuestos_texto,observaciones,responsable,mecanico_asignado,taller_tipo,usuario)
       VALUES($1,$2,$3,$4,$5,'movil',$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'interno',$18) RETURNING ot_id,numero_ot`,
-      [num,e.empresa_id||null,eqId,faenaId,tipo,fecha,en,estado==='cerrada'?(en||new Date()):null,horo,estado,b.prioridad==='alta'?'alta':'normal',
+      [num,e.empresa_id||null,eqId,faenaId,tipo,fecha,en,estado==='cerrada'?(en||new Date()):null,horo,estado,(MANT_PRIORIDADES.indexOf(mantPrioridad(b.prioridad))>=0?mantPrioridad(b.prioridad):'normal'),
        String(b.sintoma_reportado||'').slice(0,4000)||null,String(b.trabajo_realizado||'').slice(0,4000)||null,String(b.repuestos_texto||'').slice(0,2000)||null,String(b.observaciones||'').slice(0,2000)||null,quien,quien,req.user.email]);
     const ot=r.rows[0]; const nf=await mantFotosInsertar(client,ot.ot_id,fotos,req.user.email);
     if(horo!=null) await client.query('UPDATE equipos SET horometro_actual=GREATEST(COALESCE(horometro_actual,0),$1) WHERE equipo_id=$2',[horo,eqId]);
@@ -6997,11 +7012,12 @@ app.patch('/api/mant/ot/:id/movil', auth, async(req,res)=>{
       if(b.estado==='cerrada'&&!o.fecha_termino) put('fecha_termino',new Date());
     }
     for(const k of ['sintoma_reportado','diagnostico','trabajo_realizado','repuestos_texto','observaciones']) if(b[k]!==undefined) put(k,String(b[k]||'').slice(0,4000)||null);
+    if(b.prioridad!==undefined){ const pr=mantPrioridad(b.prioridad); if(MANT_PRIORIDADES.indexOf(pr)<0) throw new Error('Prioridad no válida'); put('prioridad',pr); }
     let horo=null;
     if(b.horometro_servicio!==undefined&&b.horometro_servicio!==''&&b.horometro_servicio!=null){ horo=parseFloat(b.horometro_servicio); if(isNaN(horo)) throw new Error('Horómetro inválido'); put('horometro_servicio',horo); }
     if(!sets.length) throw new Error('Nada que actualizar');
     vals.push(id);
-    const r=await pool.query('UPDATE mant_ot SET '+sets.join(',')+' WHERE ot_id=$'+vals.length+' RETURNING ot_id,numero_ot,estado,horometro_servicio,sintoma_reportado,diagnostico,trabajo_realizado,repuestos_texto,observaciones,fecha_inicio,fecha_termino',vals);
+    const r=await pool.query('UPDATE mant_ot SET '+sets.join(',')+' WHERE ot_id=$'+vals.length+' RETURNING ot_id,numero_ot,estado,prioridad,horometro_servicio,sintoma_reportado,diagnostico,trabajo_realizado,repuestos_texto,observaciones,fecha_inicio,fecha_termino',vals);
     if(horo!=null) await pool.query('UPDATE equipos SET horometro_actual=GREATEST(COALESCE(horometro_actual,0),$1) WHERE equipo_id=$2',[horo,o.equipo_id]);
     if(b.estado==='cerrada') await pool.query("UPDATE equipos SET estado_operativo='operativo' WHERE equipo_id=$1 AND estado_operativo='detenido'",[o.equipo_id]);
     res.json(r.rows[0]);

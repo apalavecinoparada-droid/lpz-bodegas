@@ -711,8 +711,8 @@ function TBL(p){
   if(!rows.length)return h('div',{className:'empty'},p.empty||'Sin datos');
   return h('div',{style:{overflowX:'auto',WebkitOverflowScrolling:'touch'}},h('div',{className:'card-t'},h('table',null,
     h('thead',null,h('tr',null,...p.cols.map((c,i)=>h('th',{key:i,style:{textAlign:c.r?'right':c.c?'center':'left',width:c.w}},c.lbl)))),
-    h('tbody',null,...rows.map((r,i)=>h('tr',{key:r[p.rowKey]||i,onClick:p.onRowClick?function(){p.onRowClick(r);}:undefined,style:p.onRowClick?{cursor:'pointer'}:undefined},
-      ...p.cols.map((c,j)=>h('td',{key:j,style:{textAlign:c.r?'right':c.c?'center':'left',fontFamily:c.mono?'Courier New':undefined,fontSize:c.mono?12:undefined}},
+    h('tbody',null,...rows.map((r,i)=>h('tr',{key:r[p.rowKey]||i,onClick:p.onRowClick?function(){p.onRowClick(r);}:undefined,style:(p.onRowClick||p.rowStyle)?Object.assign({},p.onRowClick?{cursor:'pointer'}:null,p.rowStyle?p.rowStyle(r,i):null):undefined},
+      ...p.cols.map((c,j)=>h('td',{key:j,style:Object.assign({textAlign:c.r?'right':c.c?'center':'left',fontFamily:c.mono?'Courier New':undefined,fontSize:c.mono?12:undefined},c.cellStyle?c.cellStyle(r,i):null)},
         c.render?c.render(r,i):str(r[c.k]||'—')
       ))
     )))
@@ -13803,6 +13803,39 @@ function CombCierreQuincenal(p){
 var SISTEMAS_OPS=['motor','hidraulico','transmision','mandos_finales','electrico','enfriamiento','rodado','estructura','combustible','frenos','direccion','cabezal_forestal','lubricacion','general','otros'];
 var TIPO_MANT_OPS=['correctiva','programada','predictiva'];
 var ESTADO_OT_OPS=['abierta','programada','en_ejecucion','pausada','cerrada','cancelada'];
+// ── Prioridad de las OT: clasificación única P1..P4 (Andrés 2026-11-13). Todo lo que muestre o edite la prioridad de una
+// OT usa estas piezas: mismo código, mismo color y mismo texto en la lista, el detalle y el celular.
+var OT_PRIO={
+  urgente:{k:'urgente',cod:'P1',lbl:'Urgente',col:'#DC2626',tx:'#991B1B',bg:'#FEF2F2',bd:'#FCA5A5',desc:'Atender de inmediato'},
+  alta:{k:'alta',cod:'P2',lbl:'Alta',col:'#EA580C',tx:'#9A3412',bg:'#FFF7ED',bd:'#FDBA74',desc:'Atender antes que el resto'},
+  normal:{k:'normal',cod:'P3',lbl:'Normal',col:'#2563EB',tx:'#1E40AF',bg:'#EFF6FF',bd:'#93C5FD',desc:'Según programación'},
+  baja:{k:'baja',cod:'P4',lbl:'Baja',col:'#64748B',tx:'#475569',bg:'#F8FAFC',bd:'#CBD5E1',desc:'Cuando haya disponibilidad'}
+};
+var OT_PRIO_ORDEN=['urgente','alta','normal','baja'];
+function otPrioKey(v){var s=String(v==null?'':v).trim().toLowerCase();if(s==='critica'||s==='crítica')s='urgente';return OT_PRIO[s]?s:'normal';}
+function otPrio(v){return OT_PRIO[otPrioKey(v)];}
+function otActiva(o){return o.estado!=='cerrada'&&o.estado!=='cancelada';}
+// Días corridos desde la apertura (para saber cuánto lleva esperando una OT activa)
+function otDiasAbierta(o){var s=String(o.fecha_apertura||'').slice(0,10);if(!/^\d{4}-\d{2}-\d{2}$/.test(s))return null;var a=s.split('-');var ini=new Date(+a[0],+a[1]-1,+a[2]);var hoy=new Date();hoy=new Date(hoy.getFullYear(),hoy.getMonth(),hoy.getDate());return Math.max(0,Math.round((hoy.getTime()-ini.getTime())/86400000));}
+// Etiqueta de prioridad: bloque con el código (P1..P4) + nombre. p.v = prioridad; p.apagada = OT cerrada/cancelada (se muestra sin relleno)
+function OTPrioChip(p){
+  var pr=otPrio(p.v);var g=p.lg;
+  return h('span',{title:pr.cod+' · Prioridad '+pr.lbl.toLowerCase()+' — '+pr.desc,style:{display:'inline-flex',alignItems:'stretch',border:'1px solid '+(p.apagada?'#CBD5E1':pr.col),borderRadius:4,overflow:'hidden',fontSize:g?12:10.5,fontWeight:700,lineHeight:1,whiteSpace:'nowrap',verticalAlign:'middle',opacity:p.apagada?.75:1}},
+    h('span',{style:{background:p.apagada?'#94A3B8':pr.col,color:'#fff',padding:g?'5px 7px':'3px 5px',fontFamily:'Consolas,"Courier New",monospace',letterSpacing:.3}},pr.cod),
+    h('span',{style:{background:p.apagada?'#F8FAFC':pr.bg,color:p.apagada?'#64748B':pr.tx,padding:g?'5px 9px':'3px 7px',textTransform:'uppercase',letterSpacing:.5}},pr.lbl));
+}
+// Selector de prioridad en botones (P1..P4). p.value, p.onChange(k), p.disabled, p.movil (botones grandes para el celular)
+function OTPrioSelector(p){
+  var act=otPrioKey(p.value);var m=p.movil;
+  return h('div',{style:{display:m?'grid':'inline-flex',gridTemplateColumns:m?'repeat(4,1fr)':undefined,gap:m?6:4,flexWrap:'wrap'}},OT_PRIO_ORDEN.map(function(k){
+    var pr=OT_PRIO[k];var on=k===act;
+    return h('button',{key:k,type:'button',disabled:p.disabled,title:pr.desc,onClick:function(){if(!on&&p.onChange)p.onChange(k);},
+      style:{display:'flex',flexDirection:m?'column':'row',alignItems:'center',justifyContent:'center',gap:m?3:6,padding:m?'9px 4px':'5px 10px',borderRadius:6,cursor:p.disabled?'wait':(on?'default':'pointer'),
+        border:(on?'2px':'1px')+' solid '+(on?pr.col:'#CBD5E1'),background:on?pr.col:'#fff',color:on?'#fff':pr.tx,fontSize:m?12:11.5,fontWeight:700,opacity:p.disabled?.6:1}},
+      h('span',{style:{fontFamily:'Consolas,"Courier New",monospace',fontSize:m?13:11,padding:'1px 4px',borderRadius:3,background:on?'rgba(255,255,255,.22)':pr.bg,color:on?'#fff':pr.col}},pr.cod),
+      h('span',{style:{textTransform:'uppercase',letterSpacing:.4}},pr.lbl));
+  }));
+}
 
 function MantPanel(p){
   const empresas=(p.m&&p.m.empresas||[]).filter(function(e){return e.activo;});
@@ -14026,8 +14059,13 @@ function MantOT(p){
   const personalMant2=(p.m.personal||[]).filter(function(x){return x.participa_mantencion&&x.activo;});
   const equipos=(p.m.equipos||[]).filter(function(e){return e.activo;});
   const faenas=(p.m.faenas||[]).filter(function(f){return f.activo;});
-  function load(){api('/mant/ot'+(filtEst?'?estado='+filtEst:''),'GET',null,p.tok).then(function(r){setOts(Array.isArray(r)?r:[]);}).catch(function(){});}
-  useEffect(load,[p.tok,filtEst]);
+  // Se cargan todas las OT una vez y los filtros (estado, prioridad) se aplican en pantalla: así el tablero de
+  // prioridades siempre cuenta las OT activas, cualquiera sea el filtro elegido.
+  const[filtPrio,setFiltPrio]=useState('');
+  const[orden,setOrden]=useState(function(){try{return localStorage.getItem('lpz_ot_orden')==='prioridad'?'prioridad':'recientes';}catch(e){return 'recientes';}});
+  function cambiarOrden(v){setOrden(v);try{localStorage.setItem('lpz_ot_orden',v);}catch(e){}}
+  function load(){api('/mant/ot','GET',null,p.tok).then(function(r){setOts(Array.isArray(r)?r:[]);}).catch(function(){});}
+  useEffect(load,[p.tok]);
   function guardarNueva(){
     if(!form.equipo_id){setMsg('Equipo requerido');return;}
     api('/mant/ot','POST',form,p.tok).then(function(r){setOts(function(a){return [r,...a];});setShowForm(false);setSelOT(r);setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});
@@ -14035,10 +14073,57 @@ function MantOT(p){
   var inpS={width:'100%',padding:'7px 9px',border:'1px solid #CBD5E1',borderRadius:5,fontSize:12,boxSizing:'border-box'};
   var ESTADO_COLORS={'abierta':'b','programada':'p','en_ejecucion':'teal','pausada':'y','cerrada':'g','cancelada':'r'};
   if(selOT) return h(MantOTDetalle,{tok:p.tok,m:p.m,ot:selOT,onBack:function(){setSelOT(null);load();}});
+  // ── Tablero: OT activas (ni cerradas ni canceladas) por prioridad ──
+  var activas=ots.filter(otActiva);
+  var tablero=OT_PRIO_ORDEN.map(function(k){
+    var l=activas.filter(function(o){return otPrioKey(o.prioridad)===k;});
+    var maxD=null;l.forEach(function(o){var d=otDiasAbierta(o);if(d!==null&&(maxD===null||d>maxD))maxD=d;});
+    return {pr:OT_PRIO[k],n:l.length,ejec:l.filter(function(o){return o.estado==='en_ejecucion';}).length,maxD:maxD};
+  });
+  var cuentaEst=function(e){return e===''?ots.length:e==='activas'?activas.length:ots.filter(function(o){return o.estado===e;}).length;};
+  var filas=ots.filter(function(o){
+    if(filtEst==='activas'){if(!otActiva(o))return false;}else if(filtEst&&o.estado!==filtEst)return false;
+    if(filtPrio&&otPrioKey(o.prioridad)!==filtPrio)return false;
+    return true;
+  });
+  if(orden==='prioridad'){
+    // Primero las activas, de P1 a P4 y dentro de cada prioridad la que lleva más días esperando; después las cerradas, como venían
+    var rk=function(o){return OT_PRIO_ORDEN.indexOf(otPrioKey(o.prioridad));};
+    filas=filas.map(function(o,i){return {o:o,i:i};}).sort(function(a,b){
+      var aa=otActiva(a.o)?0:1,ba=otActiva(b.o)?0:1;if(aa!==ba)return aa-ba;
+      if(aa===1)return a.i-b.i;
+      if(rk(a.o)!==rk(b.o))return rk(a.o)-rk(b.o);
+      var da=otDiasAbierta(a.o)||0,db=otDiasAbierta(b.o)||0;if(da!==db)return db-da;
+      return a.i-b.i;
+    }).map(function(x){return x.o;});
+  }
+  var ESTADO_LBL={'':'Todas','activas':'Activas'};
+  var segBtn=function(on){return {padding:'4px 10px',borderRadius:4,fontSize:11,cursor:'pointer',border:'1px solid '+(on?'#1E293B':'#CBD5E1'),background:on?'#1E293B':'#F8FAFC',color:on?'#fff':'#475569',fontWeight:on?700:500};};
   return h('div',null,
-    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10}},
-      h('div',{style:{display:'flex',gap:4,flexWrap:'wrap'}},
-        ['','abierta','programada','en_ejecucion','cerrada','cancelada'].map(function(e){return h('button',{key:e,onClick:function(){setFiltEst(e);},style:{padding:'4px 10px',borderRadius:4,fontSize:11,cursor:'pointer',border:'1px solid #CBD5E1',background:filtEst===e?'#3B82F6':'#F8FAFC',color:filtEst===e?'#fff':'#475569'}},e||'Todas');})
+    h('div',{style:{marginBottom:12}},
+      h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'baseline',marginBottom:6,gap:8,flexWrap:'wrap'}},
+        h('div',{style:{fontSize:10.5,fontWeight:700,letterSpacing:1,color:'#475569',textTransform:'uppercase'}},'Clasificación por prioridad · ',h('span',{style:{color:'#0F172A'}},activas.length+' OT activas')),
+        h('div',{style:{fontSize:10.5,color:'#94A3B8'}},filtPrio?h('a',{onClick:function(){setFiltPrio('');},style:{color:'#2563EB',cursor:'pointer',fontWeight:600}},'✕ Quitar filtro de prioridad'):'Toca una prioridad para ver sus OT')),
+      h('div',{style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(180px,1fr))',gap:10}},tablero.map(function(t){
+        var pr=t.pr;var on=filtPrio===pr.k;
+        return h('div',{key:pr.k,role:'button',onClick:function(){if(on){setFiltPrio('');}else{setFiltPrio(pr.k);setFiltEst('activas');}},title:'Ver las OT activas con prioridad '+pr.lbl.toLowerCase(),
+          style:{cursor:'pointer',background:on?pr.bg:'#fff',border:'1px solid '+(on?pr.col:'#E2E8F0'),borderLeft:'5px solid '+pr.col,borderRadius:8,padding:'10px 12px',opacity:t.n||on?1:.6,boxShadow:on?'0 0 0 2px '+pr.bd:'none'}},
+          h('div',{style:{display:'flex',alignItems:'center',gap:8}},
+            h('span',{style:{fontFamily:'Consolas,"Courier New",monospace',fontSize:11,fontWeight:700,color:'#fff',background:pr.col,padding:'2px 6px',borderRadius:3}},pr.cod),
+            h('span',{style:{fontSize:11,fontWeight:700,letterSpacing:.8,textTransform:'uppercase',color:pr.tx}},pr.lbl)),
+          h('div',{style:{display:'flex',alignItems:'baseline',gap:6,marginTop:6}},
+            h('span',{style:{fontFamily:'Consolas,"Courier New",monospace',fontSize:28,fontWeight:700,color:t.n?pr.col:'#CBD5E1',lineHeight:1}},String(t.n)),
+            h('span',{style:{fontSize:11,color:'#64748B'}},t.n===1?'OT activa':'OT activas')),
+          h('div',{style:{fontSize:10.5,color:'#64748B',marginTop:5,fontFamily:'Consolas,"Courier New",monospace'}},t.n?(t.ejec+' en ejecución · máx. '+(t.maxD===null?'—':t.maxD+' d')+' abierta'):'—'),
+          h('div',{style:{fontSize:10.5,color:'#94A3B8',marginTop:3}},pr.desc));
+      }))
+    ),
+    h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:10,gap:8,flexWrap:'wrap'}},
+      h('div',{style:{display:'flex',gap:4,flexWrap:'wrap',alignItems:'center'}},
+        ['','activas','abierta','programada','en_ejecucion','pausada','cerrada','cancelada'].map(function(e){return h('button',{key:e,onClick:function(){setFiltEst(e);},style:segBtn(filtEst===e)},(ESTADO_LBL[e]||e.replace(/_/g,' '))+' ',h('span',{style:{fontFamily:'Consolas,"Courier New",monospace',opacity:.75}},String(cuentaEst(e))));}),
+        h('span',{style:{fontSize:10.5,color:'#94A3B8',margin:'0 2px 0 10px',textTransform:'uppercase',letterSpacing:.6,fontWeight:700}},'Orden'),
+        h('button',{onClick:function(){cambiarOrden('recientes');},style:segBtn(orden==='recientes')},'Más recientes'),
+        h('button',{onClick:function(){cambiarOrden('prioridad');},style:segBtn(orden==='prioridad'),title:'Activas primero, de P1 a P4; dentro de cada prioridad, la que lleva más días abierta'},'Prioridad')
       ),
       h(Btn,{onClick:function(){setShowForm(!showForm);}},showForm?'Cancelar':'+ Nueva OT')
     ),
@@ -14055,7 +14140,7 @@ function MantOT(p){
           {v:'aviso_falla',l:'Aviso de falla — reportada por operador'},
           {v:'plan_maestro',l:'Plan maestro — programada por horómetro/km'}
         ].map(function(o){return h('option',{key:o.v,value:o.v},o.l);}))),
-        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Prioridad'),h('select',{value:form.prioridad,onChange:function(e){setForm(function(f){return Object.assign({},f,{prioridad:e.target.value});});},style:inpS},['urgente','alta','normal','baja'].map(function(t){return h('option',{key:t,value:t},t);}))),
+        h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Prioridad'),h('select',{value:form.prioridad,onChange:function(e){setForm(function(f){return Object.assign({},f,{prioridad:e.target.value});});},style:Object.assign({},inpS,{borderLeft:'5px solid '+otPrio(form.prioridad).col,fontWeight:600})},OT_PRIO_ORDEN.map(function(t){return h('option',{key:t,value:t},OT_PRIO[t].cod+' · '+OT_PRIO[t].lbl+' — '+OT_PRIO[t].desc);}))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Responsable'),hSel({value:form.responsable||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{responsable:e.target.value});});},style:inpS},[h('option',{value:''},'—')].concat(personalMant2.map(function(x){return h('option',{key:x.persona_id,value:x.nombre_completo},x.nombre_completo);})))),
         h('div',null,h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Mecánico líder'),hSel({value:form.mecanico_asignado||'',onChange:function(e){setForm(function(f){return Object.assign({},f,{mecanico_asignado:e.target.value});});},style:inpS},[h('option',{value:''},'—')].concat(personalMant2.map(function(x){return h('option',{key:x.persona_id,value:x.nombre_completo},x.nombre_completo);})))),
         h('div',{style:{gridColumn:'1/-1'}},h('label',{style:{fontSize:11,fontWeight:600,display:'block',marginBottom:3}},'Síntoma reportado'),h('textarea',{value:form.sintoma_reportado,onChange:function(e){setForm(function(f){return Object.assign({},f,{sintoma_reportado:e.target.value});});},rows:2,style:Object.assign({},inpS,{resize:'vertical'})}))
@@ -14064,18 +14149,19 @@ function MantOT(p){
     ),
     h('div',{className:'card'},
       h(TBL,{cols:[
-        {lbl:'N° OT',render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11}},r.numero_ot,r.fotos>0&&h('span',{title:r.fotos+' foto(s)',style:{marginLeft:4,fontSize:10,color:'#0E7490'}},'📷'+r.fotos));}},
-        {lbl:'Fecha',render:function(r){return fmtD(r.fecha_apertura);}},
+        {lbl:'N° OT',cellStyle:function(r){return {boxShadow:'inset 5px 0 0 '+(otActiva(r)?otPrio(r.prioridad).col:otPrio(r.prioridad).bd),paddingLeft:14,whiteSpace:'nowrap'};},render:function(r){return h('span',{style:{fontFamily:'monospace',fontSize:11,fontWeight:otActiva(r)?700:400}},r.numero_ot,r.fotos>0&&h('span',{title:r.fotos+' foto(s)',style:{marginLeft:4,fontSize:10,color:'#0E7490'}},'📷'+r.fotos));}},
+        {lbl:'Prioridad',render:function(r){return h(OTPrioChip,{v:r.prioridad,apagada:!otActiva(r)});}},
+        {lbl:'Apertura',cellStyle:function(){return {whiteSpace:'nowrap'};},render:function(r){return fmtD(r.fecha_apertura);}},
+        {lbl:'Días',r:true,cellStyle:function(){return {whiteSpace:'nowrap'};},render:function(r){if(!otActiva(r))return h('span',{style:{color:'#CBD5E1'}},'—');var d=otDiasAbierta(r);return h('span',{title:'Días corridos desde la apertura',style:{fontFamily:'Consolas,"Courier New",monospace',fontSize:12,fontWeight:700,color:'#334155'}},d===null?'—':d+' d');}},
         {lbl:'Activo',k:'equipo_nombre'},
         {lbl:'Empresa',k:'empresa_nombre'},
         {lbl:'Faena',k:'faena_nombre'},
         {lbl:'Tipo',render:function(r){return r.tipo_mantencion.replace(/_/g,' ');}},
         {lbl:'Sistema',render:function(r){return r.sistema?(r.sistema.replace(/_/g,' ')):'—';}},
-        {lbl:'Prioridad',render:function(r){return h(Bg,{c:r.prioridad==='urgente'?'r':r.prioridad==='alta'?'y':r.prioridad==='normal'?'b':'gray'},r.prioridad);}},
         {lbl:'Estado',render:function(r){return h(Bg,{c:ESTADO_COLORS[r.estado]||'b'},r.estado.replace(/_/g,' '));}},
         {lbl:'Costo',r:true,render:function(r){var t=(parseFloat(r.costo_total)||0)+(parseFloat(r.costo_oc)||0)+(parseFloat(r.costo_salidas)||0);return t>0?CLP(Math.round(t)):'—';}},
         {lbl:'',render:function(r){return h(Btn,{v:'a',sm:true,onClick:function(){setSelOT(r);}},null,'Ver');}}
-      ],rows:ots,empty:'Sin órdenes de trabajo'})
+      ],rows:filas,rowKey:'ot_id',rowStyle:function(r){var k=otPrioKey(r.prioridad);return otActiva(r)&&(k==='urgente'||k==='alta')?{background:OT_PRIO[k].bg}:null;},empty:(filtEst||filtPrio)?'Sin órdenes de trabajo con ese filtro':'Sin órdenes de trabajo'})
     )
   );
 }
@@ -14126,6 +14212,16 @@ function MantOTDetalle(p){
 
   function guardar(){
     api('/mant/ot/'+ot.ot_id,'PUT',form,p.tok).then(function(r){setOt(r);setEditMode(false);setMsg('Guardado');}).catch(function(e){setMsg('Error: '+e.message);});
+  }
+  // Prioridad: se guarda al elegirla (PATCH propio), en cualquier estado de la OT. También se deja en `form` para que
+  // un 'Guardar' posterior (PUT completo) no la devuelva al valor anterior.
+  const[prioGuardando,setPrioGuardando]=useState(false);
+  function cambiarPrioridad(k){
+    setPrioGuardando(true);
+    api('/mant/ot/'+ot.ot_id+'/prioridad','PATCH',{prioridad:k},p.tok)
+      .then(function(r){setOt(function(o){return Object.assign({},o,{prioridad:r.prioridad});});setForm(function(f){return Object.assign({},f,{prioridad:r.prioridad});});setMsg('Prioridad cambiada a '+otPrio(r.prioridad).cod+' · '+otPrio(r.prioridad).lbl);})
+      .catch(function(e){setMsg('Error: '+e.message);})
+      .finally(function(){setPrioGuardando(false);});
   }
   function guardarSistemas(){if(!selSist.length){setMsg('Seleccione al menos un sistema');return;}api('/mant/ot/'+ot.ot_id+'/sistemas','POST',{sistemas:selSist},p.tok).then(function(r){setSistemas(r);setShowSistEdit(false);setMsg('');}).catch(function(e){setMsg('Error: '+e.message);});}
   function refreshOT(){api('/mant/ot/'+ot.ot_id+'/full','GET',null,p.tok).then(function(r){if(r){setOt(r);setForm(function(f){return Object.assign({},f,r);});}}).catch(function(){});}
@@ -14198,7 +14294,7 @@ function MantOTDetalle(p){
         h('button',{onClick:function(){p.onBack();},style:{padding:'5px 12px',border:'1px solid #CBD5E1',borderRadius:5,cursor:'pointer',fontSize:12}},'← Volver'),
         h('span',{style:{fontWeight:700,fontSize:16}},ot.numero_ot),
         h(Bg,{c:ESTADO_COLORS[ot.estado]||'b'},ot.estado.replace(/_/g,' ')),
-        h(Bg,{c:ot.prioridad==='urgente'?'r':ot.prioridad==='alta'?'y':'gray'},ot.prioridad)
+        h(OTPrioChip,{v:ot.prioridad,lg:true})
       ),
       h('div',{style:{display:'flex',gap:6}},
         h(Btn,{v:'teal',sm:true,onClick:exportarOT},'⬇ Excel'),
@@ -14209,6 +14305,11 @@ function MantOTDetalle(p){
       )
     ),
     msg&&h('div',{className:'al '+(msg.startsWith('Error')?'al-e':'al-s'),style:{marginBottom:8}},msg),
+    // Prioridad (clasificación P1..P4): editable siempre, se guarda al elegir
+    h('div',{className:'card',style:{marginBottom:12,padding:'10px 14px',borderLeft:'6px solid '+otPrio(ot.prioridad).col,display:'flex',alignItems:'center',gap:14,flexWrap:'wrap'}},
+      h('div',{style:{fontSize:10.5,fontWeight:700,letterSpacing:1,color:'#475569',textTransform:'uppercase'}},'Prioridad'),
+      h(OTPrioSelector,{value:ot.prioridad,onChange:cambiarPrioridad,disabled:prioGuardando}),
+      h('div',{style:{fontSize:11,color:'#64748B'}},h('strong',{style:{color:otPrio(ot.prioridad).tx}},otPrio(ot.prioridad).desc),prioGuardando?' · guardando…':' · se guarda al elegir')),
     // Header info
     h('div',{className:'g2',style:{marginBottom:12}},
       h('div',{className:'card'},
@@ -14763,7 +14864,7 @@ function MantGenerarOTModal(p){
   const[fApertura,setFApertura]=useState(fmtISO(new Date()));
   const[fProg,setFProg]=useState('');
   const[horo,setHoro]=useState(plan.horometro_actual!=null?String(Math.round(parseFloat(plan.horometro_actual))):'');
-  const[prioridad,setPrioridad]=useState(plan.prioridad||'normal');
+  const[prioridad,setPrioridad]=useState(otPrioKey(plan.prioridad));
   const[resp,setResp]=useState('');
   const[obs,setObs]=useState('');
   const[saving,setSaving]=useState(false);
@@ -14873,7 +14974,7 @@ function MantGenerarOTModal(p){
       ),
       h('div',null,h('label',{style:lbl},'Prioridad'),
         h('select',{value:prioridad,onChange:function(e){setPrioridad(e.target.value);},style:inp},
-          h('option',{value:'baja'},'Baja'),h('option',{value:'normal'},'Normal'),h('option',{value:'alta'},'Alta'),h('option',{value:'critica'},'Crítica')
+          h('option',{value:'baja'},'P4 · Baja'),h('option',{value:'normal'},'P3 · Normal'),h('option',{value:'alta'},'P2 · Alta'),h('option',{value:'urgente'},'P1 · Urgente')
         )
       ),
       h('div',null,h('label',{style:lbl},'Responsable'),
@@ -26753,7 +26854,7 @@ function OTFotos(p){
 // Detalle de una OT en el celular (cualquier origen): edita estado, horómetro y textos (necesita señal) y agrega fotos (con o sin señal).
 function MobileOTDetalle(p){
   var o=p.ot;
-  var[f,setF]=useState({estado:o.estado,horometro_servicio:o.horometro_servicio||'',sintoma_reportado:o.sintoma_reportado||'',trabajo_realizado:o.trabajo_realizado||'',repuestos_texto:o.repuestos_texto||'',observaciones:o.observaciones||''});
+  var[f,setF]=useState({estado:o.estado,prioridad:otPrioKey(o.prioridad),horometro_servicio:o.horometro_servicio||'',sintoma_reportado:o.sintoma_reportado||'',trabajo_realizado:o.trabajo_realizado||'',repuestos_texto:o.repuestos_texto||'',observaciones:o.observaciones||''});
   var[msg,setMsg]=useState('');var[guardando,setGuardando]=useState(false);var[online,setOnline]=useState(navigator.onLine);
   useEffect(function(){function on(){setOnline(true);}function off(){setOnline(false);}window.addEventListener('online',on);window.addEventListener('offline',off);return function(){window.removeEventListener('online',on);window.removeEventListener('offline',off);};},[]);
   var up=function(k,v){setF(function(x){var n=Object.assign({},x);n[k]=v;return n;});};
@@ -26764,7 +26865,7 @@ function MobileOTDetalle(p){
   function guardar(){
     if(!navigator.onLine){setMsg('📴 Sin señal: los cambios de texto y estado necesitan señal. Las fotos sí puedes agregarlas ahora.');return;}
     setGuardando(true);setMsg('');
-    var body={horometro_servicio:f.horometro_servicio,sintoma_reportado:f.sintoma_reportado,trabajo_realizado:f.trabajo_realizado,repuestos_texto:f.repuestos_texto,observaciones:f.observaciones}; if(editable)body.estado=f.estado;
+    var body={horometro_servicio:f.horometro_servicio,sintoma_reportado:f.sintoma_reportado,trabajo_realizado:f.trabajo_realizado,repuestos_texto:f.repuestos_texto,observaciones:f.observaciones,prioridad:f.prioridad}; if(editable)body.estado=f.estado;
     api('/mant/ot/'+o.ot_id+'/movil','PATCH',body,p.tok).then(function(r){setMsg('✔ Guardado en el sistema');if(p.onSaved)p.onSaved(r);}).catch(function(e){setMsg(esSinSenal(e)?'📴 Se perdió la señal: inténtalo de nuevo cuando vuelva':e.message);}).finally(function(){setGuardando(false);});
   }
   function campoTexto(k,label,placeholder,filas){return h('div',null,h('label',{style:lbl},label),h('div',{style:{display:'flex',gap:8,alignItems:'flex-start'}},h('textarea',{value:f[k],onChange:function(e){up(k,e.target.value);},rows:filas||3,placeholder:placeholder,style:Object.assign({},inp,{resize:'vertical'})}),vozSoportada()&&h(MicBtn,{alTexto:function(t){up(k,(f[k]?f[k]+' ':'')+t);}})));}
@@ -26778,6 +26879,9 @@ function MobileOTDetalle(p){
         h('label',{style:lbl},'Estado'),
         editable?h('select',{value:f.estado,onChange:function(e){up('estado',e.target.value);},style:inp},h('option',{value:'abierta'},'Pendiente'),h('option',{value:'en_ejecucion'},'En trabajo'),h('option',{value:'cerrada'},'Terminada'))
           :h('div',{style:{fontSize:13,padding:'8px 0'}},ESTN[o.estado]||o.estado,h('span',{style:{fontSize:11,color:'#64748B'}},' (este estado se cambia desde el escritorio)')),
+        h('label',{style:lbl},'Prioridad'),
+        h(OTPrioSelector,{value:f.prioridad,onChange:function(k){up('prioridad',k);},movil:true}),
+        h('div',{style:{fontSize:11,color:'#64748B',marginTop:4}},otPrio(f.prioridad).desc,f.prioridad!==otPrioKey(o.prioridad)?' · se guarda con el botón de abajo':''),
         h('label',{style:lbl},'Horómetro'),
         h('div',{style:{display:'flex',gap:8}},h('input',{type:'number',inputMode:'decimal',value:f.horometro_servicio,onChange:function(e){up('horometro_servicio',e.target.value);},placeholder:'Horas de la máquina',style:inp}),vozSoportada()&&h(MicBtn,{modo:'num',alTexto:function(t){up('horometro_servicio',t);}})),
         campoTexto('sintoma_reportado','Falla o motivo','¿Qué pasó?',3),
@@ -27215,6 +27319,9 @@ function MobileMantOT(p){
         h('div',{style:{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}},
           h('div',null,h('label',{style:lbl},'Tipo'),h('select',{value:f.tipo_mantencion,onChange:function(e){up('tipo_mantencion',e.target.value);},style:inp},h('option',{value:'correctiva'},'Correctiva (falla)'),h('option',{value:'preventiva'},'Preventiva'),h('option',{value:'programada'},'Programada'))),
           h('div',null,h('label',{style:lbl},'Estado'),h('select',{value:f.estado,onChange:function(e){up('estado',e.target.value);},style:inp},h('option',{value:'cerrada'},'Terminada'),h('option',{value:'en_ejecucion'},'En trabajo'),h('option',{value:'abierta'},'Pendiente')))),
+        h('label',{style:lbl},'Prioridad'),
+        h(OTPrioSelector,{value:f.prioridad,onChange:function(k){up('prioridad',k);},movil:true}),
+        h('div',{style:{fontSize:11,color:'#64748B',marginTop:4}},otPrio(f.prioridad).desc),
         h('label',{style:lbl},'Horómetro'),
         h('div',{style:{display:'flex',gap:8}},h('input',{type:'number',inputMode:'decimal',value:f.horometro_servicio,onChange:function(e){up('horometro_servicio',e.target.value);},placeholder:'Horas de la máquina',style:inp}),vozSoportada()&&h(MicBtn,{modo:'num',alTexto:function(t){up('horometro_servicio',t);}})),
         campoTexto('sintoma_reportado','Falla o motivo *','¿Qué pasó? Ej: se cortó manguera hidráulica del cabezal',3),
@@ -27257,7 +27364,7 @@ function MobileMantOT(p){
         cargando&&h('div',{style:{fontSize:12,color:'#64748B',padding:8}},'Cargando…'),
         !cargando&&!lista.length&&h('div',{className:'card',style:{padding:14,color:'#64748B'}},'Sin OT en los últimos 120 días'+(q?' con "'+q+'"':'')+'.'),
         lista.map(function(x){var c=ESTCOL[x.estado]||'#475569';return h('div',{key:x.ot_id,className:'card',onClick:function(){setSel(x);},style:{padding:10,marginBottom:8,borderLeft:'4px solid '+c,cursor:'pointer'}},
-          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}},h('div',{style:{fontWeight:800,fontSize:14}},x.numero_ot),h('span',{style:{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:10,background:'#F1F5F9',color:c,whiteSpace:'nowrap'}},ESTN[x.estado]||x.estado)),
+          h('div',{style:{display:'flex',justifyContent:'space-between',alignItems:'center',gap:6}},h('div',{style:{fontWeight:800,fontSize:14,display:'flex',alignItems:'center',gap:6,flexWrap:'wrap'}},x.numero_ot,(otPrioKey(x.prioridad)!=='normal')&&h(OTPrioChip,{v:x.prioridad,apagada:!otActiva(x)})),h('span',{style:{fontSize:10,fontWeight:700,padding:'2px 8px',borderRadius:10,background:'#F1F5F9',color:c,whiteSpace:'nowrap'}},ESTN[x.estado]||x.estado)),
           h('div',{style:{fontSize:12,color:'#334155',marginTop:4}},h('b',null,x.equipo_codigo),' ',x.equipo_nombre,' · ',fmtD(x.fecha_apertura),x.faena_nombre?' · '+x.faena_nombre:''),
           x.sintoma_reportado&&h('div',{style:{fontSize:12,marginTop:3,color:'#475569',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},x.sintoma_reportado),
           h('div',{style:{fontSize:11,color:'#64748B',marginTop:4}},(x.fotos>0?'📷 '+x.fotos+' foto(s)':'Sin fotos'),x.mecanico_asignado?' · '+x.mecanico_asignado:'',' · toca para abrir'));}))));
